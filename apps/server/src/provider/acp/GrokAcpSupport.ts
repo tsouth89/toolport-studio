@@ -34,9 +34,13 @@ export function buildGrokAcpSpawnInput(
   cwd: string,
   environment?: NodeJS.ProcessEnv,
 ): AcpSessionRuntime.AcpSpawnInput {
+  const binaryPath = grokSettings?.binaryPath?.trim() || "grok";
+  // Node script agents (test mocks, custom wrappers) must be launched under the
+  // current Node binary. Spawning a .mjs/.js path directly fails on Windows.
+  const isNodeScript = /\.(c|m)?(js|ts)$/i.test(binaryPath);
   return {
-    command: grokSettings?.binaryPath || "grok",
-    args: ["agent", "stdio"],
+    command: isNodeScript ? process.execPath : binaryPath,
+    args: isNodeScript ? [binaryPath, "agent", "stdio"] : ["agent", "stdio"],
     cwd,
     env: {
       ...environment,

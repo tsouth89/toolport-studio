@@ -1052,12 +1052,13 @@ export function makeCursorAdapter(
         const ctx = yield* requireSession(threadId);
         yield* settlePendingApprovalsAsCancelled(ctx.pendingApprovals);
         yield* settlePendingUserInputsAsEmptyAnswers(ctx.pendingUserInputs);
-        yield* Effect.ignore(
-          ctx.acp.cancel.pipe(
-            Effect.mapError((error) =>
-              mapAcpToAdapterError(PROVIDER, threadId, "session/cancel", error),
-            ),
+        // Never block Stop on a wedged ACP child process.
+        yield* ctx.acp.cancel.pipe(
+          Effect.mapError((error) =>
+            mapAcpToAdapterError(PROVIDER, threadId, "session/cancel", error),
           ),
+          Effect.timeout("2 seconds"),
+          Effect.ignore,
         );
       });
 

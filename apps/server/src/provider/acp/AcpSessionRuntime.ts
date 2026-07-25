@@ -13,6 +13,7 @@ import * as Ref from "effect/Ref";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import * as ChildProcess from "effect/unstable/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 import * as EffectAcpClient from "effect-acp/client";
@@ -200,6 +201,12 @@ export class AcpSessionRuntime extends Context.Service<
      */
     readonly cancel: Effect.Effect<void, EffectAcpErrors.AcpError>;
     /**
+     * True when the most recent prompt was released by the local cancel latch
+     * (agent process may still be wedged). Callers should recycle the child
+     * before the next prompt.
+     */
+    readonly wasForceCancelled: Effect.Effect<boolean>;
+    /**
      * Selects the active mode through the negotiated `mode` configuration option.
      * This is a no-op when the requested mode is already active.
      * @see https://agentclientprotocol.com/protocol/schema#session/set_config_option
@@ -296,6 +303,21 @@ export const make = (
     const activePromptFiberRef = yield* Ref.make<
       Option.Option<Fiber.Fiber<EffectAcpSchema.PromptResponse, EffectAcpErrors.AcpError>>
     >(Option.none());
+    /**
+     * Local cancel latch for the in-flight prompt. Stop must never wait for the
+     * agent process to tear down an uninterruptible `session/prompt` RPC; the
+     * latch lets `prompt` resolve with `cancelled` immediately while interrupt
+     * and `session/cancel` continue in the background.
+     */
+    const activePromptCancelRef = yield* Ref.make<
+      Option.Option<Deferred.Deferred<EffectAcpSchema.PromptResponse>>
+    >(Option.none());
+    /**
+     * True when the last in-flight prompt was released via the local cancel
+     * latch rather than a clean agent RPC response. Callers should treat the
+     * ACP child as compromised and recycle it before the next prompt.
+     */
+    const forceCancelledRef = yield* Ref.make(false);
     const sessionLoadGateRef = yield* Ref.make<Option.Option<SessionLoadGate>>(Option.none());
 
     const logRequest = (event: AcpSessionRequestLogEvent) =>
@@ -731,22 +753,38 @@ export const make = (
             const cancelledResponse = {
               stopReason: "cancelled",
             } satisfies EffectAcpSchema.PromptResponse;
+            const localCancel = yield* Deferred.make<EffectAcpSchema.PromptResponse>();
             const promptRpcFiber = yield* runLoggedRequest(
               "session/prompt",
               requestPayload,
               acp.agent.prompt(requestPayload),
             ).pipe(Effect.forkIn(runtimeScope));
             yield* Ref.set(activePromptFiberRef, Option.some(promptRpcFiber));
-            return yield* Fiber.join(promptRpcFiber).pipe(
-              Effect.catchCause((cause) =>
-                Cause.hasInterruptsOnly(cause)
-                  ? Effect.succeed(cancelledResponse)
-                  : Effect.failCause(cause),
+            yield* Ref.set(activePromptCancelRef, Option.some(localCancel));
+            yield* Ref.set(forceCancelledRef, false);
+            // Race local cancel against the RPC so Stop never depends on the
+            // agent process becoming interruptible. Fiber.interrupt of the RPC
+            // may hang forever on a wedged child process; the latch still wins.
+            return yield* Effect.raceFirst(
+              Fiber.join(promptRpcFiber).pipe(
+                Effect.catchCause((cause) =>
+                  Cause.hasInterruptsOnly(cause)
+                    ? Effect.succeed(cancelledResponse)
+                    : Effect.failCause(cause),
+                ),
+                Effect.tap(() => Ref.set(forceCancelledRef, false)),
               ),
+              Deferred.await(localCancel).pipe(Effect.tap(() => Ref.set(forceCancelledRef, true))),
+            ).pipe(
               Effect.ensuring(
                 Effect.gen(function* () {
-                  yield* Fiber.interrupt(promptRpcFiber).pipe(Effect.ignore);
+                  yield* Ref.set(activePromptCancelRef, Option.none());
                   yield* Ref.set(activePromptFiberRef, Option.none());
+                  // Best-effort only: never block prompt settlement on process health.
+                  yield* Fiber.interrupt(promptRpcFiber).pipe(
+                    Effect.ignore,
+                    Effect.forkIn(runtimeScope),
+                  );
                 }),
               ),
               Effect.tap(() =>
@@ -761,16 +799,48 @@ export const make = (
       cancel: getStartedState.pipe(
         Effect.flatMap((started) =>
           Effect.gen(function* () {
-            const activePromptFiber = yield* Ref.get(activePromptFiberRef);
-            if (Option.isSome(activePromptFiber)) {
-              yield* Fiber.interrupt(activePromptFiber.value).pipe(Effect.ignore);
-            }
+            const cancelledResponse = {
+              stopReason: "cancelled",
+            } satisfies EffectAcpSchema.PromptResponse;
+            // Notify the agent first. Cooperative agents free session/prompt
+            // quickly; give them a short window before force-releasing locally.
             yield* acp.agent
               .cancel({ sessionId: started.sessionId })
               .pipe(Effect.ignore, Effect.forkIn(runtimeScope));
+
+            // Use live clock for the grace window so TestClock-driven suites
+            // still observe cooperative agent cancel (25ms poll in the mock).
+            const stillActiveAfterGrace = yield* Ref.get(activePromptCancelRef).pipe(
+              Effect.flatMap((current) =>
+                Option.isNone(current)
+                  ? Effect.succeed(current)
+                  : Effect.sleep("200 millis").pipe(
+                      TestClock.withLive,
+                      Effect.andThen(Ref.get(activePromptCancelRef)),
+                    ),
+              ),
+            );
+
+            if (Option.isSome(stillActiveAfterGrace)) {
+              // Agent did not release the prompt — force-cancel and mark the
+              // child compromised so adapters can recycle before the next turn.
+              yield* Ref.set(forceCancelledRef, true);
+              yield* Deferred.succeed(stillActiveAfterGrace.value, cancelledResponse).pipe(
+                Effect.ignore,
+              );
+            }
+
+            const activePromptFiber = yield* Ref.get(activePromptFiberRef);
+            if (Option.isSome(activePromptFiber)) {
+              yield* Fiber.interrupt(activePromptFiber.value).pipe(
+                Effect.ignore,
+                Effect.forkIn(runtimeScope),
+              );
+            }
           }),
         ),
       ),
+      wasForceCancelled: Ref.get(forceCancelledRef),
       setMode: (modeId) =>
         Ref.get(modeStateRef).pipe(
           Effect.flatMap((modeState) => {

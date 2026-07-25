@@ -240,9 +240,10 @@ describe("AcpSessionRuntime", () => {
         .pipe(Effect.forkChild({ startImmediately: true }));
 
       yield* TestClock.adjust("500 millis");
-      yield* runtime.cancel;
+      // Cancel itself must not hang waiting for agent process teardown.
+      yield* runtime.cancel.pipe(Effect.timeout("1 second"));
 
-      const firstPromptResult = yield* Fiber.join(promptFiber);
+      const firstPromptResult = yield* Fiber.join(promptFiber).pipe(Effect.timeout("1 second"));
       expect(firstPromptResult).toMatchObject({ stopReason: "cancelled" });
 
       const secondPromptResult = yield* runtime.prompt({

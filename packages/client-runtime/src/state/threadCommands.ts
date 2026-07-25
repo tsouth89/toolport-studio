@@ -146,7 +146,9 @@ export function createThreadEnvironmentAtoms<R, E>(
       label: "environment-data:commands:thread:interrupt-turn",
       execute: (input: InterruptThreadTurnInput) => interruptThreadTurn(input),
       scheduler,
-      concurrency,
+      // Stop must never sit behind a long/hung startTurn (or any other serial
+      // thread command). Parallel keeps the Stop button responsive.
+      concurrency: { mode: "parallel" },
     }),
     respondToApproval: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:respond-to-approval",

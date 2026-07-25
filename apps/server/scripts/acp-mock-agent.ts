@@ -519,7 +519,16 @@ const program = Effect.gen(function* () {
       }
 
       if (hangPromptForever || (hangFirstPromptForever && promptCount === 1)) {
-        return yield* Effect.never;
+        // Uncooperative hang until session/cancel arrives. If cancel never
+        // lands, Effect.never-equivalent: poll forever. When cancel lands,
+        // return cancelled so the same process can accept a follow-up without
+        // requiring process recycle (covers the cooperative path). Adapter
+        // still force-cancels via local latch for fully silent agents.
+        while (!cancelledSessions.has(requestedSessionId)) {
+          yield* Effect.sleep("25 millis");
+        }
+        cancelledSessions.delete(requestedSessionId);
+        return { stopReason: "cancelled" as const };
       }
 
       if (emitXAiPromptCompleteThenHang) {
