@@ -421,6 +421,7 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
   preserveComposerFocusOnPointerDown?: boolean;
   onPreviousPendingQuestion: () => void;
   onInterrupt: () => void;
+  onSteer?: () => void;
   onImplementPlanInNewThread: () => void;
 }) {
   return (
@@ -448,6 +449,7 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
         preserveComposerFocusOnPointerDown={props.preserveComposerFocusOnPointerDown ?? false}
         onPreviousPendingQuestion={props.onPreviousPendingQuestion}
         onInterrupt={props.onInterrupt}
+        {...(props.onSteer ? { onSteer: props.onSteer } : {})}
         onImplementPlanInNewThread={props.onImplementPlanInNewThread}
       />
     </>
@@ -2045,6 +2047,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const handleInterruptPrimaryAction = useCallback(() => {
     void onInterrupt();
   }, [onInterrupt]);
+
+  const handleSteerPrimaryAction = useCallback(() => {
+    submitComposer(undefined, { intent: "steer" });
+  }, [submitComposer]);
   const handleImplementPlanInNewThreadPrimaryAction = useCallback(() => {
     void onImplementPlanInNewThread();
   }, [onImplementPlanInNewThread]);
@@ -2758,6 +2764,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   preserveComposerFocusOnPointerDown={isMobileViewport}
                   onPreviousPendingQuestion={onPreviousActivePendingUserInputQuestion}
                   onInterrupt={handleInterruptPrimaryAction}
+                  onSteer={handleSteerPrimaryAction}
                   onImplementPlanInNewThread={handleImplementPlanInNewThreadPrimaryAction}
                 />
               </div>

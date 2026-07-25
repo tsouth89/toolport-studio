@@ -28,6 +28,8 @@ interface ComposerPrimaryActionsProps {
   preserveComposerFocusOnPointerDown?: boolean;
   onPreviousPendingQuestion: () => void;
   onInterrupt: () => void;
+  /** Inject composer content into the live turn (steer). */
+  onSteer?: () => void;
   onImplementPlanInNewThread: () => void;
 }
 
@@ -67,6 +69,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   preserveComposerFocusOnPointerDown = false,
   onPreviousPendingQuestion,
   onInterrupt,
+  onSteer,
   onImplementPlanInNewThread,
 }: ComposerPrimaryActionsProps) {
   const pointerFocusProps = preserveComposerFocusOnPointerDown
@@ -142,39 +145,35 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
     );
   }
 
-  // Live turn: queue/send stays available next to Stop (Grok Build-style).
-  // Default submit queues; Ctrl/Cmd+Enter steers (handled by the composer).
+  // Live turn: Queue (default submit) + Send now (steer) + Stop.
+  // Ctrl is used by sidebar thread-jump hints on Windows, so steer is a button.
   if (isRunning) {
     return (
       <div className="flex items-center gap-1.5">
-        <button
+        <Button
           type="submit"
-          className={cn(
-            "relative isolate flex h-9 w-9 items-center justify-center overflow-hidden rounded-full text-primary-foreground shadow-xs transition-all duration-150 enabled:cursor-pointer enabled:inset-shadow-[0_1px_--theme(--color-white/16%)] hover:scale-105 active:inset-shadow-[0_1px_--theme(--color-black/8%)] active:shadow-none disabled:pointer-events-none disabled:opacity-30 disabled:shadow-none disabled:hover:scale-100 sm:h-8 sm:w-8",
-            stageBackdropVariant
-              ? "bg-transparent enabled:shadow-black/24 enabled:hover:brightness-110"
-              : "bg-primary/90 enabled:shadow-primary/24 hover:bg-primary",
-          )}
+          size="sm"
+          variant="outline"
+          className="h-8 rounded-full px-2.5 text-xs"
           {...pointerFocusProps}
           disabled={isEnvironmentUnavailable || !hasSendableContent}
           aria-label="Queue message for after this turn"
-          title="Queue for after this turn (Ctrl+Enter steers into the live turn)"
+          title="Queue for after this turn"
         >
-          {stageBackdropVariant ? (
-            <span className="absolute inset-0 -z-10" aria-hidden="true">
-              <StageBackdropButtonArt variant={stageBackdropVariant} />
-            </span>
-          ) : null}
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-            <path
-              d="M12.5 1.5L6.2 7.8M12.5 1.5L8.5 12.5L6.2 7.8M12.5 1.5L1.5 5.5L6.2 7.8"
-              stroke="currentColor"
-              strokeWidth="1.5"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          </svg>
-        </button>
+          Queue
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          className="h-8 rounded-full px-2.5 text-xs"
+          {...pointerFocusProps}
+          disabled={isEnvironmentUnavailable || !hasSendableContent || !onSteer}
+          aria-label="Send into live turn now"
+          title="Send into the live turn now (steer)"
+          onClick={() => onSteer?.()}
+        >
+          Send now
+        </Button>
         <button
           type="button"
           className="flex size-8 cursor-pointer items-center justify-center rounded-full bg-destructive/90 text-white shadow-xs shadow-destructive/24 inset-shadow-[0_1px_--theme(--color-white/16%)] transition-all duration-150 hover:bg-destructive hover:scale-105 active:inset-shadow-[0_1px_--theme(--color-black/8%)] active:shadow-none sm:h-8 sm:w-8"

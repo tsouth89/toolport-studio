@@ -4539,9 +4539,9 @@ function ChatViewContent(props: ChatViewProps) {
       ctrlOrMetaKey: options?.ctrlOrMetaKey ?? false,
       explicitIntent: options?.intent,
     });
-    // While a turn is live, default Send/Enter queues the next turn. Ctrl+Enter
-    // (or intent=steer) injects into the current Grok turn. Stop cancels the
-    // whole live turn (ACP); queued messages are kept.
+    // While a turn is live, default Send/Enter queues the next turn. "Send now"
+    // (composer button or queue-item action) steers into the live turn. Stop
+    // cancels the whole live turn (ACP); queued messages are kept.
     if (submitIntent === "queue" && phase === "running") {
       if (!hasSendableContent) {
         return false;
@@ -4940,6 +4940,47 @@ function ChatViewContent(props: ChatViewProps) {
 
   const onSendRef = useRef(onSend);
   onSendRef.current = onSend;
+
+  /** Pull a queued item into the composer and send it now (steer if live). */
+  const sendQueuedItemNow = useCallback(
+    (itemId: string) => {
+      if (!activeThreadId) {
+        return;
+      }
+      const item = useThreadTurnQueueStore
+        .getState()
+        .list(activeThreadId)
+        .find((entry) => entry.id === itemId);
+      if (!item) {
+        return;
+      }
+      useThreadTurnQueueStore.getState().remove(activeThreadId, itemId);
+      clearComposerDraftContent(composerDraftTarget);
+      setComposerDraftPrompt(composerDraftTarget, item.text);
+      if (item.images.length > 0) {
+        addComposerDraftImages(composerDraftTarget, [...item.images]);
+      }
+      promptRef.current = item.text;
+      composerImagesRef.current = [...item.images];
+      composerTerminalContextsRef.current = [];
+      composerElementContextsRef.current = [];
+      composerRef.current?.resetCursorState({
+        prompt: item.text,
+        cursor: item.text.length,
+        detectTrigger: false,
+      });
+      const intent = phase === "running" ? "steer" : "force";
+      void onSendRef.current(undefined, { intent });
+    },
+    [
+      activeThreadId,
+      addComposerDraftImages,
+      clearComposerDraftContent,
+      composerDraftTarget,
+      phase,
+      setComposerDraftPrompt,
+    ],
+  );
 
   // Drain queued turns once the live turn is fully settled. Stop keeps the queue.
   useEffect(() => {
@@ -5946,7 +5987,7 @@ function ChatViewContent(props: ChatViewProps) {
                                   ? "1 message queued for after this turn"
                                   : `${activeThreadQueueCount} messages queued for after this turn`}
                                 {phase === "running"
-                                  ? " · Ctrl+Enter steers into the live turn"
+                                  ? " · Send now injects into the live turn"
                                   : ""}
                               </span>
                               <button
@@ -5976,17 +6017,28 @@ function ChatViewContent(props: ChatViewProps) {
                                       {index + 1}. {preview}
                                       {item.text.trim().length > 72 ? "…" : ""}
                                     </span>
-                                    <button
-                                      type="button"
-                                      className="shrink-0 rounded px-1.5 py-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
-                                      onClick={() => {
-                                        useThreadTurnQueueStore
-                                          .getState()
-                                          .remove(activeThreadId, item.id);
-                                      }}
-                                    >
-                                      Remove
-                                    </button>
+                                    <span className="flex shrink-0 items-center gap-1">
+                                      <button
+                                        type="button"
+                                        className="rounded px-1.5 py-0.5 font-medium text-primary hover:bg-muted"
+                                        onClick={() => {
+                                          sendQueuedItemNow(item.id);
+                                        }}
+                                      >
+                                        Send now
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="rounded px-1.5 py-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+                                        onClick={() => {
+                                          useThreadTurnQueueStore
+                                            .getState()
+                                            .remove(activeThreadId, item.id);
+                                        }}
+                                      >
+                                        Remove
+                                      </button>
+                                    </span>
                                   </li>
                                 );
                               })}
