@@ -1093,6 +1093,42 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
     }),
   );
 
+  it.effect("falls back to a fresh session when the persisted Grok session path is gone", () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("grok-stale-resume-path");
+      const adapter = yield* makeMockTestAdapter({
+        T3_ACP_FAIL_LOAD_SESSION_NOT_FOUND: "1",
+      });
+
+      const session = yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("grok"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        modelSelection: { instanceId: ProviderInstanceId.make("grok"), model: "grok-build" },
+        resumeCursor: { schemaVersion: 1, sessionId: "stale-pre-rebuild-session" },
+      });
+
+      // session/load Path not found → session/new; resumeCursor points at the new id.
+      assert.deepStrictEqual(session.resumeCursor, {
+        schemaVersion: 1,
+        sessionId: "mock-session-1",
+      });
+      assert.notEqual(
+        (session.resumeCursor as { sessionId?: string } | undefined)?.sessionId,
+        "stale-pre-rebuild-session",
+      );
+
+      yield* adapter.sendTurn({
+        threadId,
+        input: "hello after rebuild",
+        attachments: [],
+      });
+
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
   it.effect("rejects startSession when provider mismatches", () =>
     Effect.gen(function* () {
       const adapter = yield* makeMockTestAdapter();

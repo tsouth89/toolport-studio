@@ -22,6 +22,7 @@ import type * as EffectAcpSchema from "effect-acp/schema";
 import type * as EffectAcpProtocol from "effect-acp/protocol";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 
+import { isAcpSessionLoadNotFound } from "./AcpAdapterSupport.ts";
 import {
   collectSessionConfigOptionValues,
   extractModelConfigId,
@@ -578,9 +579,23 @@ export const make = (
         | EffectAcpSchema.LoadSessionResponse
         | EffectAcpSchema.NewSessionResponse
         | EffectAcpSchema.ResumeSessionResponse;
+
+      const createNewSession = Effect.gen(function* () {
+        const createPayload = {
+          cwd: options.cwd,
+          mcpServers: options.mcpServers ?? [],
+        } satisfies EffectAcpSchema.NewSessionRequest;
+        return yield* runLoggedRequest(
+          "session/new",
+          createPayload,
+          acp.agent.createSession(createPayload),
+        );
+      });
+
       if (options.resumeSessionId) {
+        const resumeSessionId = options.resumeSessionId;
         const loadPayload = {
-          sessionId: options.resumeSessionId,
+          sessionId: resumeSessionId,
           cwd: options.cwd,
           mcpServers: options.mcpServers ?? [],
         } satisfies EffectAcpSchema.LoadSessionRequest;
@@ -601,8 +616,7 @@ export const make = (
           }),
         );
 
-        sessionId = options.resumeSessionId;
-        sessionSetupResult = yield* Effect.gen(function* () {
+        const loadedOrFresh = yield* Effect.gen(function* () {
           yield* logRequest({
             method: "session/load",
             payload: loadPayload,
@@ -650,18 +664,34 @@ export const make = (
             ),
           );
 
-          return loaded;
-        }).pipe(Effect.ensuring(Ref.set(sessionLoadGateRef, Option.none())));
-      } else {
-        const createPayload = {
-          cwd: options.cwd,
-          mcpServers: options.mcpServers ?? [],
-        } satisfies EffectAcpSchema.NewSessionRequest;
-        const created = yield* runLoggedRequest(
-          "session/new",
-          createPayload,
-          acp.agent.createSession(createPayload),
+          return {
+            sessionId: resumeSessionId,
+            sessionSetupResult: loaded,
+          } as const;
+        }).pipe(
+          // Drop the load gate before any fallback session/new so replay
+          // filtering cannot swallow live updates from the fresh session.
+          Effect.ensuring(Ref.set(sessionLoadGateRef, Option.none())),
+          Effect.catchIf(isAcpSessionLoadNotFound, (error) =>
+            Effect.gen(function* () {
+              yield* Effect.logWarning(
+                `ACP session/load failed for session '${resumeSessionId}' (session no longer available); starting a fresh session/new.`,
+                {
+                  detail: error instanceof Error ? error.message : String(error),
+                },
+              );
+              const created = yield* createNewSession;
+              return {
+                sessionId: created.sessionId,
+                sessionSetupResult: created,
+              } as const;
+            }),
+          ),
         );
+        sessionId = loadedOrFresh.sessionId;
+        sessionSetupResult = loadedOrFresh.sessionSetupResult;
+      } else {
+        const created = yield* createNewSession;
         sessionId = created.sessionId;
         sessionSetupResult = created;
       }

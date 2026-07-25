@@ -14,6 +14,75 @@ import {
 const isAcpProcessExitedError = Schema.is(EffectAcpErrors.AcpProcessExitedError);
 const isAcpRequestError = Schema.is(EffectAcpErrors.AcpRequestError);
 
+/** ACP JSON-RPC code for resource / session not found. */
+const ACP_RESOURCE_NOT_FOUND_CODE = -32002;
+
+/**
+ * Whether a failed `session/load` should fall back to `session/new`.
+ *
+ * Grok (and similar ACP agents) persist sessions on disk; after a Studio rebuild
+ * or agent data wipe the durable resume cursor still points at a missing path
+ * and load returns "Path not found". Only confirmed missing-session failures
+ * recover silently — auth, transport, and other request errors must propagate
+ * so we do not reset a live thread's provider context on a transient blip.
+ *
+ * Matches structured signals first (`-32002`), then bounded message patterns
+ * used by real agents (Grok: "Path not found"). Exported for unit testing.
+ */
+export function isAcpSessionLoadNotFound(error: unknown): boolean {
+  const seen = new Set<unknown>();
+  const queue: Array<unknown> = [error];
+  for (let steps = 0; queue.length > 0 && steps < 32; steps += 1) {
+    const node = queue.shift();
+    if (node === null || node === undefined || seen.has(node)) {
+      continue;
+    }
+    if (typeof node === "string") {
+      if (messageLooksLikeSessionNotFound(node)) {
+        return true;
+      }
+      continue;
+    }
+    if (typeof node !== "object") {
+      continue;
+    }
+    seen.add(node);
+    const record = node as Record<string, unknown>;
+
+    if (record.code === ACP_RESOURCE_NOT_FOUND_CODE || record.code === 404) {
+      return true;
+    }
+
+    for (const key of ["errorMessage", "message", "detail"] as const) {
+      const value = record[key];
+      if (typeof value === "string" && messageLooksLikeSessionNotFound(value)) {
+        return true;
+      }
+    }
+
+    for (const key of ["cause", "data", "error", "body"] as const) {
+      if (record[key] !== undefined) {
+        queue.push(record[key]);
+      }
+    }
+  }
+  return false;
+}
+
+function messageLooksLikeSessionNotFound(message: string): boolean {
+  const normalized = message.toLowerCase();
+  // Prefer specific phrases over bare "not found" so method-not-found and
+  // unrelated upstream errors do not force a silent session reset.
+  return (
+    normalized.includes("path not found") ||
+    normalized.includes("session not found") ||
+    normalized.includes("resource not found") ||
+    normalized.includes("no such file") ||
+    normalized.includes("enoent") ||
+    /\bmissing session\b/.test(normalized)
+  );
+}
+
 export function mapAcpToAdapterError(
   provider: ProviderDriverKind,
   threadId: ThreadId,

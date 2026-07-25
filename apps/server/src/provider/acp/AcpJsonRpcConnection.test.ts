@@ -503,7 +503,7 @@ describe("AcpSessionRuntime", () => {
     );
   });
 
-  it.effect("fails session startup when session/load returns an error", () =>
+  it.effect("fails session startup when session/load returns a non-not-found error", () =>
     Effect.gen(function* () {
       const runtime = yield* AcpSessionRuntime.AcpSessionRuntime;
       const error = yield* runtime.start().pipe(Effect.flip);
@@ -518,6 +518,39 @@ describe("AcpSessionRuntime", () => {
             args: mockAgentArgs,
             env: {
               T3_ACP_FAIL_LOAD_SESSION: "1",
+            },
+          },
+          cwd: process.cwd(),
+          resumeSessionId: "stale-session-id",
+          clientInfo: { name: "t3-test", version: "0.0.0" },
+        }),
+      ),
+      Effect.scoped,
+      Effect.provide(NodeServices.layer),
+    ),
+  );
+
+  it.effect("falls back to session/new when session/load reports the session is gone", () =>
+    Effect.gen(function* () {
+      const runtime = yield* AcpSessionRuntime.AcpSessionRuntime;
+      const started = yield* runtime.start();
+
+      // Mock agent always mints mock-session-1 from session/new; resume id is stale.
+      expect(started.sessionId).toBe("mock-session-1");
+      expect(started.sessionId).not.toBe("stale-session-id");
+
+      yield* runtime.prompt({
+        prompt: [{ type: "text", text: "after stale resume" }],
+      });
+    }).pipe(
+      Effect.provide(
+        AcpSessionRuntime.layer({
+          authMethodId: "test",
+          spawn: {
+            command: mockAgentCommand,
+            args: mockAgentArgs,
+            env: {
+              T3_ACP_FAIL_LOAD_SESSION_NOT_FOUND: "1",
             },
           },
           cwd: process.cwd(),
