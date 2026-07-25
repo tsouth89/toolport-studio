@@ -131,6 +131,18 @@ interface GrokSessionContext {
    * cannot black-hole.
    */
   acpCompromised: boolean;
+  /**
+   * Visible assistant/tool stream events observed for the active turn. Used to
+   * detect silent end_turn completions that leave the session looking dead.
+   */
+  turnVisibleUpdateCount: number;
+  /**
+   * Bumped whenever the ACP process or notification consumer is replaced so
+   * late finalizers from a disposed consumer cannot clear the live fiber.
+   */
+  notificationGeneration: number;
+  /** True after disposeAcpProcess until a successful recycle/start rebinds ACP. */
+  acpDisposed: boolean;
 }
 
 export function buildGrokImagePromptPart(input: {
@@ -550,9 +562,16 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
 
     const disposeAcpProcess = (ctx: GrokSessionContext) =>
       Effect.gen(function* () {
+        if (ctx.acpDisposed) {
+          return;
+        }
         const notificationFiber = ctx.notificationFiber;
         const scope = ctx.scope;
+        // Invalidate in-flight notification finalizers before clearing the fiber
+        // so a late ensuring cannot stomp a recycled consumer.
+        ctx.notificationGeneration += 1;
         ctx.notificationFiber = undefined;
+        ctx.acpDisposed = true;
         if (notificationFiber) {
           // Never block teardown on a stuck notification consumer. Scope
           // finalizers can be uninterruptible, so fork rather than timeout.
@@ -711,12 +730,25 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         );
       });
 
-    const startNotificationFiber = (ctx: GrokSessionContext) =>
-      Stream.runDrain(
+    const markAcpCompromised = (ctx: GrokSessionContext, reason: string) =>
+      Effect.gen(function* () {
+        if (ctx.stopped || ctx.acpCompromised) {
+          return;
+        }
+        ctx.acpCompromised = true;
+        yield* Effect.logWarning("Grok ACP marked compromised; will recycle before next turn", {
+          threadId: ctx.threadId,
+          reason,
+        });
+      });
+
+    const startNotificationFiber = (ctx: GrokSessionContext) => {
+      const generation = ctx.notificationGeneration;
+      return Stream.runDrain(
         Stream.mapEffect(ctx.acp.getEvents(), (event) =>
           Effect.gen(function* () {
             if (event._tag === "EventStreamBarrier") {
-              yield* Deferred.succeed(event.acknowledge, undefined);
+              yield* Deferred.succeed(event.acknowledge, undefined).pipe(Effect.ignore);
               return;
             }
             if (
@@ -742,6 +774,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
 
             switch (event._tag) {
               case "AssistantItemStarted":
+                ctx.turnVisibleUpdateCount += 1;
                 yield* offerRuntimeEvent(
                   makeAcpAssistantItemEvent({
                     stamp,
@@ -754,6 +787,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 );
                 return;
               case "AssistantItemCompleted":
+                ctx.turnVisibleUpdateCount += 1;
                 yield* offerRuntimeEvent(
                   makeAcpAssistantItemEvent({
                     stamp,
@@ -766,6 +800,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 );
                 return;
               case "PlanUpdated":
+                ctx.turnVisibleUpdateCount += 1;
                 yield* emitPlanUpdate(
                   ctx,
                   notificationTurnId,
@@ -776,6 +811,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 );
                 return;
               case "ToolCallUpdated":
+                ctx.turnVisibleUpdateCount += 1;
                 yield* offerRuntimeEvent(
                   makeAcpToolCallEvent({
                     stamp,
@@ -788,6 +824,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 );
                 return;
               case "ContentDelta":
+                ctx.turnVisibleUpdateCount += 1;
                 yield* offerRuntimeEvent(
                   makeAcpContentDeltaEvent({
                     stamp,
@@ -801,19 +838,50 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 );
                 return;
             }
-          }),
+          }).pipe(
+            // One bad notification must not kill the consumer for later turns
+            // (silent multi-turn death after Stop + one good follow-up).
+            Effect.catch((cause) =>
+              Effect.logError("Failed to process Grok runtime notification event.", {
+                cause,
+                threadId: ctx.threadId,
+              }),
+            ),
+          ),
         ),
       ).pipe(
+        Effect.ensuring(
+          Effect.gen(function* () {
+            // Ignore finalizers from a disposed generation after recycle/stop.
+            if (ctx.notificationGeneration !== generation || ctx.stopped) {
+              return;
+            }
+            ctx.notificationFiber = undefined;
+            yield* markAcpCompromised(ctx, "notification stream ended");
+          }),
+        ),
         Effect.catch((cause) =>
-          Effect.logError("Failed to process Grok runtime notification.", { cause }),
+          Effect.gen(function* () {
+            if (ctx.notificationGeneration !== generation || ctx.stopped) {
+              return;
+            }
+            yield* Effect.logError("Failed to process Grok runtime notification stream.", {
+              cause,
+              threadId: ctx.threadId,
+            });
+            ctx.notificationFiber = undefined;
+            yield* markAcpCompromised(ctx, "notification stream failed");
+          }),
         ),
         Effect.forkChild,
       );
+    };
 
     /**
-     * Kill a wedged ACP child and open a Grok ACP session in a new process.
-     * Prefer resuming the prior session id so follow-ups keep conversation
-     * context; fall back to a fresh session if resume fails or times out.
+     * Kill a wedged ACP child and open a fresh Grok ACP session in a new
+     * process. After Stop/force-cancel we intentionally do not resume the prior
+     * session id: load/resume of a cancelled session is a common source of
+     * silent multi-turn death (end_turn with no stream updates).
      */
     const recycleCompromisedAcp = (ctx: GrokSessionContext) =>
       Effect.gen(function* () {
@@ -822,7 +890,6 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         }
         yield* disposeAcpProcess(ctx);
 
-        const resumeSessionId = parseGrokResume(ctx.session.resumeCursor)?.sessionId;
         const mcpBindings = McpProviderSession.readMcpProviderBindings(
           ctx.threadId,
           options?.environment ?? process.env,
@@ -840,74 +907,55 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           threadId: ctx.threadId,
         });
 
-        const spawnAndStart = (resumeId: string | undefined) =>
-          Effect.gen(function* () {
-            const sessionScope = yield* Scope.make("sequential");
-            const acp = yield* makeGrokAcpRuntime({
-              grokSettings,
-              ...(grokEnvironment ? { environment: grokEnvironment } : {}),
-              childProcessSpawner,
-              cwd: ctx.session.cwd,
-              ...(resumeId ? { resumeSessionId: resumeId } : {}),
-              clientInfo: { name: "t3-code", version: "0.0.0" },
-              ...(mcpBindings.length > 0
-                ? { mcpServers: McpProviderSession.toAcpMcpServers(mcpBindings) }
-                : {}),
-              ...acpNativeLoggers,
-            }).pipe(
-              Effect.provideService(Crypto.Crypto, crypto),
-              Effect.provideService(Scope.Scope, sessionScope),
-              Effect.mapError(
-                (cause) =>
-                  new ProviderAdapterProcessError({
-                    provider: PROVIDER,
-                    threadId: ctx.threadId,
-                    detail: cause.message,
-                    cause,
-                  }),
-              ),
-            );
+        const recycled = yield* Effect.gen(function* () {
+          const sessionScope = yield* Scope.make("sequential");
+          const acp = yield* makeGrokAcpRuntime({
+            grokSettings,
+            ...(grokEnvironment ? { environment: grokEnvironment } : {}),
+            childProcessSpawner,
+            cwd: ctx.session.cwd,
+            clientInfo: { name: "t3-code", version: "0.0.0" },
+            ...(mcpBindings.length > 0
+              ? { mcpServers: McpProviderSession.toAcpMcpServers(mcpBindings) }
+              : {}),
+            ...acpNativeLoggers,
+          }).pipe(
+            Effect.provideService(Crypto.Crypto, crypto),
+            Effect.provideService(Scope.Scope, sessionScope),
+            Effect.mapError(
+              (cause) =>
+                new ProviderAdapterProcessError({
+                  provider: PROVIDER,
+                  threadId: ctx.threadId,
+                  detail: cause.message,
+                  cause,
+                }),
+            ),
+          );
 
-            yield* wireAcpHandlers(acp, {
-              threadId: ctx.threadId,
-              runtimeMode: ctx.session.runtimeMode,
-              pendingApprovals: ctx.pendingApprovals,
-              pendingUserInputs: ctx.pendingUserInputs,
-            }).pipe(
+          yield* wireAcpHandlers(acp, {
+            threadId: ctx.threadId,
+            runtimeMode: ctx.session.runtimeMode,
+            pendingApprovals: ctx.pendingApprovals,
+            pendingUserInputs: ctx.pendingUserInputs,
+          }).pipe(
+            Effect.mapError((error) =>
+              mapAcpToAdapterError(PROVIDER, ctx.threadId, "session/start", error),
+            ),
+          );
+          const started = yield* acp
+            .start()
+            .pipe(
               Effect.mapError((error) =>
                 mapAcpToAdapterError(PROVIDER, ctx.threadId, "session/start", error),
               ),
             );
-            const started = yield* acp
-              .start()
-              .pipe(
-                Effect.mapError((error) =>
-                  mapAcpToAdapterError(PROVIDER, ctx.threadId, "session/start", error),
-                ),
-              );
-            return { sessionScope, acp, started } as const;
-          });
-
-        // Prefer resume so multi-turn after Stop keeps Grok conversation state.
-        // Bound the attempt so a wedged session cannot pin follow-up forever.
-        const recycled = yield* (
-          resumeSessionId === undefined
-            ? spawnAndStart(undefined)
-            : spawnAndStart(resumeSessionId).pipe(
-                Effect.timeout("8 seconds"),
-                Effect.catch(() =>
-                  Effect.logInfo("Grok ACP resume after Stop failed; using a fresh session", {
-                    threadId: ctx.threadId,
-                    previousSessionId: resumeSessionId,
-                  }).pipe(Effect.andThen(spawnAndStart(undefined))),
-                ),
-              )
-        ).pipe(
+          return { sessionScope, acp, started } as const;
+        }).pipe(
           Effect.tapError((error) =>
             Effect.logWarning("Grok ACP recycle failed after Stop", {
               threadId: ctx.threadId,
               detail: error instanceof Error ? error.message : String(error),
-              triedResume: resumeSessionId !== undefined,
             }),
           ),
         );
@@ -937,7 +985,10 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           },
           updatedAt: yield* nowIso,
         };
+        ctx.turnVisibleUpdateCount = 0;
+        // Generation already bumped in dispose; start consumer on the new process.
         ctx.notificationFiber = yield* startNotificationFiber(ctx);
+        ctx.acpDisposed = false;
         ctx.acpCompromised = false;
       });
 
@@ -1079,6 +1130,9 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             currentModelId: boundModelId,
             stopped: false,
             acpCompromised: false,
+            turnVisibleUpdateCount: 0,
+            notificationGeneration: 0,
+            acpDisposed: false,
           };
 
           ctx.notificationFiber = yield* startNotificationFiber(ctx);
@@ -1117,8 +1171,8 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           input.threadId,
           Effect.gen(function* () {
             const ctx = yield* requireSession(input.threadId);
-            // After Stop force-cancels a hung prompt the child may still be
-            // wedged. Recycle before any new work so the turn cannot black-hole.
+            // After Stop (or silent empty end_turn) the child may be wedged.
+            // Recycle before any new work so turns cannot black-hole.
             if (ctx.acpCompromised) {
               yield* recycleCompromisedAcp(ctx);
             }
@@ -1134,6 +1188,9 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             // Bind the turn id before cooperative yields so interruptTurn can
             // settle this prompt even if stop arrives during preparation.
             ctx.activeTurnId = turnId;
+            if (steeringTurnId === undefined) {
+              ctx.turnVisibleUpdateCount = 0;
+            }
             ctx.session = {
               ...ctx.session,
               status: steeringTurnId === undefined ? "connecting" : "running",
@@ -1404,17 +1461,38 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   ...(prepared.displayModel ? { model: prepared.displayModel } : {}),
                 };
                 const completedStopReason = completedStopReasonFromPromptResponse(result);
-                yield* offerRuntimeEvent({
-                  type: "turn.completed",
-                  ...(yield* makeEventStamp()),
-                  provider: PROVIDER,
-                  threadId: input.threadId,
-                  turnId: prepared.turnId,
-                  payload: {
-                    state: result.stopReason === "cancelled" ? "cancelled" : "completed",
-                    stopReason: completedStopReason,
-                  },
-                });
+                const cancelled = result.stopReason === "cancelled";
+                const silentEmptyCompletion = !cancelled && ctx.turnVisibleUpdateCount === 0;
+                if (silentEmptyCompletion) {
+                  // Real Grok sessions after Stop/recycle can return end_turn with
+                  // zero stream updates. Treat that as failure + compromise so the
+                  // next message recycles instead of silently "working" forever.
+                  yield* markAcpCompromised(ctx, "silent empty end_turn");
+                  yield* offerRuntimeEvent({
+                    type: "turn.completed",
+                    ...(yield* makeEventStamp()),
+                    provider: PROVIDER,
+                    threadId: input.threadId,
+                    turnId: prepared.turnId,
+                    payload: {
+                      state: "failed",
+                      errorMessage:
+                        "Grok finished without any visible response. The next message will reconnect the agent.",
+                    },
+                  });
+                } else {
+                  yield* offerRuntimeEvent({
+                    type: "turn.completed",
+                    ...(yield* makeEventStamp()),
+                    provider: PROVIDER,
+                    threadId: input.threadId,
+                    turnId: prepared.turnId,
+                    payload: {
+                      state: cancelled ? "cancelled" : "completed",
+                      stopReason: completedStopReason,
+                    },
+                  });
+                }
                 ctx.interruptedTurnIds.delete(prepared.turnId);
                 yield* Ref.set(promptSettled, true);
               } else if (remainingPrompts > 0) {
@@ -1472,6 +1550,21 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                       prepared.promptParts,
                       promptResult,
                     );
+                    const cancelled = promptResult.stopReason === "cancelled";
+                    const silentEmptyCompletion = !cancelled && ctx.turnVisibleUpdateCount === 0;
+                    if (silentEmptyCompletion) {
+                      yield* markAcpCompromised(ctx, "silent empty end_turn (ensuring)");
+                      yield* settlePromptInFlight(
+                        input.threadId,
+                        prepared.turnId,
+                        prepared.acpSessionId,
+                        {
+                          errorMessage:
+                            "Grok finished without any visible response. The next message will reconnect the agent.",
+                        },
+                      );
+                      return;
+                    }
                     yield* settlePromptInFlight(
                       input.threadId,
                       prepared.turnId,
@@ -1488,8 +1581,19 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               const errorMessage = yield* Ref.get(promptFailureMessageRef);
               yield* withThreadLock(
                 input.threadId,
-                settlePromptInFlight(input.threadId, prepared.turnId, prepared.acpSessionId, {
-                  errorMessage: errorMessage ?? "Grok prompt request failed.",
+                Effect.gen(function* () {
+                  const ctx = sessions.get(input.threadId);
+                  if (ctx && !ctx.stopped) {
+                    yield* markAcpCompromised(ctx, "prompt request failed");
+                  }
+                  yield* settlePromptInFlight(
+                    input.threadId,
+                    prepared.turnId,
+                    prepared.acpSessionId,
+                    {
+                      errorMessage: errorMessage ?? "Grok prompt request failed.",
+                    },
+                  );
                 }),
               );
             }).pipe(Effect.catch(() => Effect.void)),
@@ -1590,7 +1694,8 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           // Always recycle after Stop. Cooperative cancel is not trustworthy:
           // the child can still be wedged and black-hole the next user message
           // while the UI shows "working" with no stream (SOU-351 / SOU-358).
-          // Fresh process on follow-up is slower by ~1s and far more reliable.
+          // Fresh process on the next sendTurn is slower by ~1s and far more
+          // reliable than reusing a cancelled ACP child.
           ctx.acpCompromised = true;
           yield* disposeAcpProcess(ctx);
         }

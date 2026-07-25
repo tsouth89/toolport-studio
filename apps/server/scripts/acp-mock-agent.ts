@@ -23,6 +23,12 @@ const emitXAiPromptCompleteThenHang = process.env.T3_ACP_EMIT_XAI_PROMPT_COMPLET
 const emitForeignSessionUpdates = process.env.T3_ACP_EMIT_FOREIGN_SESSION_UPDATES === "1";
 const hangPromptForever = process.env.T3_ACP_HANG_PROMPT_FOREVER === "1";
 const hangFirstPromptForever = process.env.T3_ACP_HANG_FIRST_PROMPT_FOREVER === "1";
+/**
+ * When set, hang any prompt whose text includes this substring until cancel.
+ * Preferred over HANG_FIRST_PROMPT_FOREVER when the adapter recycles the ACP
+ * process after Stop (a new process would otherwise re-hang its first prompt).
+ */
+const hangPromptText = process.env.T3_ACP_HANG_PROMPT_TEXT?.trim() || "";
 const emitLateUpdateAfterCancel = process.env.T3_ACP_EMIT_LATE_UPDATE_AFTER_CANCEL === "1";
 const omitXAiPromptCompleteStopReason =
   process.env.T3_ACP_OMIT_XAI_PROMPT_COMPLETE_STOP_REASON === "1";
@@ -39,6 +45,13 @@ const failPrompt = process.env.T3_ACP_FAIL_PROMPT === "1";
 const failSetConfigOption = process.env.T3_ACP_FAIL_SET_CONFIG_OPTION === "1";
 const exitOnSetConfigOption = process.env.T3_ACP_EXIT_ON_SET_CONFIG_OPTION === "1";
 const promptResponseText = process.env.T3_ACP_PROMPT_RESPONSE_TEXT;
+/** Return end_turn with no session/update chunks (silent empty completion). */
+const emptyPromptResponse = process.env.T3_ACP_EMPTY_PROMPT_RESPONSE === "1";
+/**
+ * After this many prompts on a process, return empty end_turn (0 = never).
+ * Used to simulate post-Stop multi-turn death after one good follow-up.
+ */
+const emptyPromptAfterCount = Number(process.env.T3_ACP_EMPTY_PROMPT_AFTER_COUNT ?? "0");
 const promptDelayMs = Number(process.env.T3_ACP_PROMPT_DELAY_MS ?? "0");
 const permissionOptionIds = {
   allowOnce: process.env.T3_ACP_ALLOW_ONCE_OPTION_ID ?? "allow-once",
@@ -518,12 +531,27 @@ const program = Effect.gen(function* () {
         return yield* Effect.never;
       }
 
-      if (hangPromptForever || (hangFirstPromptForever && promptCount === 1)) {
+      const promptText = Array.isArray(request.prompt)
+        ? request.prompt
+            .map((part) =>
+              part && typeof part === "object" && "type" in part && part.type === "text"
+                ? String((part as { text?: unknown }).text ?? "")
+                : "",
+            )
+            .join("")
+        : "";
+      const hangThisPrompt =
+        hangPromptForever ||
+        (hangPromptText.length > 0 && promptText.includes(hangPromptText)) ||
+        (hangPromptText.length === 0 && hangFirstPromptForever && promptCount === 1);
+      if (hangThisPrompt) {
         // Uncooperative hang until session/cancel arrives. If cancel never
         // lands, Effect.never-equivalent: poll forever. When cancel lands,
         // return cancelled so the same process can accept a follow-up without
         // requiring process recycle (covers the cooperative path). Adapter
         // still force-cancels via local latch for fully silent agents.
+        // Prefer T3_ACP_HANG_PROMPT_TEXT when Stop recycles the process: a fresh
+        // process resets promptCount and would otherwise re-hang follow-ups.
         while (!cancelledSessions.has(requestedSessionId)) {
           yield* Effect.sleep("25 millis");
         }
@@ -852,6 +880,13 @@ const program = Effect.gen(function* () {
             content: { type: "text", text: " root after child" },
           },
         });
+        return { stopReason: "end_turn" };
+      }
+
+      if (
+        emptyPromptResponse ||
+        (emptyPromptAfterCount > 0 && promptCount >= emptyPromptAfterCount)
+      ) {
         return { stopReason: "end_turn" };
       }
 

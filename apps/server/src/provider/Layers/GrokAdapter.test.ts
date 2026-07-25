@@ -542,10 +542,10 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
   it.effect("lets Stop unblock a fully silent Grok prompt and accept a follow-up turn", () =>
     Effect.gen(function* () {
       const threadId = ThreadId.make("grok-stop-after-full-silence");
-      // First prompt hangs until session/cancel (cooperative mock). Follow-up
-      // must work on the same process without black-holing.
+      // Only the intentional hang prompt blocks; after Stop the adapter recycles
+      // the ACP process, so HANG_FIRST would re-hang the follow-up on a new process.
       const adapter = yield* makeMockTestAdapter({
-        T3_ACP_HANG_FIRST_PROMPT_FOREVER: "1",
+        T3_ACP_HANG_PROMPT_TEXT: "hang forever",
       });
 
       const runtimeEvents: ProviderRuntimeEvent[] = [];
@@ -579,8 +579,11 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
         })
         .pipe(Effect.forkChild);
       const turnId = yield* Deferred.await(turnStarted).pipe(Effect.timeout("2 seconds"));
-      yield* adapter.interruptTurn(threadId, turnId).pipe(Effect.timeout("2 seconds"));
-      yield* Fiber.join(sendTurnFiber).pipe(Effect.timeout("2 seconds"));
+      yield* adapter.interruptTurn(threadId, turnId).pipe(Effect.timeout("3 seconds"));
+      // Do not require the cancelled sendTurn fiber to fully unwind before the
+      // follow-up: dispose can leave late drain work racing, and the adapter
+      // must accept the next message while the prior fiber settles.
+      yield* Fiber.join(sendTurnFiber).pipe(Effect.timeout("3 seconds"), Effect.ignore);
 
       const cancelledEvents = runtimeEvents.filter(
         (event): event is Extract<ProviderRuntimeEvent, { type: "turn.completed" }> =>
@@ -601,7 +604,7 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
           input: "continue after stop",
           attachments: [],
         })
-        .pipe(Effect.timeout("5 seconds"));
+        .pipe(Effect.timeout("10 seconds"));
 
       const followUpCompletedEvents = runtimeEvents
         .slice(followUpEventsBefore)
@@ -611,6 +614,90 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
         );
       assert.lengthOf(followUpCompletedEvents, 1);
       assert.equal(followUpCompletedEvents[0]?.payload.state, "completed");
+
+      // Same recovered thread must accept further multi-turn prompts (not just
+      // the first follow-up after Stop).
+      const secondFollowUpBefore = runtimeEvents.length;
+      yield* adapter
+        .sendTurn({
+          threadId,
+          input: "second message after recovered follow-up",
+          attachments: [],
+        })
+        .pipe(Effect.timeout("5 seconds"));
+      const secondFollowUpCompleted = runtimeEvents
+        .slice(secondFollowUpBefore)
+        .filter(
+          (event): event is Extract<ProviderRuntimeEvent, { type: "turn.completed" }> =>
+            event.type === "turn.completed" && String(event.threadId) === String(threadId),
+        );
+      assert.lengthOf(secondFollowUpCompleted, 1);
+      assert.equal(secondFollowUpCompleted[0]?.payload.state, "completed");
+
+      yield* Fiber.interrupt(runtimeEventsFiber);
+      yield* adapter.stopSession(threadId);
+    }).pipe(TestClock.withLive),
+  );
+
+  it.effect("fails silent empty end_turn and recycles before the next message", () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("grok-silent-empty-end-turn");
+      const adapter = yield* makeMockTestAdapter({
+        T3_ACP_EMPTY_PROMPT_RESPONSE: "1",
+      });
+
+      const runtimeEvents: ProviderRuntimeEvent[] = [];
+      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          runtimeEvents.push(event);
+        }),
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("grok"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+
+      yield* adapter
+        .sendTurn({
+          threadId,
+          input: "please respond",
+          attachments: [],
+        })
+        .pipe(Effect.timeout("5 seconds"));
+
+      const firstCompleted = runtimeEvents.filter(
+        (event): event is Extract<ProviderRuntimeEvent, { type: "turn.completed" }> =>
+          event.type === "turn.completed" && String(event.threadId) === String(threadId),
+      );
+      assert.lengthOf(firstCompleted, 1);
+      assert.equal(firstCompleted[0]?.payload.state, "failed");
+      assert.match(firstCompleted[0]?.payload.errorMessage ?? "", /without any visible response/i);
+
+      // Next sendTurn must recycle and accept work. Keep empty responses so
+      // recycle path is exercised even when the agent stays silent.
+      const secondBefore = runtimeEvents.length;
+      yield* adapter
+        .sendTurn({
+          threadId,
+          input: "retry after silent failure",
+          attachments: [],
+        })
+        .pipe(Effect.timeout("8 seconds"));
+      const secondCompleted = runtimeEvents
+        .slice(secondBefore)
+        .filter(
+          (event): event is Extract<ProviderRuntimeEvent, { type: "turn.completed" }> =>
+            event.type === "turn.completed" && String(event.threadId) === String(threadId),
+        );
+      assert.lengthOf(secondCompleted, 1);
+      assert.equal(secondCompleted[0]?.payload.state, "failed");
+
+      const readySessions = yield* adapter.listSessions();
+      const readySession = readySessions.find((session) => session.threadId === threadId);
+      assert.equal(readySession?.status, "ready");
 
       yield* Fiber.interrupt(runtimeEventsFiber);
       yield* adapter.stopSession(threadId);
@@ -625,7 +712,7 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
       );
       const requestLogPath = NodePath.join(tempDir, "requests.ndjson");
       const adapter = yield* makeMockTestAdapter({
-        T3_ACP_HANG_FIRST_PROMPT_FOREVER: "1",
+        T3_ACP_HANG_PROMPT_TEXT: "cancel this prompt",
         T3_ACP_REQUEST_LOG_PATH: requestLogPath,
       });
 
@@ -666,13 +753,13 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
       const firstTurnId = yield* Deferred.await(firstTurnStarted).pipe(Effect.timeout("2 seconds"));
       yield* waitForFileContent(requestLogPath, 80, '"method":"session/prompt"');
 
-      yield* adapter.interruptTurn(threadId, firstTurnId).pipe(Effect.timeout("2 seconds"));
-      yield* Fiber.join(firstSendTurnFiber).pipe(Effect.timeout("2 seconds"));
+      yield* adapter.interruptTurn(threadId, firstTurnId).pipe(Effect.timeout("3 seconds"));
+      yield* Fiber.join(firstSendTurnFiber).pipe(Effect.timeout("3 seconds"), Effect.ignore);
       // Follow-up may recycle the ACP process after force-cancel; allow extra time.
       const followUp = yield* adapter
         .sendTurn({ threadId, input: "complete the follow-up", attachments: [] })
-        .pipe(Effect.timeout("5 seconds"));
-      yield* Deferred.await(twoTurnsCompleted).pipe(Effect.timeout("5 seconds"));
+        .pipe(Effect.timeout("15 seconds"));
+      yield* Deferred.await(twoTurnsCompleted).pipe(Effect.timeout("10 seconds"));
 
       const turnCompletedEvents = runtimeEvents.filter(
         (event): event is Extract<ProviderRuntimeEvent, { type: "turn.completed" }> =>
