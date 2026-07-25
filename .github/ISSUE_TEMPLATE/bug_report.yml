@@ -27,6 +27,10 @@ body:
       label: Area
       description: Which part of the project is affected?
       options:
+        - Provider authentication or session
+        - Toolport or MCP integration
+        - Conversation, attachments, or models
+        - Projects, terminal, preview, or source control
         - apps/web
         - apps/server
         - apps/desktop
@@ -91,7 +95,7 @@ body:
     attributes:
       label: Environment
       description: OS, browser or desktop app version, Node/Bun version, provider/model if relevant.
-      placeholder: macOS 15.3, Chrome 135, Bun 1.3.9, Codex app-server ...
+      placeholder: Windows 11, Toolport Studio 0.1.0-alpha.2, Grok 4.5 ...
 
   - type: textarea
     id: logs

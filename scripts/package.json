@@ -1,6 +1,7 @@
 {
   "name": "@t3tools/scripts",
   "private": true,
+  "description": "Development, packaging, release, and brand tooling for Toolport Studio.",
   "type": "module",
   "scripts": {
     "typecheck": "tsgo --noEmit",

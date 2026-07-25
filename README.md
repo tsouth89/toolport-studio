@@ -1,47 +1,93 @@
 # Toolport Studio
 
-**One workspace for every AI coding agent.**
+**One desktop home for Claude, Codex, Cursor, Grok, and the tools around them.**
 
-Toolport Studio is a desktop workspace for using Codex, Claude, Cursor, Grok,
-and OpenCode through their installed subscription-backed CLIs. It combines
-conversation, projects, terminals, previews, screenshots, and provider
-switching in one application.
+Toolport Studio turns subscription-backed AI coding CLIs into a cohesive desktop
+workspace. Start with a normal conversation, paste screenshots, switch providers
+and models, then attach a folder when the work becomes a project.
 
-Toolport Studio is built on the open-source
-[T3 Code](https://github.com/pingdotgg/t3code) project and is currently under
-active development.
+The goal is not to create separate “chat” and “coding” products. A conversation
+starts with as little context as you want and grows into a coding workspace when
+you add a project, terminal, preview, source control, or Toolport tools.
 
-## Product family
+> [!IMPORTANT]
+> Toolport Studio is an early alpha. Provider support depends on the corresponding
+> CLI being installed and authenticated on your machine.
 
-- [Toolport](https://toolport.app) is the MCP control plane. Studio discovers
-  its local gateway and makes the same scoped tools available to every provider.
-- [Ceiling](https://github.com/tsouth89/ceiling) supplies provider usage,
-  quota, reset-window, spend, and activity intelligence.
-- [Toolport Studio](https://toolport.studio) is the workspace where those
-  providers and tools come together.
+## What works today
 
-## Current foundation
+- Claude, Codex, Cursor, Grok, and OpenCode provider adapters
+- Subscription-backed authentication through installed provider CLIs
+- Screenshot and image pasting, including Grok Build conversations
+- A curated Recommended model list with the full catalog one click away
+- Projects, terminals, previews, source control, and provider switching
+- Automatic discovery of the local Toolport gateway
+- Toolport-managed MCP servers injected into provider sessions
+- Independent Toolport Studio application identity and data directory
 
-- Subscription-backed Codex, Claude, Cursor, Grok, and OpenCode adapters
-- Pasted screenshot and image support for Grok
-- Internal preview automation MCP server
-- Automatic discovery of Toolport's published gateway on Windows
-- Multi-binding MCP injection through stdio or Streamable HTTP
-- Stable Toolport client identity: `toolport-studio`
+## The product model
+
+Toolport Studio has one conversation surface with progressive context:
+
+1. **Start anywhere** — Open the app and talk without choosing a repository.
+2. **Choose a provider** — Switch between supported providers without learning a
+   different interface for each CLI.
+3. **Add context when needed** — Attach a folder, repository, screenshot, file, or
+   Toolport tool to the same conversation.
+4. **Move into build mode naturally** — Terminals, diffs, previews, approvals, and
+   source control appear when the task needs them.
+
+This keeps casual questions lightweight without creating an artificial wall
+between asking about code and working on it.
+
+Read [the product foundation](./docs/product/vision.md) for the design principles
+and phased roadmap.
+
+## Toolport ecosystem
+
+- [Toolport](https://toolport.app) is the MCP control plane. It gives every
+  provider the same governed tools and server configuration.
+- [Ceiling](https://github.com/tsouth89/ceiling) provides provider usage, quota,
+  reset-window, spend, and activity intelligence.
+- [Toolport Studio](https://toolport.studio) is where conversations, providers,
+  projects, tools, and usage context come together.
+
+## Install
+
+Windows alpha builds are published on the
+[GitHub Releases page](https://github.com/tsouth89/toolport-studio/releases).
+The current builds are not code-signed, so Windows SmartScreen may require
+**More info → Run anyway**.
+
+Before opening Studio, install and sign in to the provider CLIs you want to use.
+Toolport Studio does not resell model access or convert API keys into subscription
+access.
 
 ## Development
 
-Toolport Studio uses [Vite+](https://viteplus.dev/guide/).
+Toolport Studio currently uses the inherited T3 Code package namespace internally
+to keep the fork easy to update while product-facing identity is migrated safely.
 
 ```bash
-vp i
-vp dev
+pnpm install
+pnpm dev
 ```
 
-The project retains T3 Code's internal storage keys and protocol identifiers
-for migration compatibility while presenting the Toolport Studio product name
-in the desktop and web clients.
+Useful commands:
 
-## License
+```bash
+pnpm test:desktop-smoke
+pnpm build:desktop
+pnpm dist:desktop:win:x64
+```
 
-MIT. See [LICENSE](./LICENSE).
+See [the documentation index](./docs/README.md) for architecture, provider, and
+release details.
+
+## Origin and license
+
+Toolport Studio is built from the open-source
+[T3 Code](https://github.com/pingdotgg/t3code) project. The fork is evolving into
+a focused desktop product while preserving upstream credit and the MIT license.
+
+See [LICENSE](./LICENSE).

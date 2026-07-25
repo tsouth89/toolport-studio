@@ -1,7 +1,20 @@
 # Workspace layout
 
-- `/apps/server`: Node.js WebSocket server. Wraps Codex app-server, serves the built web app, and opens the browser on start.
-- `/apps/web`: React + Vite UI. Session control, conversation, and provider event rendering. Connects to the server via WebSocket.
-- `/apps/desktop`: Electron shell. Spawns a desktop-scoped `t3` backend process and loads the shared web app.
-- `/packages/contracts`: Shared effect/Schema schemas and TypeScript contracts for provider events, WebSocket protocol, and model/session types.
-- `/packages/shared`: Shared runtime utilities consumed by both server and web. Uses explicit subpath exports (e.g. `@t3tools/shared/git`, `@t3tools/shared/DrainableWorker`) — no barrel index.
+- `apps/desktop` — Electron shell, native integration, local backend lifecycle,
+  updates, and packaging resources.
+- `apps/server` — Provider adapters, orchestration, persistence, projects,
+  terminals, previews, attachments, and Toolport MCP bindings.
+- `apps/web` — React conversation and workspace interface.
+- `packages/contracts` — Shared Effect schemas and transport contracts.
+- `packages/client-runtime` — Reusable client state and connection behavior.
+- `packages/shared` — Shared runtime utilities with explicit subpath exports.
+- `packages/effect-acp` — ACP transport support used by Cursor, Grok, and
+  OpenCode.
+- `packages/effect-codex-app-server` — Codex app-server transport support.
+- `packages/ssh` and `packages/tailscale` — Optional remote environment support.
+- `scripts` — Development, packaging, release, and brand tooling.
+- `.repos/effect-smol` — Read-only Effect reference source used during
+  development.
+
+The fork intentionally does not contain the inherited T3 mobile app, marketing
+site, hosted relay deployment, or their release workflows.
