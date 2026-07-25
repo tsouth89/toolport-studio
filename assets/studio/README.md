@@ -3,8 +3,9 @@
 Toolport Studio uses a sibling variant of the Toolport porthole rather than an
 unrelated mark. The geometry and navy/orange palette remain shared with the
 parent brand; Studio moves the orange accent to the portal ring and uses a small
-signal spark at the center so Toolport and Studio remain distinguishable when
-both are pinned to the taskbar.
+white signal at the center so Toolport and Studio remain distinguishable when
+both are pinned to the taskbar. The center stays intentionally geometric and
+symbol-free so it remains legible at system-tray sizes.
 
 Source files:
 
