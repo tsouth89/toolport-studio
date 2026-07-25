@@ -34,7 +34,7 @@ are in place.
 
 The release artifact contains the desktop shell, local server, and web client.
 The old T3 marketing, mobile, and hosted relay products are intentionally not
-part of this fork.
+part of Toolport Studio releases.
 
 ## Future automation
 

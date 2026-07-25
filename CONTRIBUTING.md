@@ -25,9 +25,10 @@ Toolport Studio is early, but thoughtful contributions are welcome.
 Explain what changed, why it matters, and how you verified it. Include
 screenshots or a short recording for visible interface changes.
 
-Toolport Studio retains some inherited `@t3tools/*`, `T3CODE_*`, and `t3`
-identifiers for compatibility. Do not rename those mechanically across the
-repository; migrations need to preserve existing user state and release paths.
+Toolport Studio still uses some inherited `@t3tools/*`, `T3CODE_*`, and `t3`
+identifiers for technical continuity. Do not rename those mechanically across
+the repository; migrations need to preserve existing user state and release
+paths.
 
 By contributing, you agree that your contribution is provided under the
 repository's MIT license.

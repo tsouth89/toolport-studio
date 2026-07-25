@@ -16,5 +16,5 @@
 - `.repos/effect-smol` — Read-only Effect reference source used during
   development.
 
-The fork intentionally does not contain the inherited T3 mobile app, marketing
-site, hosted relay deployment, or their release workflows.
+This repository intentionally does not include the inherited T3 mobile app,
+marketing site, hosted relay deployment, or their release workflows.

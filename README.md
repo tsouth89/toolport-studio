@@ -65,8 +65,9 @@ access.
 
 ## Development
 
-Toolport Studio currently uses the inherited T3 Code package namespace internally
-to keep the fork easy to update while product-facing identity is migrated safely.
+Some internal package names still use the inherited `@t3tools/*` namespace for
+technical continuity (imports, state paths, and release wiring). Product-facing
+identity is Toolport Studio.
 
 ```bash
 pnpm install
@@ -84,10 +85,10 @@ pnpm dist:desktop:win:x64
 See [the documentation index](./docs/README.md) for architecture, provider, and
 release details.
 
-## Origin and license
+## Heritage and license
 
-Toolport Studio is built from the open-source
-[T3 Code](https://github.com/pingdotgg/t3code) project. The fork is evolving into
-a focused desktop product while preserving upstream credit and the MIT license.
+Toolport Studio is based on the open-source
+[T3 Code](https://github.com/pingdotgg/t3code) project (MIT). T3 Code is
+ancestry, not an active upstream. Credit to T3 Tools Inc. is permanent.
 
-See [LICENSE](./LICENSE).
+See [LICENSE](./LICENSE) and [NOTICE](./NOTICE).
