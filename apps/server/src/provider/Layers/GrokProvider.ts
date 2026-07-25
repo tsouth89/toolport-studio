@@ -2,6 +2,7 @@ import {
   type GrokSettings,
   type ModelCapabilities,
   type ServerProvider,
+  type ServerProviderAuth,
   type ServerProviderModel,
 } from "@t3tools/contracts";
 import type * as EffectAcpSchema from "effect-acp/schema";
@@ -52,6 +53,10 @@ const GROK_BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
     capabilities: EMPTY_CAPABILITIES,
   },
 ];
+
+export function grokAuthAfterSuccessfulAcpDiscovery(): ServerProviderAuth {
+  return { status: "authenticated", label: "Grok Account" };
+}
 
 export function buildInitialGrokProviderSnapshot(
   grokSettings: GrokSettings,
@@ -306,7 +311,9 @@ export const checkGrokProviderStatus = Effect.fn("checkGrokProviderStatus")(func
       installed: true,
       version,
       status: "ready",
-      auth: { status: "unknown" },
+      // A successful ACP session and model discovery requires usable Grok
+      // credentials, even though Grok does not expose account metadata.
+      auth: grokAuthAfterSuccessfulAcpDiscovery(),
     },
   });
 });

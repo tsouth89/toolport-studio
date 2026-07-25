@@ -6,7 +6,11 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import { GrokSettings } from "@t3tools/contracts";
 
-import { buildInitialGrokProviderSnapshot, checkGrokProviderStatus } from "./GrokProvider.ts";
+import {
+  buildInitialGrokProviderSnapshot,
+  checkGrokProviderStatus,
+  grokAuthAfterSuccessfulAcpDiscovery,
+} from "./GrokProvider.ts";
 
 const decodeGrokSettings = Schema.decodeSync(GrokSettings);
 
@@ -34,6 +38,15 @@ describe("buildInitialGrokProviderSnapshot", () => {
       expect(snapshot.requiresNewThreadForModelChange).toBe(true);
     }),
   );
+});
+
+describe("grokAuthAfterSuccessfulAcpDiscovery", () => {
+  it("marks a working Grok ACP session as authenticated", () => {
+    expect(grokAuthAfterSuccessfulAcpDiscovery()).toEqual({
+      status: "authenticated",
+      label: "Grok Account",
+    });
+  });
 });
 
 it.layer(NodeServices.layer)("checkGrokProviderStatus", (it) => {
