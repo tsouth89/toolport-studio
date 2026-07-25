@@ -942,16 +942,21 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
     };
 
     /**
-     * Kill a wedged ACP child and open a fresh Grok ACP session in a new
-     * process. After Stop/force-cancel we intentionally do not resume the prior
-     * session id: load/resume of a cancelled session is a common source of
-     * silent multi-turn death (end_turn with no stream updates).
+     * Kill a wedged ACP child and open a fresh process. Prefer session/load of
+     * the prior Grok session id so Stop → follow-up keeps conversation history.
+     * Reusing the cancelled *process* is what black-holed multi-turn; a new
+     * process + load restores disk history. If load misses (Path not found),
+     * AcpSessionRuntime already falls back to session/new.
      */
     const recycleCompromisedAcp = (ctx: GrokSessionContext) =>
       Effect.gen(function* () {
         if (!ctx.acpCompromised || ctx.stopped) {
           return;
         }
+        const previousSessionId =
+          ctx.acpSessionId.trim() ||
+          parseGrokResume(ctx.session.resumeCursor)?.sessionId ||
+          undefined;
         yield* disposeAcpProcess(ctx);
 
         const mcpBindings = McpProviderSession.readMcpProviderBindings(
@@ -978,6 +983,9 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             ...(grokEnvironment ? { environment: grokEnvironment } : {}),
             childProcessSpawner,
             cwd: ctx.session.cwd,
+            // Resume history on the new process. Soft miss → session/new inside
+            // AcpSessionRuntime when the path is gone after rebuild.
+            ...(previousSessionId ? { resumeSessionId: previousSessionId } : {}),
             clientInfo: { name: "t3-code", version: "0.0.0" },
             ...(mcpBindings.length > 0
               ? { mcpServers: McpProviderSession.toAcpMcpServers(mcpBindings) }
@@ -1020,6 +1028,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             Effect.logWarning("Grok ACP recycle failed after Stop", {
               threadId: ctx.threadId,
               detail: error instanceof Error ? error.message : String(error),
+              previousSessionId,
             }),
           ),
         );
@@ -1825,8 +1834,8 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           // Always recycle after Stop. Cooperative cancel is not trustworthy:
           // the child can still be wedged and black-hole the next user message
           // while the UI shows "working" with no stream (SOU-351 / SOU-358).
-          // Fresh process on the next sendTurn is slower by ~1s and far more
-          // reliable than reusing a cancelled ACP child.
+          // Next sendTurn starts a fresh process and session/load's the prior
+          // session id so conversation history survives (not a blank agent).
           ctx.acpCompromised = true;
           yield* disposeAcpProcess(ctx);
         }

@@ -542,10 +542,15 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
   it.effect("lets Stop unblock a fully silent Grok prompt and accept a follow-up turn", () =>
     Effect.gen(function* () {
       const threadId = ThreadId.make("grok-stop-after-full-silence");
+      const tempDir = yield* Effect.promise(() =>
+        NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "grok-stop-resume-")),
+      );
+      const requestLogPath = NodePath.join(tempDir, "requests.ndjson");
       // Only the intentional hang prompt blocks; after Stop the adapter recycles
       // the ACP process, so HANG_FIRST would re-hang the follow-up on a new process.
       const adapter = yield* makeMockTestAdapter({
         T3_ACP_HANG_PROMPT_TEXT: "hang forever",
+        T3_ACP_REQUEST_LOG_PATH: requestLogPath,
       });
 
       const runtimeEvents: ProviderRuntimeEvent[] = [];
@@ -564,12 +569,15 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
         ),
       ).pipe(Effect.forkChild);
 
-      yield* adapter.startSession({
+      const session = yield* adapter.startSession({
         threadId,
         provider: ProviderDriverKind.make("grok"),
         cwd: process.cwd(),
         runtimeMode: "full-access",
       });
+      const sessionIdBeforeStop = (session.resumeCursor as { sessionId?: string } | undefined)
+        ?.sessionId;
+      assert.equal(sessionIdBeforeStop, "mock-session-1");
 
       const sendTurnFiber = yield* adapter
         .sendTurn({
@@ -614,6 +622,33 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
         );
       assert.lengthOf(followUpCompletedEvents, 1);
       assert.equal(followUpCompletedEvents[0]?.payload.state, "completed");
+
+      // Fresh process after Stop must session/load the prior id so Grok keeps
+      // conversation history (not a blank agent that forgot prior turns).
+      yield* waitForFileContent(requestLogPath, 80, '"method":"session/load"');
+      const requests = yield* Effect.promise(() => readJsonLines(requestLogPath));
+      assert.isTrue(
+        requests.some((entry) => {
+          if (entry.method !== "session/load") return false;
+          // Mock agent request log is raw JSON-RPC wire: method + params.
+          const params = entry.params;
+          return (
+            typeof params === "object" &&
+            params !== null &&
+            "sessionId" in params &&
+            (params as { sessionId?: unknown }).sessionId === sessionIdBeforeStop
+          );
+        }),
+        "expected session/load of the pre-Stop Grok session after recycle",
+      );
+      const sessionsAfterFollowUp = yield* adapter.listSessions();
+      const sessionAfterFollowUp = sessionsAfterFollowUp.find(
+        (entry) => entry.threadId === threadId,
+      );
+      assert.deepStrictEqual(sessionAfterFollowUp?.resumeCursor, {
+        schemaVersion: 1,
+        sessionId: sessionIdBeforeStop,
+      });
 
       // Same recovered thread must accept further multi-turn prompts (not just
       // the first follow-up after Stop).
