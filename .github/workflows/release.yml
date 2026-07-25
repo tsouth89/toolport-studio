@@ -1,0 +1,203 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Prerelease version without the v prefix
+        required: true
+        default: 0.1.0-alpha.4
+        type: string
+      release_notes:
+        description: Short release summary
+        required: true
+        default: Grok recovery, Stop reliability, and queued-turn hardening.
+        type: string
+
+permissions:
+  contents: write
+  id-token: write
+
+concurrency:
+  group: release-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    name: Windows x64
+    if: github.ref == 'refs/heads/main'
+    runs-on: windows-2025
+    timeout-minutes: 30
+    environment: release
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: true
+
+      - name: Validate release request
+        id: release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          if ($env:VERSION -notmatch '^\d+\.\d+\.\d+-alpha\.\d+$') {
+            throw "Expected an alpha version such as 0.1.0-alpha.4; got '$env:VERSION'."
+          }
+
+          $tag = "v$env:VERSION"
+          gh release view $tag 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            throw "Release $tag already exists."
+          }
+
+          $outputDir = "release/toolport-studio-$env:VERSION"
+          $installer = "$outputDir/Toolport-Studio-$env:VERSION-x64.exe"
+          $blockmap = "$installer.blockmap"
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "output_dir=$outputDir" >> $env:GITHUB_OUTPUT
+          "installer=$installer" >> $env:GITHUB_OUTPUT
+          "blockmap=$blockmap" >> $env:GITHUB_OUTPUT
+
+      - name: Validate signing configuration
+        shell: pwsh
+        env:
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          SIGNING_ENDPOINT: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
+          SIGNING_ACCOUNT: ${{ vars.ARTIFACT_SIGNING_ACCOUNT_NAME }}
+          SIGNING_PROFILE: ${{ vars.ARTIFACT_SIGNING_CERTIFICATE_PROFILE_NAME }}
+          SIGNING_PUBLISHER: ${{ vars.ARTIFACT_SIGNING_PUBLISHER_NAME }}
+        run: |
+          foreach ($name in @(
+            "AZURE_CLIENT_ID",
+            "AZURE_TENANT_ID",
+            "AZURE_SUBSCRIPTION_ID",
+            "SIGNING_ENDPOINT",
+            "SIGNING_ACCOUNT",
+            "SIGNING_PROFILE",
+            "SIGNING_PUBLISHER"
+          )) {
+            if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
+              throw "The release environment is missing $name."
+            }
+          }
+
+      - name: Build desktop bundles
+        run: pnpm build:desktop
+
+      - name: Sign in to Azure with GitHub OIDC
+        uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Package signed installer
+        shell: pwsh
+        env:
+          AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
+          AZURE_TRUSTED_SIGNING_ACCOUNT_NAME: ${{ vars.ARTIFACT_SIGNING_ACCOUNT_NAME }}
+          AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ vars.ARTIFACT_SIGNING_CERTIFICATE_PROFILE_NAME }}
+          AZURE_TRUSTED_SIGNING_PUBLISHER_NAME: ${{ vars.ARTIFACT_SIGNING_PUBLISHER_NAME }}
+          VERSION: ${{ inputs.version }}
+          OUTPUT_DIR: ${{ steps.release.outputs.output_dir }}
+        run: |
+          pnpm exec node scripts/build-desktop-artifact.ts `
+            --platform win `
+            --target nsis `
+            --arch x64 `
+            --build-version $env:VERSION `
+            --output-dir $env:OUTPUT_DIR `
+            --skip-build `
+            --signed
+
+      - name: Verify signed release assets
+        id: verify
+        shell: pwsh
+        env:
+          INSTALLER: ${{ steps.release.outputs.installer }}
+          BLOCKMAP: ${{ steps.release.outputs.blockmap }}
+          EXPECTED_PUBLISHER: ${{ vars.ARTIFACT_SIGNING_PUBLISHER_NAME }}
+        run: |
+          foreach ($path in @($env:INSTALLER, $env:BLOCKMAP)) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing release asset: $path"
+            }
+          }
+
+          $signature = Get-AuthenticodeSignature -LiteralPath $env:INSTALLER
+          if ($signature.Status -ne "Valid") {
+            throw "Installer signature is not valid: $($signature.Status) $($signature.StatusMessage)"
+          }
+          if ($signature.SignerCertificate.Subject -ne $env:EXPECTED_PUBLISHER) {
+            throw "Unexpected publisher: $($signature.SignerCertificate.Subject)"
+          }
+
+          $checksum = (Get-FileHash -LiteralPath $env:INSTALLER -Algorithm SHA256).Hash.ToLowerInvariant()
+          "checksum=$checksum" >> $env:GITHUB_OUTPUT
+          "publisher=$($signature.SignerCertificate.Subject)" >> $env:GITHUB_OUTPUT
+
+      - name: Upload signed workflow artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: toolport-studio-${{ inputs.version }}-windows-x64
+          path: |
+            ${{ steps.release.outputs.installer }}
+            ${{ steps.release.outputs.blockmap }}
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish GitHub prerelease
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+          VERSION: ${{ inputs.version }}
+          INSTALLER: ${{ steps.release.outputs.installer }}
+          BLOCKMAP: ${{ steps.release.outputs.blockmap }}
+          CHECKSUM: ${{ steps.verify.outputs.checksum }}
+          PUBLISHER: ${{ steps.verify.outputs.publisher }}
+          RELEASE_NOTES: ${{ inputs.release_notes }}
+        run: |
+          @"
+          ## Toolport Studio $env:VERSION
+
+          $env:RELEASE_NOTES
+
+          ### Highlights
+
+          - Grok post-Stop recovery and history rehydration
+          - Idempotent interruption of stopped or unknown provider sessions
+          - Queued messages preserve composer context and drain without overwriting drafts
+          - Temporary Grok state directories are reused and cleaned up
+
+          ### Install
+
+          Download ``Toolport-Studio-$env:VERSION-x64.exe`` and run it.
+
+          The installer is signed by ``$env:PUBLISHER`` using Microsoft Azure Artifact Signing.
+
+          ### Checksum
+
+          - ``Toolport-Studio-$env:VERSION-x64.exe`` SHA-256: ``$env:CHECKSUM``
+
+          Built from ``$env:GITHUB_SHA``.
+          "@ | Set-Content -LiteralPath release-body.md -Encoding utf8
+
+          gh release create $env:TAG `
+            $env:INSTALLER `
+            $env:BLOCKMAP `
+            --repo $env:GITHUB_REPOSITORY `
+            --target $env:GITHUB_SHA `
+            --title "Toolport Studio 0.1.0 Alpha $($env:VERSION.Split('.')[-1])" `
+            --notes-file release-body.md `
+            --prerelease

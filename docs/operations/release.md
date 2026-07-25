@@ -1,34 +1,29 @@
 # Desktop release process
 
-Toolport Studio currently publishes desktop prereleases manually while signing
-and updater infrastructure are being established.
+Toolport Studio publishes Windows desktop prereleases through the manual
+`Release` GitHub Actions workflow. The workflow authenticates to Azure with
+GitHub OIDC, builds from `main`, signs through Azure Artifact Signing, verifies
+the Authenticode publisher, and fails before publication if signing is not
+available.
 
 ## Windows alpha
 
-1. Start from a clean, pushed commit.
-2. Build the web, server, and Electron bundles.
-3. Build the x64 NSIS artifact with the intended prerelease version.
-4. Audit the installer contents for unexpected platform binaries, source maps,
-   credentials, and local data.
-5. Run the packaged server import/startup check and desktop smoke test.
-6. Compute SHA-256 and publish the installer plus blockmap to a GitHub
-   prerelease.
-7. Verify GitHub's asset digest matches the local checksum.
+1. Start from a clean commit pushed to `main`.
+2. Run the `Release` workflow with the next `0.1.0-alpha.N` version and a short
+   release summary.
+3. Confirm the workflow's signature verification and artifact upload steps pass.
+4. Download the published installer and confirm GitHub's asset digest matches
+   the SHA-256 in the release notes.
 
-```powershell
-pnpm build:desktop
-pnpm exec node scripts/build-desktop-artifact.ts `
-  --platform win `
-  --target nsis `
-  --arch x64 `
-  --build-version 0.1.0-alpha.3 `
-  --output-dir release/toolport-studio-0.1.0-alpha.3 `
-  --skip-build
+The `release` GitHub environment contains the Azure application, subscription,
+and Artifact Signing configuration. Its Entra application must trust this
+federated subject:
+
+```text
+repo:tsouth89/toolport-studio:environment:release
 ```
 
-Unsigned alpha installers may trigger Microsoft Defender SmartScreen. Public
-stable releases should not be declared until code signing and updater validation
-are in place.
+No OAuth redirect URI is used by this workflow.
 
 ## Release scope
 
@@ -38,9 +33,8 @@ part of Toolport Studio releases.
 
 ## Future automation
 
-Before enabling tag-driven releases:
+Before enabling automatic tag-driven releases:
 
-- add Windows code signing
 - establish macOS signing and notarization
 - produce platform-specific artifacts without cross-platform payloads
 - publish update manifests from Toolport Studio's repository
