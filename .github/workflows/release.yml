@@ -41,6 +41,9 @@ jobs:
           cache: true
           run-install: true
 
+      - name: Setup pnpm for packaging
+        run: npm install --global pnpm@11.10.0
+
       - name: Validate release request
         id: release
         shell: pwsh
