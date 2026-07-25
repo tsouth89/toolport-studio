@@ -672,6 +672,7 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain('aria-live="polite"');
     expect(markup).toContain("No updates for");
     expect(markup).toContain('aria-label="Stop generation"');
+    expect(markup).toContain("Stop now");
     expect(markup).toContain("focus-visible:ring-2");
     // Live region should wrap the stall copy, not the interactive Stop control.
     expect(markup).toMatch(

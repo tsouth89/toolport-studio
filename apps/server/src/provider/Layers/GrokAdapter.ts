@@ -77,8 +77,13 @@ const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.UnknownFromJ
 
 const PROVIDER = ProviderDriverKind.make("grok");
 const GROK_RESUME_VERSION = 1 as const;
-/** Force-fail a Grok prompt that emits zero stream/tool events for this long. */
-const GROK_SILENT_TURN_WATCHDOG_MS = 180_000;
+/**
+ * Auto-stop only when a tool is still open and nothing streams (option C).
+ * Pure thinking without open tools is allowed much longer.
+ */
+const GROK_SILENT_OPEN_TOOL_WATCHDOG_MS = 90_000;
+/** Absolute ceiling so a pure-think wedge cannot run forever. */
+const GROK_SILENT_THINK_WATCHDOG_MS = 15 * 60_000;
 const GROK_SILENT_TURN_WATCHDOG_POLL_MS = 10_000;
 
 function encodeJsonStringForDiagnostics(input: unknown): string | undefined {
@@ -141,6 +146,10 @@ interface GrokSessionContext {
   turnVisibleUpdateCount: number;
   /** Wall-clock ms of the last ACP stream/tool event for the active turn. */
   lastTurnActivityAtMs: number;
+  /** Open toolCallIds still pending/inProgress for the active turn. */
+  openToolCallIds: Set<string>;
+  /** Best-effort title of the most recent open tool (for logs / errors). */
+  lastOpenToolTitle: string | undefined;
   /**
    * Bumped whenever the ACP process or notification consumer is replaced so
    * late finalizers from a disposed consumer cannot clear the live fiber.
@@ -826,8 +835,24 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   "session/update",
                 );
                 return;
-              case "ToolCallUpdated":
+              case "ToolCallUpdated": {
                 ctx.turnVisibleUpdateCount += 1;
+                const toolCallId = event.toolCall.toolCallId;
+                const toolStatus = event.toolCall.status;
+                if (toolStatus === "completed" || toolStatus === "failed") {
+                  ctx.openToolCallIds.delete(toolCallId);
+                  if (ctx.openToolCallIds.size === 0) {
+                    ctx.lastOpenToolTitle = undefined;
+                  }
+                } else if (toolStatus === "pending" || toolStatus === "inProgress") {
+                  ctx.openToolCallIds.add(toolCallId);
+                  const title = event.toolCall.title?.trim();
+                  if (title) {
+                    ctx.lastOpenToolTitle = title;
+                  } else if (!ctx.lastOpenToolTitle) {
+                    ctx.lastOpenToolTitle = event.toolCall.kind ?? "tool";
+                  }
+                }
                 yield* offerRuntimeEvent(
                   makeAcpToolCallEvent({
                     stamp,
@@ -839,6 +864,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   }),
                 );
                 return;
+              }
               case "ContentDelta":
                 ctx.turnVisibleUpdateCount += 1;
                 yield* offerRuntimeEvent(
@@ -1025,6 +1051,8 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         };
         ctx.turnVisibleUpdateCount = 0;
         ctx.lastTurnActivityAtMs = Date.now();
+        ctx.openToolCallIds = new Set();
+        ctx.lastOpenToolTitle = undefined;
         // Generation already bumped in dispose; start consumer on the new process.
         ctx.notificationFiber = yield* startNotificationFiber(ctx);
         ctx.acpDisposed = false;
@@ -1171,6 +1199,8 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             acpCompromised: false,
             turnVisibleUpdateCount: 0,
             lastTurnActivityAtMs: Date.now(),
+            openToolCallIds: new Set(),
+            lastOpenToolTitle: undefined,
             notificationGeneration: 0,
             acpDisposed: false,
           };
@@ -1379,6 +1409,8 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           const activityCtx = sessions.get(input.threadId);
           if (activityCtx) {
             activityCtx.lastTurnActivityAtMs = Date.now();
+            activityCtx.openToolCallIds = new Set();
+            activityCtx.lastOpenToolTitle = undefined;
           }
 
           const silenceWatchdog = Effect.gen(function* () {
@@ -1395,13 +1427,21 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 continue;
               }
               const silentMs = Date.now() - live.lastTurnActivityAtMs;
-              if (silentMs < GROK_SILENT_TURN_WATCHDOG_MS) {
+              const openToolCount = live.openToolCallIds.size;
+              const toolStuck = openToolCount > 0 && silentMs >= GROK_SILENT_OPEN_TOOL_WATCHDOG_MS;
+              const thinkStuck = openToolCount === 0 && silentMs >= GROK_SILENT_THINK_WATCHDOG_MS;
+              if (!toolStuck && !thinkStuck) {
                 continue;
               }
+              const toolLabel = live.lastOpenToolTitle?.trim() || "a tool";
               yield* Effect.logWarning("Grok silent-turn watchdog fired", {
                 threadId: input.threadId,
                 turnId: prepared.turnId,
                 silentMs,
+                openToolCount,
+                toolStuck,
+                thinkStuck,
+                lastOpenToolTitle: live.lastOpenToolTitle,
               });
               live.acpCompromised = true;
               live.interruptedTurnIds.add(prepared.turnId);
@@ -1409,8 +1449,9 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               return yield* new ProviderAdapterRequestError({
                 provider: PROVIDER,
                 method: "session/prompt",
-                detail:
-                  "Grok went silent for 3+ minutes mid-turn (often a stuck shell/tool). Turn was stopped automatically — try a smaller task or send again.",
+                detail: toolStuck
+                  ? `Grok went silent for ${Math.round(silentMs / 1000)}s while ${toolLabel} was still running. Turn was stopped automatically — try a smaller task or Send again.`
+                  : `Grok went silent for ${Math.round(silentMs / 60000)}+ minutes with no tools or stream updates. Turn was stopped automatically — try again.`,
               });
             }
           });

@@ -1164,17 +1164,17 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
             {/* Live region on the stall copy only so interactive Stop is not inside status. */}
             <span role="status" aria-live="polite" aria-atomic="true">
               {stalled.silentForMs >= 90_000
-                ? `No updates for ${stalled.silentLabel} — likely stuck on a tool or think. Stop and retry a smaller ask.`
+                ? `No updates for ${stalled.silentLabel} — often a stuck tool. Stop, then Send again or shrink the task.`
                 : `No updates for ${stalled.silentLabel}`}
             </span>
             {handleStop ? (
               <button
                 type="button"
-                className="rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 font-medium text-warning transition-colors hover:bg-warning/16 hover:cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-warning/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background"
+                className="rounded-full border border-warning/40 bg-warning/15 px-2.5 py-1 text-[12px] font-semibold text-warning shadow-sm transition-colors hover:bg-warning/25 hover:cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-warning/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background"
                 onClick={handleStop}
                 aria-label="Stop generation"
               >
-                Stop
+                Stop now
               </button>
             ) : null}
           </>
