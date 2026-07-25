@@ -1020,6 +1020,42 @@ routing.layer("ProviderServiceLive routing", (it) => {
     }),
   );
 
+  it.effect("publishes session.exited when stopping an orphaned persisted session", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-stop-orphaned-runtime");
+      const initial = yield* provider.startSession(threadId, {
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: codexInstanceId,
+        threadId,
+        cwd: "/tmp/project-stop-orphaned-runtime",
+        runtimeMode: "full-access",
+      });
+
+      yield* routing.codex.stopSession(initial.threadId);
+      const nextEventFiber = yield* Stream.runHead(provider.streamEvents).pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+
+      yield* provider.stopSession({ threadId });
+      const event = yield* Fiber.join(nextEventFiber).pipe(
+        Effect.flatMap(
+          Option.match({
+            onNone: () => Effect.die("Expected orphaned session exit event."),
+            onSome: Effect.succeed,
+          }),
+        ),
+      );
+
+      assert.equal(event.type, "session.exited");
+      assert.equal(event.threadId, threadId);
+      assert.equal(event.provider, "codex");
+      if (event.type === "session.exited") {
+        assert.equal(event.payload.exitKind, "error");
+        assert.equal(event.payload.recoverable, true);
+      }
+    }),
+  );
+
   it.effect("routes explicit claudeAgent provider session starts to the claude adapter", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService.ProviderService;

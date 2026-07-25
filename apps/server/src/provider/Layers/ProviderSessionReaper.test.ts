@@ -137,6 +137,10 @@ describe("ProviderSessionReaper", () => {
 
   async function createHarness(input: {
     readonly readModel: ReturnType<typeof makeReadModel>;
+    readonly activeSessions?: ReadonlyArray<{
+      readonly threadId: ThreadId;
+      readonly provider: "codex" | "claudeAgent";
+    }>;
     readonly stopSessionImplementation?: (input: {
       readonly threadId: ThreadId;
     }) => ReturnType<ProviderServiceShape["stopSession"]>;
@@ -158,7 +162,22 @@ describe("ProviderSessionReaper", () => {
       respondToRequest: () => unsupported(),
       respondToUserInput: () => unsupported(),
       stopSession,
-      listSessions: () => Effect.succeed([]),
+      listSessions: () =>
+        Effect.succeed(
+          (input.activeSessions ?? []).map(
+            (session) =>
+              ({
+                threadId: session.threadId,
+                provider: ProviderDriverKind.make(session.provider),
+                providerInstanceId: ProviderInstanceId.make(session.provider),
+                status: "running",
+                runtimeMode: "full-access",
+                activeTurnId: TurnId.make(`active-${session.threadId}`),
+                createdAt: "2026-01-01T00:00:00.000Z",
+                updatedAt: "2026-01-01T00:00:00.000Z",
+              }) as const,
+          ),
+        ),
       getCapabilities: () => Effect.succeed({ sessionModelSwitch: "in-session" }),
       getInstanceInfo: (instanceId) => {
         const driverKind = ProviderDriverKind.make(String(instanceId));
@@ -289,6 +308,7 @@ describe("ProviderSessionReaper", () => {
           },
         },
       ]),
+      activeSessions: [{ threadId, provider: "claudeAgent" }],
     });
     const repository = await runtime!.runPromise(
       Effect.service(ProviderSessionRuntime.ProviderSessionRuntimeRepository),
@@ -318,6 +338,52 @@ describe("ProviderSessionReaper", () => {
     expect(harness.stopSession).not.toHaveBeenCalled();
     const remaining = await runtime!.runPromise(repository.getByThreadId({ threadId }));
     expect(Option.isSome(remaining)).toBe(true);
+  });
+
+  it("reaps a projected active turn immediately when no live provider runtime exists", async () => {
+    const threadId = ThreadId.make("thread-reaper-orphaned-active-turn");
+    const turnId = TurnId.make("turn-reaper-orphaned-active");
+    const now = DateTime.formatIso(await Effect.runPromise(DateTime.now));
+    const harness = await createHarness({
+      readModel: makeReadModel([
+        {
+          id: threadId,
+          session: {
+            threadId,
+            status: "running",
+            providerName: "claudeAgent",
+            runtimeMode: "full-access",
+            activeTurnId: turnId,
+            lastError: null,
+            updatedAt: now,
+          },
+        },
+      ]),
+    });
+    const repository = await runtime!.runPromise(
+      Effect.service(ProviderSessionRuntime.ProviderSessionRuntimeRepository),
+    );
+
+    await runtime!.runPromise(
+      repository.upsert({
+        threadId,
+        providerName: "claudeAgent",
+        providerInstanceId: null,
+        adapterKey: "claudeAgent",
+        runtimeMode: "full-access",
+        status: "running",
+        lastSeenAt: now,
+        resumeCursor: { opaque: "resume-orphaned-active-turn" },
+        runtimePayload: null,
+      }),
+    );
+
+    const reaper = await runtime!.runPromise(Effect.service(ProviderSessionReaper));
+    scope = await Effect.runPromise(Scope.make("sequential"));
+    await Effect.runPromise(reaper.start().pipe(Scope.provide(scope)));
+
+    await waitFor(() => harness.stopSession.mock.calls.length === 1);
+    expect(harness.stopSession.mock.calls[0]?.[0]).toEqual({ threadId });
   });
 
   it("does not reap sessions that are still within the inactivity threshold", async () => {

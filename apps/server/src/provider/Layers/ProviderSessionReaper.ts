@@ -35,6 +35,9 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
 
     const sweep = Effect.gen(function* () {
       const bindings = yield* directory.listBindings();
+      const activeSessionThreadIds = new Set(
+        (yield* providerService.listSessions()).map((session) => session.threadId),
+      );
       const now = yield* Clock.currentTimeMillis;
       let reapedCount = 0;
 
@@ -53,20 +56,22 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
           continue;
         }
 
-        const idleDurationMs = now - lastSeenMs;
-        if (idleDurationMs < inactivityThresholdMs) {
-          continue;
-        }
-
         const thread = yield* projectionSnapshotQuery
           .getThreadShellById(binding.threadId)
           .pipe(Effect.map(Option.getOrUndefined));
-        if (thread?.session?.activeTurnId != null) {
+        const projectedActiveTurnId = thread?.session?.activeTurnId;
+        const hasLiveRuntime = activeSessionThreadIds.has(binding.threadId);
+        if (projectedActiveTurnId != null && hasLiveRuntime) {
           yield* Effect.logDebug("provider.session.reaper.skipped-active-turn", {
             threadId: binding.threadId,
-            activeTurnId: thread.session.activeTurnId,
-            idleDurationMs,
+            activeTurnId: projectedActiveTurnId,
           });
+          continue;
+        }
+
+        const idleDurationMs = now - lastSeenMs;
+        const isOrphanedActiveTurn = projectedActiveTurnId != null && !hasLiveRuntime;
+        if (!isOrphanedActiveTurn && idleDurationMs < inactivityThresholdMs) {
           continue;
         }
 
@@ -76,7 +81,7 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
               threadId: binding.threadId,
               provider: binding.provider,
               idleDurationMs,
-              reason: "inactivity_threshold",
+              reason: isOrphanedActiveTurn ? "orphaned_active_turn" : "inactivity_threshold",
             }),
           ),
           Effect.as(true),

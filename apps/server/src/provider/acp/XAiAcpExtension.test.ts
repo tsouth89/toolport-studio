@@ -327,6 +327,28 @@ describe("XAiAcpExtension", () => {
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
+  it.effect("resolves a hung prompt from Grok 0.2.112 turn_completed session update", () =>
+    Effect.gen(function* () {
+      const runtime = yield* makePromptCompletionRuntime({
+        T3_ACP_EMIT_XAI_PROMPT_COMPLETE_THEN_HANG: "1",
+        T3_ACP_XAI_PROMPT_COMPLETE_METHOD: "_x.ai/session/update",
+      });
+      yield* runtime.start();
+
+      const promptResult = yield* runtime.prompt({
+        prompt: [{ type: "text", text: "hi" }],
+      });
+
+      expect(promptResult).toMatchObject({
+        stopReason: "end_turn",
+        _meta: {
+          sessionId: "mock-session-1",
+        },
+      });
+      expect(typeof promptResult._meta?.promptId).toBe("string");
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("returns the xAI fallback without waiting for cancellation cleanup", () =>
     Effect.gen(function* () {
       const cancelStarted = yield* Deferred.make<void>();

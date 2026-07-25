@@ -560,7 +560,12 @@ export function parseSessionUpdateEvent(params: EffectAcpSchema.SessionNotificat
       break;
     }
     case "tool_call_update": {
-      const toolCall = parseTypedToolCallState(upd);
+      // Current Grok Build emits the first tool notification as
+      // tool_call_update with a null status. With no prior state this is the
+      // start of a live tool call, not a status-less completed item.
+      const toolCall = parseTypedToolCallState(upd, {
+        fallbackStatus: "pending",
+      });
       if (toolCall) {
         events.push({
           _tag: "ToolCallUpdated",

@@ -10,6 +10,7 @@
  * @module ProviderServiceLive
  */
 import {
+  EventId,
   ModelSelection,
   NonNegativeInt,
   ThreadId,
@@ -214,6 +215,11 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
   const runtimeEventPubSub = yield* PubSub.unbounded<ProviderRuntimeEvent>();
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
+  let syntheticEventSequence = 0;
+  const nextSyntheticEventId = (kind: string, threadId: ThreadId) => {
+    syntheticEventSequence += 1;
+    return EventId.make(`provider-service:${kind}:${threadId}:${syntheticEventSequence}`);
+  };
   const prepareMcpSession = (threadId: ThreadId, providerInstanceId: ProviderInstanceId) =>
     McpSessionRegistry.issueActiveMcpCredential({ threadId, providerInstanceId }).pipe(
       Effect.tap((credential) =>
@@ -859,6 +865,21 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
             activeTurnId: null,
           },
         });
+        if (!routed.isActive) {
+          yield* publishRuntimeEvent({
+            type: "session.exited",
+            eventId: nextSyntheticEventId("orphaned-session-exited", input.threadId),
+            provider: routed.adapter.provider,
+            providerInstanceId: routed.instanceId,
+            threadId: input.threadId,
+            createdAt: yield* nowIso,
+            payload: {
+              reason: "Persisted provider session no longer had a live runtime.",
+              recoverable: true,
+              exitKind: "error",
+            },
+          });
+        }
         yield* analytics.record("provider.session.stopped", {
           provider: routed.adapter.provider,
         });

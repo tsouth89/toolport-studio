@@ -16,6 +16,23 @@ const XAiPromptCompleteNotification = Schema.Struct({
 
 type XAiPromptCompleteNotification = typeof XAiPromptCompleteNotification.Type;
 
+/**
+ * Grok Build 0.2.112 moved prompt completion to a private session-update
+ * notification and changed the completion fields to snake_case.
+ */
+const XAiTurnCompletedUpdateNotification = Schema.Struct({
+  sessionId: Schema.String,
+  update: Schema.Struct({
+    sessionUpdate: Schema.Literal("turn_completed"),
+    prompt_id: Schema.optional(Schema.String),
+    promptId: Schema.optional(Schema.String),
+    stop_reason: Schema.optional(Schema.String),
+    stopReason: Schema.optional(Schema.String),
+    agent_result: Schema.optional(Schema.NullOr(Schema.Unknown)),
+    agentResult: Schema.optional(Schema.NullOr(Schema.Unknown)),
+  }),
+});
+
 interface PendingXAiPromptCompletion {
   readonly sessionId: string;
   readonly promptId: string;
@@ -30,6 +47,7 @@ const xAiPromptCompleteMethods = [
   "x.ai/session/prompt_complete",
   "_x.ai/session/prompt_complete",
 ] as const;
+const xAiSessionUpdateMethods = ["x.ai/session/update", "_x.ai/session/update"] as const;
 
 const XAiAskUserQuestionOption = Schema.Struct({
   label: Schema.String,
@@ -233,6 +251,18 @@ export const makeXAiPromptCompletionRuntime = Effect.fn("makeXAiPromptCompletion
         ),
       { discard: true },
     );
+    yield* Effect.forEach(
+      xAiSessionUpdateMethods,
+      (method) =>
+        runtime.handleExtNotification(method, XAiTurnCompletedUpdateNotification, (notification) =>
+          resolveXAiPromptCompletionFallback({
+            pendingRef,
+            completedPromptIdsRef,
+            notification: normalizeXAiTurnCompletedUpdate(notification),
+          }),
+        ),
+      { discard: true },
+    );
 
     return {
       ...runtime,
@@ -316,6 +346,21 @@ export const makeXAiPromptCompletionRuntime = Effect.fn("makeXAiPromptCompletion
     } satisfies AcpSessionRuntime.AcpSessionRuntime["Service"];
   },
 );
+
+function normalizeXAiTurnCompletedUpdate(
+  notification: typeof XAiTurnCompletedUpdateNotification.Type,
+): XAiPromptCompleteNotification {
+  const update = notification.update;
+  const promptId = update.prompt_id ?? update.promptId;
+  const stopReason = update.stop_reason ?? update.stopReason;
+  const agentResult = update.agent_result ?? update.agentResult;
+  return {
+    sessionId: notification.sessionId,
+    ...(promptId !== undefined ? { promptId } : {}),
+    ...(stopReason !== undefined ? { stopReason } : {}),
+    ...(agentResult !== undefined ? { agentResult } : {}),
+  };
+}
 
 const registerXAiPromptCompletionFallback = (
   pendingRef: Ref.Ref<ReadonlyArray<PendingXAiPromptCompletion>>,

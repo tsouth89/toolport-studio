@@ -217,6 +217,7 @@ command = "echo"
     );
     expect(env.GROK_HOME).toBeTruthy();
     expect(env.GROK_HOME).not.toBe(grokDir);
+    expect(env.GROK_HOME).toBe(NodePath.join(grokDir, ".toolport-studio"));
     const filtered = NodeFS.readFileSync(
       NodePath.join(env.GROK_HOME as string, "config.toml"),
       "utf8",
@@ -234,6 +235,30 @@ command = "echo"
     expect(
       NodeFS.readFileSync(NodePath.join(refreshedEnv.GROK_HOME as string, "auth.json"), "utf8"),
     ).toBe('{"token":"refreshed"}');
+
+    const studioAuthPath = NodePath.join(refreshedEnv.GROK_HOME as string, "auth.json");
+    NodeFS.writeFileSync(studioAuthPath, '{"token":"studio-refreshed"}', "utf8");
+    const future = new Date(Date.now() + 5_000);
+    NodeFS.utimesSync(studioAuthPath, future, future);
+    McpProviderSession.environmentSuppressingGrokConfigToolportGateway(
+      { PATH: "/usr/bin", HOME: homeDirectory },
+      homeDirectory,
+    );
+    expect(NodeFS.readFileSync(NodePath.join(grokDir, "auth.json"), "utf8")).toBe(
+      '{"token":"studio-refreshed"}',
+    );
+
+    const durableSessionPath = NodePath.join(
+      refreshedEnv.GROK_HOME as string,
+      "session-survives-restart.json",
+    );
+    NodeFS.writeFileSync(durableSessionPath, '{"session":"durable"}', "utf8");
+    const repeatedEnv = McpProviderSession.environmentSuppressingGrokConfigToolportGateway(
+      { PATH: "/usr/bin", HOME: homeDirectory },
+      homeDirectory,
+    );
+    expect(repeatedEnv.GROK_HOME).toBe(refreshedEnv.GROK_HOME);
+    expect(NodeFS.readFileSync(durableSessionPath, "utf8")).toBe('{"session":"durable"}');
 
     NodeFS.rmSync(NodePath.join(grokDir, "auth.json"));
     const withoutAuthEnv = McpProviderSession.environmentSuppressingGrokConfigToolportGateway(

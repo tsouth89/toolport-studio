@@ -590,12 +590,25 @@ const program = Effect.gen(function* () {
           });
         }
 
-        writeJsonRpcNotification(xAiPromptCompleteMethod, {
-          sessionId: requestedSessionId,
-          promptId: promptIdFromRequestMeta(request) ?? "mock-xai-prompt-1",
-          ...(omitXAiPromptCompleteStopReason ? {} : { stopReason: "end_turn" }),
-          agentResult: null,
-        });
+        const completedPromptId = promptIdFromRequestMeta(request) ?? "mock-xai-prompt-1";
+        if (xAiPromptCompleteMethod.endsWith("/session/update")) {
+          writeJsonRpcNotification(xAiPromptCompleteMethod, {
+            sessionId: requestedSessionId,
+            update: {
+              sessionUpdate: "turn_completed",
+              prompt_id: completedPromptId,
+              ...(omitXAiPromptCompleteStopReason ? {} : { stop_reason: "end_turn" }),
+              agent_result: null,
+            },
+          });
+        } else {
+          writeJsonRpcNotification(xAiPromptCompleteMethod, {
+            sessionId: requestedSessionId,
+            promptId: completedPromptId,
+            ...(omitXAiPromptCompleteStopReason ? {} : { stopReason: "end_turn" }),
+            agentResult: null,
+          });
+        }
 
         if (emitForeignSessionUpdates) {
           writeJsonRpcNotification("session/update", {

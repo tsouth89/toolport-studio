@@ -255,6 +255,32 @@ describe("AcpRuntimeModel", () => {
     }
   });
 
+  it("treats Grok's first status-null tool_call_update as a pending tool", () => {
+    const result = parseSessionUpdateEvent({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "tool_call_update",
+        toolCallId: "tool-grok-1",
+        title: "toolport__toolport_run_script",
+        kind: "other",
+        status: null,
+        rawInput: {
+          variant: "UseTool",
+          tool_name: "toolport__toolport_run_script",
+        },
+      },
+    } satisfies EffectAcpSchema.SessionNotification);
+
+    expect(result.events).toHaveLength(1);
+    expect(result.events[0]).toMatchObject({
+      _tag: "ToolCallUpdated",
+      toolCall: {
+        toolCallId: "tool-grok-1",
+        status: "pending",
+      },
+    });
+  });
+
   it("trims padded current mode updates before emitting a mode change", () => {
     const result = parseSessionUpdateEvent({
       sessionId: "session-1",

@@ -326,7 +326,7 @@ export function stripToolportGatewayTablesFromToml(toml: string): string {
 
 const GROK_HOME_AUTH_FILES = ["auth.json", "mcp_credentials.json", "credentials.json"] as const;
 const filteredGrokHomes = new Map<string, string>();
-let filteredGrokHomeCleanupRegistered = false;
+const TOOLPORT_STUDIO_GROK_HOME_DIRECTORY = ".toolport-studio";
 
 function filteredGrokHomeFor(realGrokHome: string): string {
   const cached = filteredGrokHomes.get(realGrokHome);
@@ -334,35 +334,54 @@ function filteredGrokHomeFor(realGrokHome: string): string {
     return cached;
   }
 
-  const tempGrokHome = NodeFS.mkdtempSync(
-    NodePath.join(NodeOS.tmpdir(), "toolport-studio-grok-home-"),
-  );
-  filteredGrokHomes.set(realGrokHome, tempGrokHome);
-  if (!filteredGrokHomeCleanupRegistered) {
-    filteredGrokHomeCleanupRegistered = true;
-    process.once("exit", () => {
-      for (const directory of filteredGrokHomes.values()) {
-        try {
-          NodeFS.rmSync(directory, { recursive: true, force: true });
-        } catch {
-          // Process-exit cleanup is best-effort.
-        }
-      }
-    });
+  const persistentGrokHome = NodePath.join(realGrokHome, TOOLPORT_STUDIO_GROK_HOME_DIRECTORY);
+  try {
+    NodeFS.mkdirSync(persistentGrokHome, { recursive: true, mode: 0o700 });
+    filteredGrokHomes.set(realGrokHome, persistentGrokHome);
+    return persistentGrokHome;
+  } catch {
+    // Read-only/custom Grok homes still need a usable isolation fallback.
+    const tempGrokHome = NodeFS.mkdtempSync(
+      NodePath.join(NodeOS.tmpdir(), "toolport-studio-grok-home-"),
+    );
+    filteredGrokHomes.set(realGrokHome, tempGrokHome);
+    return tempGrokHome;
   }
-  return tempGrokHome;
+}
+
+function synchronizeGrokAuthFile(realPath: string, studioPath: string): void {
+  if (!NodeFS.existsSync(realPath)) {
+    NodeFS.rmSync(studioPath, { force: true });
+    return;
+  }
+  try {
+    if (
+      NodeFS.existsSync(studioPath) &&
+      NodeFS.statSync(studioPath).mtimeMs > NodeFS.statSync(realPath).mtimeMs
+    ) {
+      // Grok refreshed its cached subscription token inside Studio. Persist
+      // that newer credential so the next desktop or terminal session reuses it.
+      NodeFS.copyFileSync(studioPath, realPath);
+      return;
+    }
+    NodeFS.copyFileSync(realPath, studioPath);
+  } catch {
+    // Best-effort: missing auth still allows API-key env auth.
+  }
 }
 
 /**
  * If `$GROK_HOME/config.toml` (default `~/.grok/config.toml`) defines a Toolport
- * gateway entry, point the child at a temporary `GROK_HOME` whose config has that
- * entry removed and whose auth files are copied from the real home.
+ * gateway entry, point the child at a private persistent `GROK_HOME` whose
+ * config has that entry removed and whose auth files track the real home.
  *
  * Studio's session `mcpServers` injection then owns the gateway (client id
  * `toolport-studio`) without fighting the global Grok Build entry (client id
  * `grok`) written by the Toolport desktop app for terminal use.
  *
- * When there is nothing to strip, returns the original environment unchanged.
+ * Persistence is intentional: Grok session/load, caches, and subscription auth
+ * must survive Studio restarts. When there is nothing to strip, returns the
+ * original environment unchanged.
  */
 export function environmentSuppressingGrokConfigToolportGateway(
   baseEnvironment: NodeJS.ProcessEnv,
@@ -393,15 +412,7 @@ export function environmentSuppressingGrokConfigToolportGateway(
   for (const fileName of GROK_HOME_AUTH_FILES) {
     const source = NodePath.join(realGrokHome, fileName);
     const destination = NodePath.join(tempGrokHome, fileName);
-    if (!NodeFS.existsSync(source)) {
-      NodeFS.rmSync(destination, { force: true });
-      continue;
-    }
-    try {
-      NodeFS.copyFileSync(source, destination);
-    } catch {
-      // Best-effort: missing auth still allows API-key env auth.
-    }
+    synchronizeGrokAuthFile(source, destination);
   }
 
   return {
