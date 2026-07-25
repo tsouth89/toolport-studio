@@ -273,7 +273,11 @@ import {
 import { useLocalStorage } from "~/hooks/useLocalStorage";
 import { useComposerHandleContext } from "../composerHandleContext";
 import { sanitizeThreadErrorMessage } from "~/rpc/transportError";
-import { resolveComposerSubmitIntent, useThreadTurnQueueStore } from "../threadTurnQueueStore";
+import {
+  EMPTY_THREAD_TURN_QUEUE,
+  resolveComposerSubmitIntent,
+  useThreadTurnQueueStore,
+} from "../threadTurnQueueStore";
 import { RightPanelSheet } from "./RightPanelSheet";
 import { previewEnvironment } from "../state/preview";
 import { useAtomCommand } from "../state/use-atom-command";
@@ -1581,12 +1585,13 @@ function ChatViewContent(props: ChatViewProps) {
     });
   }, [activeThreadKey, existingOpenTerminalThreadKeys, terminalUiState.terminalOpen]);
   const latestTurnSettled = isLatestTurnSettled(activeLatestTurn, activeThread?.session ?? null);
-  const activeThreadQueueCount = useThreadTurnQueueStore((state) =>
-    activeThreadId ? state.count(activeThreadId) : 0,
-  );
+  const activeThreadQueueKey = activeThreadId ? String(activeThreadId) : null;
   const activeThreadQueueItems = useThreadTurnQueueStore((state) =>
-    activeThreadId ? state.list(activeThreadId) : [],
+    activeThreadQueueKey
+      ? (state.queuesByThreadId[activeThreadQueueKey] ?? EMPTY_THREAD_TURN_QUEUE)
+      : EMPTY_THREAD_TURN_QUEUE,
   );
+  const activeThreadQueueCount = activeThreadQueueItems.length;
   const queueFlushInFlightRef = useRef(false);
   const activeProjectRef = activeThread
     ? scopeProjectRef(activeThread.environmentId, activeThread.projectId)
@@ -4973,26 +4978,11 @@ function ChatViewContent(props: ChatViewProps) {
       cursor: next.text.length,
       detectTrigger: false,
     });
-    void onSendRef
-      .current(undefined, { intent: "force" })
-      .then((ok) => {
-        if (ok) {
-          return;
-        }
-        // Put failed flush back at the front so the user can retry / edit.
-        useThreadTurnQueueStore.getState().enqueue(
-          activeThreadId,
-          {
-            id: next.id,
-            text: next.text,
-            images: next.images,
-          },
-          { front: true },
-        );
-      })
-      .finally(() => {
-        queueFlushInFlightRef.current = false;
-      });
+    // Do not re-enqueue on failure: that loops when onSend rejects synchronously
+    // (composer restore already puts content back for the user to retry).
+    void onSendRef.current(undefined, { intent: "force" }).finally(() => {
+      queueFlushInFlightRef.current = false;
+    });
   }, [
     activeThread,
     activeThreadId,

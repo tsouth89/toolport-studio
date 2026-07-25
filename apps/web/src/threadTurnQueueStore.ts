@@ -36,6 +36,9 @@ export interface ThreadTurnQueueState {
 
 const threadKey = (threadId: ThreadId | string): string => String(threadId);
 
+/** Stable empty list so React selectors never allocate a new [] every render. */
+export const EMPTY_THREAD_TURN_QUEUE: ReadonlyArray<ThreadQueuedTurn> = [];
+
 const newQueuedTurnId = (): string => {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
     return crypto.randomUUID();
@@ -108,8 +111,9 @@ export const useThreadTurnQueueStore = create<ThreadTurnQueueState>((set, get) =
       return { queuesByThreadId: nextQueues };
     });
   },
-  list: (threadId) => get().queuesByThreadId[threadKey(threadId)] ?? [],
-  count: (threadId) => (get().queuesByThreadId[threadKey(threadId)] ?? []).length,
+  list: (threadId) => get().queuesByThreadId[threadKey(threadId)] ?? EMPTY_THREAD_TURN_QUEUE,
+  count: (threadId) =>
+    (get().queuesByThreadId[threadKey(threadId)] ?? EMPTY_THREAD_TURN_QUEUE).length,
 }));
 
 export function resolveComposerSubmitIntent(input: {
