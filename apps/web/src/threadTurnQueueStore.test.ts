@@ -79,4 +79,18 @@ describe("useThreadTurnQueueStore", () => {
         .map((item) => item.id),
     ).toEqual([id]);
   });
+
+  it("can re-enqueue a failed flush at the front", () => {
+    const threadId = "thread-3";
+    useThreadTurnQueueStore.getState().enqueue(threadId, { text: "second", images: [] });
+    useThreadTurnQueueStore
+      .getState()
+      .enqueue(threadId, { text: "first-retry", images: [] }, { front: true });
+    expect(
+      useThreadTurnQueueStore
+        .getState()
+        .list(threadId)
+        .map((item) => item.text),
+    ).toEqual(["first-retry", "second"]);
+  });
 });

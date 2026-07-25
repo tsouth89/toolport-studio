@@ -856,6 +856,10 @@ export function makeCursorAdapter(
                       }),
                     );
                     return;
+                  case "ThoughtDelta":
+                    // Cursor path ignores reasoning stream for transcript; Grok
+                    // uses it for stalled-turn liveness.
+                    return;
                 }
               }),
             ),

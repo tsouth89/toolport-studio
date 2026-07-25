@@ -1584,6 +1584,9 @@ function ChatViewContent(props: ChatViewProps) {
   const activeThreadQueueCount = useThreadTurnQueueStore((state) =>
     activeThreadId ? state.count(activeThreadId) : 0,
   );
+  const activeThreadQueueItems = useThreadTurnQueueStore((state) =>
+    activeThreadId ? state.list(activeThreadId) : [],
+  );
   const queueFlushInFlightRef = useRef(false);
   const activeProjectRef = activeThread
     ? scopeProjectRef(activeThread.environmentId, activeThread.projectId)
@@ -4483,7 +4486,7 @@ function ChatViewContent(props: ChatViewProps) {
       readonly intent?: "auto" | "queue" | "steer" | "force";
       readonly ctrlOrMetaKey?: boolean;
     },
-  ) => {
+  ): Promise<boolean> => {
     e?.preventDefault();
     if (
       !activeThread ||
@@ -4492,13 +4495,13 @@ function ChatViewContent(props: ChatViewProps) {
       activeEnvironmentUnavailable ||
       sendInFlightRef.current
     )
-      return;
+      return false;
     if (activePendingProgress) {
       onAdvanceActivePendingUserInput();
-      return;
+      return false;
     }
     const sendCtx = composerRef.current?.getSendContext();
-    if (!sendCtx?.providerAvailable) return;
+    if (!sendCtx?.providerAvailable) return false;
     const {
       images: composerImages,
       terminalContexts: composerTerminalContexts,
@@ -4536,7 +4539,7 @@ function ChatViewContent(props: ChatViewProps) {
     // whole live turn (ACP); queued messages are kept.
     if (submitIntent === "queue" && phase === "running") {
       if (!hasSendableContent) {
-        return;
+        return false;
       }
       useThreadTurnQueueStore.getState().enqueue(activeThread.id, {
         text: promptForSend,
@@ -4548,7 +4551,7 @@ function ChatViewContent(props: ChatViewProps) {
       composerTerminalContextsRef.current = [];
       composerElementContextsRef.current = [];
       composerRef.current?.resetCursorState();
-      return;
+      return true;
     }
     if (showPlanFollowUpPrompt && activeProposedPlan) {
       const followUp = resolvePlanFollowUpSubmission({
@@ -4562,7 +4565,7 @@ function ChatViewContent(props: ChatViewProps) {
         text: followUp.text,
         interactionMode: followUp.interactionMode,
       });
-      return;
+      return true;
     }
     const standaloneSlashCommand =
       composerImages.length === 0 &&
@@ -4577,7 +4580,7 @@ function ChatViewContent(props: ChatViewProps) {
       promptRef.current = "";
       clearComposerDraftContent(composerDraftTarget);
       composerRef.current?.resetCursorState();
-      return;
+      return true;
     }
     if (!hasSendableContent) {
       if (expiredTerminalContextCount > 0) {
@@ -4593,7 +4596,7 @@ function ChatViewContent(props: ChatViewProps) {
           }),
         );
       }
-      return;
+      return false;
     }
     if (!activeProject) {
       toastManager.add(
@@ -4603,7 +4606,7 @@ function ChatViewContent(props: ChatViewProps) {
           description: "This draft no longer points to an available project.",
         }),
       );
-      return;
+      return false;
     }
     const threadIdForSend = activeThread.id;
     const isFirstMessage = !isServerThread || activeThread.messages.length === 0;
@@ -4618,7 +4621,7 @@ function ChatViewContent(props: ChatViewProps) {
       isFirstMessage && sendEnvMode === "worktree" && !activeThread.worktreePath;
     if (shouldCreateWorktree && !activeThreadBranch) {
       setThreadError(threadIdForSend, "Select a base branch before sending in New worktree mode.");
-      return;
+      return false;
     }
 
     sendInFlightRef.current = true;
@@ -4885,10 +4888,16 @@ function ChatViewContent(props: ChatViewProps) {
       }
       if (!isAtomCommandInterrupted(failure)) {
         const error = squashAtomCommandFailure(failure);
-        setThreadError(
-          threadIdForSend,
-          error instanceof Error ? error.message : "Failed to send message.",
-        );
+        const detail = error instanceof Error ? error.message : "Failed to send message.";
+        const imageHint =
+          composerImagesSnapshot.length > 0 &&
+          (detail.toLowerCase().includes("image") ||
+            detail.toLowerCase().includes("read") ||
+            detail.toLowerCase().includes("timed out") ||
+            detail.toLowerCase().includes("attachment"))
+            ? " Image attach failed — re-attach or send without the image."
+            : "";
+        setThreadError(threadIdForSend, `${detail}${imageHint}`);
       }
     }
     sendInFlightRef.current = false;
@@ -4898,6 +4907,7 @@ function ChatViewContent(props: ChatViewProps) {
       );
       resetLocalDispatch();
     }
+    return turnStartSucceeded;
   };
 
   const onInterrupt = async () => {
@@ -4963,9 +4973,26 @@ function ChatViewContent(props: ChatViewProps) {
       cursor: next.text.length,
       detectTrigger: false,
     });
-    void onSendRef.current(undefined, { intent: "force" }).finally(() => {
-      queueFlushInFlightRef.current = false;
-    });
+    void onSendRef
+      .current(undefined, { intent: "force" })
+      .then((ok) => {
+        if (ok) {
+          return;
+        }
+        // Put failed flush back at the front so the user can retry / edit.
+        useThreadTurnQueueStore.getState().enqueue(
+          activeThreadId,
+          {
+            id: next.id,
+            text: next.text,
+            images: next.images,
+          },
+          { front: true },
+        );
+      })
+      .finally(() => {
+        queueFlushInFlightRef.current = false;
+      });
   }, [
     activeThread,
     activeThreadId,
@@ -5922,22 +5949,58 @@ function ChatViewContent(props: ChatViewProps) {
                     >
                       <div className="chat-composer-glass-host relative z-10 w-full rounded-[22px]">
                         {activeThreadId && activeThreadQueueCount > 0 ? (
-                          <div className="flex items-center justify-between gap-2 border-b border-border/50 px-3 py-2 text-xs text-muted-foreground sm:px-4">
-                            <span>
-                              {activeThreadQueueCount === 1
-                                ? "1 message queued for after this turn"
-                                : `${activeThreadQueueCount} messages queued for after this turn`}
-                              {phase === "running" ? " · Ctrl+Enter steers into the live turn" : ""}
-                            </span>
-                            <button
-                              type="button"
-                              className="shrink-0 rounded-md px-2 py-0.5 text-foreground/80 hover:bg-muted"
-                              onClick={() => {
-                                useThreadTurnQueueStore.getState().clear(activeThreadId);
-                              }}
-                            >
-                              Clear queue
-                            </button>
+                          <div className="space-y-1.5 border-b border-border/50 px-3 py-2 text-xs text-muted-foreground sm:px-4">
+                            <div className="flex items-center justify-between gap-2">
+                              <span>
+                                {activeThreadQueueCount === 1
+                                  ? "1 message queued for after this turn"
+                                  : `${activeThreadQueueCount} messages queued for after this turn`}
+                                {phase === "running"
+                                  ? " · Ctrl+Enter steers into the live turn"
+                                  : ""}
+                              </span>
+                              <button
+                                type="button"
+                                className="shrink-0 rounded-md px-2 py-0.5 text-foreground/80 hover:bg-muted"
+                                onClick={() => {
+                                  useThreadTurnQueueStore.getState().clear(activeThreadId);
+                                }}
+                              >
+                                Clear queue
+                              </button>
+                            </div>
+                            <ul className="space-y-1">
+                              {activeThreadQueueItems.map((item, index) => {
+                                const preview =
+                                  item.text.trim().length > 0
+                                    ? item.text.trim().slice(0, 72)
+                                    : item.images.length > 0
+                                      ? `${item.images.length} image${item.images.length === 1 ? "" : "s"}`
+                                      : "Empty message";
+                                return (
+                                  <li
+                                    key={item.id}
+                                    className="flex items-center justify-between gap-2 rounded-md bg-muted/30 px-2 py-1 text-[11px] text-foreground/80"
+                                  >
+                                    <span className="min-w-0 truncate">
+                                      {index + 1}. {preview}
+                                      {item.text.trim().length > 72 ? "…" : ""}
+                                    </span>
+                                    <button
+                                      type="button"
+                                      className="shrink-0 rounded px-1.5 py-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+                                      onClick={() => {
+                                        useThreadTurnQueueStore
+                                          .getState()
+                                          .remove(activeThreadId, item.id);
+                                      }}
+                                    >
+                                      Remove
+                                    </button>
+                                  </li>
+                                );
+                              })}
+                            </ul>
                           </div>
                         ) : null}
                         <div ref={attachDraftHeroComposerAnchorRef} className="relative z-10">

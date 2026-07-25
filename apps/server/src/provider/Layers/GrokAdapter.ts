@@ -754,7 +754,8 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             if (
               event._tag === "PlanUpdated" ||
               event._tag === "ToolCallUpdated" ||
-              event._tag === "ContentDelta"
+              event._tag === "ContentDelta" ||
+              event._tag === "ThoughtDelta"
             ) {
               yield* logNative(ctx.threadId, "session/update", event.rawPayload);
             }
@@ -836,6 +837,28 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                     rawPayload: event.rawPayload,
                   }),
                 );
+                return;
+              case "ThoughtDelta":
+                // Do not dump reasoning into the chat transcript, but count it
+                // as visible activity so stalled-turn UI and recycle logic know
+                // Grok is still working (quiet multi-minute thinks).
+                ctx.turnVisibleUpdateCount += 1;
+                yield* offerRuntimeEvent({
+                  type: "session.state.changed",
+                  ...stamp,
+                  provider: PROVIDER,
+                  threadId: ctx.threadId,
+                  turnId: notificationTurnId,
+                  payload: {
+                    state: "running",
+                    reason: "Grok is thinking",
+                  },
+                  raw: {
+                    source: "acp.jsonrpc",
+                    method: "session/update",
+                    payload: event.rawPayload,
+                  },
+                });
                 return;
             }
           }).pipe(

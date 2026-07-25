@@ -108,6 +108,12 @@ export type AcpParsedSessionEvent =
       readonly itemId?: string;
       readonly text: string;
       readonly rawPayload: unknown;
+    }
+  | {
+      /** Agent reasoning stream; used for liveness, not assistant chat text. */
+      readonly _tag: "ThoughtDelta";
+      readonly text: string;
+      readonly rawPayload: unknown;
     };
 
 type AcpSessionSetupResponse =
@@ -568,6 +574,16 @@ export function parseSessionUpdateEvent(params: EffectAcpSchema.SessionNotificat
       if (upd.content.type === "text" && upd.content.text.length > 0) {
         events.push({
           _tag: "ContentDelta",
+          text: upd.content.text,
+          rawPayload: params,
+        });
+      }
+      break;
+    }
+    case "agent_thought_chunk": {
+      if (upd.content.type === "text" && upd.content.text.length > 0) {
+        events.push({
+          _tag: "ThoughtDelta",
           text: upd.content.text,
           rawPayload: params,
         });

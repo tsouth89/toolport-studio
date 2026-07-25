@@ -25,6 +25,7 @@ export interface ThreadTurnQueueState {
       readonly images: ReadonlyArray<ComposerImageAttachment>;
       readonly id?: string;
     },
+    options?: { readonly front?: boolean },
   ) => string;
   dequeue: (threadId: ThreadId | string) => ThreadQueuedTurn | null;
   remove: (threadId: ThreadId | string, id: string) => void;
@@ -44,7 +45,7 @@ const newQueuedTurnId = (): string => {
 
 export const useThreadTurnQueueStore = create<ThreadTurnQueueState>((set, get) => ({
   queuesByThreadId: {},
-  enqueue: (threadId, item) => {
+  enqueue: (threadId, item, options) => {
     const id = item.id ?? newQueuedTurnId();
     const key = threadKey(threadId);
     const entry: ThreadQueuedTurn = {
@@ -58,7 +59,7 @@ export const useThreadTurnQueueStore = create<ThreadTurnQueueState>((set, get) =
       return {
         queuesByThreadId: {
           ...state.queuesByThreadId,
-          [key]: [...current, entry],
+          [key]: options?.front ? [entry, ...current] : [...current, entry],
         },
       };
     });

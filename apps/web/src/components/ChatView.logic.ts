@@ -198,20 +198,74 @@ export interface PullRequestDialogState {
   key: number;
 }
 
-export function readFileAsDataUrl(file: File): Promise<string> {
+/** Default timeout for encoding a composer image for send. */
+export const COMPOSER_IMAGE_READ_TIMEOUT_MS = 30_000;
+
+export function readFileAsDataUrl(
+  file: File,
+  options?: { readonly timeoutMs?: number },
+): Promise<string> {
+  const timeoutMs = options?.timeoutMs ?? COMPOSER_IMAGE_READ_TIMEOUT_MS;
+  const label = file.name?.trim() || "image";
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.addEventListener("load", () => {
-      if (typeof reader.result === "string") {
-        resolve(reader.result);
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) {
         return;
       }
-      reject(new Error("Could not read image data."));
+      settled = true;
+      try {
+        reader.abort();
+      } catch {
+        // ignore abort failures
+      }
+      reject(
+        new Error(
+          `Timed out reading '${label}' after ${Math.round(timeoutMs / 1000)}s. Try a smaller image or re-attach it.`,
+        ),
+      );
+    }, timeoutMs);
+    const finish = (fn: () => void) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      fn();
+    };
+    reader.addEventListener("load", () => {
+      finish(() => {
+        if (typeof reader.result === "string") {
+          resolve(reader.result);
+          return;
+        }
+        reject(new Error(`Could not read image data for '${label}'.`));
+      });
     });
     reader.addEventListener("error", () => {
-      reject(reader.error ?? new Error("Failed to read image."));
+      finish(() => {
+        reject(
+          reader.error instanceof Error
+            ? reader.error
+            : new Error(`Failed to read image '${label}'.`),
+        );
+      });
     });
-    reader.readAsDataURL(file);
+    reader.addEventListener("abort", () => {
+      finish(() => {
+        reject(new Error(`Image read was cancelled for '${label}'.`));
+      });
+    });
+    try {
+      reader.readAsDataURL(file);
+    } catch (error) {
+      finish(() => {
+        reject(
+          error instanceof Error ? error : new Error(`Failed to start reading image '${label}'.`),
+        );
+      });
+    }
   });
 }
 
