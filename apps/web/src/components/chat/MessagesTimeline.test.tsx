@@ -655,4 +655,27 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("lucide-x");
     expect(markup).toContain('aria-label="Tool call failed"');
   });
+
+  it("announces stalled-turn status and exposes a keyboard-accessible Stop control", () => {
+    const lastStreamActivityAt = new Date(Date.now() - 45_000).toISOString();
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        isWorking
+        lastStreamActivityAt={lastStreamActivityAt}
+        onInterrupt={() => {}}
+        timelineEntries={[]}
+      />,
+    );
+
+    expect(markup).toContain('role="status"');
+    expect(markup).toContain('aria-live="polite"');
+    expect(markup).toContain("No updates for");
+    expect(markup).toContain('aria-label="Stop generation"');
+    expect(markup).toContain("focus-visible:ring-2");
+    // Live region should wrap the stall copy, not the interactive Stop control.
+    expect(markup).toMatch(
+      /role="status"[^>]*>No updates for [^<]+<\/span>\s*<button[^>]*aria-label="Stop generation"/,
+    );
+  });
 });
