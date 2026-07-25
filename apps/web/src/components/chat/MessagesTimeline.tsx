@@ -8,6 +8,11 @@ import {
 import { parseScopedThreadKey } from "@t3tools/client-runtime/environment";
 import { resolveChatListAnchoredEndSpace } from "@t3tools/shared/chatList";
 import {
+  STALLED_TURN_THRESHOLD_MS,
+  deriveStalledTurnState,
+  formatStalledSilenceLabel,
+} from "@t3tools/shared/stalledTurn";
+import {
   createContext,
   Fragment,
   memo,
@@ -142,6 +147,9 @@ interface TimelineRowActivityState {
   isRevertingCheckpoint: boolean;
   activeTurnInProgress: boolean;
   latestTurnId: TurnId | null;
+  /** Last client-observed stream/orchestration activity for the running turn. */
+  lastStreamActivityAt: string | null;
+  onInterrupt: (() => void) | null;
 }
 
 const TimelineRowCtx = createContext<TimelineRowSharedState>(null!);
@@ -159,6 +167,8 @@ interface MessagesTimelineProps {
   isWorking: boolean;
   activeTurnInProgress: boolean;
   activeTurnStartedAt: string | null;
+  /** Latest orchestration/stream activity timestamp while a turn is running. */
+  lastStreamActivityAt?: string | null;
   listRef: React.RefObject<LegendListRef | null>;
   timelineEntries: ReturnType<typeof deriveTimelineEntries>;
   latestTurn: TimelineLatestTurn | null;
@@ -170,6 +180,8 @@ interface MessagesTimelineProps {
   onRevertUserMessage: (messageId: MessageId) => void;
   isRevertingCheckpoint: boolean;
   onImageExpand: (preview: ExpandedImagePreview) => void;
+  /** Stop the running turn from the stalled-working indicator. */
+  onInterrupt?: () => void;
   activeThreadEnvironmentId: EnvironmentId;
   markdownCwd: string | undefined;
   resolvedTheme: "light" | "dark";
@@ -194,6 +206,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   isWorking,
   activeTurnInProgress,
   activeTurnStartedAt,
+  lastStreamActivityAt = null,
   listRef,
   timelineEntries,
   latestTurn,
@@ -205,6 +218,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   onRevertUserMessage,
   isRevertingCheckpoint,
   onImageExpand,
+  onInterrupt = undefined,
   activeThreadEnvironmentId,
   markdownCwd,
   resolvedTheme,
@@ -452,8 +466,17 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       isRevertingCheckpoint,
       activeTurnInProgress,
       latestTurnId: latestTurn?.turnId ?? null,
+      lastStreamActivityAt,
+      onInterrupt: onInterrupt ?? null,
     }),
-    [activeTurnInProgress, isRevertingCheckpoint, isWorking, latestTurn?.turnId],
+    [
+      activeTurnInProgress,
+      isRevertingCheckpoint,
+      isWorking,
+      lastStreamActivityAt,
+      latestTurn?.turnId,
+      onInterrupt,
+    ],
   );
 
   // Stable renderItem — no closure deps. Row components read shared state
@@ -1092,13 +1115,39 @@ function ProposedPlanTimelineRow({
 }
 
 function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "working" }> }) {
+  const activity = use(TimelineRowActivityCtx);
+  const stalled = useStalledTurnIndicator(activity.lastStreamActivityAt);
+  const handleStop = activity.onInterrupt;
+
   return (
     <div className="py-0.5 pl-1.5">
-      <div className="flex items-center gap-2 pt-1 text-[11px] text-muted-foreground/70 tabular-nums">
-        <span className="inline-flex items-center gap-[3px]">
-          <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-status-pulse" />
-          <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-status-pulse [animation-delay:200ms]" />
-          <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-status-pulse [animation-delay:400ms]" />
+      <div
+        className={cn(
+          "flex flex-wrap items-center gap-x-2 gap-y-1 pt-1 text-[11px] tabular-nums",
+          stalled.isStalled ? "text-warning" : "text-muted-foreground/70",
+        )}
+        role={stalled.isStalled ? "status" : undefined}
+        aria-live={stalled.isStalled ? "polite" : undefined}
+      >
+        <span className="inline-flex items-center gap-[3px]" aria-hidden="true">
+          <span
+            className={cn(
+              "h-1 w-1 rounded-full animate-status-pulse",
+              stalled.isStalled ? "bg-warning/70" : "bg-muted-foreground/30",
+            )}
+          />
+          <span
+            className={cn(
+              "h-1 w-1 rounded-full animate-status-pulse [animation-delay:200ms]",
+              stalled.isStalled ? "bg-warning/70" : "bg-muted-foreground/30",
+            )}
+          />
+          <span
+            className={cn(
+              "h-1 w-1 rounded-full animate-status-pulse [animation-delay:400ms]",
+              stalled.isStalled ? "bg-warning/70" : "bg-muted-foreground/30",
+            )}
+          />
         </span>
         <span>
           {row.createdAt ? (
@@ -1109,9 +1158,82 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
             "Working..."
           )}
         </span>
+        {stalled.isStalled && stalled.silentLabel ? (
+          <>
+            <span className="text-warning/50" aria-hidden="true">
+              ·
+            </span>
+            <span>No updates for {stalled.silentLabel}</span>
+            {handleStop ? (
+              <button
+                type="button"
+                className="rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 font-medium text-warning transition-colors hover:bg-warning/16 hover:cursor-pointer"
+                onClick={handleStop}
+              >
+                Stop
+              </button>
+            ) : null}
+          </>
+        ) : null}
       </div>
     </div>
   );
+}
+
+/**
+ * Self-ticking stalled-turn signal. Re-renders only when stall state or the
+ * second-bucket silence label changes, so quiet turns do not thrash the list.
+ */
+function useStalledTurnIndicator(lastStreamActivityAt: string | null): {
+  isStalled: boolean;
+  silentLabel: string | null;
+} {
+  const [state, setState] = useState(() =>
+    readStalledTurnIndicator(lastStreamActivityAt, Date.now()),
+  );
+
+  useEffect(() => {
+    const update = () => {
+      const next = readStalledTurnIndicator(lastStreamActivityAt, Date.now());
+      setState((previous) =>
+        previous.isStalled === next.isStalled && previous.silentLabel === next.silentLabel
+          ? previous
+          : next,
+      );
+    };
+    update();
+    if (lastStreamActivityAt === null) {
+      return;
+    }
+    const id = window.setInterval(update, 1_000);
+    return () => window.clearInterval(id);
+  }, [lastStreamActivityAt]);
+
+  return state;
+}
+
+function readStalledTurnIndicator(
+  lastStreamActivityAt: string | null,
+  nowMs: number,
+): { isStalled: boolean; silentLabel: string | null } {
+  // Only evaluate stall while ChatView has a stream clock (phase === "running").
+  // Send/connect busy states also show the working row but are not stalled turns.
+  if (lastStreamActivityAt === null) {
+    return { isStalled: false, silentLabel: null };
+  }
+  const stalled = deriveStalledTurnState({
+    isRunning: true,
+    lastActivityAt: lastStreamActivityAt,
+    nowMs,
+    thresholdMs: STALLED_TURN_THRESHOLD_MS,
+  });
+  if (!stalled.isStalled) {
+    return { isStalled: false, silentLabel: null };
+  }
+  return {
+    isStalled: true,
+    silentLabel: formatStalledSilenceLabel(stalled.silentForMs),
+  };
 }
 
 // ---------------------------------------------------------------------------

@@ -39,6 +39,7 @@ import {
 } from "@t3tools/shared/model";
 import { CHAT_LIST_ANCHOR_OFFSET } from "@t3tools/shared/chatList";
 import { projectScriptCwd, projectScriptRuntimeEnv } from "@t3tools/shared/projectScripts";
+import { deriveLastStreamActivityAt } from "@t3tools/shared/stalledTurn";
 import { truncate } from "@t3tools/shared/String";
 import { nextTerminalId, resolveTerminalSessionLabel } from "@t3tools/shared/terminalLabels";
 import { Debouncer } from "@tanstack/react-pacer";
@@ -2017,6 +2018,17 @@ function ChatViewContent(props: ChatViewProps) {
     activeThread?.session ?? null,
     localDispatchStartedAt,
   );
+  // Only track stream silence while the session is actually running a turn.
+  // Send/connect busy states reuse the working indicator but are not stalled.
+  const lastStreamActivityAt =
+    phase === "running" && activeThread
+      ? deriveLastStreamActivityAt({
+          threadUpdatedAt: activeThread.updatedAt,
+          sessionUpdatedAt: activeThread.session?.updatedAt ?? null,
+          latestTurnRequestedAt: activeLatestTurn?.requestedAt ?? null,
+          latestTurnStartedAt: activeLatestTurn?.startedAt ?? null,
+        })
+      : null;
   useEffect(() => {
     attachmentPreviewHandoffByMessageIdRef.current = attachmentPreviewHandoffByMessageId;
   }, [attachmentPreviewHandoffByMessageId]);
@@ -5678,6 +5690,7 @@ function ChatViewContent(props: ChatViewProps) {
                 isWorking={isWorking}
                 activeTurnInProgress={isWorking || !latestTurnSettled}
                 activeTurnStartedAt={activeWorkStartedAt}
+                lastStreamActivityAt={lastStreamActivityAt}
                 listRef={legendListRef}
                 timelineEntries={timelineEntries}
                 latestTurn={activeLatestTurn}
@@ -5694,6 +5707,7 @@ function ChatViewContent(props: ChatViewProps) {
                 onRevertUserMessage={onRevertUserMessage}
                 isRevertingCheckpoint={isRevertingCheckpoint}
                 onImageExpand={onExpandTimelineImage}
+                onInterrupt={onInterrupt}
                 markdownCwd={gitCwd ?? undefined}
                 resolvedTheme={resolvedTheme}
                 timestampFormat={timestampFormat}

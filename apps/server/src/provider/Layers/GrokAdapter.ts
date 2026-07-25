@@ -1559,12 +1559,12 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             Effect.timeout("2 seconds"),
             Effect.ignore,
           );
-          // Only recycle when Stop had to force-release a wedged prompt. Clean
-          // agent cancellations keep the process so follow-ups stay fast.
-          const forceCancelled = yield* ctx.acp.wasForceCancelled;
-          if (forceCancelled) {
-            ctx.acpCompromised = true;
-          }
+          // Always recycle after Stop. Cooperative cancel is not trustworthy:
+          // the child can still be wedged and black-hole the next user message
+          // while the UI shows "working" with no stream (SOU-351 / SOU-358).
+          // Fresh process on follow-up is slower by ~1s and far more reliable.
+          ctx.acpCompromised = true;
+          yield* disposeAcpProcess(ctx);
         }
       });
 
