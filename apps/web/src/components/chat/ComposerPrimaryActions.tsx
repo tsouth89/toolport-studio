@@ -125,22 +125,68 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
     );
   }
 
-  // Running turns and stuck local "Sending" both need a real Stop control.
-  // isSendBusy alone used to render a disabled spinner with no cancel path
-  // (screenshot/upload or projection lag left the composer dead).
-  if (isRunning || isSendBusy) {
+  // Stuck local "Sending" (pre-running): cancel only — no provider turn yet.
+  if (isSendBusy && !isRunning) {
     return (
       <button
         type="button"
         className="flex size-8 cursor-pointer items-center justify-center rounded-full bg-destructive/90 text-white shadow-xs shadow-destructive/24 inset-shadow-[0_1px_--theme(--color-white/16%)] transition-all duration-150 hover:bg-destructive hover:scale-105 active:inset-shadow-[0_1px_--theme(--color-black/8%)] active:shadow-none sm:h-8 sm:w-8"
         {...pointerFocusProps}
         onClick={onInterrupt}
-        aria-label={isRunning ? "Stop generation" : "Cancel sending"}
+        aria-label="Cancel sending"
       >
         <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor" aria-hidden="true">
           <rect x="2" y="2" width="8" height="8" rx="1.5" />
         </svg>
       </button>
+    );
+  }
+
+  // Live turn: queue/send stays available next to Stop (Grok Build-style).
+  // Default submit queues; Ctrl/Cmd+Enter steers (handled by the composer).
+  if (isRunning) {
+    return (
+      <div className="flex items-center gap-1.5">
+        <button
+          type="submit"
+          className={cn(
+            "relative isolate flex h-9 w-9 items-center justify-center overflow-hidden rounded-full text-primary-foreground shadow-xs transition-all duration-150 enabled:cursor-pointer enabled:inset-shadow-[0_1px_--theme(--color-white/16%)] hover:scale-105 active:inset-shadow-[0_1px_--theme(--color-black/8%)] active:shadow-none disabled:pointer-events-none disabled:opacity-30 disabled:shadow-none disabled:hover:scale-100 sm:h-8 sm:w-8",
+            stageBackdropVariant
+              ? "bg-transparent enabled:shadow-black/24 enabled:hover:brightness-110"
+              : "bg-primary/90 enabled:shadow-primary/24 hover:bg-primary",
+          )}
+          {...pointerFocusProps}
+          disabled={isEnvironmentUnavailable || !hasSendableContent}
+          aria-label="Queue message for after this turn"
+          title="Queue for after this turn (Ctrl+Enter steers into the live turn)"
+        >
+          {stageBackdropVariant ? (
+            <span className="absolute inset-0 -z-10" aria-hidden="true">
+              <StageBackdropButtonArt variant={stageBackdropVariant} />
+            </span>
+          ) : null}
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+            <path
+              d="M12.5 1.5L6.2 7.8M12.5 1.5L8.5 12.5L6.2 7.8M12.5 1.5L1.5 5.5L6.2 7.8"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        </button>
+        <button
+          type="button"
+          className="flex size-8 cursor-pointer items-center justify-center rounded-full bg-destructive/90 text-white shadow-xs shadow-destructive/24 inset-shadow-[0_1px_--theme(--color-white/16%)] transition-all duration-150 hover:bg-destructive hover:scale-105 active:inset-shadow-[0_1px_--theme(--color-black/8%)] active:shadow-none sm:h-8 sm:w-8"
+          {...pointerFocusProps}
+          onClick={onInterrupt}
+          aria-label="Stop generation"
+        >
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor" aria-hidden="true">
+            <rect x="2" y="2" width="8" height="8" rx="1.5" />
+          </svg>
+        </button>
+      </div>
     );
   }
 

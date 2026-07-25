@@ -273,6 +273,7 @@ import {
 import { useLocalStorage } from "~/hooks/useLocalStorage";
 import { useComposerHandleContext } from "../composerHandleContext";
 import { sanitizeThreadErrorMessage } from "~/rpc/transportError";
+import { resolveComposerSubmitIntent, useThreadTurnQueueStore } from "../threadTurnQueueStore";
 import { RightPanelSheet } from "./RightPanelSheet";
 import { previewEnvironment } from "../state/preview";
 import { useAtomCommand } from "../state/use-atom-command";
@@ -1580,6 +1581,10 @@ function ChatViewContent(props: ChatViewProps) {
     });
   }, [activeThreadKey, existingOpenTerminalThreadKeys, terminalUiState.terminalOpen]);
   const latestTurnSettled = isLatestTurnSettled(activeLatestTurn, activeThread?.session ?? null);
+  const activeThreadQueueCount = useThreadTurnQueueStore((state) =>
+    activeThreadId ? state.count(activeThreadId) : 0,
+  );
+  const queueFlushInFlightRef = useRef(false);
   const activeProjectRef = activeThread
     ? scopeProjectRef(activeThread.environmentId, activeThread.projectId)
     : null;
@@ -4472,7 +4477,13 @@ function ChatViewContent(props: ChatViewProps) {
     ],
   );
 
-  const onSend = async (e?: { preventDefault: () => void }) => {
+  const onSend = async (
+    e?: { preventDefault: () => void },
+    options?: {
+      readonly intent?: "auto" | "queue" | "steer" | "force";
+      readonly ctrlOrMetaKey?: boolean;
+    },
+  ) => {
     e?.preventDefault();
     if (
       !activeThread ||
@@ -4515,6 +4526,30 @@ function ChatViewContent(props: ChatViewProps) {
         composerPreviewAnnotations.length +
         composerReviewComments.length,
     });
+    const submitIntent = resolveComposerSubmitIntent({
+      phase,
+      ctrlOrMetaKey: options?.ctrlOrMetaKey ?? false,
+      explicitIntent: options?.intent,
+    });
+    // While a turn is live, default Send/Enter queues the next turn. Ctrl+Enter
+    // (or intent=steer) injects into the current Grok turn. Stop cancels the
+    // whole live turn (ACP); queued messages are kept.
+    if (submitIntent === "queue" && phase === "running") {
+      if (!hasSendableContent) {
+        return;
+      }
+      useThreadTurnQueueStore.getState().enqueue(activeThread.id, {
+        text: promptForSend,
+        images: composerImages.map((image) => ({ ...image })),
+      });
+      promptRef.current = "";
+      clearComposerDraftContent(composerDraftTarget);
+      composerImagesRef.current = [];
+      composerTerminalContextsRef.current = [];
+      composerElementContextsRef.current = [];
+      composerRef.current?.resetCursorState();
+      return;
+    }
     if (showPlanFollowUpPrompt && activeProposedPlan) {
       const followUp = resolvePlanFollowUpSubmission({
         draftText: trimmed,
@@ -4887,6 +4922,63 @@ function ChatViewContent(props: ChatViewProps) {
       );
     }
   };
+
+  const onSendRef = useRef(onSend);
+  onSendRef.current = onSend;
+
+  // Drain queued turns once the live turn is fully settled. Stop keeps the queue.
+  useEffect(() => {
+    if (!activeThreadId || !activeThread) {
+      return;
+    }
+    if (
+      queueFlushInFlightRef.current ||
+      sendInFlightRef.current ||
+      isSendBusy ||
+      isConnecting ||
+      phase === "running" ||
+      !latestTurnSettled
+    ) {
+      return;
+    }
+    if (activeThreadQueueCount === 0) {
+      return;
+    }
+    const next = useThreadTurnQueueStore.getState().dequeue(activeThreadId);
+    if (!next) {
+      return;
+    }
+    queueFlushInFlightRef.current = true;
+    clearComposerDraftContent(composerDraftTarget);
+    setComposerDraftPrompt(composerDraftTarget, next.text);
+    if (next.images.length > 0) {
+      addComposerDraftImages(composerDraftTarget, [...next.images]);
+    }
+    promptRef.current = next.text;
+    composerImagesRef.current = [...next.images];
+    composerTerminalContextsRef.current = [];
+    composerElementContextsRef.current = [];
+    composerRef.current?.resetCursorState({
+      prompt: next.text,
+      cursor: next.text.length,
+      detectTrigger: false,
+    });
+    void onSendRef.current(undefined, { intent: "force" }).finally(() => {
+      queueFlushInFlightRef.current = false;
+    });
+  }, [
+    activeThread,
+    activeThreadId,
+    activeThreadQueueCount,
+    addComposerDraftImages,
+    clearComposerDraftContent,
+    composerDraftTarget,
+    isConnecting,
+    isSendBusy,
+    latestTurnSettled,
+    phase,
+    setComposerDraftPrompt,
+  ]);
 
   const onRespondToApproval = useCallback(
     async (requestId: ApprovalRequestId, decision: ProviderApprovalDecision) => {
@@ -5829,6 +5921,25 @@ function ChatViewContent(props: ChatViewProps) {
                       )}
                     >
                       <div className="chat-composer-glass-host relative z-10 w-full rounded-[22px]">
+                        {activeThreadId && activeThreadQueueCount > 0 ? (
+                          <div className="flex items-center justify-between gap-2 border-b border-border/50 px-3 py-2 text-xs text-muted-foreground sm:px-4">
+                            <span>
+                              {activeThreadQueueCount === 1
+                                ? "1 message queued for after this turn"
+                                : `${activeThreadQueueCount} messages queued for after this turn`}
+                              {phase === "running" ? " · Ctrl+Enter steers into the live turn" : ""}
+                            </span>
+                            <button
+                              type="button"
+                              className="shrink-0 rounded-md px-2 py-0.5 text-foreground/80 hover:bg-muted"
+                              onClick={() => {
+                                useThreadTurnQueueStore.getState().clear(activeThreadId);
+                              }}
+                            >
+                              Clear queue
+                            </button>
+                          </div>
+                        ) : null}
                         <div ref={attachDraftHeroComposerAnchorRef} className="relative z-10">
                           <ChatComposer
                             composerRef={composerRef}

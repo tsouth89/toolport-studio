@@ -580,7 +580,13 @@ export interface ChatComposerProps {
   composerRef: React.RefObject<ChatComposerHandle | null>;
 
   // Callbacks
-  onSend: (e?: { preventDefault: () => void }) => void;
+  onSend: (
+    e?: { preventDefault: () => void },
+    options?: {
+      readonly intent?: "auto" | "queue" | "steer" | "force";
+      readonly ctrlOrMetaKey?: boolean;
+    },
+  ) => void;
   onInterrupt: () => void;
   onImplementPlanInNewThread: () => void;
   onRespondToApproval: (
@@ -1787,17 +1793,30 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   ]);
 
   const submitComposer = useCallback(
-    (event?: { preventDefault: () => void }) => {
+    (
+      event?: { preventDefault: () => void },
+      options?: {
+        readonly intent?: "auto" | "queue" | "steer" | "force";
+        readonly ctrlOrMetaKey?: boolean;
+      },
+    ) => {
       if (noProviderAvailable) {
         event?.preventDefault();
         return;
       }
-      onSend(event);
-      if (shouldBlurMobileComposerOnSubmit()) {
+      onSend(event, options);
+      // Don't blur when queueing/steering mid-turn — user often keeps typing.
+      if (phase !== "running" && shouldBlurMobileComposerOnSubmit()) {
         blurMobileComposerAfterSend();
       }
     },
-    [blurMobileComposerAfterSend, noProviderAvailable, onSend, shouldBlurMobileComposerOnSubmit],
+    [
+      blurMobileComposerAfterSend,
+      noProviderAvailable,
+      onSend,
+      phase,
+      shouldBlurMobileComposerOnSubmit,
+    ],
   );
   const expandMobileComposer = useCallback(() => {
     if (composerBlurFrameRef.current !== null) {
@@ -1855,7 +1874,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       key === "Enter" &&
       shouldSubmitComposerOnEnter({ isMobileViewport, shiftKey: event.shiftKey })
     ) {
-      submitComposer();
+      // Ctrl/Cmd+Enter while running steers into the live turn; bare Enter queues.
+      submitComposer(undefined, {
+        ctrlOrMetaKey: event.ctrlKey || event.metaKey,
+        ...(event.ctrlKey || event.metaKey ? { intent: "steer" as const } : {}),
+      });
       return true;
     }
     return false;
