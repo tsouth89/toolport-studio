@@ -56,7 +56,7 @@ const StageWorkspaceConfig = Schema.Struct({
     libc: Schema.optional(Schema.Array(Schema.String)),
   }),
   // pnpm 11 only reads these from pnpm-workspace.yaml (not package.json#pnpm).
-  // Without allowBuilds the staged `vp install --prod` fails with
+  // Without allowBuilds the staged `pnpm install --prod` fails with
   // ERR_PNPM_IGNORED_BUILDS for packages that have lifecycle scripts.
   allowBuilds: Schema.optional(Schema.Record(Schema.String, Schema.Boolean)),
   patchedDependencies: Schema.optional(Schema.Record(Schema.String, Schema.String)),
@@ -1803,13 +1803,17 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   }
 
   yield* Effect.log("[desktop-artifact] Installing staged production dependencies...");
-  const installCommand = yield* resolveSpawnCommand("vp", [...STAGE_INSTALL_ARGS]);
+  // The staging directory intentionally has no local Vite+ shim. Invoke the
+  // package manager declared by the staged manifest directly so Windows does
+  // not resolve a workspace-local `vp.cmd` whose relative launcher paths are
+  // invalid from the temporary directory.
+  const installCommand = yield* resolveSpawnCommand("pnpm", [...STAGE_INSTALL_ARGS]);
   yield* runCommand(
     ChildProcess.make(installCommand.command, installCommand.args, {
       cwd: stageAppDir,
       shell: installCommand.shell,
     }),
-    { label: "vp install --prod", verbose: options.verbose },
+    { label: "pnpm install --prod", verbose: options.verbose },
   );
   yield* stageClerkPasskeyNativeBinaries(stageAppDir, options.platform, options.arch);
 
