@@ -43,10 +43,18 @@ export type AcpMcpServerBinding =
       readonly env: ReadonlyArray<{ readonly name: string; readonly value: string }>;
     };
 
-const INTERNAL_MCP_SERVER_NAME = "toolport-studio-preview";
-const TOOLPORT_MCP_SERVER_NAME = "toolport";
-const TOOLPORT_CLIENT_ID = "toolport-studio";
+/** Studio-owned preview automation MCP (browser control). */
+export const INTERNAL_MCP_SERVER_NAME = "toolport-studio-preview";
+/**
+ * Shared gateway binding name. Matches the name Toolport writes into client
+ * configs (`toolport`, legacy `conduit`) so provider-native config merges
+ * replace rather than double-register when the key is the same.
+ */
+export const TOOLPORT_MCP_SERVER_NAME = "toolport";
+/** Client id Toolport uses to scope Studio-originated gateway sessions. */
+export const TOOLPORT_CLIENT_ID = "toolport-studio";
 const TOOLPORT_GATEWAY_MANIFEST = "gateway-manifest.json";
+const LEGACY_GATEWAY_ENTRY_NAMES = new Set(["toolport", "conduit"]);
 const decodeGatewayManifest = Schema.decodeUnknownOption(
   Schema.fromJsonString(Schema.Struct({ path: Schema.String })),
 );
@@ -58,16 +66,50 @@ function nonEmpty(value: string | undefined): string | undefined {
   return trimmed ? trimmed : undefined;
 }
 
+/** True when a server name is Toolport's own gateway entry (current or legacy). */
+export function isToolportGatewayServerName(name: string): boolean {
+  return LEGACY_GATEWAY_ENTRY_NAMES.has(name.trim().toLowerCase());
+}
+
+/** True when a command path looks like the Toolport/Conduit gateway binary. */
+export function isToolportGatewayCommand(command: string | undefined): boolean {
+  if (!command) return false;
+  const lower = command.replace(/\\/g, "/").toLowerCase();
+  return lower.includes("toolport-gateway") || lower.includes("conduit-gateway");
+}
+
+/**
+ * True when a provider-config MCP server is Toolport's gateway (by name or command).
+ * Used to suppress global client-config gateway entries when Studio injects its own.
+ */
+export function isToolportGatewayIdentity(input: {
+  readonly name?: string;
+  readonly command?: string;
+}): boolean {
+  if (input.name && isToolportGatewayServerName(input.name)) return true;
+  return isToolportGatewayCommand(input.command);
+}
+
 function toolportDataDirectories(
   environment: NodeJS.ProcessEnv,
   platform: NodeJS.Platform,
   homeDirectory: string,
 ): ReadonlyArray<string> {
-  const configured = nonEmpty(environment.CONDUIT_DATA_DIR);
+  // Prefer TOOLPORT_DATA_DIR; still honor CONDUIT_DATA_DIR from older installs/docs.
+  const configured =
+    nonEmpty(environment.TOOLPORT_DATA_DIR) ?? nonEmpty(environment.CONDUIT_DATA_DIR);
   if (configured) return [configured];
 
   if (platform === "win32") {
-    return [NodePath.join(homeDirectory, "AppData", "Roaming", "Conduit")];
+    const roaming = NodePath.join(homeDirectory, "AppData", "Roaming");
+    // Prefer the post-rename leaf; keep legacy Conduit leaves as fallbacks so
+    // Studio still finds a gateway that has not migrated yet.
+    return [
+      NodePath.join(roaming, "Toolport"),
+      NodePath.join(roaming, "Conduit"),
+      NodePath.join(roaming, "Toolport-dev"),
+      NodePath.join(roaming, "Conduit-dev"),
+    ];
   }
 
   const configDirectory =
@@ -75,7 +117,12 @@ function toolportDataDirectories(
     (platform === "darwin"
       ? NodePath.join(homeDirectory, "Library", "Application Support")
       : NodePath.join(homeDirectory, ".config"));
-  return [NodePath.join(configDirectory, "Conduit")];
+  return [
+    NodePath.join(configDirectory, "Toolport"),
+    NodePath.join(configDirectory, "Conduit"),
+    NodePath.join(configDirectory, "Toolport-dev"),
+    NodePath.join(configDirectory, "Conduit-dev"),
+  ];
 }
 
 function gatewayPathFromManifest(dataDirectory: string): string | undefined {
@@ -99,8 +146,15 @@ function gatewayPathFromSearchPath(
 
   const executableNames =
     platform === "win32"
-      ? ["toolport-gateway.exe", "toolport-gateway.cmd", "toolport-gateway.bat"]
-      : ["toolport-gateway"];
+      ? [
+          "toolport-gateway.exe",
+          "toolport-gateway.cmd",
+          "toolport-gateway.bat",
+          "conduit-gateway.exe",
+          "conduit-gateway.cmd",
+          "conduit-gateway.bat",
+        ]
+      : ["toolport-gateway", "conduit-gateway"];
   for (const directory of searchPath.split(NodePath.delimiter)) {
     const trimmedDirectory = nonEmpty(directory);
     if (!trimmedDirectory) continue;
@@ -126,6 +180,18 @@ export function resolveToolportGatewayPath(
   }
 
   return gatewayPathFromSearchPath(environment, platform);
+}
+
+/**
+ * Env vars written into the Studio-managed gateway spawn so Toolport scopes
+ * Studio as its own client. Dual-write TOOLPORT_* + CONDUIT_* so both current
+ * and pre-1.9.5 gateways recognize the identity.
+ */
+export function toolportStudioClientEnv(): Readonly<Record<string, string>> {
+  return {
+    TOOLPORT_CLIENT_ID: TOOLPORT_CLIENT_ID,
+    CONDUIT_CLIENT_ID: TOOLPORT_CLIENT_ID,
+  };
 }
 
 function toolportMcpBinding(
@@ -161,9 +227,7 @@ function toolportMcpBinding(
     transport: "stdio",
     command,
     args: [],
-    env: {
-      CONDUIT_CLIENT_ID: TOOLPORT_CLIENT_ID,
-    },
+    env: { ...toolportStudioClientEnv() },
   };
 }
 
@@ -217,6 +281,100 @@ export function toAcpMcpServers(
           headers: Object.entries(binding.headers).map(([name, value]) => ({ name, value })),
         },
   );
+}
+
+/**
+ * Strip Toolport gateway server tables from a Grok/Codex-style TOML config so a
+ * Studio-injected `toolport` binding is the only gateway for that session.
+ *
+ * Removes `[mcp_servers.toolport]` / `[mcp_servers.conduit]` (and dotted-key
+ * forms) plus nested `[mcp_servers.<name>.env]` tables. Leaves all other MCP
+ * servers and non-MCP config intact so terminal-oriented entries still work
+ * outside Studio.
+ */
+export function stripToolportGatewayTablesFromToml(toml: string): string {
+  const lines = toml.split(/\r?\n/);
+  const out: Array<string> = [];
+  let skipping = false;
+
+  for (const line of lines) {
+    const header = line.match(/^\s*\[([^\]]+)\]\s*$/);
+    if (header) {
+      const table = header[1]?.trim().toLowerCase() ?? "";
+      // [mcp_servers.toolport], [mcp_servers.conduit], [mcp_servers.toolport.env], …
+      const gatewayTable = /^mcp_servers\.(toolport|conduit)(\.|$)/.test(table);
+      skipping = gatewayTable;
+      if (skipping) continue;
+      out.push(line);
+      continue;
+    }
+    if (skipping) continue;
+    out.push(line);
+  }
+
+  // Collapse runs of blank lines left by removals.
+  return out
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/^\n+/, "")
+    .replace(/\n+$/, "\n");
+}
+
+const GROK_HOME_AUTH_FILES = ["auth.json", "mcp_credentials.json", "credentials.json"] as const;
+
+/**
+ * If `$GROK_HOME/config.toml` (default `~/.grok/config.toml`) defines a Toolport
+ * gateway entry, point the child at a temporary `GROK_HOME` whose config has that
+ * entry removed and whose auth files are copied from the real home.
+ *
+ * Studio's session `mcpServers` injection then owns the gateway (client id
+ * `toolport-studio`) without fighting the global Grok Build entry (client id
+ * `grok`) written by the Toolport desktop app for terminal use.
+ *
+ * When there is nothing to strip, returns the original environment unchanged.
+ */
+export function environmentSuppressingGrokConfigToolportGateway(
+  baseEnvironment: NodeJS.ProcessEnv,
+  homeDirectory = NodeOs.homedir(),
+): NodeJS.ProcessEnv {
+  const realGrokHome = nonEmpty(baseEnvironment.GROK_HOME) ?? NodePath.join(homeDirectory, ".grok");
+  const configPath = NodePath.join(realGrokHome, "config.toml");
+
+  let original: string;
+  try {
+    original = NodeFs.readFileSync(configPath, "utf8");
+  } catch {
+    return baseEnvironment;
+  }
+
+  if (!/^\s*\[mcp_servers\.(toolport|conduit)(\.|\]|\s)/im.test(original)) {
+    return baseEnvironment;
+  }
+
+  const stripped = stripToolportGatewayTablesFromToml(original);
+  if (stripped.trim() === original.trim()) {
+    return baseEnvironment;
+  }
+
+  const tempGrokHome = NodeFs.mkdtempSync(
+    NodePath.join(NodeOs.tmpdir(), "toolport-studio-grok-home-"),
+  );
+  NodeFs.writeFileSync(NodePath.join(tempGrokHome, "config.toml"), stripped, "utf8");
+
+  for (const fileName of GROK_HOME_AUTH_FILES) {
+    const source = NodePath.join(realGrokHome, fileName);
+    if (!NodeFs.existsSync(source)) continue;
+    try {
+      NodeFs.copyFileSync(source, NodePath.join(tempGrokHome, fileName));
+    } catch {
+      // Best-effort: missing auth still allows API-key env auth.
+    }
+  }
+
+  return {
+    ...baseEnvironment,
+    GROK_HOME: tempGrokHome,
+  };
 }
 
 export function clearMcpProviderSession(threadId: ThreadId): void {

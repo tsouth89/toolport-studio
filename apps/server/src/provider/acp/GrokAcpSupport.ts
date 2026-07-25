@@ -8,6 +8,7 @@ import * as EffectAcpErrors from "effect-acp/errors";
 import type * as EffectAcpSchema from "effect-acp/schema";
 import { normalizeModelSlug } from "@t3tools/shared/model";
 
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import * as AcpSessionRuntime from "./AcpSessionRuntime.ts";
 import { makeXAiPromptCompletionRuntime } from "./XAiAcpExtension.ts";
 
@@ -47,6 +48,23 @@ export function buildGrokAcpSpawnInput(
       [GROK_OAUTH2_REFERRER_ENV]: T3_CODE_OAUTH_REFERRER,
     },
   };
+}
+
+/**
+ * When Studio injects a Toolport gateway binding for a Grok session, strip the
+ * global Grok Build config entry (`[mcp_servers.toolport]`) so terminal Grok and
+ * Studio do not both spawn a gateway.
+ */
+export function buildGrokAcpEnvironmentForStudio(
+  baseEnvironment: NodeJS.ProcessEnv | undefined,
+  injectsToolportGateway: boolean,
+): NodeJS.ProcessEnv | undefined {
+  if (!injectsToolportGateway) {
+    return baseEnvironment ? { ...baseEnvironment } : undefined;
+  }
+  return McpProviderSession.environmentSuppressingGrokConfigToolportGateway(
+    baseEnvironment ?? process.env,
+  );
 }
 
 function resolveGrokAuthMethodId(environment: NodeJS.ProcessEnv | undefined): string {

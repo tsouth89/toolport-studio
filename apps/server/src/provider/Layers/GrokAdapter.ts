@@ -58,6 +58,7 @@ import { parsePermissionRequest } from "../acp/AcpRuntimeModel.ts";
 import { makeAcpNativeLoggerFactory } from "../acp/AcpNativeLogging.ts";
 import {
   applyGrokAcpModelSelection,
+  buildGrokAcpEnvironmentForStudio,
   currentGrokModelIdFromSessionSetup,
   makeGrokAcpRuntime,
   resolveGrokAcpBaseModelId,
@@ -831,12 +832,19 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           ctx.threadId,
           options?.environment ?? process.env,
         );
+        const injectsToolportGateway = mcpBindings.some(
+          (binding) => binding.name === McpProviderSession.TOOLPORT_MCP_SERVER_NAME,
+        );
+        const grokEnvironment = buildGrokAcpEnvironmentForStudio(
+          options?.environment,
+          injectsToolportGateway,
+        );
         // Intentionally omit resumeSessionId: after force-cancel the prior ACP
         // session may be corrupt/wedged. A clean session is more reliable than
         // a session/load that can hang for up to 90s.
         const acp = yield* makeGrokAcpRuntime({
           grokSettings,
-          ...(options?.environment ? { environment: options.environment } : {}),
+          ...(grokEnvironment ? { environment: grokEnvironment } : {}),
           childProcessSpawner,
           cwd: ctx.session.cwd,
           clientInfo: { name: "t3-code", version: "0.0.0" },
@@ -951,9 +959,16 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             input.threadId,
             options?.environment ?? process.env,
           );
+          const injectsToolportGateway = mcpBindings.some(
+            (binding) => binding.name === McpProviderSession.TOOLPORT_MCP_SERVER_NAME,
+          );
+          const grokEnvironment = buildGrokAcpEnvironmentForStudio(
+            options?.environment,
+            injectsToolportGateway,
+          );
           const acp = yield* makeGrokAcpRuntime({
             grokSettings,
-            ...(options?.environment ? { environment: options.environment } : {}),
+            ...(grokEnvironment ? { environment: grokEnvironment } : {}),
             childProcessSpawner,
             cwd,
             ...(resumeSessionId ? { resumeSessionId } : {}),

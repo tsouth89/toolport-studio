@@ -41,3 +41,24 @@ Each provider session receives:
 
 Bindings are created per session so credentials and temporary endpoints do not
 leak into global provider configuration.
+
+### Single gateway, no doubles
+
+Studio injects the gateway under the name `toolport` with client id
+`toolport-studio` (and the legacy `CONDUIT_CLIENT_ID` dual-write for older
+gateways). That name matches the entry Toolport writes into Claude/Cursor/Grok
+client configs for **terminal** use.
+
+**Studio is the source of truth inside Studio sessions.** For Grok Build, if
+`~/.grok/config.toml` already has `[mcp_servers.toolport]` (or legacy
+`conduit`) from a Toolport desktop connect, Studio launches the Grok ACP child
+with a temporary `GROK_HOME` whose config has that gateway table stripped, and
+passes the Studio-managed binding via ACP `session/new` `mcpServers` instead.
+Terminal `grok` outside Studio continues to use the real `~/.grok` config.
+
+Codex receives the same binding via `-c mcp_servers.toolport.*` overrides, which
+replace the same key in Codex's config rather than adding a second server.
+
+Gateway discovery looks under the post-rename data leaf (`…/Toolport`) first,
+then the legacy `…/Conduit` leaf, plus `TOOLPORT_DATA_DIR` / `CONDUIT_DATA_DIR`
+and `TOOLPORT_GATEWAY_PATH`.
