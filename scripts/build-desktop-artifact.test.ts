@@ -36,6 +36,7 @@ import {
   resolveMockUpdateServerUrl,
   resolvePackageManagerUserAgent,
   stageLinuxIconSize,
+  STAGE_IGNORED_OPTIONAL_DEPENDENCIES,
   STAGE_INSTALL_ARGS,
 } from "./build-desktop-artifact.ts";
 import { BRAND_ASSET_PATHS } from "./lib/brand-assets.ts";
@@ -217,6 +218,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         os: ["darwin"],
         cpu: ["x64"],
       },
+      ignoredOptionalDependencies: ["@anthropic-ai/claude-agent-sdk-*"],
     });
     assert.deepStrictEqual(createStageWorkspaceConfig({ platform: "linux", arch: "x64" }), {
       supportedArchitectures: {
@@ -224,29 +226,42 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         cpu: ["x64"],
         libc: ["glibc"],
       },
+      ignoredOptionalDependencies: ["@anthropic-ai/claude-agent-sdk-*"],
     });
-    // Windows artifacts also bundle the same-architecture WSL (Linux, glibc) backend, so the
-    // staged install must fetch its native optional deps (e.g. ffi-rs) too.
+    // Normal Windows artifacts contain Windows dependencies only.
     assert.deepStrictEqual(createStageWorkspaceConfig({ platform: "win", arch: "x64" }), {
       supportedArchitectures: {
-        os: ["win32", "linux"],
+        os: ["win32"],
         cpu: ["x64"],
-        libc: ["glibc"],
       },
+      ignoredOptionalDependencies: ["@anthropic-ai/claude-agent-sdk-*"],
     });
-    assert.deepStrictEqual(createStageWorkspaceConfig({ platform: "win", arch: "arm64" }), {
-      supportedArchitectures: {
-        os: ["win32", "linux"],
-        cpu: ["arm64"],
-        libc: ["glibc"],
+    // A build with an actual WSL prebuild also stages Linux/glibc dependencies.
+    assert.deepStrictEqual(
+      createStageWorkspaceConfig({
+        platform: "win",
+        arch: "arm64",
+        includeWslBackend: true,
+      }),
+      {
+        supportedArchitectures: {
+          os: ["win32", "linux"],
+          cpu: ["arm64"],
+          libc: ["glibc"],
+        },
+        ignoredOptionalDependencies: ["@anthropic-ai/claude-agent-sdk-*"],
       },
-    });
+    );
     assert.deepStrictEqual(createStageWorkspaceConfig({ platform: "mac", arch: "universal" }), {
       supportedArchitectures: {
         os: ["darwin"],
         cpu: ["arm64", "x64"],
       },
+      ignoredOptionalDependencies: ["@anthropic-ai/claude-agent-sdk-*"],
     });
+    assert.deepStrictEqual(STAGE_IGNORED_OPTIONAL_DEPENDENCIES, [
+      "@anthropic-ai/claude-agent-sdk-*",
+    ]);
   });
 
   it("stages pnpm 11 allowBuilds and patchedDependencies in the workspace yaml", () => {
@@ -272,6 +287,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
           cpu: ["x64"],
           libc: ["glibc"],
         },
+        ignoredOptionalDependencies: ["@anthropic-ai/claude-agent-sdk-*"],
         allowBuilds: {
           electron: true,
           "node-pty": true,
@@ -302,6 +318,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
           os: ["darwin"],
           cpu: ["arm64"],
         },
+        ignoredOptionalDependencies: ["@anthropic-ai/claude-agent-sdk-*"],
       },
     );
   });
@@ -501,6 +518,8 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       assert.equal(win.icon, "icon.ico");
       assert.equal(win.signAndEditExecutable, true);
       assert.notProperty(win, "azureSignOptions");
+      assert.deepStrictEqual(config.electronLanguages, ["en-US"]);
+      assert.deepStrictEqual(config.files, ["!**/*.map"]);
     }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
   );
 

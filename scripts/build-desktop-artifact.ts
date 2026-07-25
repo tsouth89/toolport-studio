@@ -55,6 +55,7 @@ const StageWorkspaceConfig = Schema.Struct({
     cpu: Schema.Array(Schema.String),
     libc: Schema.optional(Schema.Array(Schema.String)),
   }),
+  ignoredOptionalDependencies: Schema.optional(Schema.Array(Schema.String)),
   // pnpm 11 only reads these from pnpm-workspace.yaml (not package.json#pnpm).
   // Without allowBuilds the staged `pnpm install --prod` fails with
   // ERR_PNPM_IGNORED_BUILDS for packages that have lifecycle scripts.
@@ -580,6 +581,12 @@ interface StagePackageJson {
 
 export const STAGE_INSTALL_ARGS = ["install", "--prod"] as const;
 export const DESKTOP_ASAR_UNPACK = ["node_modules/@ff-labs/fff-bin-*/**/*"] as const;
+export const STAGE_IGNORED_OPTIONAL_DEPENDENCIES = [
+  // Every Claude SDK query is given pathToClaudeCodeExecutable, pointing at the
+  // user's authenticated Claude CLI. The SDK's optional bundled executables are
+  // therefore redundant and add roughly 170 MB to a Windows installer.
+  "@anthropic-ai/claude-agent-sdk-*",
+] as const;
 
 export interface MacPasskeySigningConfiguration {
   readonly appId: string;
@@ -888,17 +895,24 @@ const stageClerkPasskeyNativeBinaries = Effect.fn("stageClerkPasskeyNativeBinari
 export function createStageWorkspaceConfig(input: {
   readonly platform: typeof BuildPlatform.Type;
   readonly arch: typeof BuildArch.Type;
+  readonly includeWslBackend?: boolean;
   readonly allowBuilds?: Record<string, boolean>;
   readonly patchedDependencies?: Record<string, string>;
   readonly overrides?: Record<string, string>;
 }): StageWorkspaceConfig {
-  const { platform, arch, allowBuilds, patchedDependencies, overrides } = input;
+  const {
+    platform,
+    arch,
+    includeWslBackend = false,
+    allowBuilds,
+    patchedDependencies,
+    overrides,
+  } = input;
   const hostOs = platform === "mac" ? "darwin" : platform === "win" ? "win32" : "linux";
   const hostCpu = arch === "universal" ? ["arm64", "x64"] : [arch];
-  // Linux AppImages and Windows WSL backends both execute a Linux/glibc Node
-  // process that loads Linux-native optional deps at runtime (e.g.
-  // @yuuang/ffi-rs-linux-x64-gnu). Keep libc explicit so pnpm includes those
-  // optional packages in the staged production install.
+  // Linux AppImages and Windows builds with an explicit WSL prebuild execute a
+  // Linux/glibc Node process that loads Linux-native optional deps at runtime.
+  // A normal Windows artifact must not carry those Linux packages.
   const supportedArchitectures =
     platform === "linux"
       ? {
@@ -908,9 +922,9 @@ export function createStageWorkspaceConfig(input: {
         }
       : platform === "win"
         ? {
-            os: Array.from(new Set([hostOs, "linux"])),
+            os: includeWslBackend ? Array.from(new Set([hostOs, "linux"])) : [hostOs],
             cpu: hostCpu,
-            libc: ["glibc"],
+            ...(includeWslBackend ? { libc: ["glibc"] } : {}),
           }
         : {
             os: [hostOs],
@@ -919,6 +933,7 @@ export function createStageWorkspaceConfig(input: {
 
   return {
     supportedArchitectures,
+    ignoredOptionalDependencies: [...STAGE_IGNORED_OPTIONAL_DEPENDENCIES],
     ...(allowBuilds && Object.keys(allowBuilds).length > 0 ? { allowBuilds } : {}),
     ...(patchedDependencies && Object.keys(patchedDependencies).length > 0
       ? { patchedDependencies }
@@ -1390,6 +1405,8 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     appId: DESKTOP_APP_ID,
     productName: resolveDesktopProductName(version),
     artifactName: "Toolport-Studio-${version}-${arch}.${ext}",
+    electronLanguages: ["en-US"],
+    files: ["!**/*.map"],
     directories: {
       buildResources: "apps/desktop/resources",
     },
@@ -1737,11 +1754,10 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
       options.arch,
       serverPackageJson.dependencies["@ff-labs/fff-node"],
     ),
-    // Windows artifacts also bundle the same-architecture WSL Linux backend, which loads the
-    // fff native binary through ffi-rs. The platform fff binary above is the
-    // host's (win32), so promote the matching Linux fff binaries too; without
-    // them file-finding in WSL fails to load its Linux native package.
-    ...(options.platform === "win"
+    // Only artifacts with a real WSL node-pty prebuild carry the Linux backend
+    // and its native fff dependencies. Shipping these in a normal Windows build
+    // creates a large payload for a backend that cannot start.
+    ...(options.platform === "win" && options.wslPrebuild
       ? resolveFffNativeDependencies(
           "linux",
           options.arch,
@@ -1788,6 +1804,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   const stageWorkspaceConfig = createStageWorkspaceConfig({
     platform: options.platform,
     arch: options.arch,
+    includeWslBackend: options.platform === "win" && options.wslPrebuild !== undefined,
     allowBuilds: workspaceAllowBuilds,
     patchedDependencies: stagePatchedDependencies,
     overrides: resolvedOverrides,
@@ -1817,9 +1834,9 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   );
   yield* stageClerkPasskeyNativeBinaries(stageAppDir, options.platform, options.arch);
 
-  // WSL is Windows-only, so only the Windows artifact carries the Linux backend
-  // binary; other platforms ignore the prebuild input.
-  if (options.platform === "win") {
+  // WSL is Windows-only and is packaged only when a target-native prebuild was
+  // explicitly supplied.
+  if (options.platform === "win" && options.wslPrebuild) {
     yield* stageWslNodePtyPrebuild({
       stageAppDir,
       arch: options.arch,
