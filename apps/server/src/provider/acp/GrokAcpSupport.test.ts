@@ -4,6 +4,7 @@ import * as EffectAcpErrors from "effect-acp/errors";
 
 import {
   applyGrokAcpModelSelection,
+  buildGrokAcpEnvironmentForStudio,
   buildGrokAcpSpawnInput,
   resolveGrokAcpBaseModelId,
 } from "./GrokAcpSupport.ts";
@@ -32,6 +33,22 @@ describe("buildGrokAcpSpawnInput", () => {
         GROK_OAUTH2_REFERRER: "t3code",
       },
     });
+  });
+});
+
+describe("buildGrokAcpEnvironmentForStudio", () => {
+  it("leaves the environment alone when Studio is not injecting Toolport", () => {
+    const base = { PATH: "/usr/bin", GROK_HOME: "/home/me/.grok" };
+    expect(buildGrokAcpEnvironmentForStudio(base, false)).toEqual(base);
+    expect(buildGrokAcpEnvironmentForStudio(undefined, false)).toBeUndefined();
+  });
+
+  it("leaves env unchanged when injecting but Grok config has no toolport entry", () => {
+    // Point GROK_HOME at a path that does not exist so suppression is a no-op
+    // and does not read the developer's real ~/.grok/config.toml.
+    const base = { PATH: "/usr/bin", GROK_HOME: "/tmp/toolport-studio-no-such-grok-home" };
+    const next = buildGrokAcpEnvironmentForStudio(base, true);
+    expect(next).toEqual(base);
   });
 });
 

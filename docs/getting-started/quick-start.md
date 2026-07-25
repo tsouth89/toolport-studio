@@ -9,6 +9,12 @@ Install and authenticate at least one supported provider CLI before starting
 Toolport Studio. The app probes the installed Claude, Codex, Cursor, Grok, and
 OpenCode CLIs and reports anything that needs attention in Settings.
 
+Install [Toolport](https://toolport.studio) if you want MCP tools inside Studio
+sessions. Studio discovers the local Toolport gateway and injects it per
+provider session (client id `toolport-studio`) without editing your global Grok
+config. Terminal Grok outside Studio keeps using Toolport's normal connect
+entry in `~/.grok/config.toml`.
+
 ## Run from source
 
 Requirements:
