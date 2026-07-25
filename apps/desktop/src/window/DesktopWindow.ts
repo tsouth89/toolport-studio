@@ -18,6 +18,12 @@ import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import { MENU_ACTION_CHANNEL, WINDOW_FULLSCREEN_STATE_CHANNEL } from "../ipc/channels.ts";
 import * as PreviewManager from "../preview/Manager.ts";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
+import {
+  ColdStartMark,
+  coldStartSummary,
+  formatColdStartSummary,
+  markColdStart,
+} from "../app/DesktopColdStart.ts";
 
 const TITLEBAR_HEIGHT = 40;
 const TITLEBAR_COLOR = "#01000000"; // #00000000 does not work correctly on Linux
@@ -635,7 +641,19 @@ export const make = Effect.gen(function* () {
       if (persistedSettings.mainWindowMaximized) {
         window.maximize();
       }
-      void runPromise(Effect.andThen(electronWindow.reveal(window), dismissConnectingSplash));
+      void runPromise(
+        Effect.gen(function* () {
+          yield* electronWindow.reveal(window);
+          yield* dismissConnectingSplash;
+          const shownMs = markColdStart(ColdStartMark.mainWindowShown);
+          const summary = coldStartSummary();
+          yield* logWindowInfo("cold start main window shown", {
+            coldStartMs: shownMs,
+            coldStart: formatColdStartSummary(summary),
+            ...summary,
+          });
+        }),
+      );
     });
 
     loadApplication();
@@ -655,7 +673,8 @@ export const make = Effect.gen(function* () {
   const createMain = Effect.gen(function* () {
     const window = yield* createWindow();
     yield* electronWindow.setMain(window);
-    yield* logWindowInfo("main window created");
+    const createdMs = markColdStart(ColdStartMark.mainWindowCreated);
+    yield* logWindowInfo("main window created", { coldStartMs: createdMs });
     return window;
   }).pipe(Effect.withSpan("desktop.window.createMain"));
 
@@ -756,7 +775,12 @@ export const make = Effect.gen(function* () {
     showConnectingSplash,
     handleBackendReady: Effect.fn("desktop.window.handleBackendReady")(function* (httpBaseUrl) {
       yield* Ref.set(backendReadyRef, true);
-      yield* logWindowInfo("backend ready", { source: "http", url: httpBaseUrl.href });
+      const backendReadyMs = markColdStart(ColdStartMark.backendReady);
+      yield* logWindowInfo("backend ready", {
+        source: "http",
+        url: httpBaseUrl.href,
+        coldStartMs: backendReadyMs,
+      });
       yield* createMainIfBackendReady;
     }),
     handleBackendNotReady: Ref.set(backendReadyRef, false).pipe(

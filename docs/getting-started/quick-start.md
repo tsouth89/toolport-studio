@@ -23,16 +23,44 @@ pnpm install
 pnpm dev
 ```
 
-Desktop development:
+That starts the **web + server** dev pair in the browser (not Electron).
+
+### Desktop development (Electron)
+
+With the production alpha already installed, you can still run a **separate**
+dev desktop build. It uses different ports and (with an instance name) a
+different userdata folder, so it will not fight the installed alpha.
+
+From the repo root:
 
 ```bash
+pnpm install
 pnpm dev:desktop
 ```
 
-Use an isolated port and state set when running more than one development copy:
+Isolated instance (recommended while alpha is also installed):
+
+```powershell
+# Windows PowerShell
+$env:T3CODE_DEV_INSTANCE = "dev-local"
+pnpm dev:desktop
+```
 
 ```bash
-T3CODE_DEV_INSTANCE=feature-xyz pnpm dev:desktop
+# macOS / Linux
+T3CODE_DEV_INSTANCE=dev-local pnpm dev:desktop
+```
+
+- Installed alpha keeps its own app data and ports.
+- Dev desktop opens Electron with hot-reloaded web UI + local server.
+- Look for cold-start lines in the desktop log (`cold start main window shown`
+  with `process_start=…ms`, `backend_ready=…ms`, `main_window_shown=…ms`).
+
+Server-only or web-only:
+
+```bash
+pnpm dev:server
+pnpm dev:web
 ```
 
 `T3CODE_DEV_INSTANCE` is an inherited compatibility variable and will be migrated

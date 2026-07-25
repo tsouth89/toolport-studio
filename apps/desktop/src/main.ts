@@ -4,6 +4,10 @@ for (const stream of [process.stdout, process.stderr]) {
   });
 }
 
+// Earliest practical cold-start origin for desktop process timing (SOU-359).
+import { ColdStartMark, markColdStart } from "./app/DesktopColdStart.ts";
+markColdStart(ColdStartMark.processStart);
+
 import * as NodeHttpClient from "@effect/platform-node/NodeHttpClient";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";

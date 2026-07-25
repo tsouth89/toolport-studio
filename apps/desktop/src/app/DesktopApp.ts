@@ -25,6 +25,12 @@ import * as DesktopShellEnvironment from "../shell/DesktopShellEnvironment.ts";
 import * as DesktopState from "./DesktopState.ts";
 import * as DesktopUpdates from "../updates/DesktopUpdates.ts";
 import * as DesktopWslBackend from "../wsl/DesktopWslBackend.ts";
+import {
+  ColdStartMark,
+  coldStartSummary,
+  formatColdStartSummary,
+  markColdStart,
+} from "./DesktopColdStart.ts";
 
 const DEFAULT_DESKTOP_BACKEND_PORT = 3773;
 const MAX_TCP_PORT = 65_535;
@@ -145,7 +151,10 @@ const bootstrap = Effect.gen(function* () {
   const serverExposure = yield* DesktopServerExposure.DesktopServerExposure;
   const wslBackend = yield* DesktopWslBackend.DesktopWslBackend;
   const desktopWindow = yield* DesktopWindow.DesktopWindow;
-  yield* logBootstrapInfo("bootstrap start");
+  const bootstrapStartMs = markColdStart(ColdStartMark.bootstrapStart);
+  yield* logBootstrapInfo("bootstrap start", {
+    coldStartMs: bootstrapStartMs,
+  });
 
   if (environment.isDevelopment && Option.isNone(environment.configuredBackendPort)) {
     return yield* new DesktopDevelopmentBackendPortRequiredError();
@@ -206,7 +215,10 @@ const bootstrap = Effect.gen(function* () {
       yield* desktopWindow.showConnectingSplash;
     }
     yield* primaryBackend.start;
-    yield* logBootstrapInfo("bootstrap backend start requested");
+    const backendStartRequestedMs = markColdStart(ColdStartMark.backendStartRequested);
+    yield* logBootstrapInfo("bootstrap backend start requested", {
+      coldStartMs: backendStartRequestedMs,
+    });
     // Bring up the WSL backend if the user previously enabled it. The
     // primary is already starting; reconcile fires off the WSL register
     // in parallel rather than blocking primary readiness on a possibly
@@ -244,7 +256,10 @@ const startup = Effect.gen(function* () {
     Effect.withSpan("desktop.electron.whenReady"),
     Effect.catchCause((cause) => fatalStartupCause("whenReady", cause)),
   );
-  yield* logStartupInfo("app ready");
+  const electronReadyMs = markColdStart(ColdStartMark.electronReady);
+  yield* logStartupInfo("app ready", {
+    coldStartMs: electronReadyMs,
+  });
   yield* appIdentity.configure;
   yield* applicationMenu.configure;
   yield* updates.configure;
@@ -253,9 +268,14 @@ const startup = Effect.gen(function* () {
 
 const scopedProgram = Effect.scoped(
   Effect.gen(function* () {
+    const programStartMs = markColdStart(ColdStartMark.programStart);
     const runId = yield* makeDesktopRunId;
     yield* Effect.annotateLogsScoped({ scope: "desktop", runId });
     yield* Effect.annotateCurrentSpan({ scope: "desktop", runId });
+    yield* logStartupInfo("desktop program start", {
+      coldStartMs: programStartMs,
+      coldStart: formatColdStartSummary(coldStartSummary()),
+    });
 
     const shutdown = yield* DesktopShutdown.DesktopShutdown;
 
