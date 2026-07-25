@@ -1163,7 +1163,9 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
             </span>
             {/* Live region on the stall copy only so interactive Stop is not inside status. */}
             <span role="status" aria-live="polite" aria-atomic="true">
-              No updates for {stalled.silentLabel}
+              {stalled.silentForMs >= 90_000
+                ? `No updates for ${stalled.silentLabel} — likely stuck on a tool or think. Stop and retry a smaller ask.`
+                : `No updates for ${stalled.silentLabel}`}
             </span>
             {handleStop ? (
               <button
@@ -1189,6 +1191,7 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
 function useStalledTurnIndicator(lastStreamActivityAt: string | null): {
   isStalled: boolean;
   silentLabel: string | null;
+  silentForMs: number;
 } {
   const [state, setState] = useState(() =>
     readStalledTurnIndicator(lastStreamActivityAt, Date.now()),
@@ -1198,7 +1201,9 @@ function useStalledTurnIndicator(lastStreamActivityAt: string | null): {
     const update = () => {
       const next = readStalledTurnIndicator(lastStreamActivityAt, Date.now());
       setState((previous) =>
-        previous.isStalled === next.isStalled && previous.silentLabel === next.silentLabel
+        previous.isStalled === next.isStalled &&
+        previous.silentLabel === next.silentLabel &&
+        previous.silentForMs === next.silentForMs
           ? previous
           : next,
       );
@@ -1217,11 +1222,11 @@ function useStalledTurnIndicator(lastStreamActivityAt: string | null): {
 function readStalledTurnIndicator(
   lastStreamActivityAt: string | null,
   nowMs: number,
-): { isStalled: boolean; silentLabel: string | null } {
+): { isStalled: boolean; silentLabel: string | null; silentForMs: number } {
   // Only evaluate stall while ChatView has a stream clock (phase === "running").
   // Send/connect busy states also show the working row but are not stalled turns.
   if (lastStreamActivityAt === null) {
-    return { isStalled: false, silentLabel: null };
+    return { isStalled: false, silentLabel: null, silentForMs: 0 };
   }
   const stalled = deriveStalledTurnState({
     isRunning: true,
@@ -1230,11 +1235,12 @@ function readStalledTurnIndicator(
     thresholdMs: STALLED_TURN_THRESHOLD_MS,
   });
   if (!stalled.isStalled) {
-    return { isStalled: false, silentLabel: null };
+    return { isStalled: false, silentLabel: null, silentForMs: stalled.silentForMs };
   }
   return {
     isStalled: true,
     silentLabel: formatStalledSilenceLabel(stalled.silentForMs),
+    silentForMs: stalled.silentForMs,
   };
 }
 

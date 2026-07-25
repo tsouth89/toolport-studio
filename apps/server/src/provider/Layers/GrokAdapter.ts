@@ -77,6 +77,9 @@ const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.UnknownFromJ
 
 const PROVIDER = ProviderDriverKind.make("grok");
 const GROK_RESUME_VERSION = 1 as const;
+/** Force-fail a Grok prompt that emits zero stream/tool events for this long. */
+const GROK_SILENT_TURN_WATCHDOG_MS = 180_000;
+const GROK_SILENT_TURN_WATCHDOG_POLL_MS = 10_000;
 
 function encodeJsonStringForDiagnostics(input: unknown): string | undefined {
   const result = encodeUnknownJsonStringExit(input);
@@ -136,6 +139,8 @@ interface GrokSessionContext {
    * detect silent end_turn completions that leave the session looking dead.
    */
   turnVisibleUpdateCount: number;
+  /** Wall-clock ms of the last ACP stream/tool event for the active turn. */
+  lastTurnActivityAtMs: number;
   /**
    * Bumped whenever the ACP process or notification consumer is replaced so
    * late finalizers from a disposed consumer cannot clear the live fiber.
@@ -755,6 +760,16 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               event._tag === "PlanUpdated" ||
               event._tag === "ToolCallUpdated" ||
               event._tag === "ContentDelta" ||
+              event._tag === "ThoughtDelta" ||
+              event._tag === "AssistantItemStarted" ||
+              event._tag === "AssistantItemCompleted"
+            ) {
+              ctx.lastTurnActivityAtMs = Date.now();
+            }
+            if (
+              event._tag === "PlanUpdated" ||
+              event._tag === "ToolCallUpdated" ||
+              event._tag === "ContentDelta" ||
               event._tag === "ThoughtDelta"
             ) {
               yield* logNative(ctx.threadId, "session/update", event.rawPayload);
@@ -1009,6 +1024,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           updatedAt: yield* nowIso,
         };
         ctx.turnVisibleUpdateCount = 0;
+        ctx.lastTurnActivityAtMs = Date.now();
         // Generation already bumped in dispose; start consumer on the new process.
         ctx.notificationFiber = yield* startNotificationFiber(ctx);
         ctx.acpDisposed = false;
@@ -1154,6 +1170,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             stopped: false,
             acpCompromised: false,
             turnVisibleUpdateCount: 0,
+            lastTurnActivityAtMs: Date.now(),
             notificationGeneration: 0,
             acpDisposed: false,
           };
@@ -1358,31 +1375,81 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         const promptFailureMessageRef = yield* Ref.make<string | undefined>(undefined);
 
         return yield* Effect.gen(function* () {
-          const result = yield* prepared.acp
-            .prompt({
-              prompt: prepared.promptParts,
-            })
-            .pipe(
-              Effect.tap((promptResult) =>
-                Effect.all([
-                  Ref.set(promptRpcSucceeded, true),
-                  Ref.set(promptResultRef, promptResult),
-                ]),
+          // Reset activity clock at prompt start so prior turn silence cannot trip us.
+          const activityCtx = sessions.get(input.threadId);
+          if (activityCtx) {
+            activityCtx.lastTurnActivityAtMs = Date.now();
+          }
+
+          const silenceWatchdog = Effect.gen(function* () {
+            while (true) {
+              yield* Effect.sleep(`${GROK_SILENT_TURN_WATCHDOG_POLL_MS} millis`);
+              const live = sessions.get(input.threadId);
+              if (
+                !live ||
+                live.stopped ||
+                live.acpSessionId !== prepared.acpSessionId ||
+                live.interruptedTurnIds.has(prepared.turnId)
+              ) {
+                // Parent fiber will interrupt this race arm when prompt settles.
+                continue;
+              }
+              const silentMs = Date.now() - live.lastTurnActivityAtMs;
+              if (silentMs < GROK_SILENT_TURN_WATCHDOG_MS) {
+                continue;
+              }
+              yield* Effect.logWarning("Grok silent-turn watchdog fired", {
+                threadId: input.threadId,
+                turnId: prepared.turnId,
+                silentMs,
+              });
+              live.acpCompromised = true;
+              live.interruptedTurnIds.add(prepared.turnId);
+              yield* live.acp.cancel.pipe(Effect.timeout("2 seconds"), Effect.ignore);
+              return yield* new ProviderAdapterRequestError({
+                provider: PROVIDER,
+                method: "session/prompt",
+                detail:
+                  "Grok went silent for 3+ minutes mid-turn (often a stuck shell/tool). Turn was stopped automatically — try a smaller task or send again.",
+              });
+            }
+          });
+
+          const result = yield* Effect.raceFirst(
+            prepared.acp
+              .prompt({
+                prompt: prepared.promptParts,
+              })
+              .pipe(
+                Effect.tap((promptResult) =>
+                  Effect.all([
+                    Ref.set(promptRpcSucceeded, true),
+                    Ref.set(promptResultRef, promptResult),
+                  ]),
+                ),
+                Effect.tapError((error) =>
+                  Ref.set(
+                    promptFailureMessageRef,
+                    mapAcpToAdapterError(PROVIDER, input.threadId, "session/prompt", error).message,
+                  ).pipe(
+                    Effect.andThen(
+                      prepared.acp.drainEvents.pipe(Effect.timeout("2 seconds"), Effect.ignore),
+                    ),
+                  ),
+                ),
+                Effect.mapError((error) =>
+                  mapAcpToAdapterError(PROVIDER, input.threadId, "session/prompt", error),
+                ),
               ),
+            silenceWatchdog.pipe(
               Effect.tapError((error) =>
                 Ref.set(
                   promptFailureMessageRef,
-                  mapAcpToAdapterError(PROVIDER, input.threadId, "session/prompt", error).message,
-                ).pipe(
-                  Effect.andThen(
-                    prepared.acp.drainEvents.pipe(Effect.timeout("2 seconds"), Effect.ignore),
-                  ),
+                  error instanceof Error ? error.message : String(error),
                 ),
               ),
-              Effect.mapError((error) =>
-                mapAcpToAdapterError(PROVIDER, input.threadId, "session/prompt", error),
-              ),
-            );
+            ),
+          );
 
           return yield* withThreadLock(
             input.threadId,
