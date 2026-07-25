@@ -26,7 +26,11 @@ import {
 } from "@t3tools/contracts";
 
 import { ServerConfig } from "../../config.ts";
-import { grokPromptSettlementBelongsToContext, makeGrokAdapter } from "./GrokAdapter.ts";
+import {
+  buildGrokImagePromptPart,
+  grokPromptSettlementBelongsToContext,
+  makeGrokAdapter,
+} from "./GrokAdapter.ts";
 const decodeGrokSettings = Schema.decodeSync(GrokSettings);
 
 const __dirname = NodePath.dirname(NodeURL.fileURLToPath(import.meta.url));
@@ -119,6 +123,29 @@ it("requires a settlement to match the live Grok turn", () => {
       liveSessionActiveTurnId: staleTurnId,
       turnId: staleTurnId,
     }),
+  );
+});
+
+it("uses an embedded resource when Grok disables native image prompt blocks", () => {
+  assert.deepStrictEqual(
+    buildGrokImagePromptPart({
+      data: "aW1hZ2U=",
+      mimeType: "image/png",
+      uri: "file:///tmp/screenshot.png",
+      promptCapabilities: {
+        image: false,
+        audio: false,
+        embeddedContext: true,
+      },
+    }),
+    {
+      type: "resource",
+      resource: {
+        uri: "file:///tmp/screenshot.png",
+        blob: "aW1hZ2U=",
+        mimeType: "image/png",
+      },
+    },
   );
 });
 

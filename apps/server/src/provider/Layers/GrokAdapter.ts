@@ -1,3 +1,6 @@
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodeURL from "node:url";
+
 import {
   ApprovalRequestId,
   type GrokSettings,
@@ -101,6 +104,9 @@ interface PendingUserInput {
 interface GrokSessionContext {
   readonly threadId: ThreadId;
   readonly acpSessionId: string;
+  readonly promptCapabilities:
+    | NonNullable<EffectAcpSchema.InitializeResponse["agentCapabilities"]>["promptCapabilities"]
+    | undefined;
   session: ProviderSession;
   readonly scope: Scope.Closeable;
   readonly acp: AcpSessionRuntime.AcpSessionRuntime["Service"];
@@ -118,6 +124,34 @@ interface GrokSessionContext {
   promptsInFlight: number;
   currentModelId: string | undefined;
   stopped: boolean;
+}
+
+export function buildGrokImagePromptPart(input: {
+  readonly data: string;
+  readonly mimeType: string;
+  readonly uri: string;
+  readonly promptCapabilities: GrokSessionContext["promptCapabilities"];
+}): EffectAcpSchema.ContentBlock {
+  if (
+    input.promptCapabilities?.image === false &&
+    input.promptCapabilities.embeddedContext === true
+  ) {
+    return {
+      type: "resource",
+      resource: {
+        uri: input.uri,
+        blob: input.data,
+        mimeType: input.mimeType,
+      },
+    };
+  }
+
+  return {
+    type: "image",
+    data: input.data,
+    mimeType: input.mimeType,
+    uri: input.uri,
+  };
 }
 
 function settlePendingApprovalsAsCancelled(
@@ -766,6 +800,8 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           const ctx: GrokSessionContext = {
             threadId: input.threadId,
             acpSessionId: started.sessionId,
+            promptCapabilities:
+              started.initializeResult.agentCapabilities?.promptCapabilities ?? undefined,
             session,
             scope: sessionScope,
             acp,
@@ -977,11 +1013,12 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                           }),
                       ),
                     );
-                    return {
-                      type: "image",
+                    return buildGrokImagePromptPart({
                       data: Buffer.from(bytes).toString("base64"),
                       mimeType: attachment.mimeType,
-                    } satisfies EffectAcpSchema.ContentBlock;
+                      uri: NodeURL.pathToFileURL(attachmentPath).href,
+                      promptCapabilities: ctx.promptCapabilities,
+                    });
                   }),
               );
               const promptParts: Array<EffectAcpSchema.ContentBlock> = [
