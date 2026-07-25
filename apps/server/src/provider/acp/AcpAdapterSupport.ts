@@ -53,14 +53,24 @@ export function isAcpSessionLoadNotFound(error: unknown): boolean {
       return true;
     }
 
-    for (const key of ["errorMessage", "message", "detail"] as const) {
+    // Grok often surfaces missing sessions as a bare Error defect that Schema
+    // rehydrates (decodeJsonError stack). Check message, toString, and stack.
+    for (const key of ["errorMessage", "message", "detail", "stack"] as const) {
       const value = record[key];
       if (typeof value === "string" && messageLooksLikeSessionNotFound(value)) {
         return true;
       }
     }
+    try {
+      const asString = String(node);
+      if (asString !== "[object Object]" && messageLooksLikeSessionNotFound(asString)) {
+        return true;
+      }
+    } catch {
+      // ignore
+    }
 
-    for (const key of ["cause", "data", "error", "body"] as const) {
+    for (const key of ["cause", "data", "error", "body", "issue", "defect"] as const) {
       if (record[key] !== undefined) {
         queue.push(record[key]);
       }

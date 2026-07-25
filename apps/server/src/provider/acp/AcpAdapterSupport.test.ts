@@ -57,6 +57,18 @@ describe("AcpAdapterSupport", () => {
         }),
       ),
     ).toBe(true);
+    // Schema-defect style surface: bare Error message + stack frames.
+    const schemaStyle = new Error("Path not found");
+    schemaStyle.stack =
+      "Error: Path not found\n    at decodeJsonError (file:///x/SchemaTransformation.js:1:1)";
+    expect(isAcpSessionLoadNotFound(schemaStyle)).toBe(true);
+    expect(
+      isAcpSessionLoadNotFound({
+        _tag: "ProviderAdapterRequestError",
+        detail: "Error: Path not found",
+        message: "Error: Path not found",
+      }),
+    ).toBe(true);
 
     // Must not treat unrelated failures as a missing session.
     expect(

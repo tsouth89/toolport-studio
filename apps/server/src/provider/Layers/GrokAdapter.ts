@@ -44,7 +44,7 @@ import {
   ProviderAdapterSessionNotFoundError,
   ProviderAdapterValidationError,
 } from "../Errors.ts";
-import { mapAcpToAdapterError } from "../acp/AcpAdapterSupport.ts";
+import { isAcpSessionLoadNotFound, mapAcpToAdapterError } from "../acp/AcpAdapterSupport.ts";
 import type * as AcpSessionRuntime from "../acp/AcpSessionRuntime.ts";
 import {
   makeAcpAssistantItemEvent,
@@ -976,54 +976,76 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           threadId: ctx.threadId,
         });
 
-        const recycled = yield* Effect.gen(function* () {
-          const sessionScope = yield* Scope.make("sequential");
-          const acp = yield* makeGrokAcpRuntime({
-            grokSettings,
-            ...(grokEnvironment ? { environment: grokEnvironment } : {}),
-            childProcessSpawner,
-            cwd: ctx.session.cwd,
-            // Resume history on the new process. Soft miss → session/new inside
-            // AcpSessionRuntime when the path is gone after rebuild.
-            ...(previousSessionId ? { resumeSessionId: previousSessionId } : {}),
-            clientInfo: { name: "t3-code", version: "0.0.0" },
-            ...(mcpBindings.length > 0
-              ? { mcpServers: McpProviderSession.toAcpMcpServers(mcpBindings) }
-              : {}),
-            ...acpNativeLoggers,
-          }).pipe(
-            Effect.provideService(Crypto.Crypto, crypto),
-            Effect.provideService(Scope.Scope, sessionScope),
-            Effect.mapError(
-              (cause) =>
-                new ProviderAdapterProcessError({
-                  provider: PROVIDER,
-                  threadId: ctx.threadId,
-                  detail: cause.message,
-                  cause,
-                }),
-            ),
-          );
+        const startRecycledAcp = (resumeSessionId: string | undefined) =>
+          Effect.gen(function* () {
+            const sessionScope = yield* Scope.make("sequential");
+            const acp = yield* makeGrokAcpRuntime({
+              grokSettings,
+              ...(grokEnvironment ? { environment: grokEnvironment } : {}),
+              childProcessSpawner,
+              cwd: ctx.session.cwd,
+              // Prefer resume so Stop→follow-up keeps history. Soft miss falls
+              // back inside AcpSessionRuntime; recycle also retries without
+              // resume if start still fails with Path not found.
+              ...(resumeSessionId ? { resumeSessionId } : {}),
+              clientInfo: { name: "t3-code", version: "0.0.0" },
+              ...(mcpBindings.length > 0
+                ? { mcpServers: McpProviderSession.toAcpMcpServers(mcpBindings) }
+                : {}),
+              ...acpNativeLoggers,
+            }).pipe(
+              Effect.provideService(Crypto.Crypto, crypto),
+              Effect.provideService(Scope.Scope, sessionScope),
+              Effect.mapError(
+                (cause) =>
+                  new ProviderAdapterProcessError({
+                    provider: PROVIDER,
+                    threadId: ctx.threadId,
+                    detail: cause.message,
+                    cause,
+                  }),
+              ),
+            );
 
-          yield* wireAcpHandlers(acp, {
-            threadId: ctx.threadId,
-            runtimeMode: ctx.session.runtimeMode,
-            pendingApprovals: ctx.pendingApprovals,
-            pendingUserInputs: ctx.pendingUserInputs,
-          }).pipe(
-            Effect.mapError((error) =>
-              mapAcpToAdapterError(PROVIDER, ctx.threadId, "session/start", error),
-            ),
-          );
-          const started = yield* acp
-            .start()
-            .pipe(
+            yield* wireAcpHandlers(acp, {
+              threadId: ctx.threadId,
+              runtimeMode: ctx.session.runtimeMode,
+              pendingApprovals: ctx.pendingApprovals,
+              pendingUserInputs: ctx.pendingUserInputs,
+            }).pipe(
               Effect.mapError((error) =>
                 mapAcpToAdapterError(PROVIDER, ctx.threadId, "session/start", error),
               ),
             );
-          return { sessionScope, acp, started } as const;
-        }).pipe(
+            const started = yield* acp
+              .start()
+              .pipe(
+                Effect.mapError((error) =>
+                  mapAcpToAdapterError(PROVIDER, ctx.threadId, "session/start", error),
+                ),
+              );
+            return { sessionScope, acp, started } as const;
+          });
+
+        const recycled = yield* startRecycledAcp(previousSessionId).pipe(
+          Effect.catchIf(
+            (error) =>
+              previousSessionId !== undefined &&
+              (isAcpSessionLoadNotFound(error) ||
+                isAcpSessionLoadNotFound(error instanceof Error ? error.message : String(error))),
+            (error) =>
+              Effect.gen(function* () {
+                yield* Effect.logWarning(
+                  "Grok ACP recycle resume failed after Stop; retrying with a blank session/new",
+                  {
+                    threadId: ctx.threadId,
+                    previousSessionId,
+                    detail: error instanceof Error ? error.message : String(error),
+                  },
+                );
+                return yield* startRecycledAcp(undefined);
+              }),
+          ),
           Effect.tapError((error) =>
             Effect.logWarning("Grok ACP recycle failed after Stop", {
               threadId: ctx.threadId,

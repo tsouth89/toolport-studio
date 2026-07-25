@@ -672,12 +672,25 @@ export const make = (
           // Drop the load gate before any fallback session/new so replay
           // filtering cannot swallow live updates from the fresh session.
           Effect.ensuring(Ref.set(sessionLoadGateRef, Option.none())),
-          Effect.catchIf(isAcpSessionLoadNotFound, (error) =>
-            Effect.gen(function* () {
+          // Grok often *dies* with Error("Path not found") via Schema defect
+          // decode rather than a typed Fail — catchIf misses that and leaves
+          // Stop→follow-up as a hard error. Catch causes (fail + die).
+          Effect.catchCause((cause) => {
+            const squashed = Cause.squash(cause);
+            const pretty = Cause.pretty(cause);
+            if (!isAcpSessionLoadNotFound(squashed) && !isAcpSessionLoadNotFound(pretty)) {
+              return Effect.failCause(cause);
+            }
+            return Effect.gen(function* () {
               yield* Effect.logWarning(
                 `ACP session/load failed for session '${resumeSessionId}' (session no longer available); starting a fresh session/new.`,
                 {
-                  detail: error instanceof Error ? error.message : String(error),
+                  detail:
+                    squashed instanceof Error
+                      ? squashed.message
+                      : typeof squashed === "string"
+                        ? squashed
+                        : pretty,
                 },
               );
               const created = yield* createNewSession;
@@ -685,8 +698,8 @@ export const make = (
                 sessionId: created.sessionId,
                 sessionSetupResult: created,
               } as const;
-            }),
-          ),
+            });
+          }),
         );
         sessionId = loadedOrFresh.sessionId;
         sessionSetupResult = loadedOrFresh.sessionSetupResult;
