@@ -94,6 +94,28 @@ const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.UnknownFromJ
 const decodeUnknownJsonStringExit = Schema.decodeUnknownExit(Schema.UnknownFromJsonString);
 
 const PROVIDER = ProviderDriverKind.make("claudeAgent");
+
+function claudeMcpServers(
+  bindings: ReadonlyArray<McpProviderSession.McpProviderBinding>,
+): NonNullable<ClaudeQueryOptions["mcpServers"]> {
+  return Object.fromEntries(
+    bindings.map((binding) => [
+      binding.name,
+      binding.transport === "stdio"
+        ? {
+            type: "stdio" as const,
+            command: binding.command,
+            args: [...binding.args],
+            env: { ...binding.env },
+          }
+        : {
+            type: "http" as const,
+            url: binding.url,
+            headers: { ...binding.headers },
+          },
+    ]),
+  );
+}
 type ClaudeTextStreamKind = Extract<RuntimeContentStreamKind, "assistant_text" | "reasoning_text">;
 type ClaudeToolResultStreamKind = Extract<
   RuntimeContentStreamKind,
@@ -3518,7 +3540,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ...(fastMode ? { fastMode: true } : {}),
         ...(ultracode ? { ultracode: true } : {}),
       };
-      const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
+      const mcpBindings = McpProviderSession.readMcpProviderBindings(
+        input.threadId,
+        options?.environment ?? process.env,
+      );
       const queryOptions: ClaudeQueryOptions = {
         ...(input.cwd ? { cwd: input.cwd } : {}),
         ...(apiModelId ? { model: apiModelId } : {}),
@@ -3544,19 +3569,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         env: claudeEnvironment,
         ...(input.cwd ? { additionalDirectories: [input.cwd] } : {}),
         ...(Object.keys(extraArgs).length > 0 ? { extraArgs } : {}),
-        ...(mcpSession
-          ? {
-              mcpServers: {
-                "t3-code": {
-                  type: "http",
-                  url: mcpSession.endpoint,
-                  headers: {
-                    Authorization: mcpSession.authorizationHeader,
-                  },
-                },
-              },
-            }
-          : {}),
+        ...(mcpBindings.length > 0 ? { mcpServers: claudeMcpServers(mcpBindings) } : {}),
       };
 
       yield* Effect.annotateCurrentSpan({

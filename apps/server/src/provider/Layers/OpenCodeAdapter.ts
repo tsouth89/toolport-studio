@@ -1214,21 +1214,31 @@ export function makeOpenCodeAdapter(
                 directory,
                 ...(server.external && serverPassword ? { serverPassword } : {}),
               });
-              const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
-              if (mcpSession && !server.external) {
-                yield* runOpenCodeSdk("mcp.add", () =>
-                  client.mcp.add({
-                    name: "t3-code",
-                    config: {
-                      type: "remote",
-                      url: mcpSession.endpoint,
-                      headers: {
-                        Authorization: mcpSession.authorizationHeader,
-                      },
-                      oauth: false,
-                    },
-                  }),
-                );
+              const mcpBindings = McpProviderSession.readMcpProviderBindings(
+                input.threadId,
+                options?.environment ?? process.env,
+              );
+              if (!server.external) {
+                for (const binding of mcpBindings) {
+                  yield* runOpenCodeSdk("mcp.add", () =>
+                    client.mcp.add({
+                      name: binding.name,
+                      config:
+                        binding.transport === "stdio"
+                          ? {
+                              type: "local",
+                              command: [binding.command, ...binding.args],
+                              environment: { ...binding.env },
+                            }
+                          : {
+                              type: "remote",
+                              url: binding.url,
+                              headers: { ...binding.headers },
+                              oauth: false,
+                            },
+                    }),
+                  );
+                }
               }
               // Resume: re-adopt the session named by the durable cursor —
               // OpenCode scopes history by session id. The probe recovers only

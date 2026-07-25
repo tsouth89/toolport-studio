@@ -2,6 +2,7 @@
   "name": "@t3tools/web",
   "version": "0.0.28",
   "private": true,
+  "description": "The Toolport Studio conversation and workspace interface.",
   "type": "module",
   "scripts": {
     "dev": "vp dev",

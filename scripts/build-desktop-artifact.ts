@@ -35,7 +35,7 @@ import { Command, Flag } from "effect/unstable/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 const LINUX_ICON_SIZES = [16, 22, 24, 32, 48, 64, 128, 256, 512] as const;
-const DESKTOP_APP_ID = "com.t3tools.t3code";
+const DESKTOP_APP_ID = "studio.toolport.desktop";
 const APPLE_TEAM_ID_PATTERN = /^[A-Z0-9]{10}$/u;
 
 const BuildPlatform = Schema.Literals(["mac", "linux", "win"]);
@@ -55,8 +55,9 @@ const StageWorkspaceConfig = Schema.Struct({
     cpu: Schema.Array(Schema.String),
     libc: Schema.optional(Schema.Array(Schema.String)),
   }),
+  ignoredOptionalDependencies: Schema.optional(Schema.Array(Schema.String)),
   // pnpm 11 only reads these from pnpm-workspace.yaml (not package.json#pnpm).
-  // Without allowBuilds the staged `vp install --prod` fails with
+  // Without allowBuilds the staged `pnpm install --prod` fails with
   // ERR_PNPM_IGNORED_BUILDS for packages that have lifecycle scripts.
   allowBuilds: Schema.optional(Schema.Record(Schema.String, Schema.Boolean)),
   patchedDependencies: Schema.optional(Schema.Record(Schema.String, Schema.String)),
@@ -580,6 +581,12 @@ interface StagePackageJson {
 
 export const STAGE_INSTALL_ARGS = ["install", "--prod"] as const;
 export const DESKTOP_ASAR_UNPACK = ["node_modules/@ff-labs/fff-bin-*/**/*"] as const;
+export const STAGE_IGNORED_OPTIONAL_DEPENDENCIES = [
+  // Every Claude SDK query is given pathToClaudeCodeExecutable, pointing at the
+  // user's authenticated Claude CLI. The SDK's optional bundled executables are
+  // therefore redundant and add roughly 170 MB to a Windows installer.
+  "@anthropic-ai/claude-agent-sdk-*",
+] as const;
 
 export interface MacPasskeySigningConfiguration {
   readonly appId: string;
@@ -888,17 +895,24 @@ const stageClerkPasskeyNativeBinaries = Effect.fn("stageClerkPasskeyNativeBinari
 export function createStageWorkspaceConfig(input: {
   readonly platform: typeof BuildPlatform.Type;
   readonly arch: typeof BuildArch.Type;
+  readonly includeWslBackend?: boolean;
   readonly allowBuilds?: Record<string, boolean>;
   readonly patchedDependencies?: Record<string, string>;
   readonly overrides?: Record<string, string>;
 }): StageWorkspaceConfig {
-  const { platform, arch, allowBuilds, patchedDependencies, overrides } = input;
+  const {
+    platform,
+    arch,
+    includeWslBackend = false,
+    allowBuilds,
+    patchedDependencies,
+    overrides,
+  } = input;
   const hostOs = platform === "mac" ? "darwin" : platform === "win" ? "win32" : "linux";
   const hostCpu = arch === "universal" ? ["arm64", "x64"] : [arch];
-  // Linux AppImages and Windows WSL backends both execute a Linux/glibc Node
-  // process that loads Linux-native optional deps at runtime (e.g.
-  // @yuuang/ffi-rs-linux-x64-gnu). Keep libc explicit so pnpm includes those
-  // optional packages in the staged production install.
+  // Linux AppImages and Windows builds with an explicit WSL prebuild execute a
+  // Linux/glibc Node process that loads Linux-native optional deps at runtime.
+  // A normal Windows artifact must not carry those Linux packages.
   const supportedArchitectures =
     platform === "linux"
       ? {
@@ -908,9 +922,9 @@ export function createStageWorkspaceConfig(input: {
         }
       : platform === "win"
         ? {
-            os: Array.from(new Set([hostOs, "linux"])),
+            os: includeWslBackend ? Array.from(new Set([hostOs, "linux"])) : [hostOs],
             cpu: hostCpu,
-            libc: ["glibc"],
+            ...(includeWslBackend ? { libc: ["glibc"] } : {}),
           }
         : {
             os: [hostOs],
@@ -919,6 +933,7 @@ export function createStageWorkspaceConfig(input: {
 
   return {
     supportedArchitectures,
+    ignoredOptionalDependencies: [...STAGE_IGNORED_OPTIONAL_DEPENDENCIES],
     ...(allowBuilds && Object.keys(allowBuilds).length > 0 ? { allowBuilds } : {}),
     ...(patchedDependencies && Object.keys(patchedDependencies).length > 0
       ? { patchedDependencies }
@@ -1368,8 +1383,8 @@ export function resolvePackageManagerUserAgent(packageManager: string): string {
 
 export function resolveDesktopProductName(version: string): string {
   return resolveDesktopUpdateChannel(version) === "nightly"
-    ? "T3 Code (Nightly)"
-    : (desktopPackageJson.productName ?? "T3 Code");
+    ? "Toolport Studio (Nightly)"
+    : (desktopPackageJson.productName ?? "Toolport Studio");
 }
 
 export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
@@ -1389,7 +1404,9 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   const buildConfig: Record<string, unknown> = {
     appId: DESKTOP_APP_ID,
     productName: resolveDesktopProductName(version),
-    artifactName: "T3-Code-${version}-${arch}.${ext}",
+    artifactName: "Toolport-Studio-${version}-${arch}.${ext}",
+    electronLanguages: ["en-US"],
+    files: ["!**/*.map"],
     directories: {
       buildResources: "apps/desktop/resources",
     },
@@ -1428,8 +1445,8 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       category: "public.app-category.developer-tools",
       protocols: [
         {
-          name: "T3 Code",
-          schemes: ["t3code", "t3code-dev"],
+          name: "Toolport Studio",
+          schemes: ["toolport-studio", "toolport-studio-dev"],
         },
       ],
       ...(macPasskeySigning
@@ -1444,12 +1461,12 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   if (platform === "linux") {
     buildConfig.linux = {
       target: [target],
-      executableName: "t3code",
+      executableName: "toolport-studio",
       icon: "icons",
       category: "Development",
       desktop: {
         entry: {
-          StartupWMClass: "t3code",
+          StartupWMClass: "toolport-studio",
         },
       },
     };
@@ -1737,11 +1754,10 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
       options.arch,
       serverPackageJson.dependencies["@ff-labs/fff-node"],
     ),
-    // Windows artifacts also bundle the same-architecture WSL Linux backend, which loads the
-    // fff native binary through ffi-rs. The platform fff binary above is the
-    // host's (win32), so promote the matching Linux fff binaries too; without
-    // them file-finding in WSL fails to load its Linux native package.
-    ...(options.platform === "win"
+    // Only artifacts with a real WSL node-pty prebuild carry the Linux backend
+    // and its native fff dependencies. Shipping these in a normal Windows build
+    // creates a large payload for a backend that cannot start.
+    ...(options.platform === "win" && options.wslPrebuild
       ? resolveFffNativeDependencies(
           "linux",
           options.arch,
@@ -1754,14 +1770,14 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     stageDependencies,
   );
   const stagePackageJson: StagePackageJson = {
-    name: "t3code",
+    name: "toolport-studio",
     version: appVersion,
     buildVersion: appVersion,
     t3codeCommitHash: commitHash,
     private: true,
     packageManager: rootPackageJson.packageManager,
-    description: "T3 Code desktop build",
-    author: "T3 Tools",
+    description: "Toolport Studio desktop build",
+    author: "Toolport",
     main: "apps/desktop/dist-electron/main.cjs",
     build: yield* createBuildConfig(
       options.platform,
@@ -1788,6 +1804,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   const stageWorkspaceConfig = createStageWorkspaceConfig({
     platform: options.platform,
     arch: options.arch,
+    includeWslBackend: options.platform === "win" && options.wslPrebuild !== undefined,
     allowBuilds: workspaceAllowBuilds,
     patchedDependencies: stagePatchedDependencies,
     overrides: resolvedOverrides,
@@ -1803,19 +1820,23 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   }
 
   yield* Effect.log("[desktop-artifact] Installing staged production dependencies...");
-  const installCommand = yield* resolveSpawnCommand("vp", [...STAGE_INSTALL_ARGS]);
+  // The staging directory intentionally has no local Vite+ shim. Invoke the
+  // package manager declared by the staged manifest directly so Windows does
+  // not resolve a workspace-local `vp.cmd` whose relative launcher paths are
+  // invalid from the temporary directory.
+  const installCommand = yield* resolveSpawnCommand("pnpm", [...STAGE_INSTALL_ARGS]);
   yield* runCommand(
     ChildProcess.make(installCommand.command, installCommand.args, {
       cwd: stageAppDir,
       shell: installCommand.shell,
     }),
-    { label: "vp install --prod", verbose: options.verbose },
+    { label: "pnpm install --prod", verbose: options.verbose },
   );
   yield* stageClerkPasskeyNativeBinaries(stageAppDir, options.platform, options.arch);
 
-  // WSL is Windows-only, so only the Windows artifact carries the Linux backend
-  // binary; other platforms ignore the prebuild input.
-  if (options.platform === "win") {
+  // WSL is Windows-only and is packaged only when a target-native prebuild was
+  // explicitly supplied.
+  if (options.platform === "win" && options.wslPrebuild) {
     yield* stageWslNodePtyPrebuild({
       stageAppDir,
       arch: options.arch,
@@ -1984,7 +2005,7 @@ const buildDesktopArtifactCli = Command.make("build-desktop-artifact", {
     Flag.optional,
   ),
 }).pipe(
-  Command.withDescription("Build a desktop artifact for T3 Code."),
+  Command.withDescription("Build a desktop artifact for Toolport Studio."),
   Command.withHandler((input) => Effect.flatMap(resolveBuildOptions(input), buildDesktopArtifact)),
 );
 

@@ -1,30 +1,43 @@
 # Provider architecture
 
-The web app communicates with the server via WebSocket using a simple JSON-RPC-style protocol:
+Toolport Studio exposes a common session contract over provider-specific
+transports.
 
-- **Request/Response**: `{ id, method, params }` → `{ id, result }` or `{ id, error }`
-- **Push events**: typed envelopes with `channel`, `sequence` (monotonic per connection), and channel-specific `data`
+## Supported adapters
 
-Push channels: `server.welcome`, `server.configUpdated`, `terminal.event`, `orchestration.domainEvent`. Payloads are schema-validated at the transport boundary (`wsTransport.ts`). Decode failures produce structured `WsDecodeDiagnostic` with `code`, `reason`, and path info.
+| Provider | Transport                                              | Authentication                    |
+| -------- | ------------------------------------------------------ | --------------------------------- |
+| Claude   | Claude Agent SDK using the installed Claude executable | Claude CLI login                  |
+| Codex    | Codex app-server                                       | Codex or ChatGPT-backed CLI login |
+| Cursor   | ACP agent                                              | Cursor Agent login                |
+| Grok     | ACP agent                                              | Grok CLI login                    |
+| OpenCode | ACP agent                                              | OpenCode configuration            |
 
-Methods mirror the `NativeApi` interface defined in `@t3tools/contracts`:
+Adapters translate provider-native events, approvals, tool calls, content blocks,
+and usage signals into the shared orchestration contracts. The UI can therefore
+render one conversation model without pretending all providers have identical
+capabilities.
 
-- `providers.startSession`, `providers.sendTurn`, `providers.interruptTurn`
-- `providers.respondToRequest`, `providers.stopSession`
-- `shell.openInEditor`, `server.getConfig`
+## Models
 
-Codex is the only implemented provider. `claudeCode` is reserved in contracts/UI.
+Provider discovery remains the source of truth for available models. The client
+builds a small recommended list from that live catalog and keeps every remaining
+model under **Other models**.
 
-## Client transport
+## Attachments
 
-`wsTransport.ts` manages connection state: `connecting` → `open` → `reconnecting` → `closed` → `disposed`. Outbound requests are queued while disconnected and flushed on reconnect. Inbound pushes are decoded and validated at the boundary, then cached per channel. Subscribers can opt into `replayLatest` to receive the last push on subscribe.
+Attachments are stored locally and resolved by the provider adapter. Providers
+with native image blocks receive them directly. Grok ACP sessions receive pasted
+images as embedded resources so Grok Build can work with screenshots from the
+desktop composer.
 
-## Server-side orchestration layers
+## Toolport MCP bindings
 
-Provider runtime events flow through queue-based workers:
+Each provider session receives:
 
-1. **ProviderRuntimeIngestion** — consumes provider runtime streams, emits orchestration commands
-2. **ProviderCommandReactor** — reacts to orchestration intent events, dispatches provider calls
-3. **CheckpointReactor** — captures git checkpoints on turn start/complete, publishes runtime receipts
+- Toolport's local gateway when it is installed and enabled
+- An explicitly configured Toolport Streamable HTTP endpoint when supplied
+- Toolport Studio's internal preview automation server when available
 
-All three use `DrainableWorker` internally and expose `drain()` for deterministic test synchronization.
+Bindings are created per session so credentials and temporary endpoints do not
+leak into global provider configuration.

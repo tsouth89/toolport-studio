@@ -531,7 +531,10 @@ export function makeCursorAdapter(
             ? yield* options.resolveSettings
             : cursorSettings;
 
-          const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
+          const mcpBindings = McpProviderSession.readMcpProviderBindings(
+            input.threadId,
+            options?.environment ?? process.env,
+          );
           const acp = yield* makeCursorAcpRuntime({
             cursorSettings: effectiveCursorSettings,
             ...(options?.environment ? { environment: options.environment } : {}),
@@ -539,22 +542,8 @@ export function makeCursorAdapter(
             cwd,
             ...(resumeSessionId ? { resumeSessionId } : {}),
             clientInfo: { name: "t3-code", version: "0.0.0" },
-            ...(mcpSession
-              ? {
-                  mcpServers: [
-                    {
-                      type: "http" as const,
-                      name: "t3-code",
-                      url: mcpSession.endpoint,
-                      headers: [
-                        {
-                          name: "Authorization",
-                          value: mcpSession.authorizationHeader,
-                        },
-                      ],
-                    },
-                  ],
-                }
+            ...(mcpBindings.length > 0
+              ? { mcpServers: McpProviderSession.toAcpMcpServers(mcpBindings) }
               : {}),
             ...acpNativeLoggers,
           }).pipe(

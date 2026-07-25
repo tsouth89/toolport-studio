@@ -80,7 +80,7 @@ export function isPublishedCliEntry(entryPath: string): boolean {
 
 /**
  * The update path this process can offer, or null when only a manual
- * relaunch works. "desktop-managed" — the T3 Code desktop app spawned this
+ * relaunch works. "desktop-managed" — the Toolport Studio desktop app spawned this
  * backend and owns its version; only updating the app updates it.
  * "boot-service" — this is the systemd-supervised process from
  * bootService.ts: rewrite the unit and let systemd swap it. "respawn" — a
@@ -230,7 +230,7 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* (option
   )(function* (input) {
     if (capability === "desktop-managed") {
       return yield* failWith(
-        "This server is managed by the T3 Code desktop app on its machine; update the desktop app to update it.",
+        "This server is managed by the Toolport Studio desktop app on its machine; update the desktop app to update it.",
       );
     }
     if (capability === null) {

@@ -1,19 +1,26 @@
-# Documentation
+# Toolport Studio documentation
 
-- [Getting started](./getting-started/quick-start.md)
+- Product
+  - [Product foundation and roadmap](./product/vision.md)
+- Getting started
+  - [Quick start](./getting-started/quick-start.md)
+  - [Codex prerequisites](./getting-started/codex-prerequisites.md)
 - Architecture
   - [Overview](./architecture/overview.md)
+  - [Providers](./architecture/providers.md)
   - [Connection runtime](./architecture/connection-runtime.md)
-  - [Remote environments](./architecture/remote.md)
-  - [Server updates](./architecture/server-updates.md)
+  - [Runtime modes](./architecture/runtime-modes.md)
+- Providers
+  - [Claude](./providers/claude.md)
+  - [Codex](./providers/codex.md)
+- Integrations
+  - [Source-control providers](./integrations/source-control-providers.md)
 - User guides
-  - [Background service](./user/background-service.md)
-  - [Remote access](./user/remote-access.md)
-  - [Keeping T3 Code in sync](./user/server-updates.md)
   - [Keybindings](./user/keybindings.md)
-- [T3 Connect](./cloud/t3-connect-clerk.md)
-- [Integrations](./integrations/source-control-providers.md)
-- [Mobile](./mobile/app.md)
-- [Operations](./operations/ci.md)
-- [Providers](./providers/codex.md)
-- [Reference](./reference/encyclopedia.md)
+- Operations
+  - [CI](./operations/ci.md)
+  - [Release process](./operations/release.md)
+  - [Observability](./operations/observability.md)
+- Reference
+  - [Workspace layout](./reference/workspace-layout.md)
+  - [Scripts](./reference/scripts.md)

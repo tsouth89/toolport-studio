@@ -28,6 +28,7 @@ import {
   type ProviderInstanceEntry,
 } from "../../providerInstances";
 import { providerModelKey, sortProviderModelItems } from "../../modelOrdering";
+import { selectRecommendedModels } from "../../modelRecommendations";
 
 type ModelPickerItem = {
   slug: string;
@@ -39,6 +40,8 @@ type ModelPickerItem = {
   instanceDisplayName: string;
   instanceAccentColor?: string | undefined;
   continuationGroupKey?: string | undefined;
+  isCustom?: boolean | undefined;
+  isDefault?: boolean | undefined;
 };
 
 const EMPTY_MODEL_JUMP_LABELS = new Map<string, string>();
@@ -103,16 +106,16 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   const modelListRef = useRef<LegendListRef | null>(null);
   const highlightedModelKeyRef = useRef<string | null>(null);
   const favorites = useClientSettings((s) => s.favorites ?? []);
-  const [selectedInstanceId, setSelectedInstanceId] = useState<ProviderInstanceId | "favorites">(
-    () => {
-      if (props.lockedProvider !== null) {
-        // When locked, prime the sidebar to the currently-active instance
-        // so jumping into the picker keeps the focused instance visible.
-        return props.activeInstanceId;
-      }
-      return favorites.length > 0 ? "favorites" : props.activeInstanceId;
-    },
-  );
+  const [selectedInstanceId, setSelectedInstanceId] = useState<
+    ProviderInstanceId | "recommended" | "favorites"
+  >(() => {
+    if (props.lockedProvider !== null) {
+      // When locked, prime the sidebar to the currently-active instance
+      // so jumping into the picker keeps the focused instance visible.
+      return props.activeInstanceId;
+    }
+    return "recommended";
+  });
   const keybindings = useMemo<ResolvedKeybindingsConfig>(
     () => providedKeybindings ?? [],
     [providedKeybindings],
@@ -124,7 +127,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   }, []);
 
   const handleSelectInstance = useCallback(
-    (instanceId: ProviderInstanceId | "favorites") => {
+    (instanceId: ProviderInstanceId | "recommended" | "favorites") => {
       setSelectedInstanceId(instanceId);
       window.requestAnimationFrame(() => {
         focusSearchInput();
@@ -207,6 +210,8 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
           name: model.name,
           ...(model.shortName ? { shortName: model.shortName } : {}),
           ...(model.subProvider ? { subProvider: model.subProvider } : {}),
+          ...(model.isCustom !== undefined ? { isCustom: model.isCustom } : {}),
+          ...(model.isDefault !== undefined ? { isDefault: model.isDefault } : {}),
           instanceId,
           driverKind: entry.driverKind,
           instanceDisplayName: entry.displayName,
@@ -255,6 +260,16 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     () => instanceEntries.map((entry) => entry.instanceId),
     [instanceEntries],
   );
+  const recommendedModelKeys = useMemo(() => {
+    const keys = new Set<string>();
+    for (const entry of instanceEntries) {
+      const models = flatModels.filter((model) => model.instanceId === entry.instanceId);
+      for (const model of selectRecommendedModels(entry.driverKind, models)) {
+        keys.add(providerModelKey(model.instanceId, model.slug));
+      }
+    }
+    return keys;
+  }, [flatModels, instanceEntries]);
 
   // Filter models based on search query and selected instance
   const filteredModels = useMemo(() => {
@@ -336,11 +351,19 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
 
     if (props.lockedProvider !== null) {
       result = result.filter((m) => matchesLockedProvider(m));
-      if (selectedInstanceId === "favorites") {
+      if (selectedInstanceId === "recommended") {
+        result = result.filter((m) =>
+          recommendedModelKeys.has(providerModelKey(m.instanceId, m.slug)),
+        );
+      } else if (selectedInstanceId === "favorites") {
         result = result.filter((m) => favoritesSet.has(providerModelKey(m.instanceId, m.slug)));
       } else {
         result = result.filter((m) => m.instanceId === selectedInstanceId);
       }
+    } else if (selectedInstanceId === "recommended") {
+      result = result.filter((m) =>
+        recommendedModelKeys.has(providerModelKey(m.instanceId, m.slug)),
+      );
     } else if (selectedInstanceId === "favorites") {
       result = result.filter((m) => favoritesSet.has(providerModelKey(m.instanceId, m.slug)));
     } else {
@@ -349,8 +372,11 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
 
     return sortProviderModelItems(result, {
       favoriteModelKeys: favoritesSet,
-      groupFavorites: selectedInstanceId !== "favorites",
-      instanceOrder: selectedInstanceId === "favorites" ? instanceOrder : [],
+      groupFavorites: selectedInstanceId !== "favorites" && selectedInstanceId !== "recommended",
+      instanceOrder:
+        selectedInstanceId === "favorites" || selectedInstanceId === "recommended"
+          ? instanceOrder
+          : [],
     });
   }, [
     favoritesSet,
@@ -358,6 +384,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     instanceOrder,
     matchesLockedProvider,
     props.lockedProvider,
+    recommendedModelKeys,
     searchQuery,
     selectedInstanceId,
   ]);
@@ -530,7 +557,8 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
             selectedInstanceId={selectedInstanceId}
             onSelectInstance={handleSelectInstance}
             instanceEntries={sidebarInstanceEntries}
-            showFavorites
+            showRecommended={!isLocked}
+            showFavorites={favorites.length > 0}
             {...(lockedDisabledInstanceIds
               ? {
                   disabledInstanceIds: lockedDisabledInstanceIds,
@@ -619,6 +647,26 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
 
             {/* Model list */}
             <div className="relative min-h-0 flex-1 overflow-hidden">
+              {!isSearching ? (
+                <div className="flex items-center justify-between gap-3 px-4 pb-1 pt-2 text-[11px] font-medium text-muted-foreground">
+                  <span>
+                    {selectedInstanceId === "recommended"
+                      ? "Recommended"
+                      : selectedInstanceId === "favorites"
+                        ? "Favorites"
+                        : `All ${entryByInstanceId.get(selectedInstanceId)?.displayName ?? "provider"} models`}
+                  </span>
+                  {selectedInstanceId === "recommended" ? (
+                    <button
+                      type="button"
+                      className="rounded px-1.5 py-1 text-foreground/75 transition-colors hover:bg-foreground/8 hover:text-foreground"
+                      onClick={() => handleSelectInstance(props.activeInstanceId)}
+                    >
+                      Other models
+                    </button>
+                  ) : null}
+                </div>
+              ) : null}
               <ComboboxListVirtualized className="model-picker-list size-full min-w-0 p-0">
                 <LegendList<string>
                   ref={modelListRef}

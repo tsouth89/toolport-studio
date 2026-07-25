@@ -266,7 +266,7 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
 
   /* Stage-channel sidebar art; ::after ramps to the sidebar bg color and the
      mask lets the surface grain show through at the boundary. Panels whose
-     background differs from the app chrome (e.g. sidebar v2) override
+     background differs from the app chrome (e.g. the navigation sidebar) override
      --sidebar-stage-fade so the art fades into their own surface color. */
   .sidebar-stage-backdrop {
     --stage-fade: var(--sidebar-stage-fade, var(--app-chrome-background));
@@ -854,7 +854,7 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
 
   @variant dark {
     color-scheme: dark;
-    /* Keep the workspace in the same neutral-black family as sidebar v2.
+    /* Keep the workspace in the same neutral-black family as the sidebar.
        Surfaces lift from this base instead of starting from a milky gray. */
     --background: var(--color-neutral-950);
     --app-chrome-background: var(--background);
@@ -895,12 +895,9 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   }
 }
 
-/* Keep both navigation implementations on the same quiet zinc hierarchy:
-   zinc-50 navigation, zinc-25 hover, and white selected/raised surfaces.
-   The version attribute remains useful for layout-specific styling without
-   changing the color system when the beta is toggled. */
-[data-sidebar-version="v1"],
-[data-sidebar-version="v2"] {
+/* Keep navigation on a quiet zinc hierarchy: zinc-50 navigation, zinc-25
+   hover, and white selected/raised surfaces. */
+[data-app-sidebar] {
   --background: var(--color-zinc-25);
   --foreground: var(--color-zinc-800);
   --card: var(--color-white);
@@ -923,8 +920,7 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   background-color: var(--sidebar);
 }
 
-.dark [data-sidebar-version="v1"],
-.dark [data-sidebar-version="v2"] {
+.dark [data-app-sidebar] {
   --background: #000;
   --foreground: #f1f3f7;
   --card: #000;

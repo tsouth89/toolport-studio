@@ -27,6 +27,11 @@ body:
       label: Area
       description: Which part of the project would this change affect?
       options:
+        - Conversation and projectless chat
+        - Providers and models
+        - Toolport and MCP
+        - Ceiling and usage intelligence
+        - Projects, terminal, preview, or source control
         - apps/web
         - apps/server
         - apps/desktop

@@ -618,6 +618,42 @@ type ClaudeCapabilitiesProbe = {
   readonly slashCommands: ReadonlyArray<ServerProviderSlashCommand>;
 };
 
+type ClaudeAuthStatusProbe = Omit<ClaudeCapabilitiesProbe, "slashCommands"> & {
+  readonly loggedIn: boolean;
+};
+
+function parseClaudeAuthStatus(raw: string): ClaudeAuthStatusProbe | undefined {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return undefined;
+    }
+
+    const payload = parsed as Record<string, unknown>;
+    if (typeof payload.loggedIn !== "boolean") {
+      return undefined;
+    }
+
+    const account =
+      payload.account && typeof payload.account === "object" && !Array.isArray(payload.account)
+        ? (payload.account as Record<string, unknown>)
+        : undefined;
+    const optionalString = (value: unknown) =>
+      typeof value === "string" && value.trim() ? value.trim() : undefined;
+
+    return {
+      loggedIn: payload.loggedIn,
+      email: optionalString(payload.email) ?? optionalString(account?.email),
+      subscriptionType:
+        optionalString(payload.subscriptionType) ?? optionalString(account?.subscriptionType),
+      tokenSource: optionalString(payload.authMethod) ?? optionalString(payload.tokenSource),
+      apiProvider: optionalString(payload.apiProvider),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 function parseClaudeInitializationCommands(
   commands: ReadonlyArray<ClaudeSlashCommand> | undefined,
 ): ReadonlyArray<ServerProviderSlashCommand> {
@@ -809,7 +845,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
         version: null,
         status: "warning",
         auth: { status: "unknown" },
-        message: "Claude is disabled in T3 Code settings.",
+        message: "Claude is disabled in Toolport Studio settings.",
       },
     });
   }
@@ -900,11 +936,23 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
   const capabilities = resolveCapabilities
     ? yield* resolveCapabilities(claudeSettings).pipe(Effect.orElseSucceed(() => undefined))
     : undefined;
+  const authStatus = capabilities
+    ? undefined
+    : yield* runClaudeCommand(claudeSettings, ["auth", "status"], resolvedEnvironment).pipe(
+        Effect.timeoutOption(DEFAULT_TIMEOUT_MS),
+        Effect.result,
+        Effect.map((result) => {
+          if (Result.isFailure(result) || Option.isNone(result.success)) {
+            return undefined;
+          }
+          return parseClaudeAuthStatus(result.success.value.stdout);
+        }),
+      );
   const skills = yield* discoverClaudeSkills(claudeSettings, cwd, resolvedEnvironment);
   const slashCommands = capabilities?.slashCommands ?? [];
   const dedupedSlashCommands = dedupeSlashCommands(slashCommands);
 
-  if (!capabilities) {
+  if (!capabilities && !authStatus) {
     return buildServerProvider({
       presentation: CLAUDE_PRESENTATION,
       enabled: claudeSettings.enabled,
@@ -922,11 +970,30 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
     });
   }
 
+  if (authStatus && !authStatus.loggedIn) {
+    return buildServerProvider({
+      presentation: CLAUDE_PRESENTATION,
+      enabled: claudeSettings.enabled,
+      checkedAt,
+      models,
+      slashCommands: dedupedSlashCommands,
+      skills,
+      probe: {
+        installed: true,
+        version: parsedVersion,
+        status: "error",
+        auth: { status: "unauthenticated" },
+        message: "Claude is not authenticated. Run `claude auth login` and try again.",
+      },
+    });
+  }
+
+  const account = capabilities ?? authStatus!;
   const authMetadata =
     claudeAuthMetadata({
-      subscriptionType: capabilities.subscriptionType,
-      authMethod: capabilities.tokenSource,
-    }) ?? apiProviderAuthMetadata(capabilities.apiProvider);
+      subscriptionType: account.subscriptionType,
+      authMethod: account.tokenSource,
+    }) ?? apiProviderAuthMetadata(account.apiProvider);
   return buildServerProvider({
     presentation: CLAUDE_PRESENTATION,
     enabled: claudeSettings.enabled,
@@ -940,7 +1007,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
       status: "ready",
       auth: {
         status: "authenticated",
-        ...(capabilities.email ? { email: capabilities.email } : {}),
+        ...(account.email ? { email: account.email } : {}),
         ...(authMetadata ? authMetadata : {}),
       },
       ...(versionUpgradeMessage ? { message: versionUpgradeMessage } : {}),
@@ -972,7 +1039,7 @@ export const makePendingClaudeProvider = (
           version: null,
           status: "warning",
           auth: { status: "unknown" },
-          message: "Claude is disabled in T3 Code settings.",
+          message: "Claude is disabled in Toolport Studio settings.",
         },
       });
     }

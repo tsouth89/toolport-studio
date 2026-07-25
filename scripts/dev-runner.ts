@@ -592,7 +592,7 @@ const devRunnerCli = Command.make("dev-runner", {
   ),
   t3Home: Flag.string("home-dir").pipe(
     Flag.withDescription(
-      "Explicit T3 Code data directory; runtime state is stored under userdata (equivalent to T3CODE_HOME).",
+      "Explicit Toolport Studio data directory; runtime state is stored under userdata (equivalent to T3CODE_HOME).",
     ),
     Flag.withFallbackConfig(optionalStringConfig("T3CODE_HOME")),
   ),

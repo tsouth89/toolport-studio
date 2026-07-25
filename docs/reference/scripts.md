@@ -21,8 +21,8 @@
 ## Desktop `.dmg` packaging notes
 
 - Default build is unsigned/not notarized for local sharing.
-- The DMG build uses `assets/prod/black-macos-1024.png` as the production app icon source.
-- Desktop production windows load the bundled UI from `t3code://app/index.html` (not a `127.0.0.1` document URL).
+- The DMG build uses `assets/studio/generated/toolport-studio-desktop-1024.png` as the app icon source.
+- Desktop production windows load the bundled UI from `toolport-studio://app/index.html` (not a `127.0.0.1` document URL).
 - Desktop packaging includes `apps/server/dist` (the `t3` backend) and starts it on loopback with an auth token for WebSocket/API traffic.
 - Your tester can still open it on macOS by right-clicking the app and choosing **Open** on first launch.
 - To keep staging files for debugging package contents, run: `vp run dist:desktop:dmg -- --keep-stage`

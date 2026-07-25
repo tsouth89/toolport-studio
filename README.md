@@ -1,92 +1,93 @@
-# T3 Code
+# Toolport Studio
 
-T3 Code is a minimal web GUI for coding agents (currently Codex, Claude, Cursor, and OpenCode, more coming soon).
+**One desktop home for Claude, Codex, Cursor, Grok, and the tools around them.**
 
-## Installation
+Toolport Studio turns subscription-backed AI coding CLIs into a cohesive desktop
+workspace. Start with a normal conversation, paste screenshots, switch providers
+and models, then attach a folder when the work becomes a project.
 
-> [!WARNING]
-> T3 Code currently supports Codex, Claude, Cursor, and OpenCode.
-> Install and authenticate at least one provider before use:
->
-> - Codex: install [Codex CLI](https://developers.openai.com/codex/cli) and run `codex login`
-> - Claude: install [Claude Code](https://claude.com/product/claude-code) and run `claude auth login`
-> - Cursor: install [Cursor CLI](https://cursor.com/cli) and run `cursor-agent login`
-> - OpenCode: install [OpenCode](https://opencode.ai) and run `opencode auth login`
+The goal is not to create separate “chat” and “coding” products. A conversation
+starts with as little context as you want and grows into a coding workspace when
+you add a project, terminal, preview, source control, or Toolport tools.
 
-### Run without installing
+> [!IMPORTANT]
+> Toolport Studio is an early alpha. Provider support depends on the corresponding
+> CLI being installed and authenticated on your machine.
 
-```bash
-npx t3@latest
-```
+## What works today
 
-Tip: Use `npx t3@latest --help` for the full CLI reference.
+- Claude, Codex, Cursor, Grok, and OpenCode provider adapters
+- Subscription-backed authentication through installed provider CLIs
+- Screenshot and image pasting, including Grok Build conversations
+- A curated Recommended model list with the full catalog one click away
+- Projects, terminals, previews, source control, and provider switching
+- Automatic discovery of the local Toolport gateway
+- Toolport-managed MCP servers injected into provider sessions
+- Independent Toolport Studio application identity and data directory
 
-### Desktop app
+## The product model
 
-Install the latest version of the desktop app from [GitHub Releases](https://github.com/pingdotgg/t3code/releases), or from your favorite package registry:
+Toolport Studio has one conversation surface with progressive context:
 
-#### Windows (`winget`)
+1. **Start anywhere** — Open the app and talk without choosing a repository.
+2. **Choose a provider** — Switch between supported providers without learning a
+   different interface for each CLI.
+3. **Add context when needed** — Attach a folder, repository, screenshot, file, or
+   Toolport tool to the same conversation.
+4. **Move into build mode naturally** — Terminals, diffs, previews, approvals, and
+   source control appear when the task needs them.
 
-```bash
-winget install T3Tools.T3Code
-```
+This keeps casual questions lightweight without creating an artificial wall
+between asking about code and working on it.
 
-#### macOS (Homebrew)
+Read [the product foundation](./docs/product/vision.md) for the design principles
+and phased roadmap.
 
-```bash
-brew install --cask t3-code
-```
+## Toolport ecosystem
 
-#### Arch Linux (AUR)
+- [Toolport](https://toolport.app) is the MCP control plane. It gives every
+  provider the same governed tools and server configuration.
+- [Ceiling](https://github.com/tsouth89/ceiling) provides provider usage, quota,
+  reset-window, spend, and activity intelligence.
+- [Toolport Studio](https://toolport.studio) is where conversations, providers,
+  projects, tools, and usage context come together.
 
-```bash
-yay -S t3code-bin
-```
+## Install
 
-## Some notes
+Windows alpha builds are published on the
+[GitHub Releases page](https://github.com/tsouth89/toolport-studio/releases).
+The current builds are not code-signed, so Windows SmartScreen may require
+**More info → Run anyway**.
 
-We are very very early in this project. Expect bugs.
+Before opening Studio, install and sign in to the provider CLIs you want to use.
+Toolport Studio does not resell model access or convert API keys into subscription
+access.
 
-We are not accepting contributions yet.
+## Development
 
-There's no public docs site yet, checkout the miscellaneous markdown files in [docs](./docs).
-
-## Documentation
-
-- [Getting started](./docs/getting-started/quick-start.md)
-- [Remote access](./docs/user/remote-access.md)
-- [Keeping T3 Code in sync](./docs/user/server-updates.md)
-- [Architecture overview](./docs/architecture/overview.md)
-- [Provider guides](./docs/providers/codex.md)
-- [Operations](./docs/operations/ci.md)
-- [Reference](./docs/reference/encyclopedia.md)
-
-## If you REALLY want to contribute still.... read this first
-
-### Install `vp`
-
-T3 Code uses Vite+ so you'll need to install the global `vp` command-line tool.
-
-#### macOS / Linux
-
-```bash
-curl -fsSL https://vite.plus | bash
-```
-
-#### Windows
+Toolport Studio currently uses the inherited T3 Code package namespace internally
+to keep the fork easy to update while product-facing identity is migrated safely.
 
 ```bash
-irm https://vite.plus/ps1 | iex
+pnpm install
+pnpm dev
 ```
 
-Checkout their getting started guide for more information: https://viteplus.dev/guide/
-
-### Install dependencies
+Useful commands:
 
 ```bash
-vp i
+pnpm test:desktop-smoke
+pnpm build:desktop
+pnpm dist:desktop:win:x64
 ```
 
-Read [CONTRIBUTING.md](./CONTRIBUTING.md) before opening an issue or PR.
+See [the documentation index](./docs/README.md) for architecture, provider, and
+release details.
 
-Need support? Join the [Discord](https://discord.gg/jn4EGJjrvv).
+## Origin and license
+
+Toolport Studio is built from the open-source
+[T3 Code](https://github.com/pingdotgg/t3code) project. The fork is evolving into
+a focused desktop product while preserving upstream credit and the MIT license.
+
+See [LICENSE](./LICENSE).

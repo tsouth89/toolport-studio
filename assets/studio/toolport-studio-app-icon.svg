@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <title>Toolport Studio application icon</title>
+  <defs>
+    <polygon id="nut" points="0,-21 -18.19,-10.5 -18.19,10.5 0,21 18.19,10.5 18.19,-10.5"/>
+    <polygon id="nut-hole" points="0,-8 -6.93,-4 -6.93,4 0,8 6.93,4 6.93,-4"/>
+  </defs>
+  <rect width="512" height="512" rx="115" fill="#1E3A66"/>
+  <circle cx="256" cy="256" r="170" fill="none" stroke="#F97316" stroke-width="78"/>
+  <g fill="#1E3A66">
+    <use href="#nut" x="256" y="86"/>
+    <use href="#nut" x="426" y="256"/>
+    <use href="#nut" x="256" y="426"/>
+    <use href="#nut" x="86" y="256"/>
+  </g>
+  <g fill="#FFFFFF">
+    <use href="#nut-hole" x="256" y="86"/>
+    <use href="#nut-hole" x="426" y="256"/>
+    <use href="#nut-hole" x="256" y="426"/>
+    <use href="#nut-hole" x="86" y="256"/>
+  </g>
+  <circle cx="256" cy="256" r="54" fill="#FFFFFF"/>
+</svg>

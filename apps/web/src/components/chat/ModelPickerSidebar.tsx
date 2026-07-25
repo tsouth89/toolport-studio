@@ -37,8 +37,8 @@ const PICKER_TOOLTIP_SIDE_OFFSET = 8;
 const PICKER_TOOLTIP_CLASS = "max-w-64 text-balance font-normal leading-snug";
 
 export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
-  selectedInstanceId: ProviderInstanceId | "favorites";
-  onSelectInstance: (instanceId: ProviderInstanceId | "favorites") => void;
+  selectedInstanceId: ProviderInstanceId | "recommended" | "favorites";
+  onSelectInstance: (instanceId: ProviderInstanceId | "recommended" | "favorites") => void;
   /**
    * Instance entries to render as rail buttons. Each entry becomes one icon
    * keyed by `instanceId`, so the default built-in Codex and a user-authored
@@ -48,6 +48,8 @@ export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
   instanceEntries: ReadonlyArray<ProviderInstanceEntry>;
   /** Render the favorites rail entry. Hidden for locked-provider instance switching. */
   showFavorites?: boolean;
+  /** Render the automatic recommendations rail entry. */
+  showRecommended?: boolean;
   /** Instance ids shown in the rail but unavailable for the current picker context. */
   disabledInstanceIds?: ReadonlySet<ProviderInstanceId>;
   getDisabledInstanceTooltip?: (entry: ProviderInstanceEntry) => string;
@@ -58,10 +60,11 @@ export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
    */
   newBadgeInstanceIds?: ReadonlySet<ProviderInstanceId>;
 }) {
-  const handleSelect = (instanceId: ProviderInstanceId | "favorites") => {
+  const handleSelect = (instanceId: ProviderInstanceId | "recommended" | "favorites") => {
     props.onSelectInstance(instanceId);
   };
   const showFavorites = props.showFavorites ?? true;
+  const showRecommended = props.showRecommended ?? true;
   const [hoveredInstanceId, setHoveredInstanceId] = useState<ProviderInstanceId | null>(null);
   const sidebarContentRef = useRef<HTMLDivElement>(null);
   const [selectedIndicatorTop, setSelectedIndicatorTop] = useState<number | null>(null);
@@ -94,7 +97,7 @@ export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
         selectedButtonRect.height / 2 -
         10,
     );
-  }, [props.instanceEntries, props.selectedInstanceId, showFavorites]);
+  }, [props.instanceEntries, props.selectedInstanceId, showFavorites, showRecommended]);
 
   return (
     <div
@@ -116,36 +119,65 @@ export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
               style={{ top: selectedIndicatorTop }}
             />
           ) : null}
-          {/* Favorites section */}
-          {showFavorites ? (
-            <div className="mb-1 border-b pb-1">
-              <div className="relative w-full">
-                <Tooltip>
-                  <TooltipTrigger
-                    render={
-                      <button
-                        className={cn(
-                          "relative isolate flex w-full cursor-pointer aspect-square items-center justify-center rounded-md transition-colors hover:bg-[color-mix(in_srgb,var(--popover)_90%,var(--foreground))] focus-visible:bg-[color-mix(in_srgb,var(--popover)_90%,var(--foreground))] focus-visible:outline-none",
-                        )}
-                        onClick={() => handleSelect("favorites")}
-                        type="button"
-                        data-model-picker-provider="favorites"
-                        aria-label="Favorites"
-                      >
-                        <StarIcon className="size-5 fill-current shrink-0" aria-hidden />
-                      </button>
-                    }
-                  />
-                  <TooltipPopup
-                    side={PICKER_TOOLTIP_SIDE}
-                    sideOffset={PICKER_TOOLTIP_SIDE_OFFSET}
-                    align="center"
-                    className={PICKER_TOOLTIP_CLASS}
-                  >
-                    Favorites
-                  </TooltipPopup>
-                </Tooltip>
-              </div>
+          {/* Smart views */}
+          {showRecommended || showFavorites ? (
+            <div className="mb-1 flex flex-col gap-1 border-b pb-1">
+              {showRecommended ? (
+                <div className="relative w-full">
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <button
+                          className="relative isolate flex w-full cursor-pointer aspect-square items-center justify-center rounded-md transition-colors hover:bg-[color-mix(in_srgb,var(--popover)_90%,var(--foreground))] focus-visible:bg-[color-mix(in_srgb,var(--popover)_90%,var(--foreground))] focus-visible:outline-none"
+                          onClick={() => handleSelect("recommended")}
+                          type="button"
+                          data-model-picker-provider="recommended"
+                          aria-label="Recommended models"
+                        >
+                          <SparklesIcon className="size-5 shrink-0" aria-hidden />
+                        </button>
+                      }
+                    />
+                    <TooltipPopup
+                      side={PICKER_TOOLTIP_SIDE}
+                      sideOffset={PICKER_TOOLTIP_SIDE_OFFSET}
+                      align="center"
+                      className={PICKER_TOOLTIP_CLASS}
+                    >
+                      Recommended models
+                    </TooltipPopup>
+                  </Tooltip>
+                </div>
+              ) : null}
+              {showFavorites ? (
+                <div className="relative w-full">
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <button
+                          className={cn(
+                            "relative isolate flex w-full cursor-pointer aspect-square items-center justify-center rounded-md transition-colors hover:bg-[color-mix(in_srgb,var(--popover)_90%,var(--foreground))] focus-visible:bg-[color-mix(in_srgb,var(--popover)_90%,var(--foreground))] focus-visible:outline-none",
+                          )}
+                          onClick={() => handleSelect("favorites")}
+                          type="button"
+                          data-model-picker-provider="favorites"
+                          aria-label="Favorites"
+                        >
+                          <StarIcon className="size-5 fill-current shrink-0" aria-hidden />
+                        </button>
+                      }
+                    />
+                    <TooltipPopup
+                      side={PICKER_TOOLTIP_SIDE}
+                      sideOffset={PICKER_TOOLTIP_SIDE_OFFSET}
+                      align="center"
+                      className={PICKER_TOOLTIP_CLASS}
+                    >
+                      Favorites
+                    </TooltipPopup>
+                  </Tooltip>
+                </div>
+              ) : null}
             </div>
           ) : null}
 
