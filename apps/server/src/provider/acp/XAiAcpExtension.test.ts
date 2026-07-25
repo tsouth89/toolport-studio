@@ -4,7 +4,9 @@ import * as NodeURL from "node:url";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Schema from "effect/Schema";
 import { describe, expect } from "vite-plus/test";
 
@@ -20,7 +22,10 @@ import * as AcpSessionRuntime from "./AcpSessionRuntime.ts";
 const __dirname = NodePath.dirname(NodeURL.fileURLToPath(import.meta.url));
 const mockAgentPath = NodePath.join(__dirname, "../../../scripts/acp-mock-agent.ts");
 
-const makePromptCompletionRuntime = (env: NodeJS.ProcessEnv) =>
+const makePromptCompletionRuntime = (
+  env: NodeJS.ProcessEnv,
+  overrides?: Partial<Pick<AcpSessionRuntime.AcpSessionRuntime["Service"], "cancel" | "prompt">>,
+) =>
   Effect.gen(function* () {
     const runtime = yield* AcpSessionRuntime.make({
       spawn: {
@@ -32,7 +37,8 @@ const makePromptCompletionRuntime = (env: NodeJS.ProcessEnv) =>
       clientInfo: { name: "t3-test", version: "0.0.0" },
       authMethodId: "test",
     });
-    return yield* makeXAiPromptCompletionRuntime(runtime);
+    const base = overrides ? { ...runtime, ...overrides } : runtime;
+    return yield* makeXAiPromptCompletionRuntime(base);
   });
 
 const decodeXAiAskUserQuestionRequest = Schema.decodeUnknownSync(XAiAskUserQuestionRequest);
@@ -296,6 +302,97 @@ describe("XAiAcpExtension", () => {
           requestId: promptId,
         },
       });
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("accepts the public xAI prompt_complete method name", () =>
+    Effect.gen(function* () {
+      const runtime = yield* makePromptCompletionRuntime({
+        T3_ACP_EMIT_XAI_PROMPT_COMPLETE_THEN_HANG: "1",
+        T3_ACP_XAI_PROMPT_COMPLETE_METHOD: "x.ai/session/prompt_complete",
+      });
+      yield* runtime.start();
+
+      const promptResult = yield* runtime.prompt({
+        prompt: [{ type: "text", text: "hi" }],
+      });
+
+      expect(promptResult).toMatchObject({
+        stopReason: "end_turn",
+        _meta: {
+          sessionId: "mock-session-1",
+        },
+      });
+      expect(typeof promptResult._meta?.promptId).toBe("string");
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("returns the xAI fallback without waiting for cancellation cleanup", () =>
+    Effect.gen(function* () {
+      const cancelStarted = yield* Deferred.make<void>();
+      const cancelGate = yield* Deferred.make<void>();
+      const runtime = yield* makePromptCompletionRuntime(
+        {
+          T3_ACP_EMIT_XAI_PROMPT_COMPLETE_THEN_HANG: "1",
+        },
+        {
+          cancel: Effect.gen(function* () {
+            yield* Deferred.succeed(cancelStarted, undefined).pipe(Effect.ignore);
+            yield* Deferred.await(cancelGate);
+          }),
+        },
+      );
+
+      yield* runtime.start();
+      const promptResult = yield* runtime
+        .prompt({
+          prompt: [{ type: "text", text: "hi" }],
+        })
+        .pipe(Effect.timeout("2 seconds"));
+
+      expect(promptResult.stopReason).toBe("end_turn");
+      // Fallback must return before the hanging cancel completes.
+      yield* Deferred.await(cancelStarted).pipe(Effect.timeout("2 seconds"));
+      yield* Deferred.succeed(cancelGate, undefined);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("does not cancel twice after an explicit cancellation", () =>
+    Effect.gen(function* () {
+      const promptStarted = yield* Deferred.make<void>();
+      const promptGate = yield* Deferred.make<void>();
+      let cancelCalls = 0;
+      const runtime = yield* makeXAiPromptCompletionRuntime({
+        handleExtNotification: () => Effect.void,
+        start: () =>
+          Effect.succeed({
+            sessionId: "mock-session-1",
+          } as AcpSessionRuntime.AcpSessionRuntimeStartResult),
+        prompt: () =>
+          Effect.gen(function* () {
+            yield* Deferred.succeed(promptStarted, undefined).pipe(Effect.ignore);
+            yield* Deferred.await(promptGate);
+            return { stopReason: "end_turn" as const };
+          }),
+        cancel: Effect.sync(() => {
+          cancelCalls += 1;
+        }),
+      } as unknown as AcpSessionRuntime.AcpSessionRuntime["Service"]);
+
+      yield* runtime.start();
+      const promptFiber = yield* runtime
+        .prompt({
+          prompt: [{ type: "text", text: "hi" }],
+        })
+        .pipe(Effect.forkChild);
+      yield* Deferred.await(promptStarted).pipe(Effect.timeout("2 seconds"));
+
+      yield* runtime.cancel.pipe(Effect.timeout("2 seconds"));
+      const promptResult = yield* Fiber.join(promptFiber).pipe(Effect.timeout("2 seconds"));
+
+      expect(promptResult.stopReason).toBe("cancelled");
+      yield* Effect.yieldNow;
+      expect(cancelCalls).toBe(1);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
