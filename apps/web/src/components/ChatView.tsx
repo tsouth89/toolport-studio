@@ -4690,20 +4690,23 @@ function ChatViewContent(props: ChatViewProps) {
       sizeBytes: image.sizeBytes,
       previewUrl: image.previewUrl,
     }));
-    // Sending always returns to the live edge. The new row becomes the
-    // anchored end-space target so it lands near the top while the response
-    // streams into the reserved space below it.
+    // Stay pinned to the live edge after send (Claude Desktop behavior).
+    // Anchoring the user row to the top caused a jump into older history
+    // until the first provider token snapped back (SOU-352).
     isAtEndRef.current = true;
-    timelineScrollModeRef.current = "anchoring-new-turn";
+    timelineScrollModeRef.current = "following-end";
     liveFollowUserScrollGenerationRef.current = anchorUserScrollGenerationRef.current;
-    pendingTimelineAnchorRef.current = messageIdForSend;
+    pendingTimelineAnchorRef.current = null;
     activeTimelineAnchorIndexRef.current = null;
+    positionedTimelineAnchorRef.current = null;
+    settledTimelineAnchorRef.current = null;
     showScrollDebouncer.current.cancel();
     setShowScrollToBottom(false);
     setTimelineAnchor({
       threadKey: scopedThreadKey(scopeThreadRef(activeThread.environmentId, threadIdForSend)),
-      messageId: messageIdForSend,
+      messageId: null,
     });
+    scrollToEnd(false);
     setOptimisticUserMessages((existing) => [
       ...existing,
       {
@@ -5250,18 +5253,21 @@ function ChatViewContent(props: ChatViewProps) {
       beginLocalDispatch({ preparingWorktree: false });
       setThreadError(threadIdForSend, null);
 
-      // Position this sent row once LegendList has measured the anchored tail.
+      // Stay pinned to the live edge after send (SOU-352).
       isAtEndRef.current = true;
-      timelineScrollModeRef.current = "anchoring-new-turn";
+      timelineScrollModeRef.current = "following-end";
       liveFollowUserScrollGenerationRef.current = anchorUserScrollGenerationRef.current;
-      pendingTimelineAnchorRef.current = messageIdForSend;
+      pendingTimelineAnchorRef.current = null;
       activeTimelineAnchorIndexRef.current = null;
+      positionedTimelineAnchorRef.current = null;
+      settledTimelineAnchorRef.current = null;
       showScrollDebouncer.current.cancel();
       setShowScrollToBottom(false);
       setTimelineAnchor({
         threadKey: scopedThreadKey(scopeThreadRef(activeThread.environmentId, threadIdForSend)),
-        messageId: messageIdForSend,
+        messageId: null,
       });
+      scrollToEnd(false);
 
       setOptimisticUserMessages((existing) => [
         ...existing,

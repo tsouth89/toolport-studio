@@ -30,7 +30,7 @@ function getFirstSortableTimestamp(...values: Array<string | null | undefined>):
   return null;
 }
 
-function getLatestUserMessageTimestamp(thread: ThreadSortInput): number {
+function getLatestUserMessageTimestamp(thread: ThreadSortInput): number | null {
   if (thread.latestUserMessageAt) {
     const latestUserMessageTimestamp = toSortableTimestamp(thread.latestUserMessageAt);
     if (latestUserMessageTimestamp !== null) {
@@ -50,11 +50,17 @@ function getLatestUserMessageTimestamp(thread: ThreadSortInput): number {
         : Math.max(latestUserMessageTimestamp, messageTimestamp);
   }
 
-  if (latestUserMessageTimestamp !== null) {
-    return latestUserMessageTimestamp;
-  }
+  return latestUserMessageTimestamp;
+}
 
-  return getFirstSortableTimestamp(thread.updatedAt, thread.createdAt) ?? Number.NEGATIVE_INFINITY;
+function getLatestMessageTimestamp(thread: ThreadSortInput): number | null {
+  let latest: number | null = null;
+  for (const message of thread.messages ?? []) {
+    const messageTimestamp = toSortableTimestamp(message.createdAt);
+    if (messageTimestamp === null) continue;
+    latest = latest === null ? messageTimestamp : Math.max(latest, messageTimestamp);
+  }
+  return latest;
 }
 
 export function getThreadSortTimestamp(
@@ -66,7 +72,19 @@ export function getThreadSortTimestamp(
       getFirstSortableTimestamp(thread.createdAt, thread.updatedAt) ?? Number.NEGATIVE_INFINITY
     );
   }
-  return getLatestUserMessageTimestamp(thread);
+  // updated_at mode = most recent activity first (SOU-356). Prefer max of
+  // user send, any message, and thread.updatedAt so an active streaming
+  // thread is not buried under a quieter one that only has a newer user send.
+  const candidates = [
+    getLatestUserMessageTimestamp(thread),
+    getLatestMessageTimestamp(thread),
+    toSortableTimestamp(thread.updatedAt),
+    toSortableTimestamp(thread.createdAt),
+  ].filter((value): value is number => value !== null);
+  if (candidates.length === 0) {
+    return Number.NEGATIVE_INFINITY;
+  }
+  return Math.max(...candidates);
 }
 
 export function sortThreads<T extends { readonly id: string } & ThreadSortInput>(

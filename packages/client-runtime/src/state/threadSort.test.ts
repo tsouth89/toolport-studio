@@ -68,4 +68,32 @@ describe("sortThreads", () => {
 
     expect(sorted.map((thread) => thread.id)).toEqual(["thread-1", "thread-2"]);
   });
+
+  it("sorts by any recent activity, not only the last user message", () => {
+    const sorted = sortThreads(
+      [
+        makeThread({
+          id: "thread-old-user-active-stream",
+          latestUserMessageAt: "2026-03-09T10:00:00.000Z",
+          updatedAt: "2026-03-09T11:00:00.000Z",
+          messages: [
+            { role: "user", createdAt: "2026-03-09T10:00:00.000Z" },
+            { role: "assistant", createdAt: "2026-03-09T11:00:00.000Z" },
+          ],
+        }),
+        makeThread({
+          id: "thread-newer-user-quiet",
+          latestUserMessageAt: "2026-03-09T10:30:00.000Z",
+          updatedAt: "2026-03-09T10:30:00.000Z",
+          messages: [{ role: "user", createdAt: "2026-03-09T10:30:00.000Z" }],
+        }),
+      ],
+      "updated_at",
+    );
+
+    expect(sorted.map((thread) => thread.id)).toEqual([
+      "thread-old-user-active-stream",
+      "thread-newer-user-quiet",
+    ]);
+  });
 });

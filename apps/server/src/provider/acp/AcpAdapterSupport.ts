@@ -3,6 +3,7 @@ import {
   type ProviderDriverKind,
   type ThreadId,
 } from "@t3tools/contracts";
+import { extractProviderErrorMessage } from "@t3tools/shared/providerError";
 import * as Schema from "effect/Schema";
 import * as EffectAcpErrors from "effect-acp/errors";
 
@@ -110,14 +111,14 @@ export function mapAcpToAdapterError(
     return new ProviderAdapterRequestError({
       provider,
       method,
-      detail: error.message,
+      detail: extractProviderErrorMessage(error.message),
       cause: error,
     });
   }
   return new ProviderAdapterRequestError({
     provider,
     method,
-    detail: error.message,
+    detail: extractProviderErrorMessage(error.message),
     cause: error,
   });
 }

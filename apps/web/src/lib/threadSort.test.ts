@@ -40,12 +40,13 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
 }
 
 describe("sortThreads", () => {
-  it("sorts threads by the latest user message in recency mode", () => {
+  it("sorts threads by most recent activity (user, assistant, or updatedAt)", () => {
     const sorted = sortThreads(
       [
         makeThread({
           id: ThreadId.make("thread-1"),
-          updatedAt: "2026-03-09T10:10:00.000Z",
+          // Stale updatedAt alone must not beat a newer user message.
+          updatedAt: "2026-03-09T10:02:00.000Z",
           messages: [
             {
               id: "message-1" as never,
