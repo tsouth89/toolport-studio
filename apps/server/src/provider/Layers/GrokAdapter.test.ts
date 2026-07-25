@@ -30,10 +30,54 @@ import {
   appendGrokConversationText,
   buildGrokContextRehydrationPrefix,
   buildGrokImagePromptPart,
+  classifyGrokSilentTurn,
   grokPromptSettlementBelongsToContext,
   makeGrokAdapter,
 } from "./GrokAdapter.ts";
 const decodeGrokSettings = Schema.decodeSync(GrokSettings);
+
+it("classifies Grok silence by active tool, completed tool loop, or pure thinking", () => {
+  assert.equal(
+    classifyGrokSilentTurn({
+      silentMs: 90_000,
+      openToolCount: 1,
+      hasObservedToolCall: true,
+    }),
+    "open-tool",
+  );
+  assert.equal(
+    classifyGrokSilentTurn({
+      silentMs: 119_999,
+      openToolCount: 0,
+      hasObservedToolCall: true,
+    }),
+    null,
+  );
+  assert.equal(
+    classifyGrokSilentTurn({
+      silentMs: 120_000,
+      openToolCount: 0,
+      hasObservedToolCall: true,
+    }),
+    "post-tool",
+  );
+  assert.equal(
+    classifyGrokSilentTurn({
+      silentMs: 120_000,
+      openToolCount: 0,
+      hasObservedToolCall: false,
+    }),
+    null,
+  );
+  assert.equal(
+    classifyGrokSilentTurn({
+      silentMs: 15 * 60_000,
+      openToolCount: 0,
+      hasObservedToolCall: false,
+    }),
+    "thinking",
+  );
+});
 
 const __dirname = NodePath.dirname(NodeURL.fileURLToPath(import.meta.url));
 const mockAgentPath = NodePath.join(__dirname, "../../../scripts/acp-mock-agent.ts");

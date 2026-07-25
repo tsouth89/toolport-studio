@@ -679,4 +679,21 @@ describe("MessagesTimeline", () => {
       /role="status"[^>]*>No updates for [^<]+<\/span>\s*<button[^>]*aria-label="Stop generation"/,
     );
   });
+
+  it("does not mislabel extended provider silence as a stuck tool", () => {
+    const lastStreamActivityAt = new Date(Date.now() - 95_000).toISOString();
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        isWorking
+        lastStreamActivityAt={lastStreamActivityAt}
+        onInterrupt={() => {}}
+        timelineEntries={[]}
+      />,
+    );
+
+    expect(markup).toContain("No progress from the provider");
+    expect(markup).toContain("You can wait, or stop and Send again.");
+    expect(markup).not.toContain("stuck tool");
+  });
 });

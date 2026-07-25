@@ -85,9 +85,43 @@ const GROK_CONTEXT_REHYDRATION_MAX_CHARS = 60_000;
  * Pure thinking without open tools is allowed much longer.
  */
 const GROK_SILENT_OPEN_TOOL_WATCHDOG_MS = 90_000;
+/**
+ * Grok occasionally leaves the prompt RPC pending after a tool has already
+ * completed. This is distinct from a legitimate long initial think: once the
+ * agent has entered the tool loop, two minutes of total ACP silence is enough
+ * to treat the turn as wedged and recycle it.
+ */
+const GROK_SILENT_POST_TOOL_WATCHDOG_MS = 2 * 60_000;
 /** Absolute ceiling so a pure-think wedge cannot run forever. */
 const GROK_SILENT_THINK_WATCHDOG_MS = 15 * 60_000;
 const GROK_SILENT_TURN_WATCHDOG_POLL_MS = 10_000;
+
+export type GrokSilentTurnKind = "open-tool" | "post-tool" | "thinking" | null;
+
+export function classifyGrokSilentTurn(input: {
+  readonly silentMs: number;
+  readonly openToolCount: number;
+  readonly hasObservedToolCall: boolean;
+}): GrokSilentTurnKind {
+  if (input.openToolCount > 0 && input.silentMs >= GROK_SILENT_OPEN_TOOL_WATCHDOG_MS) {
+    return "open-tool";
+  }
+  if (
+    input.openToolCount === 0 &&
+    input.hasObservedToolCall &&
+    input.silentMs >= GROK_SILENT_POST_TOOL_WATCHDOG_MS
+  ) {
+    return "post-tool";
+  }
+  if (
+    input.openToolCount === 0 &&
+    !input.hasObservedToolCall &&
+    input.silentMs >= GROK_SILENT_THINK_WATCHDOG_MS
+  ) {
+    return "thinking";
+  }
+  return null;
+}
 
 function encodeJsonStringForDiagnostics(input: unknown): string | undefined {
   const result = encodeUnknownJsonStringExit(input);
@@ -151,6 +185,8 @@ interface GrokSessionContext {
   lastTurnActivityAtMs: number;
   /** Open toolCallIds still pending/inProgress for the active turn. */
   openToolCallIds: Set<string>;
+  /** Whether the active prompt has entered a tool loop, including completed tools. */
+  hasObservedToolCall: boolean;
   /** Best-effort title of the most recent open tool (for logs / errors). */
   lastOpenToolTitle: string | undefined;
   /**
@@ -917,6 +953,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 return;
               case "ToolCallUpdated": {
                 ctx.turnVisibleUpdateCount += 1;
+                ctx.hasObservedToolCall = true;
                 const toolCallId = event.toolCall.toolCallId;
                 const toolStatus = event.toolCall.status;
                 if (toolStatus === "completed" || toolStatus === "failed") {
@@ -1165,6 +1202,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         ctx.turnVisibleUpdateCount = 0;
         ctx.lastTurnActivityAtMs = yield* Clock.currentTimeMillis;
         ctx.openToolCallIds = new Set();
+        ctx.hasObservedToolCall = false;
         ctx.lastOpenToolTitle = undefined;
         // Only a successful session/load proves Grok restored history. A
         // fallback session/new may legally reuse the same opaque id, so id
@@ -1330,6 +1368,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             turnVisibleUpdateCount: 0,
             lastTurnActivityAtMs: yield* Clock.currentTimeMillis,
             openToolCallIds: new Set(),
+            hasObservedToolCall: false,
             lastOpenToolTitle: undefined,
             notificationGeneration: 0,
             acpDisposed: false,
@@ -1559,6 +1598,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           if (activityCtx) {
             activityCtx.lastTurnActivityAtMs = yield* Clock.currentTimeMillis;
             activityCtx.openToolCallIds = new Set();
+            activityCtx.hasObservedToolCall = false;
             activityCtx.lastOpenToolTitle = undefined;
           }
 
@@ -1577,9 +1617,12 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               }
               const silentMs = (yield* Clock.currentTimeMillis) - live.lastTurnActivityAtMs;
               const openToolCount = live.openToolCallIds.size;
-              const toolStuck = openToolCount > 0 && silentMs >= GROK_SILENT_OPEN_TOOL_WATCHDOG_MS;
-              const thinkStuck = openToolCount === 0 && silentMs >= GROK_SILENT_THINK_WATCHDOG_MS;
-              if (!toolStuck && !thinkStuck) {
+              const silentTurnKind = classifyGrokSilentTurn({
+                silentMs,
+                openToolCount,
+                hasObservedToolCall: live.hasObservedToolCall,
+              });
+              if (silentTurnKind === null) {
                 continue;
               }
               const toolLabel = live.lastOpenToolTitle?.trim() || "a tool";
@@ -1588,8 +1631,8 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 turnId: prepared.turnId,
                 silentMs,
                 openToolCount,
-                toolStuck,
-                thinkStuck,
+                hasObservedToolCall: live.hasObservedToolCall,
+                silentTurnKind,
                 lastOpenToolTitle: live.lastOpenToolTitle,
               });
               live.acpCompromised = true;
@@ -1598,9 +1641,12 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               return yield* new ProviderAdapterRequestError({
                 provider: PROVIDER,
                 method: "session/prompt",
-                detail: toolStuck
-                  ? `Grok went silent for ${Math.round(silentMs / 1000)}s while ${toolLabel} was still running. Turn was stopped automatically — try a smaller task or Send again.`
-                  : `Grok went silent for ${Math.round(silentMs / 60000)}+ minutes with no tools or stream updates. Turn was stopped automatically — try again.`,
+                detail:
+                  silentTurnKind === "open-tool"
+                    ? `Grok went silent for ${Math.round(silentMs / 1000)}s while ${toolLabel} was still running. Turn was stopped automatically — try a smaller task or Send again.`
+                    : silentTurnKind === "post-tool"
+                      ? `Grok stopped responding after its last tool completed. The turn was stopped automatically after ${Math.round(silentMs / 1000)}s with no progress — Send again to continue.`
+                      : `Grok went silent for ${Math.round(silentMs / 60000)}+ minutes with no tools or stream updates. Turn was stopped automatically — try again.`,
               });
             }
           });

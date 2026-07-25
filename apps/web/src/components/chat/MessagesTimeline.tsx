@@ -1164,7 +1164,7 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
             {/* Live region on the stall copy only so interactive Stop is not inside status. */}
             <span role="status" aria-live="polite" aria-atomic="true">
               {stalled.silentForMs >= 90_000
-                ? `No updates for ${stalled.silentLabel} — often a stuck tool. Stop, then Send again or shrink the task.`
+                ? `No progress from the provider for ${stalled.silentLabel}. You can wait, or stop and Send again.`
                 : `No updates for ${stalled.silentLabel}`}
             </span>
             {handleStop ? (
