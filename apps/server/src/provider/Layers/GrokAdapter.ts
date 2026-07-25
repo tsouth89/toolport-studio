@@ -77,6 +77,8 @@ const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.UnknownFromJ
 
 const PROVIDER = ProviderDriverKind.make("grok");
 const GROK_RESUME_VERSION = 1 as const;
+/** Cap rehydrated transcript so a long thread cannot blow the next prompt. */
+const GROK_CONTEXT_REHYDRATION_MAX_CHARS = 60_000;
 /**
  * Auto-stop only when a tool is still open and nothing streams (option C).
  * Pure thinking without open tools is allowed much longer.
@@ -157,6 +159,83 @@ interface GrokSessionContext {
   notificationGeneration: number;
   /** True after disposeAcpProcess until a successful recycle/start rebinds ACP. */
   acpDisposed: boolean;
+  /**
+   * Studio-side transcript for this Grok session. Grok's on-disk session is
+   * often gone after Stop (Path not found on session/load). When recycle falls
+   * back to a blank session/new, the next prompt rehydrates from this log.
+   */
+  conversationLog: Array<GrokConversationTurn>;
+  /** After recycle landed on a different session id, rehydrate once. */
+  needsContextRehydration: boolean;
+}
+
+export type GrokConversationTurn = {
+  readonly role: "user" | "assistant";
+  readonly text: string;
+};
+
+/** Append streamed/user text into a role-merged conversation log. Exported for tests. */
+export function appendGrokConversationText(
+  log: ReadonlyArray<GrokConversationTurn>,
+  role: GrokConversationTurn["role"],
+  text: string,
+): Array<GrokConversationTurn> {
+  // Assistant deltas are raw stream chunks (preserve spaces). User lines trim.
+  const nextText = role === "assistant" ? text : text.trim();
+  if (nextText.length === 0) {
+    return [...log];
+  }
+  const last = log[log.length - 1];
+  if (last && last.role === role) {
+    const separator = role === "assistant" ? "" : "\n";
+    return [...log.slice(0, -1), { role, text: `${last.text}${separator}${nextText}` }];
+  }
+  return [...log, { role, text: nextText }];
+}
+
+/**
+ * Build a prompt prefix that restores Studio-known history when the provider
+ * session could not be resumed. Exported for tests.
+ */
+export function buildGrokContextRehydrationPrefix(
+  log: ReadonlyArray<GrokConversationTurn>,
+  maxChars = GROK_CONTEXT_REHYDRATION_MAX_CHARS,
+): string | undefined {
+  if (log.length === 0 || maxChars <= 0) {
+    return undefined;
+  }
+  const lines: string[] = [];
+  let used = 0;
+  for (let index = log.length - 1; index >= 0; index -= 1) {
+    const turn = log[index];
+    if (!turn) continue;
+    const label = turn.role === "user" ? "User" : "Assistant";
+    const block = `${label}:\n${turn.text}`;
+    const cost = block.length + (lines.length > 0 ? 2 : 0);
+    if (used + cost > maxChars && lines.length > 0) {
+      break;
+    }
+    if (used + cost > maxChars) {
+      const remaining = Math.max(0, maxChars - used - `${label}:\n`.length - 20);
+      lines.unshift(`${label}:\n${turn.text.slice(-remaining)}\n…`);
+      break;
+    }
+    lines.unshift(block);
+    used += cost;
+  }
+  if (lines.length === 0) {
+    return undefined;
+  }
+  return [
+    "The previous Grok provider session was interrupted and could not be resumed (common after Stop).",
+    "Here is the conversation so far from Toolport Studio. Treat it as your memory of this thread and continue without asking the user to restate it.",
+    "",
+    lines.join("\n\n"),
+    "",
+    "---",
+    "Latest user message:",
+    "",
+  ].join("\n");
 }
 
 export function buildGrokImagePromptPart(input: {
@@ -867,6 +946,13 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               }
               case "ContentDelta":
                 ctx.turnVisibleUpdateCount += 1;
+                if (event.text.length > 0) {
+                  ctx.conversationLog = appendGrokConversationText(
+                    ctx.conversationLog,
+                    "assistant",
+                    event.text,
+                  );
+                }
                 yield* offerRuntimeEvent(
                   makeAcpContentDeltaEvent({
                     stamp,
@@ -1084,6 +1170,22 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         ctx.lastTurnActivityAtMs = Date.now();
         ctx.openToolCallIds = new Set();
         ctx.lastOpenToolTitle = undefined;
+        // Same session id ⇒ load restored Grok history. Different id ⇒ blank
+        // session/new; rehydrate from Studio transcript on the next prompt.
+        if (previousSessionId === undefined || recycled.started.sessionId !== previousSessionId) {
+          ctx.needsContextRehydration = true;
+          yield* Effect.logWarning(
+            "Grok ACP recycle started a new session; next turn will rehydrate Studio transcript",
+            {
+              threadId: ctx.threadId,
+              previousSessionId,
+              newSessionId: recycled.started.sessionId,
+              conversationTurns: ctx.conversationLog.length,
+            },
+          );
+        } else {
+          ctx.needsContextRehydration = false;
+        }
         // Generation already bumped in dispose; start consumer on the new process.
         ctx.notificationFiber = yield* startNotificationFiber(ctx);
         ctx.acpDisposed = false;
@@ -1234,6 +1336,8 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             lastOpenToolTitle: undefined,
             notificationGeneration: 0,
             acpDisposed: false,
+            conversationLog: [],
+            needsContextRehydration: false,
           };
 
           ctx.notificationFiber = yield* startNotificationFiber(ctx);
@@ -1350,8 +1454,26 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                     });
                   }),
               );
+              // When Stop forced a blank session/new, inject Studio-side history
+              // so Grok still has prior turns (session/load often Path not found).
+              const rehydrationPrefix =
+                steeringTurnId === undefined && ctx.needsContextRehydration
+                  ? buildGrokContextRehydrationPrefix(ctx.conversationLog)
+                  : undefined;
+              if (steeringTurnId === undefined && ctx.needsContextRehydration) {
+                ctx.needsContextRehydration = false;
+              }
+              const promptText =
+                text && rehydrationPrefix
+                  ? `${rehydrationPrefix}${text}`
+                  : rehydrationPrefix
+                    ? `${rehydrationPrefix}(continue)`
+                    : text;
+              if (steeringTurnId === undefined && text) {
+                ctx.conversationLog = appendGrokConversationText(ctx.conversationLog, "user", text);
+              }
               const promptParts: Array<EffectAcpSchema.ContentBlock> = [
-                ...(text ? [{ type: "text" as const, text }] : []),
+                ...(promptText ? [{ type: "text" as const, text: promptText }] : []),
                 ...imagePromptParts,
               ];
 

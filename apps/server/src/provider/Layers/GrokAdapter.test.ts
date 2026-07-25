@@ -27,6 +27,8 @@ import {
 
 import { ServerConfig } from "../../config.ts";
 import {
+  appendGrokConversationText,
+  buildGrokContextRehydrationPrefix,
   buildGrokImagePromptPart,
   grokPromptSettlementBelongsToContext,
   makeGrokAdapter,
@@ -98,6 +100,28 @@ const makeMockTestAdapter = (
   const { binaryPath, environment } = makeMockGrokBinaryAndEnv(extraEnv);
   return makeTestAdapter(binaryPath, { ...options, environment });
 };
+
+it("merges consecutive conversation turns of the same role", () => {
+  const withUser = appendGrokConversationText([], "user", "hello");
+  const withAssistant = appendGrokConversationText(withUser, "assistant", "hi ");
+  const withMoreAssistant = appendGrokConversationText(withAssistant, "assistant", "there");
+  assert.deepStrictEqual(withMoreAssistant, [
+    { role: "user", text: "hello" },
+    { role: "assistant", text: "hi there" },
+  ]);
+});
+
+it("builds a rehydration prefix from Studio-side conversation history", () => {
+  const prefix = buildGrokContextRehydrationPrefix([
+    { role: "user", text: "Secret code is zebra-42" },
+    { role: "assistant", text: "Got it, zebra-42." },
+  ]);
+  assert.isString(prefix);
+  assert.include(prefix ?? "", "Secret code is zebra-42");
+  assert.include(prefix ?? "", "Got it, zebra-42.");
+  assert.include(prefix ?? "", "Latest user message:");
+  assert.isUndefined(buildGrokContextRehydrationPrefix([]));
+});
 
 it("requires a settlement to match the live Grok turn", () => {
   const staleTurnId = TurnId.make("stale-turn");
@@ -1162,6 +1186,92 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
 
       yield* adapter.stopSession(threadId);
     }),
+  );
+
+  it.effect("rehydrates Studio transcript after Stop when session/load is gone", () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("grok-rehydrate-after-stop");
+      const tempDir = yield* Effect.promise(() =>
+        NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "grok-rehydrate-")),
+      );
+      const requestLogPath = NodePath.join(tempDir, "requests.ndjson");
+      // Load always fails after recycle → blank session/new → must rehydrate.
+      const adapter = yield* makeMockTestAdapter({
+        T3_ACP_HANG_PROMPT_TEXT: "hang forever",
+        T3_ACP_FAIL_LOAD_SESSION_NOT_FOUND: "1",
+        T3_ACP_REQUEST_LOG_PATH: requestLogPath,
+      });
+
+      const runtimeEvents: ProviderRuntimeEvent[] = [];
+      const hangTurnStarted = yield* Deferred.make<TurnId>();
+      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          runtimeEvents.push(event);
+        }).pipe(
+          Effect.andThen(
+            event.type === "turn.started" &&
+              event.turnId !== undefined &&
+              String(event.threadId) === String(threadId) &&
+              // First completed turn is the seed; hang is the second turn.started
+              runtimeEvents.some(
+                (entry) =>
+                  entry.type === "turn.completed" && String(entry.threadId) === String(threadId),
+              )
+              ? Deferred.succeed(hangTurnStarted, event.turnId).pipe(Effect.asVoid)
+              : Effect.void,
+          ),
+        ),
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("grok"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+
+      yield* adapter.sendTurn({
+        threadId,
+        input: "Secret code is zebra-42",
+        attachments: [],
+      });
+
+      const hangFiber = yield* adapter
+        .sendTurn({
+          threadId,
+          input: "hang forever",
+          attachments: [],
+        })
+        .pipe(Effect.forkChild);
+      const hangTurnId = yield* Deferred.await(hangTurnStarted).pipe(Effect.timeout("3 seconds"));
+      yield* adapter.interruptTurn(threadId, hangTurnId).pipe(Effect.timeout("3 seconds"));
+      yield* Fiber.join(hangFiber).pipe(Effect.timeout("3 seconds"), Effect.ignore);
+
+      yield* adapter
+        .sendTurn({
+          threadId,
+          input: "What was the secret code?",
+          attachments: [],
+        })
+        .pipe(Effect.timeout("10 seconds"));
+
+      yield* waitForFileContent(requestLogPath, 80, "Secret code is zebra-42");
+      const requests = yield* Effect.promise(() => readJsonLines(requestLogPath));
+      const followUpPrompt = requests.find((entry) => {
+        if (entry.method !== "session/prompt") return false;
+        const params = entry.params;
+        if (typeof params !== "object" || params === null || !("prompt" in params)) return false;
+        const prompt = (params as { prompt?: unknown }).prompt;
+        return JSON.stringify(prompt).includes("Secret code is zebra-42");
+      });
+      assert.isDefined(
+        followUpPrompt,
+        "expected follow-up session/prompt to rehydrate prior user secret",
+      );
+
+      yield* Fiber.interrupt(runtimeEventsFiber);
+      yield* adapter.stopSession(threadId);
+    }).pipe(TestClock.withLive),
   );
 
   it.effect("rejects startSession when provider mismatches", () =>
