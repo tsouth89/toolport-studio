@@ -71,6 +71,45 @@ const isCodexResumeCursorSchema = Schema.is(CodexResumeCursorSchema);
 
 const PROVIDER = ProviderDriverKind.make("codex");
 
+function codexMcpLaunchOptions(
+  bindings: ReadonlyArray<McpProviderSession.McpProviderBinding>,
+  baseEnvironment: NodeJS.ProcessEnv,
+): {
+  readonly environment: NodeJS.ProcessEnv;
+  readonly appServerArgs: ReadonlyArray<string>;
+} {
+  const environment = { ...baseEnvironment };
+  const appServerArgs: Array<string> = [];
+
+  bindings.forEach((binding, index) => {
+    const prefix = `mcp_servers.${binding.name}`;
+    if (binding.transport === "stdio") {
+      appServerArgs.push("-c", `${prefix}.command=${JSON.stringify(binding.command)}`);
+      if (binding.args.length > 0) {
+        appServerArgs.push("-c", `${prefix}.args=${JSON.stringify(binding.args)}`);
+      }
+      for (const [name, value] of Object.entries(binding.env)) {
+        appServerArgs.push("-c", `${prefix}.env.${name}=${JSON.stringify(value)}`);
+      }
+      return;
+    }
+
+    appServerArgs.push("-c", `${prefix}.url=${JSON.stringify(binding.url)}`);
+    const authorization = binding.headers.Authorization;
+    const bearerToken = authorization?.match(/^Bearer\s+(.+)$/i)?.[1];
+    if (bearerToken) {
+      const tokenEnvironmentName = `TOOLPORT_STUDIO_MCP_BEARER_TOKEN_${index}`;
+      environment[tokenEnvironmentName] = bearerToken;
+      appServerArgs.push(
+        "-c",
+        `${prefix}.bearer_token_env_var=${JSON.stringify(tokenEnvironmentName)}`,
+      );
+    }
+  });
+
+  return { environment, appServerArgs };
+}
+
 export interface CodexAdapterLiveOptions {
   readonly instanceId?: ProviderInstanceId;
   readonly environment?: NodeJS.ProcessEnv;
@@ -1394,7 +1433,14 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           input.modelSelection?.instanceId === boundInstanceId
             ? getCodexServiceTierOptionValue(input.modelSelection)
             : undefined;
-        const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
+        const mcpBindings = McpProviderSession.readMcpProviderBindings(
+          input.threadId,
+          options?.environment ?? process.env,
+        );
+        const mcpLaunchOptions =
+          mcpBindings.length > 0
+            ? codexMcpLaunchOptions(mcpBindings, options?.environment ?? process.env)
+            : undefined;
         const runtimeInput: CodexSessionRuntimeOptions = {
           threadId: input.threadId,
           providerInstanceId: boundInstanceId,
@@ -1411,20 +1457,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
             ? { model: input.modelSelection.model }
             : {}),
           ...(serviceTier ? { serviceTier } : {}),
-          ...(mcpSession
-            ? {
-                environment: {
-                  ...(options?.environment ?? process.env),
-                  T3_MCP_BEARER_TOKEN: mcpSession.authorizationHeader.replace(/^Bearer\s+/, ""),
-                },
-                appServerArgs: [
-                  "-c",
-                  `mcp_servers.t3-code.url=${mcpSession.endpoint}`,
-                  "-c",
-                  'mcp_servers.t3-code.bearer_token_env_var="T3_MCP_BEARER_TOKEN"',
-                ],
-              }
-            : {}),
+          ...(mcpLaunchOptions ?? {}),
         };
         const sessionScope = yield* Scope.make("sequential");
         let sessionScopeTransferred = false;

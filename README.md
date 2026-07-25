@@ -1,92 +1,47 @@
-# T3 Code
+# Toolport Studio
 
-T3 Code is a minimal web GUI for coding agents (currently Codex, Claude, Cursor, and OpenCode, more coming soon).
+**One workspace for every AI coding agent.**
 
-## Installation
+Toolport Studio is a desktop workspace for using Codex, Claude, Cursor, Grok,
+and OpenCode through their installed subscription-backed CLIs. It combines
+conversation, projects, terminals, previews, screenshots, and provider
+switching in one application.
 
-> [!WARNING]
-> T3 Code currently supports Codex, Claude, Cursor, and OpenCode.
-> Install and authenticate at least one provider before use:
->
-> - Codex: install [Codex CLI](https://developers.openai.com/codex/cli) and run `codex login`
-> - Claude: install [Claude Code](https://claude.com/product/claude-code) and run `claude auth login`
-> - Cursor: install [Cursor CLI](https://cursor.com/cli) and run `cursor-agent login`
-> - OpenCode: install [OpenCode](https://opencode.ai) and run `opencode auth login`
+Toolport Studio is built on the open-source
+[T3 Code](https://github.com/pingdotgg/t3code) project and is currently under
+active development.
 
-### Run without installing
+## Product family
 
-```bash
-npx t3@latest
-```
+- [Toolport](https://toolport.app) is the MCP control plane. Studio discovers
+  its local gateway and makes the same scoped tools available to every provider.
+- [Ceiling](https://github.com/tsouth89/ceiling) supplies provider usage,
+  quota, reset-window, spend, and activity intelligence.
+- [Toolport Studio](https://toolport.studio) is the workspace where those
+  providers and tools come together.
 
-Tip: Use `npx t3@latest --help` for the full CLI reference.
+## Current foundation
 
-### Desktop app
+- Subscription-backed Codex, Claude, Cursor, Grok, and OpenCode adapters
+- Pasted screenshot and image support for Grok
+- Internal preview automation MCP server
+- Automatic discovery of Toolport's published gateway on Windows
+- Multi-binding MCP injection through stdio or Streamable HTTP
+- Stable Toolport client identity: `toolport-studio`
 
-Install the latest version of the desktop app from [GitHub Releases](https://github.com/pingdotgg/t3code/releases), or from your favorite package registry:
+## Development
 
-#### Windows (`winget`)
-
-```bash
-winget install T3Tools.T3Code
-```
-
-#### macOS (Homebrew)
-
-```bash
-brew install --cask t3-code
-```
-
-#### Arch Linux (AUR)
-
-```bash
-yay -S t3code-bin
-```
-
-## Some notes
-
-We are very very early in this project. Expect bugs.
-
-We are not accepting contributions yet.
-
-There's no public docs site yet, checkout the miscellaneous markdown files in [docs](./docs).
-
-## Documentation
-
-- [Getting started](./docs/getting-started/quick-start.md)
-- [Remote access](./docs/user/remote-access.md)
-- [Keeping T3 Code in sync](./docs/user/server-updates.md)
-- [Architecture overview](./docs/architecture/overview.md)
-- [Provider guides](./docs/providers/codex.md)
-- [Operations](./docs/operations/ci.md)
-- [Reference](./docs/reference/encyclopedia.md)
-
-## If you REALLY want to contribute still.... read this first
-
-### Install `vp`
-
-T3 Code uses Vite+ so you'll need to install the global `vp` command-line tool.
-
-#### macOS / Linux
-
-```bash
-curl -fsSL https://vite.plus | bash
-```
-
-#### Windows
-
-```bash
-irm https://vite.plus/ps1 | iex
-```
-
-Checkout their getting started guide for more information: https://viteplus.dev/guide/
-
-### Install dependencies
+Toolport Studio uses [Vite+](https://viteplus.dev/guide/).
 
 ```bash
 vp i
+vp dev
 ```
 
-Read [CONTRIBUTING.md](./CONTRIBUTING.md) before opening an issue or PR.
+The project retains T3 Code's internal storage keys and protocol identifiers
+for migration compatibility while presenting the Toolport Studio product name
+in the desktop and web clients.
 
-Need support? Join the [Discord](https://discord.gg/jn4EGJjrvv).
+## License
+
+MIT. See [LICENSE](./LICENSE).
