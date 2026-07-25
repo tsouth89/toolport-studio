@@ -1,3 +1,5 @@
+import { useAtomValue } from "@effect/atom-react";
+import { isAtomCommandInterrupted } from "@t3tools/client-runtime/state/runtime";
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { LinkIcon, PlusIcon, RotateCcwIcon } from "lucide-react";
@@ -14,10 +16,19 @@ import {
   useProjects,
   useThreadShells,
 } from "../state/entities";
-import { useEnvironments } from "../state/environments";
+import { useEnvironments, usePrimaryEnvironmentId } from "../state/environments";
+import { projectEnvironment } from "../state/projects";
+import { primaryServerProvidersAtom } from "../state/server";
+import { useAtomCommand } from "../state/use-atom-command";
 import { APP_DISPLAY_NAME } from "~/branding";
 import { hasCloudPublicConfig } from "~/cloud/publicConfig";
-import { cn } from "~/lib/utils";
+import {
+  GENERAL_CHAT_TITLE,
+  GENERAL_CHAT_WORKSPACE_ROOT,
+  isGeneralChatProject,
+} from "~/lib/generalChat";
+import { resolveDefaultProviderModelSelection } from "~/providerInstances";
+import { cn, newProjectId } from "~/lib/utils";
 import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "~/workspaceTitlebar";
 
 function ChatIndexRouteView() {
@@ -34,13 +45,18 @@ function ChatIndexRouteView() {
 /**
  * Landing on the index route drops straight into a draft thread for the most
  * recently active project, so the first screen is a prompt instead of a dead
- * end. Falls back to an add-project hero when no project exists yet.
+ * end. When no project exists yet, auto-create the system General chat
+ * workspace (SOU-357) instead of forcing "Add project".
  */
 function IndexDraftLanding() {
   const projects = useProjects();
   const threads = useThreadShells();
   const bootstrapped = useAllEnvironmentShellsBootstrapped();
   const handleNewThread = useNewThreadHandler();
+  const primaryEnvironmentId = usePrimaryEnvironmentId();
+  const { environments } = useEnvironments();
+  const providers = useAtomValue(primaryServerProvidersAtom);
+  const createProject = useAtomCommand(projectEnvironment.create, { reportFailure: false });
   const startingRef = useRef(false);
   const [startState, setStartState] = useState({ failed: false, retryRequest: 0 });
 
@@ -52,26 +68,97 @@ function IndexDraftLanding() {
     [bootstrapped, projects, threads],
   );
 
+  const existingGeneralProject = useMemo(
+    () => projects.find((project) => isGeneralChatProject(project)) ?? null,
+    [projects],
+  );
+
   useEffect(() => {
-    if (mostRecentProject === null || startingRef.current) {
+    if (!bootstrapped || startingRef.current) {
       return;
     }
+
+    if (mostRecentProject !== null) {
+      startingRef.current = true;
+      void handleNewThread(scopeProjectRef(mostRecentProject.environmentId, mostRecentProject.id), {
+        replace: true,
+      }).catch(() => {
+        startingRef.current = false;
+        setStartState((state) => ({ ...state, failed: true }));
+      });
+      return;
+    }
+
+    // No projects yet: open General chat (create if needed) so the home
+    // screen is a composer, not an Add project wall.
+    const environmentId =
+      existingGeneralProject?.environmentId ??
+      primaryEnvironmentId ??
+      environments[0]?.environmentId ??
+      null;
+    if (environmentId === null) {
+      return;
+    }
+
     startingRef.current = true;
-    void handleNewThread(scopeProjectRef(mostRecentProject.environmentId, mostRecentProject.id), {
-      replace: true,
-    }).catch(() => {
-      startingRef.current = false;
-      setStartState((state) => ({ ...state, failed: true }));
-    });
-  }, [handleNewThread, mostRecentProject, startState.retryRequest]);
+    void (async () => {
+      try {
+        let projectId = existingGeneralProject?.id;
+        if (projectId === undefined) {
+          projectId = newProjectId();
+          const targetEnvironmentProviders =
+            environments.find((environment) => environment.environmentId === environmentId)
+              ?.serverConfig?.providers ?? providers;
+          const createResult = await createProject({
+            environmentId,
+            input: {
+              projectId,
+              title: GENERAL_CHAT_TITLE,
+              workspaceRoot: GENERAL_CHAT_WORKSPACE_ROOT,
+              createWorkspaceRootIfMissing: true,
+              defaultModelSelection: resolveDefaultProviderModelSelection(
+                targetEnvironmentProviders,
+                null,
+              ),
+            },
+          });
+          if (createResult._tag === "Failure") {
+            if (!isAtomCommandInterrupted(createResult)) {
+              startingRef.current = false;
+              setStartState((state) => ({ ...state, failed: true }));
+            }
+            return;
+          }
+        }
+        await handleNewThread(scopeProjectRef(environmentId, projectId), {
+          replace: true,
+          envMode: "local",
+        });
+      } catch {
+        startingRef.current = false;
+        setStartState((state) => ({ ...state, failed: true }));
+      }
+    })();
+  }, [
+    bootstrapped,
+    createProject,
+    environments,
+    existingGeneralProject,
+    handleNewThread,
+    mostRecentProject,
+    primaryEnvironmentId,
+    providers,
+    startState.retryRequest,
+  ]);
 
   if (!bootstrapped) {
     return null;
   }
-  if (mostRecentProject !== null) {
+  if (mostRecentProject !== null || existingGeneralProject !== null || primaryEnvironmentId) {
     return startState.failed ? (
       <DraftStartError
         onRetry={() => {
+          startingRef.current = false;
           setStartState((state) => ({
             failed: false,
             retryRequest: state.retryRequest + 1,
@@ -117,9 +204,12 @@ function NoProjectsHero() {
                 What should we work on?
               </EmptyTitle>
               <EmptyDescription className="mt-2 text-sm text-muted-foreground/78">
-                Add a project to start your first thread.
+                Connect an environment, then start chatting. You can attach a folder anytime.
               </EmptyDescription>
-              <div className="mt-6 flex justify-center">
+              <div className="mt-6 flex justify-center gap-2">
+                <Button render={<Link to="/settings/connections" />} size="sm" variant="outline">
+                  Connections
+                </Button>
                 <Button size="sm" onClick={openAddProject}>
                   <PlusIcon className="size-4" />
                   Add project
