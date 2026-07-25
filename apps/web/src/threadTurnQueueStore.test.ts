@@ -1,4 +1,5 @@
 import { describe, expect, it, beforeEach } from "vite-plus/test";
+import { ThreadId } from "@t3tools/contracts";
 
 import { resolveComposerSubmitIntent, useThreadTurnQueueStore } from "./threadTurnQueueStore";
 
@@ -92,5 +93,72 @@ describe("useThreadTurnQueueStore", () => {
         .list(threadId)
         .map((item) => item.text),
     ).toEqual(["first-retry", "second"]);
+  });
+
+  it("preserves every composer context while a turn waits in the queue", () => {
+    const threadId = ThreadId.make("thread-with-context");
+    const terminalContext = {
+      id: "terminal-context",
+      threadId,
+      createdAt: "2026-07-25T20:00:00.000Z",
+      terminalId: "terminal-1",
+      terminalLabel: "PowerShell",
+      lineStart: 1,
+      lineEnd: 1,
+      text: "vp test run",
+    };
+    const elementContext = {
+      id: "element-context",
+      threadId,
+      pickedAt: "2026-07-25T20:00:00.000Z",
+      pageUrl: "http://localhost:3773",
+      pageTitle: "Toolport Studio",
+      tagName: "button",
+      selector: "#send",
+      htmlPreview: "<button>Send</button>",
+      componentName: "SendButton",
+      source: null,
+      styles: "",
+    };
+    const previewAnnotation = {
+      id: "preview-annotation",
+      pageUrl: "http://localhost:3773",
+      pageTitle: "Toolport Studio",
+      comment: "Fix this",
+      elements: [],
+      regions: [],
+      strokes: [],
+      styleChanges: [],
+      screenshot: null,
+      createdAt: "2026-07-25T20:00:00.000Z",
+    };
+    const reviewComment = {
+      id: "review-comment",
+      sectionId: "file:src/app.ts",
+      sectionTitle: "File comment",
+      filePath: "src/app.ts",
+      startIndex: 0,
+      endIndex: 0,
+      rangeLabel: "L1",
+      text: "Check this",
+      diff: "+const fixed = true;",
+    };
+
+    useThreadTurnQueueStore.getState().enqueue(threadId, {
+      text: "Use the attached context",
+      images: [],
+      terminalContexts: [terminalContext],
+      elementContexts: [elementContext],
+      previewAnnotations: [previewAnnotation],
+      reviewComments: [reviewComment],
+    });
+
+    const queued = useThreadTurnQueueStore.getState().dequeue(threadId);
+    expect(queued).toMatchObject({
+      terminalContexts: [terminalContext],
+      elementContexts: [elementContext],
+      previewAnnotations: [previewAnnotation],
+      reviewComments: [reviewComment],
+    });
   });
 });

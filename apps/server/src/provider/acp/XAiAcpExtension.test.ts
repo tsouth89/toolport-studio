@@ -367,6 +367,7 @@ describe("XAiAcpExtension", () => {
         start: () =>
           Effect.succeed({
             sessionId: "mock-session-1",
+            resumedExistingSession: false,
           } as AcpSessionRuntime.AcpSessionRuntimeStartResult),
         prompt: () =>
           Effect.gen(function* () {

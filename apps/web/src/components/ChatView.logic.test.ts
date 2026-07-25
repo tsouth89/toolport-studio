@@ -25,6 +25,7 @@ import {
   reconcileRetainedMountedThreadIds,
   resolveThreadMetadataUpdateForNextTurn,
   resolveSendEnvMode,
+  shouldAutoDrainQueuedTurn,
   shouldShowBranchMismatchBanner,
   shouldWriteThreadErrorToCurrentServerThread,
 } from "./ChatView.logic";
@@ -33,6 +34,32 @@ const environmentId = EnvironmentId.make("environment-local");
 const projectId = ProjectId.make("project-1");
 const threadId = ThreadId.make("thread-1");
 const now = "2026-03-29T00:00:00.000Z";
+
+describe("shouldAutoDrainQueuedTurn", () => {
+  const ready = {
+    queueCount: 1,
+    phase: "ready" as const,
+    queueFlushInFlight: false,
+    sendInFlight: false,
+    isSendBusy: false,
+    isConnecting: false,
+    composerHasDraftContent: false,
+  };
+
+  it("drains when the provider is ready even if a stale turn projection has not settled", () => {
+    expect(shouldAutoDrainQueuedTurn(ready)).toBe(true);
+  });
+
+  it("waits while a new composer draft would be overwritten", () => {
+    expect(shouldAutoDrainQueuedTurn({ ...ready, composerHasDraftContent: true })).toBe(false);
+  });
+
+  it("waits while the live turn or another dispatch is active", () => {
+    expect(shouldAutoDrainQueuedTurn({ ...ready, phase: "running" })).toBe(false);
+    expect(shouldAutoDrainQueuedTurn({ ...ready, sendInFlight: true })).toBe(false);
+    expect(shouldAutoDrainQueuedTurn({ ...ready, queueFlushInFlight: true })).toBe(false);
+  });
+});
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
   return {
@@ -599,7 +626,7 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
     expect(hasServerAcknowledgedLocalDispatch({ ...common, threadError: "failed" })).toBe(true);
   });
 
-  it("acknowledges a turn requested after the local dispatch started", () => {
+  it("acknowledges a turn projection created after the local dispatch started", () => {
     const localDispatch = createLocalDispatchSnapshot(
       makeThread({ latestTurn: completedTurn, session: readySession }),
     );
@@ -609,7 +636,7 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
       requestedAt: "2099-01-01T00:00:01.000Z",
       startedAt: null,
       completedAt: null,
-      state: "requested" as const,
+      state: "running" as const,
     };
 
     expect(

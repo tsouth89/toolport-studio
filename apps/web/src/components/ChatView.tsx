@@ -8,6 +8,7 @@ import {
   type ProjectScript,
   type ProjectId,
   type ProviderApprovalDecision,
+  type PreviewAnnotationPayload,
   ProviderInstanceId,
   type ServerProvider,
   type ResolvedKeybindingsConfig,
@@ -268,6 +269,7 @@ import {
   resolveSendEnvMode,
   revokeBlobPreviewUrl,
   revokeUserMessagePreviewUrls,
+  shouldAutoDrainQueuedTurn,
   waitForStartedServerThread,
 } from "./ChatView.logic";
 import { useLocalStorage } from "~/hooks/useLocalStorage";
@@ -1269,6 +1271,8 @@ function ChatViewContent(props: ChatViewProps) {
   const composerImagesRef = useRef<ComposerImageAttachment[]>([]);
   const composerTerminalContextsRef = useRef<TerminalContextDraft[]>([]);
   const composerElementContextsRef = useRef<ElementContextDraft[]>([]);
+  const composerPreviewAnnotationsRef = useRef<PreviewAnnotationPayload[]>([]);
+  const composerReviewCommentsRef = useRef<ReviewCommentContext[]>([]);
   const localComposerRef = useRef<ChatComposerHandle | null>(null);
   const composerRef = useComposerHandleContext() ?? localComposerRef;
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
@@ -4537,7 +4541,7 @@ function ChatViewContent(props: ChatViewProps) {
     const submitIntent = resolveComposerSubmitIntent({
       phase,
       ctrlOrMetaKey: options?.ctrlOrMetaKey ?? false,
-      explicitIntent: options?.intent,
+      ...(options?.intent === undefined ? {} : { explicitIntent: options.intent }),
     });
     // While a turn is live, default Send/Enter queues the next turn. "Send now"
     // (composer button or queue-item action) steers into the live turn. Stop
@@ -4549,12 +4553,18 @@ function ChatViewContent(props: ChatViewProps) {
       useThreadTurnQueueStore.getState().enqueue(activeThread.id, {
         text: promptForSend,
         images: composerImages.map((image) => ({ ...image })),
+        terminalContexts: sendableComposerTerminalContexts.map((context) => ({ ...context })),
+        elementContexts: composerElementContexts.map((context) => ({ ...context })),
+        previewAnnotations: composerPreviewAnnotations.map((annotation) => ({ ...annotation })),
+        reviewComments: composerReviewComments.map((comment) => ({ ...comment })),
       });
       promptRef.current = "";
       clearComposerDraftContent(composerDraftTarget);
       composerImagesRef.current = [];
       composerTerminalContextsRef.current = [];
       composerElementContextsRef.current = [];
+      composerPreviewAnnotationsRef.current = [];
+      composerReviewCommentsRef.current = [];
       composerRef.current?.resetCursorState();
       return true;
     }
@@ -4963,10 +4973,16 @@ function ChatViewContent(props: ChatViewProps) {
       if (item.images.length > 0) {
         addComposerDraftImages(composerDraftTarget, [...item.images]);
       }
+      setComposerDraftTerminalContexts(composerDraftTarget, [...item.terminalContexts]);
+      setComposerDraftElementContexts(composerDraftTarget, [...item.elementContexts]);
+      setComposerDraftPreviewAnnotations(composerDraftTarget, [...item.previewAnnotations]);
+      setComposerDraftReviewComments(composerDraftTarget, [...item.reviewComments]);
       promptRef.current = item.text;
       composerImagesRef.current = [...item.images];
-      composerTerminalContextsRef.current = [];
-      composerElementContextsRef.current = [];
+      composerTerminalContextsRef.current = [...item.terminalContexts];
+      composerElementContextsRef.current = [...item.elementContexts];
+      composerPreviewAnnotationsRef.current = [...item.previewAnnotations];
+      composerReviewCommentsRef.current = [...item.reviewComments];
       composerRef.current?.resetCursorState({
         prompt: item.text,
         cursor: item.text.length,
@@ -4981,7 +4997,11 @@ function ChatViewContent(props: ChatViewProps) {
       clearComposerDraftContent,
       composerDraftTarget,
       phase,
+      setComposerDraftElementContexts,
+      setComposerDraftPreviewAnnotations,
       setComposerDraftPrompt,
+      setComposerDraftReviewComments,
+      setComposerDraftTerminalContexts,
     ],
   );
 
@@ -4991,16 +5011,18 @@ function ChatViewContent(props: ChatViewProps) {
       return;
     }
     if (
-      queueFlushInFlightRef.current ||
-      sendInFlightRef.current ||
-      isSendBusy ||
-      isConnecting ||
-      phase === "running" ||
-      !latestTurnSettled
+      !shouldAutoDrainQueuedTurn({
+        queueCount: activeThreadQueueCount,
+        phase,
+        queueFlushInFlight: queueFlushInFlightRef.current,
+        sendInFlight: sendInFlightRef.current,
+        isSendBusy,
+        isConnecting,
+        // Never overwrite a new draft the user started while the queued
+        // turn was waiting. The queue remains visible for explicit sending.
+        composerHasDraftContent,
+      })
     ) {
-      return;
-    }
-    if (activeThreadQueueCount === 0) {
       return;
     }
     const next = useThreadTurnQueueStore.getState().dequeue(activeThreadId);
@@ -5013,10 +5035,16 @@ function ChatViewContent(props: ChatViewProps) {
     if (next.images.length > 0) {
       addComposerDraftImages(composerDraftTarget, [...next.images]);
     }
+    setComposerDraftTerminalContexts(composerDraftTarget, [...next.terminalContexts]);
+    setComposerDraftElementContexts(composerDraftTarget, [...next.elementContexts]);
+    setComposerDraftPreviewAnnotations(composerDraftTarget, [...next.previewAnnotations]);
+    setComposerDraftReviewComments(composerDraftTarget, [...next.reviewComments]);
     promptRef.current = next.text;
     composerImagesRef.current = [...next.images];
-    composerTerminalContextsRef.current = [];
-    composerElementContextsRef.current = [];
+    composerTerminalContextsRef.current = [...next.terminalContexts];
+    composerElementContextsRef.current = [...next.elementContexts];
+    composerPreviewAnnotationsRef.current = [...next.previewAnnotations];
+    composerReviewCommentsRef.current = [...next.reviewComments];
     composerRef.current?.resetCursorState({
       prompt: next.text,
       cursor: next.text.length,
@@ -5033,12 +5061,16 @@ function ChatViewContent(props: ChatViewProps) {
     activeThreadQueueCount,
     addComposerDraftImages,
     clearComposerDraftContent,
+    composerHasDraftContent,
     composerDraftTarget,
     isConnecting,
     isSendBusy,
-    latestTurnSettled,
     phase,
+    setComposerDraftElementContexts,
+    setComposerDraftPreviewAnnotations,
     setComposerDraftPrompt,
+    setComposerDraftReviewComments,
+    setComposerDraftTerminalContexts,
   ]);
 
   const onRespondToApproval = useCallback(
@@ -6104,6 +6136,8 @@ function ChatViewContent(props: ChatViewProps) {
                             composerImagesRef={composerImagesRef}
                             composerTerminalContextsRef={composerTerminalContextsRef}
                             composerElementContextsRef={composerElementContextsRef}
+                            composerPreviewAnnotationsRef={composerPreviewAnnotationsRef}
+                            composerReviewCommentsRef={composerReviewCommentsRef}
                             onSend={onSend}
                             onInterrupt={onInterrupt}
                             onImplementPlanInNewThread={onImplementPlanInNewThread}

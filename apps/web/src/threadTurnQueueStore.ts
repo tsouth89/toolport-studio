@@ -1,8 +1,11 @@
 import { create } from "zustand";
 
-import type { ThreadId } from "@t3tools/contracts";
+import type { PreviewAnnotationPayload, ThreadId } from "@t3tools/contracts";
 
 import type { ComposerImageAttachment } from "./composerDraftStore";
+import type { ElementContextDraft } from "./lib/elementContext";
+import type { TerminalContextDraft } from "./lib/terminalContext";
+import type { ReviewCommentContext } from "./reviewCommentContext";
 
 /**
  * In-memory per-thread queue for turns composed while the provider is still
@@ -13,6 +16,10 @@ export interface ThreadQueuedTurn {
   readonly id: string;
   readonly text: string;
   readonly images: ReadonlyArray<ComposerImageAttachment>;
+  readonly terminalContexts: ReadonlyArray<TerminalContextDraft>;
+  readonly elementContexts: ReadonlyArray<ElementContextDraft>;
+  readonly previewAnnotations: ReadonlyArray<PreviewAnnotationPayload>;
+  readonly reviewComments: ReadonlyArray<ReviewCommentContext>;
   readonly createdAt: string;
 }
 
@@ -23,6 +30,10 @@ export interface ThreadTurnQueueState {
     item: {
       readonly text: string;
       readonly images: ReadonlyArray<ComposerImageAttachment>;
+      readonly terminalContexts?: ReadonlyArray<TerminalContextDraft>;
+      readonly elementContexts?: ReadonlyArray<ElementContextDraft>;
+      readonly previewAnnotations?: ReadonlyArray<PreviewAnnotationPayload>;
+      readonly reviewComments?: ReadonlyArray<ReviewCommentContext>;
       readonly id?: string;
     },
     options?: { readonly front?: boolean },
@@ -39,11 +50,11 @@ const threadKey = (threadId: ThreadId | string): string => String(threadId);
 /** Stable empty list so React selectors never allocate a new [] every render. */
 export const EMPTY_THREAD_TURN_QUEUE: ReadonlyArray<ThreadQueuedTurn> = [];
 
+let queuedTurnSequence = 0;
+
 const newQueuedTurnId = (): string => {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID();
-  }
-  return `queued-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  queuedTurnSequence = (queuedTurnSequence + 1) % Number.MAX_SAFE_INTEGER;
+  return `queued-${Date.now()}-${queuedTurnSequence}`;
 };
 
 export const useThreadTurnQueueStore = create<ThreadTurnQueueState>((set, get) => ({
@@ -55,6 +66,10 @@ export const useThreadTurnQueueStore = create<ThreadTurnQueueState>((set, get) =
       id,
       text: item.text,
       images: item.images,
+      terminalContexts: item.terminalContexts ?? [],
+      elementContexts: item.elementContexts ?? [],
+      previewAnnotations: item.previewAnnotations ?? [],
+      reviewComments: item.reviewComments ?? [],
       createdAt: new Date().toISOString(),
     };
     set((state) => {

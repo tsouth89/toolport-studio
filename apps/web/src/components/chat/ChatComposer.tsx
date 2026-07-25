@@ -579,6 +579,8 @@ export interface ChatComposerProps {
   composerImagesRef: React.RefObject<ComposerImageAttachment[]>;
   composerTerminalContextsRef: React.RefObject<TerminalContextDraft[]>;
   composerElementContextsRef: React.RefObject<ElementContextDraft[]>;
+  composerPreviewAnnotationsRef: React.RefObject<PreviewAnnotationPayload[]>;
+  composerReviewCommentsRef: React.RefObject<ReviewCommentContext[]>;
   composerRef: React.RefObject<ChatComposerHandle | null>;
 
   // Callbacks
@@ -674,6 +676,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     composerImagesRef,
     composerTerminalContextsRef,
     composerElementContextsRef,
+    composerPreviewAnnotationsRef,
+    composerReviewCommentsRef,
     onSend,
     onInterrupt,
     onImplementPlanInNewThread,
@@ -1308,6 +1312,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   useEffect(() => {
     composerElementContextsRef.current = composerElementContexts;
   }, [composerElementContexts, composerElementContextsRef]);
+
+  useEffect(() => {
+    composerPreviewAnnotationsRef.current = composerPreviewAnnotations;
+  }, [composerPreviewAnnotations, composerPreviewAnnotationsRef]);
+
+  useEffect(() => {
+    composerReviewCommentsRef.current = composerReviewComments;
+  }, [composerReviewComments, composerReviewCommentsRef]);
 
   // ------------------------------------------------------------------
   // Composer menu highlight sync
@@ -2180,8 +2192,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         images: composerImagesRef.current,
         terminalContexts: composerTerminalContextsRef.current,
         elementContexts: composerElementContextsRef.current,
-        previewAnnotations: composerPreviewAnnotations,
-        reviewComments: composerReviewComments,
+        previewAnnotations: composerPreviewAnnotationsRef.current,
+        reviewComments: composerReviewCommentsRef.current,
         selectedPromptEffort,
         selectedModelOptionsForDispatch,
         selectedModelSelection,
@@ -2201,8 +2213,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       composerImagesRef,
       composerTerminalContextsRef,
       composerElementContextsRef,
-      composerPreviewAnnotations,
-      composerReviewComments,
+      composerPreviewAnnotationsRef,
+      composerReviewCommentsRef,
       isConnecting,
       isComposerApprovalState,
       pendingUserInputs.length,

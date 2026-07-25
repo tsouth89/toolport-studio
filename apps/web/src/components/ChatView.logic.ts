@@ -625,3 +625,23 @@ export function hasServerAcknowledgedLocalDispatch(input: {
   }
   return false;
 }
+
+export function shouldAutoDrainQueuedTurn(input: {
+  queueCount: number;
+  phase: "disconnected" | "connecting" | "running" | "ready";
+  queueFlushInFlight: boolean;
+  sendInFlight: boolean;
+  isSendBusy: boolean;
+  isConnecting: boolean;
+  composerHasDraftContent: boolean;
+}): boolean {
+  return (
+    input.queueCount > 0 &&
+    input.phase === "ready" &&
+    !input.queueFlushInFlight &&
+    !input.sendInFlight &&
+    !input.isSendBusy &&
+    !input.isConnecting &&
+    !input.composerHasDraftContent
+  );
+}

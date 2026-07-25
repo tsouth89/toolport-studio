@@ -32,6 +32,7 @@ const hangFirstPromptForever = process.env.T3_ACP_HANG_FIRST_PROMPT_FOREVER === 
  * process after Stop (a new process would otherwise re-hang its first prompt).
  */
 const hangPromptText = process.env.T3_ACP_HANG_PROMPT_TEXT?.trim() || "";
+const hangPromptTextExact = process.env.T3_ACP_HANG_PROMPT_TEXT_EXACT === "1";
 const emitLateUpdateAfterCancel = process.env.T3_ACP_EMIT_LATE_UPDATE_AFTER_CANCEL === "1";
 const omitXAiPromptCompleteStopReason =
   process.env.T3_ACP_OMIT_XAI_PROMPT_COMPLETE_STOP_REASON === "1";
@@ -550,7 +551,10 @@ const program = Effect.gen(function* () {
         : "";
       const hangThisPrompt =
         hangPromptForever ||
-        (hangPromptText.length > 0 && promptText.includes(hangPromptText)) ||
+        (hangPromptText.length > 0 &&
+          (hangPromptTextExact
+            ? promptText === hangPromptText
+            : promptText.includes(hangPromptText))) ||
         (hangPromptText.length === 0 && hangFirstPromptForever && promptCount === 1);
       if (hangThisPrompt) {
         // Uncooperative hang until session/cancel arrives. If cancel never

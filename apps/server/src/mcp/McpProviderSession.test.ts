@@ -1,7 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
@@ -89,13 +89,15 @@ it.effect("adds an explicitly configured Toolport stdio gateway with dual client
 it.effect("discovers Toolport's published Windows gateway under the Toolport data leaf", () =>
   Effect.gen(function* () {
     McpProviderSession.clearAllMcpProviderSessions();
-    const homeDirectory = mkdtempSync(join(tmpdir(), "toolport-studio-home-"));
-    const gatewayPath = join(homeDirectory, "toolport-gateway-1.9.5.exe");
-    writeFileSync(gatewayPath, "");
-    const manifestDirectory = join(homeDirectory, "AppData", "Roaming", "Toolport", "bin");
-    mkdirSync(manifestDirectory, { recursive: true });
-    writeFileSync(
-      join(manifestDirectory, "gateway-manifest.json"),
+    const homeDirectory = NodeFS.mkdtempSync(
+      NodePath.join(NodeOS.tmpdir(), "toolport-studio-home-"),
+    );
+    const gatewayPath = NodePath.join(homeDirectory, "toolport-gateway-1.9.5.exe");
+    NodeFS.writeFileSync(gatewayPath, "");
+    const manifestDirectory = NodePath.join(homeDirectory, "AppData", "Roaming", "Toolport", "bin");
+    NodeFS.mkdirSync(manifestDirectory, { recursive: true });
+    NodeFS.writeFileSync(
+      NodePath.join(manifestDirectory, "gateway-manifest.json"),
       encodeGatewayManifest({ version: "1.9.5", path: gatewayPath, size: 0 }),
     );
 
@@ -108,13 +110,15 @@ it.effect("discovers Toolport's published Windows gateway under the Toolport dat
 it.effect("falls back to the legacy Conduit data leaf when Toolport is absent", () =>
   Effect.gen(function* () {
     McpProviderSession.clearAllMcpProviderSessions();
-    const homeDirectory = mkdtempSync(join(tmpdir(), "toolport-studio-legacy-"));
-    const gatewayPath = join(homeDirectory, "toolport-gateway-1.9.4.exe");
-    writeFileSync(gatewayPath, "");
-    const manifestDirectory = join(homeDirectory, "AppData", "Roaming", "Conduit", "bin");
-    mkdirSync(manifestDirectory, { recursive: true });
-    writeFileSync(
-      join(manifestDirectory, "gateway-manifest.json"),
+    const homeDirectory = NodeFS.mkdtempSync(
+      NodePath.join(NodeOS.tmpdir(), "toolport-studio-legacy-"),
+    );
+    const gatewayPath = NodePath.join(homeDirectory, "toolport-gateway-1.9.4.exe");
+    NodeFS.writeFileSync(gatewayPath, "");
+    const manifestDirectory = NodePath.join(homeDirectory, "AppData", "Roaming", "Conduit", "bin");
+    NodeFS.mkdirSync(manifestDirectory, { recursive: true });
+    NodeFS.writeFileSync(
+      NodePath.join(manifestDirectory, "gateway-manifest.json"),
       encodeGatewayManifest({ version: "1.9.4", path: gatewayPath, size: 0 }),
     );
 
@@ -190,11 +194,13 @@ command = "conduit-gateway"
 
 it.effect("points GROK_HOME at a filtered home when a global toolport entry exists", () =>
   Effect.gen(function* () {
-    const homeDirectory = mkdtempSync(join(tmpdir(), "toolport-studio-grok-home-"));
-    const grokDir = join(homeDirectory, ".grok");
-    mkdirSync(grokDir, { recursive: true });
-    writeFileSync(
-      join(grokDir, "config.toml"),
+    const homeDirectory = NodeFS.mkdtempSync(
+      NodePath.join(NodeOS.tmpdir(), "toolport-studio-grok-home-"),
+    );
+    const grokDir = NodePath.join(homeDirectory, ".grok");
+    NodeFS.mkdirSync(grokDir, { recursive: true });
+    NodeFS.writeFileSync(
+      NodePath.join(grokDir, "config.toml"),
       `[mcp_servers.toolport]
 command = "toolport-gateway"
 
@@ -203,7 +209,7 @@ command = "echo"
 `,
       "utf8",
     );
-    writeFileSync(join(grokDir, "auth.json"), '{"token":"x"}', "utf8");
+    NodeFS.writeFileSync(NodePath.join(grokDir, "auth.json"), '{"token":"x"}', "utf8");
 
     const env = McpProviderSession.environmentSuppressingGrokConfigToolportGateway(
       { PATH: "/usr/bin", HOME: homeDirectory },
@@ -211,10 +217,32 @@ command = "echo"
     );
     expect(env.GROK_HOME).toBeTruthy();
     expect(env.GROK_HOME).not.toBe(grokDir);
-    const filtered = readFileSync(join(env.GROK_HOME as string, "config.toml"), "utf8");
+    const filtered = NodeFS.readFileSync(
+      NodePath.join(env.GROK_HOME as string, "config.toml"),
+      "utf8",
+    );
     expect(filtered).toContain("[mcp_servers.other]");
     expect(filtered).not.toMatch(/mcp_servers\.toolport/);
-    expect(existsSync(join(env.GROK_HOME as string, "auth.json"))).toBe(true);
+    expect(NodeFS.existsSync(NodePath.join(env.GROK_HOME as string, "auth.json"))).toBe(true);
+
+    NodeFS.writeFileSync(NodePath.join(grokDir, "auth.json"), '{"token":"refreshed"}', "utf8");
+    const refreshedEnv = McpProviderSession.environmentSuppressingGrokConfigToolportGateway(
+      { PATH: "/usr/bin", HOME: homeDirectory },
+      homeDirectory,
+    );
+    expect(refreshedEnv.GROK_HOME).toBe(env.GROK_HOME);
+    expect(
+      NodeFS.readFileSync(NodePath.join(refreshedEnv.GROK_HOME as string, "auth.json"), "utf8"),
+    ).toBe('{"token":"refreshed"}');
+
+    NodeFS.rmSync(NodePath.join(grokDir, "auth.json"));
+    const withoutAuthEnv = McpProviderSession.environmentSuppressingGrokConfigToolportGateway(
+      { PATH: "/usr/bin", HOME: homeDirectory },
+      homeDirectory,
+    );
+    expect(NodeFS.existsSync(NodePath.join(withoutAuthEnv.GROK_HOME as string, "auth.json"))).toBe(
+      false,
+    );
   }).pipe(Effect.provide(NodeServices.layer)),
 );
 

@@ -15,6 +15,7 @@ import {
   type ThreadId,
   TurnId,
 } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -852,7 +853,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               event._tag === "AssistantItemStarted" ||
               event._tag === "AssistantItemCompleted"
             ) {
-              ctx.lastTurnActivityAtMs = Date.now();
+              ctx.lastTurnActivityAtMs = yield* Clock.currentTimeMillis;
             }
             if (
               event._tag === "PlanUpdated" ||
@@ -1010,19 +1011,6 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             yield* markAcpCompromised(ctx, "notification stream ended");
           }),
         ),
-        Effect.catch((cause) =>
-          Effect.gen(function* () {
-            if (ctx.notificationGeneration !== generation || ctx.stopped) {
-              return;
-            }
-            yield* Effect.logError("Failed to process Grok runtime notification stream.", {
-              cause,
-              threadId: ctx.threadId,
-            });
-            ctx.notificationFiber = undefined;
-            yield* markAcpCompromised(ctx, "notification stream failed");
-          }),
-        ),
         Effect.forkChild,
       );
     };
@@ -1043,6 +1031,14 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           ctx.acpSessionId.trim() ||
           parseGrokResume(ctx.session.resumeCursor)?.sessionId ||
           undefined;
+        const cwd = ctx.session.cwd;
+        if (cwd === undefined) {
+          return yield* new ProviderAdapterValidationError({
+            provider: PROVIDER,
+            operation: "recycleCompromisedAcp",
+            issue: "The Grok session has no working directory to restart from.",
+          });
+        }
         yield* disposeAcpProcess(ctx);
 
         const mcpBindings = McpProviderSession.readMcpProviderBindings(
@@ -1069,7 +1065,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               grokSettings,
               ...(grokEnvironment ? { environment: grokEnvironment } : {}),
               childProcessSpawner,
-              cwd: ctx.session.cwd,
+              cwd,
               // Prefer resume so Stop→follow-up keeps history. Soft miss falls
               // back inside AcpSessionRuntime; recycle also retries without
               // resume if start still fails with Path not found.
@@ -1167,12 +1163,13 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           updatedAt: yield* nowIso,
         };
         ctx.turnVisibleUpdateCount = 0;
-        ctx.lastTurnActivityAtMs = Date.now();
+        ctx.lastTurnActivityAtMs = yield* Clock.currentTimeMillis;
         ctx.openToolCallIds = new Set();
         ctx.lastOpenToolTitle = undefined;
-        // Same session id ⇒ load restored Grok history. Different id ⇒ blank
-        // session/new; rehydrate from Studio transcript on the next prompt.
-        if (previousSessionId === undefined || recycled.started.sessionId !== previousSessionId) {
+        // Only a successful session/load proves Grok restored history. A
+        // fallback session/new may legally reuse the same opaque id, so id
+        // equality alone cannot distinguish a blank replacement session.
+        if (!recycled.started.resumedExistingSession) {
           ctx.needsContextRehydration = true;
           yield* Effect.logWarning(
             "Grok ACP recycle started a new session; next turn will rehydrate Studio transcript",
@@ -1331,7 +1328,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             stopped: false,
             acpCompromised: false,
             turnVisibleUpdateCount: 0,
-            lastTurnActivityAtMs: Date.now(),
+            lastTurnActivityAtMs: yield* Clock.currentTimeMillis,
             openToolCallIds: new Set(),
             lastOpenToolTitle: undefined,
             notificationGeneration: 0,
@@ -1460,9 +1457,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 steeringTurnId === undefined && ctx.needsContextRehydration
                   ? buildGrokContextRehydrationPrefix(ctx.conversationLog)
                   : undefined;
-              if (steeringTurnId === undefined && ctx.needsContextRehydration) {
-                ctx.needsContextRehydration = false;
-              }
+              const usesContextRehydration = rehydrationPrefix !== undefined;
               const promptText =
                 text && rehydrationPrefix
                   ? `${rehydrationPrefix}${text}`
@@ -1532,6 +1527,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 displayModel,
                 promptParts,
                 turnId,
+                usesContextRehydration,
               };
             }).pipe(
               Effect.tapCause(() =>
@@ -1561,7 +1557,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           // Reset activity clock at prompt start so prior turn silence cannot trip us.
           const activityCtx = sessions.get(input.threadId);
           if (activityCtx) {
-            activityCtx.lastTurnActivityAtMs = Date.now();
+            activityCtx.lastTurnActivityAtMs = yield* Clock.currentTimeMillis;
             activityCtx.openToolCallIds = new Set();
             activityCtx.lastOpenToolTitle = undefined;
           }
@@ -1579,7 +1575,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 // Parent fiber will interrupt this race arm when prompt settles.
                 continue;
               }
-              const silentMs = Date.now() - live.lastTurnActivityAtMs;
+              const silentMs = (yield* Clock.currentTimeMillis) - live.lastTurnActivityAtMs;
               const openToolCount = live.openToolCallIds.size;
               const toolStuck = openToolCount > 0 && silentMs >= GROK_SILENT_OPEN_TOOL_WATCHDOG_MS;
               const thinkStuck = openToolCount === 0 && silentMs >= GROK_SILENT_THINK_WATCHDOG_MS;
@@ -1665,6 +1661,12 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   method: "session/prompt",
                   detail: "Grok session changed before the turn completed.",
                 });
+              }
+              if (prepared.usesContextRehydration) {
+                // Keep the replay armed until the ACP prompt actually returns.
+                // Preparation can fail or be interrupted before the blank
+                // replacement session receives any Studio history.
+                ctx.needsContextRehydration = false;
               }
               // Keep prompt settlement atomic with respect to Stop and steering.
               // interruptTurn marks its target before waiting for this lock, so
@@ -1890,11 +1892,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         const observed = yield* Effect.sync(() => {
           const ctx = sessions.get(threadId);
           if (!ctx || ctx.stopped) {
-            return {
-              _tag: "Proceed" as const,
-              acpSessionId: undefined,
-              interruptedTurnId: turnId,
-            };
+            return { _tag: "Ignore" as const };
           }
           const activeTurnId = ctx.activeTurnId ?? ctx.session.activeTurnId;
           if (turnId !== undefined && activeTurnId !== undefined && activeTurnId !== turnId) {

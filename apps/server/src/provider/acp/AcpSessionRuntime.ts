@@ -90,6 +90,8 @@ export interface AcpSessionRequestLogEvent {
 
 export interface AcpSessionRuntimeStartResult {
   readonly sessionId: string;
+  /** True only when session/load restored the requested existing session. */
+  readonly resumedExistingSession: boolean;
   readonly initializeResult: EffectAcpSchema.InitializeResponse;
   readonly sessionSetupResult:
     | EffectAcpSchema.LoadSessionResponse
@@ -575,6 +577,7 @@ export const make = (
       );
 
       let sessionId: string;
+      let resumedExistingSession = false;
       let sessionSetupResult:
         | EffectAcpSchema.LoadSessionResponse
         | EffectAcpSchema.NewSessionResponse
@@ -666,6 +669,7 @@ export const make = (
 
           return {
             sessionId: resumeSessionId,
+            resumedExistingSession: true,
             sessionSetupResult: loaded,
           } as const;
         }).pipe(
@@ -696,12 +700,14 @@ export const make = (
               const created = yield* createNewSession;
               return {
                 sessionId: created.sessionId,
+                resumedExistingSession: false,
                 sessionSetupResult: created,
               } as const;
             });
           }),
         );
         sessionId = loadedOrFresh.sessionId;
+        resumedExistingSession = loadedOrFresh.resumedExistingSession;
         sessionSetupResult = loadedOrFresh.sessionSetupResult;
       } else {
         const created = yield* createNewSession;
@@ -714,6 +720,7 @@ export const make = (
 
       const nextState = {
         sessionId,
+        resumedExistingSession,
         initializeResult,
         sessionSetupResult,
         modelConfigId: extractModelConfigId(sessionSetupResult),

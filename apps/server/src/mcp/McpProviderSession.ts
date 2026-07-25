@@ -1,7 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import type { EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
-import * as NodeFs from "node:fs";
-import * as NodeOs from "node:os";
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as Schema from "effect/Schema";
 
@@ -128,10 +128,10 @@ function toolportDataDirectories(
 function gatewayPathFromManifest(dataDirectory: string): string | undefined {
   const manifestPath = NodePath.join(dataDirectory, "bin", TOOLPORT_GATEWAY_MANIFEST);
   try {
-    const parsed = decodeGatewayManifest(NodeFs.readFileSync(manifestPath, "utf8"));
+    const parsed = decodeGatewayManifest(NodeFS.readFileSync(manifestPath, "utf8"));
     if (parsed._tag === "None") return undefined;
     const gatewayPath = nonEmpty(parsed.value.path);
-    return gatewayPath && NodeFs.existsSync(gatewayPath) ? gatewayPath : undefined;
+    return gatewayPath && NodeFS.existsSync(gatewayPath) ? gatewayPath : undefined;
   } catch {
     return undefined;
   }
@@ -160,7 +160,7 @@ function gatewayPathFromSearchPath(
     if (!trimmedDirectory) continue;
     for (const executableName of executableNames) {
       const candidate = NodePath.join(trimmedDirectory, executableName);
-      if (NodeFs.existsSync(candidate)) return candidate;
+      if (NodeFS.existsSync(candidate)) return candidate;
     }
   }
   return undefined;
@@ -168,8 +168,10 @@ function gatewayPathFromSearchPath(
 
 export function resolveToolportGatewayPath(
   environment: NodeJS.ProcessEnv = process.env,
+  // Pure synchronous resolver; callers can inject a platform for tests.
+  // oxlint-disable-next-line t3code/no-global-process-runtime
   platform: NodeJS.Platform = process.platform,
-  homeDirectory = NodeOs.homedir(),
+  homeDirectory = NodeOS.homedir(),
 ): string | undefined {
   const configured = nonEmpty(environment.TOOLPORT_GATEWAY_PATH);
   if (configured) return configured;
@@ -242,8 +244,10 @@ export function readMcpProviderSession(threadId: ThreadId): McpProviderSessionCo
 export function readMcpProviderBindings(
   threadId: ThreadId,
   environment: NodeJS.ProcessEnv = process.env,
+  // Pure synchronous resolver; callers can inject a platform for tests.
+  // oxlint-disable-next-line t3code/no-global-process-runtime
   platform: NodeJS.Platform = process.platform,
-  homeDirectory = NodeOs.homedir(),
+  homeDirectory = NodeOS.homedir(),
 ): ReadonlyArray<McpProviderBinding> {
   const bindings: Array<McpProviderBinding> = [];
   const internalSession = readMcpProviderSession(threadId);
@@ -321,6 +325,33 @@ export function stripToolportGatewayTablesFromToml(toml: string): string {
 }
 
 const GROK_HOME_AUTH_FILES = ["auth.json", "mcp_credentials.json", "credentials.json"] as const;
+const filteredGrokHomes = new Map<string, string>();
+let filteredGrokHomeCleanupRegistered = false;
+
+function filteredGrokHomeFor(realGrokHome: string): string {
+  const cached = filteredGrokHomes.get(realGrokHome);
+  if (cached && NodeFS.existsSync(cached)) {
+    return cached;
+  }
+
+  const tempGrokHome = NodeFS.mkdtempSync(
+    NodePath.join(NodeOS.tmpdir(), "toolport-studio-grok-home-"),
+  );
+  filteredGrokHomes.set(realGrokHome, tempGrokHome);
+  if (!filteredGrokHomeCleanupRegistered) {
+    filteredGrokHomeCleanupRegistered = true;
+    process.once("exit", () => {
+      for (const directory of filteredGrokHomes.values()) {
+        try {
+          NodeFS.rmSync(directory, { recursive: true, force: true });
+        } catch {
+          // Process-exit cleanup is best-effort.
+        }
+      }
+    });
+  }
+  return tempGrokHome;
+}
 
 /**
  * If `$GROK_HOME/config.toml` (default `~/.grok/config.toml`) defines a Toolport
@@ -335,14 +366,14 @@ const GROK_HOME_AUTH_FILES = ["auth.json", "mcp_credentials.json", "credentials.
  */
 export function environmentSuppressingGrokConfigToolportGateway(
   baseEnvironment: NodeJS.ProcessEnv,
-  homeDirectory = NodeOs.homedir(),
+  homeDirectory = NodeOS.homedir(),
 ): NodeJS.ProcessEnv {
   const realGrokHome = nonEmpty(baseEnvironment.GROK_HOME) ?? NodePath.join(homeDirectory, ".grok");
   const configPath = NodePath.join(realGrokHome, "config.toml");
 
   let original: string;
   try {
-    original = NodeFs.readFileSync(configPath, "utf8");
+    original = NodeFS.readFileSync(configPath, "utf8");
   } catch {
     return baseEnvironment;
   }
@@ -356,16 +387,18 @@ export function environmentSuppressingGrokConfigToolportGateway(
     return baseEnvironment;
   }
 
-  const tempGrokHome = NodeFs.mkdtempSync(
-    NodePath.join(NodeOs.tmpdir(), "toolport-studio-grok-home-"),
-  );
-  NodeFs.writeFileSync(NodePath.join(tempGrokHome, "config.toml"), stripped, "utf8");
+  const tempGrokHome = filteredGrokHomeFor(realGrokHome);
+  NodeFS.writeFileSync(NodePath.join(tempGrokHome, "config.toml"), stripped, "utf8");
 
   for (const fileName of GROK_HOME_AUTH_FILES) {
     const source = NodePath.join(realGrokHome, fileName);
-    if (!NodeFs.existsSync(source)) continue;
+    const destination = NodePath.join(tempGrokHome, fileName);
+    if (!NodeFS.existsSync(source)) {
+      NodeFS.rmSync(destination, { force: true });
+      continue;
+    }
     try {
-      NodeFs.copyFileSync(source, NodePath.join(tempGrokHome, fileName));
+      NodeFS.copyFileSync(source, destination);
     } catch {
       // Best-effort: missing auth still allows API-key env auth.
     }

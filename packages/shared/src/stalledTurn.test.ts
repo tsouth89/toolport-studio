@@ -5,7 +5,7 @@ import {
   deriveLastStreamActivityAt,
   deriveStalledTurnState,
   formatStalledSilenceLabel,
-} from "./stalledTurn";
+} from "./stalledTurn.js";
 
 const T0 = "2026-07-25T12:00:00.000Z";
 const T0_MS = Date.parse(T0);

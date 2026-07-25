@@ -180,6 +180,16 @@ it("uses an embedded resource when Grok disables native image prompt blocks", ()
 });
 
 it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
+  it.effect("treats interrupting an unknown session as an idempotent no-op", () =>
+    Effect.gen(function* () {
+      const adapter = yield* makeMockTestAdapter();
+      yield* adapter.interruptTurn(
+        ThreadId.make("missing-grok-session"),
+        TurnId.make("missing-grok-turn"),
+      );
+    }),
+  );
+
   it.effect("starts a session and maps mock ACP prompt flow to runtime events", () =>
     Effect.gen(function* () {
       const threadId = ThreadId.make("grok-mock-thread");
@@ -1188,7 +1198,7 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
     }),
   );
 
-  it.effect("rehydrates Studio transcript after Stop when session/load is gone", () =>
+  it.effect("keeps transcript rehydration armed when a post-Stop turn is interrupted", () =>
     Effect.gen(function* () {
       const threadId = ThreadId.make("grok-rehydrate-after-stop");
       const tempDir = yield* Effect.promise(() =>
@@ -1198,6 +1208,7 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
       // Load always fails after recycle → blank session/new → must rehydrate.
       const adapter = yield* makeMockTestAdapter({
         T3_ACP_HANG_PROMPT_TEXT: "hang forever",
+        T3_ACP_HANG_PROMPT_TEXT_EXACT: "1",
         T3_ACP_FAIL_LOAD_SESSION_NOT_FOUND: "1",
         T3_ACP_REQUEST_LOG_PATH: requestLogPath,
       });
@@ -1247,6 +1258,23 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
       yield* adapter.interruptTurn(threadId, hangTurnId).pipe(Effect.timeout("3 seconds"));
       yield* Fiber.join(hangFiber).pipe(Effect.timeout("3 seconds"), Effect.ignore);
 
+      // Cancel the first turn against the blank replacement session during
+      // preparation, before session/prompt is sent. Rehydration must remain
+      // armed for the next real prompt.
+      const interruptedPreparationFiber = yield* adapter
+        .sendTurn({
+          threadId,
+          input: "cancel before the prompt is sent",
+          attachments: [],
+        })
+        .pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+      yield* adapter.interruptTurn(threadId).pipe(Effect.timeout("3 seconds"));
+      yield* Fiber.join(interruptedPreparationFiber).pipe(
+        Effect.timeout("3 seconds"),
+        Effect.ignore,
+      );
+
       yield* adapter
         .sendTurn({
           threadId,
@@ -1262,7 +1290,11 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
         const params = entry.params;
         if (typeof params !== "object" || params === null || !("prompt" in params)) return false;
         const prompt = (params as { prompt?: unknown }).prompt;
-        return JSON.stringify(prompt).includes("Secret code is zebra-42");
+        const serializedPrompt = JSON.stringify(prompt);
+        return (
+          serializedPrompt.includes("What was the secret code?") &&
+          serializedPrompt.includes("Secret code is zebra-42")
+        );
       });
       assert.isDefined(
         followUpPrompt,
