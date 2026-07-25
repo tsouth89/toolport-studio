@@ -66,7 +66,7 @@ describe("DesktopClerk", () => {
           {
             storage: storageAdapter,
             passkeys: true,
-            renderer: { scheme: "t3code-dev", host: "app" },
+            renderer: { scheme: "toolport-studio-dev", host: "app" },
           },
         ],
       ]);
@@ -125,8 +125,8 @@ describe("DesktopClerk", () => {
   });
 
   it.each([
-    { isDevelopment: true, scheme: "t3code-dev" },
-    { isDevelopment: false, scheme: "t3code" },
+    { isDevelopment: true, scheme: "toolport-studio-dev" },
+    { isDevelopment: false, scheme: "toolport-studio" },
   ])("configures the SDK with the $scheme renderer origin", ({ isDevelopment, scheme }) => {
     const bridge = { cleanup: vi.fn() };
     storageMock.mockReturnValue(storageAdapter);

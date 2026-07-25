@@ -14,5 +14,7 @@ Source files:
 - `toolport-studio-tray-dark.svg` — monochrome tray glyph for light chrome
 - `toolport-studio-tray-light.svg` — monochrome tray glyph for dark chrome
 
-Generated PNG and ICO renditions live under `generated/`. Keep the SVG sources
-as the editable source of truth.
+Generated platform renditions live under `generated/`. Keep the SVG sources as
+the editable source of truth and the 1024px application PNG as the canonical
+raster companion. Run `pnpm icons:export` after changing that raster so the web,
+desktop, dock, taskbar, and installer assets stay synchronized.

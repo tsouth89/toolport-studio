@@ -1360,7 +1360,7 @@ export function resolveDesktopBuildIconAssets(version: string): DesktopBuildIcon
   return {
     macIconPng: BRAND_ASSET_PATHS.productionMacIconPng,
     linuxIconPng: BRAND_ASSET_PATHS.productionLinuxIconPng,
-    windowsIconIco: BRAND_ASSET_PATHS.studioWindowsIconIco,
+    windowsIconIco: BRAND_ASSET_PATHS.productionWindowsIconIco,
   };
 }
 
@@ -1770,14 +1770,14 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     stageDependencies,
   );
   const stagePackageJson: StagePackageJson = {
-    name: "t3code",
+    name: "toolport-studio",
     version: appVersion,
     buildVersion: appVersion,
     t3codeCommitHash: commitHash,
     private: true,
     packageManager: rootPackageJson.packageManager,
     description: "Toolport Studio desktop build",
-    author: "T3 Tools",
+    author: "Toolport",
     main: "apps/desktop/dist-electron/main.cjs",
     build: yield* createBuildConfig(
       options.platform,

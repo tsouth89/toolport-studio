@@ -69,8 +69,8 @@ export function RelayClientInstallDialog() {
           </DialogTitle>
           <DialogDescription>
             {isInstalling
-              ? "Toolport Studio is preparing this environment for secure access through T3 Connect."
-              : "Toolport Studio needs the relay client to make this environment available through T3 Connect."}
+              ? "Toolport Studio is preparing this environment for secure access through Toolport Connect."
+              : "Toolport Studio needs the relay client to make this environment available through Toolport Connect."}
           </DialogDescription>
         </DialogHeader>
         <DialogPanel scrollFade={false}>
