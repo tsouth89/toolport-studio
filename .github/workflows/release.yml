@@ -57,6 +57,7 @@ jobs:
           if ($LASTEXITCODE -eq 0) {
             throw "Release $tag already exists."
           }
+          $global:LASTEXITCODE = 0
 
           $outputDir = "release/toolport-studio-$env:VERSION"
           $installer = "$outputDir/Toolport-Studio-$env:VERSION-x64.exe"
