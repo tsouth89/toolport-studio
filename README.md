@@ -47,7 +47,7 @@ and phased roadmap.
 
 - [Toolport](https://toolport.app) is the MCP control plane. It gives every
   provider the same governed tools and server configuration.
-- [Ceiling](https://github.com/tsouth89/ceiling) provides provider usage, quota,
+- [Ceiling](https://ceiling.win) provides provider usage, quota,
   reset-window, spend, and activity intelligence.
 - [Toolport Studio](https://toolport.studio) is where conversations, providers,
   projects, tools, and usage context come together.
