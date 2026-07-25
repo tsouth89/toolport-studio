@@ -598,4 +598,78 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
     expect(hasServerAcknowledgedLocalDispatch({ ...common, hasPendingUserInput: true })).toBe(true);
     expect(hasServerAcknowledgedLocalDispatch({ ...common, threadError: "failed" })).toBe(true);
   });
+
+  it("acknowledges a turn requested after the local dispatch started", () => {
+    const localDispatch = createLocalDispatchSnapshot(
+      makeThread({ latestTurn: completedTurn, session: readySession }),
+    );
+    const turnAfterDispatch = {
+      ...completedTurn,
+      turnId: TurnId.make("turn-after-dispatch"),
+      requestedAt: "2099-01-01T00:00:01.000Z",
+      startedAt: null,
+      completedAt: null,
+      state: "requested" as const,
+    };
+
+    expect(
+      hasServerAcknowledgedLocalDispatch({
+        localDispatch: {
+          ...localDispatch,
+          startedAt: "2099-01-01T00:00:00.000Z",
+        },
+        phase: "ready",
+        latestTurn: turnAfterDispatch,
+        latestUserMessageId: localDispatch.latestUserMessageId,
+        session: readySession,
+        hasPendingApproval: false,
+        hasPendingUserInput: false,
+        threadError: null,
+      }),
+    ).toBe(true);
+  });
+
+  it("acknowledges a stale local dispatch after the safety timeout", () => {
+    const localDispatch = createLocalDispatchSnapshot(makeThread({ session: readySession }));
+    const startedAt = "2026-03-29T00:00:00.000Z";
+    const startedMs = Date.parse(startedAt);
+    // Freeze projection so only the wall-clock stale path can acknowledge.
+    const frozen = {
+      ...localDispatch,
+      startedAt,
+      latestTurnTurnId: null,
+      latestTurnRequestedAt: null,
+      latestTurnStartedAt: null,
+      latestTurnCompletedAt: null,
+      sessionStatus: readySession.status,
+      sessionUpdatedAt: readySession.updatedAt,
+    };
+
+    expect(
+      hasServerAcknowledgedLocalDispatch({
+        localDispatch: frozen,
+        phase: "ready",
+        latestTurn: null,
+        latestUserMessageId: frozen.latestUserMessageId,
+        session: readySession,
+        hasPendingApproval: false,
+        hasPendingUserInput: false,
+        threadError: null,
+        nowMs: startedMs + 44_000,
+      }),
+    ).toBe(false);
+    expect(
+      hasServerAcknowledgedLocalDispatch({
+        localDispatch: frozen,
+        phase: "ready",
+        latestTurn: null,
+        latestUserMessageId: frozen.latestUserMessageId,
+        session: readySession,
+        hasPendingApproval: false,
+        hasPendingUserInput: false,
+        threadError: null,
+        nowMs: startedMs + 45_000,
+      }),
+    ).toBe(true);
+  });
 });

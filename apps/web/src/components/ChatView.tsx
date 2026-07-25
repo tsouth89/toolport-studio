@@ -252,6 +252,7 @@ import {
   deriveComposerSendState,
   dismissBranchMismatchForSession,
   hasServerAcknowledgedLocalDispatch,
+  LOCAL_DISPATCH_STALE_MS,
   isBranchMismatchDismissedForSession,
   shouldShowBranchMismatchBanner,
   getStartedThreadModelChangeBlockReason,
@@ -489,6 +490,7 @@ function useLocalDispatchState(input: {
   threadError: string | null | undefined;
 }) {
   const [localDispatch, setLocalDispatch] = useState<LocalDispatchSnapshot | null>(null);
+  const [dispatchClockMs, setDispatchClockMs] = useState(() => Date.now());
   const latestUserMessageId =
     input.activeThread?.messages.findLast((message) => message.role === "user")?.id ?? null;
 
@@ -507,8 +509,10 @@ function useLocalDispatchState(input: {
         hasPendingApproval: input.activePendingApproval !== null,
         hasPendingUserInput: input.activePendingUserInput !== null,
         threadError: input.threadError,
+        nowMs: dispatchClockMs,
       }),
     [
+      dispatchClockMs,
       input.activeLatestTurn,
       input.activePendingApproval,
       input.activePendingUserInput,
@@ -520,9 +524,31 @@ function useLocalDispatchState(input: {
     ],
   );
   const activeLocalDispatch = serverAcknowledgedLocalDispatch ? null : localDispatch;
+
+  // Re-evaluate stale "Sending" after LOCAL_DISPATCH_STALE_MS so the composer
+  // cannot stay on a disabled spinner forever when projection never acks.
+  useEffect(() => {
+    if (!activeLocalDispatch) {
+      return;
+    }
+    const startedMs = Date.parse(activeLocalDispatch.startedAt);
+    if (!Number.isFinite(startedMs)) {
+      return;
+    }
+    const remainingMs = LOCAL_DISPATCH_STALE_MS - (Date.now() - startedMs);
+    const timeoutId = window.setTimeout(
+      () => {
+        setDispatchClockMs(Date.now());
+      },
+      Math.max(0, remainingMs) + 25,
+    );
+    return () => window.clearTimeout(timeoutId);
+  }, [activeLocalDispatch]);
+
   const beginLocalDispatch = useCallback(
     (options?: { preparingWorktree?: boolean }) => {
       const preparingWorktree = Boolean(options?.preparingWorktree);
+      setDispatchClockMs(Date.now());
       setLocalDispatch((current) => {
         const active = serverAcknowledgedLocalDispatch ? null : current;
         if (active) {
@@ -4841,6 +4867,14 @@ function ChatViewContent(props: ChatViewProps) {
 
   const onInterrupt = async () => {
     if (!activeThread) return;
+    // Always clear local "Sending" busy state. Stop must work even when the
+    // provider turn never reached phase=running (stuck image read/upload or
+    // missing projection ack).
+    resetLocalDispatch();
+    sendInFlightRef.current = false;
+    if (phase !== "running") {
+      return;
+    }
     const result = await interruptThreadTurn({
       environmentId,
       input: buildThreadTurnInterruptInput(activeThread),

@@ -485,6 +485,9 @@ export function createLocalDispatchSnapshot(
   };
 }
 
+/** Local "Sending" must never outlive a successful server-side turn handoff. */
+export const LOCAL_DISPATCH_STALE_MS = 45_000;
+
 export function hasServerAcknowledgedLocalDispatch(input: {
   localDispatch: LocalDispatchSnapshot | null;
   phase: SessionPhase;
@@ -494,6 +497,8 @@ export function hasServerAcknowledgedLocalDispatch(input: {
   hasPendingApproval: boolean;
   hasPendingUserInput: boolean;
   threadError: string | null | undefined;
+  /** Wall clock for stale-dispatch safety; defaults to Date.now(). */
+  nowMs?: number;
 }): boolean {
   if (!input.localDispatch) {
     return false;
@@ -504,6 +509,7 @@ export function hasServerAcknowledgedLocalDispatch(input: {
 
   const latestTurn = input.latestTurn ?? null;
   const session = input.session ?? null;
+  const dispatchStartedAt = input.localDispatch.startedAt;
   const latestUserMessageChanged =
     input.localDispatch.latestUserMessageId !== input.latestUserMessageId;
   const latestTurnChanged =
@@ -512,14 +518,23 @@ export function hasServerAcknowledgedLocalDispatch(input: {
     input.localDispatch.latestTurnStartedAt !== (latestTurn?.startedAt ?? null) ||
     input.localDispatch.latestTurnCompletedAt !== (latestTurn?.completedAt ?? null);
 
+  // Any turn requested/started/completed after we pressed Send is a handoff,
+  // even if projection briefly desyncs phase vs session status.
+  const turnActivityAfterDispatch =
+    latestTurn !== null &&
+    ((latestTurn.requestedAt !== null && latestTurn.requestedAt >= dispatchStartedAt) ||
+      (latestTurn.startedAt !== null && latestTurn.startedAt >= dispatchStartedAt) ||
+      (latestTurn.completedAt !== null && latestTurn.completedAt >= dispatchStartedAt));
+
+  if (latestUserMessageChanged || turnActivityAfterDispatch) {
+    return true;
+  }
+
   if (input.phase === "running") {
     // Steering adds a user message to the current running turn without
     // necessarily changing any of the turn timestamps. Treat that projected
     // message as the server acknowledgment so the composer does not remain
     // stuck in its local "Sending" state until the turn settles.
-    if (latestUserMessageChanged) {
-      return true;
-    }
     if (!latestTurnChanged) {
       return false;
     }
@@ -536,9 +551,23 @@ export function hasServerAcknowledgedLocalDispatch(input: {
     return true;
   }
 
-  return (
+  if (
     latestTurnChanged ||
     input.localDispatch.sessionStatus !== (session?.status ?? null) ||
     input.localDispatch.sessionUpdatedAt !== (session?.updatedAt ?? null)
-  );
+  ) {
+    return true;
+  }
+
+  // Escape hatch: never leave the composer on a disabled blue spinner with no
+  // Stop control if projection never reflected the send (image upload hang,
+  // dropped WS event, etc.).
+  const startedMs = Date.parse(dispatchStartedAt);
+  if (Number.isFinite(startedMs)) {
+    const nowMs = input.nowMs ?? Date.now();
+    if (nowMs - startedMs >= LOCAL_DISPATCH_STALE_MS) {
+      return true;
+    }
+  }
+  return false;
 }
