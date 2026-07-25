@@ -20,10 +20,14 @@ and Artifact Signing configuration. Its Entra application must trust this
 federated subject:
 
 ```text
-repo:tsouth89/toolport-studio:environment:release
+repo:tsouth89@258147599/toolport-studio@1311541374:environment:release
 ```
 
-No OAuth redirect URI is used by this workflow.
+This repository uses GitHub's ID-hardened OIDC subject format. If the Entra
+GitHub Actions wizard only offers the name-only format, create an `Other issuer`
+credential with issuer `https://token.actions.githubusercontent.com` and
+audience `api://AzureADTokenExchange`. No OAuth redirect URI is used by this
+workflow.
 
 ## Release scope
 
