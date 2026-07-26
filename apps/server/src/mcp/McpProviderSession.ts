@@ -196,13 +196,40 @@ export function toolportStudioClientEnv(): Readonly<Record<string, string>> {
   };
 }
 
+/**
+ * Whether Studio should inject the Toolport gateway into provider sessions.
+ *
+ * Default is **off** (SOU-402): coding turns should not spawn a gateway or
+ * inflate the tool catalog. Opt in via:
+ * - Settings → inject Toolport MCP (`TOOLPORT_STUDIO_TOOLPORT_MCP=on`), or
+ * - Explicit `TOOLPORT_STUDIO_MCP_URL` (HTTP endpoint is intentional config).
+ */
+export function isToolportMcpInjectionEnabled(environment: NodeJS.ProcessEnv): boolean {
+  const flag = nonEmpty(environment.TOOLPORT_STUDIO_TOOLPORT_MCP)?.toLowerCase();
+  if (flag === "0" || flag === "false" || flag === "off") {
+    return false;
+  }
+  if (flag === "1" || flag === "true" || flag === "on") {
+    return true;
+  }
+  // Explicit streamable HTTP URL is treated as opt-in configuration.
+  return Boolean(nonEmpty(environment.TOOLPORT_STUDIO_MCP_URL));
+}
+
+/** Sync process env from the server settings toggle (adapters read env at turn start). */
+export function applyToolportMcpInjectionEnv(enabled: boolean): void {
+  // oxlint-disable-next-line t3code/no-global-process-runtime
+  process.env.TOOLPORT_STUDIO_TOOLPORT_MCP = enabled ? "on" : "off";
+}
+
 function toolportMcpBinding(
   environment: NodeJS.ProcessEnv,
   platform: NodeJS.Platform,
   homeDirectory: string,
 ): McpProviderBinding | undefined {
-  const enabled = nonEmpty(environment.TOOLPORT_STUDIO_TOOLPORT_MCP)?.toLowerCase();
-  if (enabled === "0" || enabled === "false" || enabled === "off") return undefined;
+  if (!isToolportMcpInjectionEnabled(environment)) {
+    return undefined;
+  }
 
   const url = nonEmpty(environment.TOOLPORT_STUDIO_MCP_URL);
   if (url) {

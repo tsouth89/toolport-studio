@@ -61,11 +61,24 @@ it.effect("adds an explicitly configured Toolport stdio gateway with dual client
     McpProviderSession.clearAllMcpProviderSessions();
     setInternalPreviewSession();
 
+    // Discovery path requires explicit opt-in (SOU-402 default off).
     expect(
       McpProviderSession.readMcpProviderBindings(
         threadId,
         {
           TOOLPORT_GATEWAY_PATH: "C:\\Program Files\\Toolport\\toolport-gateway.exe",
+        },
+        "win32",
+        "C:\\Users\\tester",
+      ),
+    ).toEqual([expect.objectContaining({ name: "toolport-studio-preview", transport: "http" })]);
+
+    expect(
+      McpProviderSession.readMcpProviderBindings(
+        threadId,
+        {
+          TOOLPORT_GATEWAY_PATH: "C:\\Program Files\\Toolport\\toolport-gateway.exe",
+          TOOLPORT_STUDIO_TOOLPORT_MCP: "on",
         },
         "win32",
         "C:\\Users\\tester",
@@ -127,6 +140,21 @@ it.effect("falls back to the legacy Conduit data leaf when Toolport is absent", 
     );
   }).pipe(Effect.provide(NodeServices.layer)),
 );
+
+it("defaults Toolport MCP injection to off without explicit opt-in", () => {
+  expect(McpProviderSession.isToolportMcpInjectionEnabled({})).toBe(false);
+  expect(
+    McpProviderSession.isToolportMcpInjectionEnabled({ TOOLPORT_STUDIO_TOOLPORT_MCP: "on" }),
+  ).toBe(true);
+  expect(
+    McpProviderSession.isToolportMcpInjectionEnabled({
+      TOOLPORT_STUDIO_MCP_URL: "http://127.0.0.1:8765/mcp",
+    }),
+  ).toBe(true);
+  expect(
+    McpProviderSession.isToolportMcpInjectionEnabled({ TOOLPORT_STUDIO_TOOLPORT_MCP: "off" }),
+  ).toBe(false);
+});
 
 it.effect("supports Toolport streamable HTTP and an explicit opt-out", () =>
   Effect.gen(function* () {

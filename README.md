@@ -24,7 +24,8 @@ you add a project, terminal, preview, source control, or Toolport tools.
 - Projects, terminals, previews, source control, and provider switching
 - Right-hand **Activity** panel (current step, tools, MCP from Toolport, changed files)
 - Automatic discovery of the local Toolport gateway
-- Toolport-managed MCP servers injected into provider sessions
+- Optional Toolport MCP in provider sessions (Settings → **Toolport tools in sessions**;
+  off by default so coding turns stay lean)
 - Independent Toolport Studio application identity and data directory
   (`~/.toolport-studio`)
 

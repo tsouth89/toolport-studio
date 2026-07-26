@@ -1281,6 +1281,28 @@ function sdkNativeMethod(message: SDKMessage): string {
   return `claude/${message.type}`;
 }
 
+/**
+ * High-frequency stream deltas dominate native logs and host IO under multi-
+ * session dogfood (SOU-400). Keep lifecycle rows (message/block start-stop,
+ * assistant, tools, result); skip per-token/json/thinking deltas.
+ */
+export function shouldLogClaudeNativeSdkMessage(message: SDKMessage): boolean {
+  if (message.type !== "stream_event") {
+    return true;
+  }
+  const streamType = sdkMessageType(message.event);
+  if (streamType !== "content_block_delta") {
+    return true;
+  }
+  const deltaType = sdkMessageType((message.event as { delta?: unknown }).delta);
+  return (
+    deltaType !== "text_delta" &&
+    deltaType !== "input_json_delta" &&
+    deltaType !== "thinking_delta" &&
+    deltaType !== "signature_delta"
+  );
+}
+
 // Discriminator/identity keys carry no human-readable content; everything else
 // on an unmodeled SDK message is potentially worth surfacing in the work log.
 const SDK_MESSAGE_NOISE_KEYS = new Set([
@@ -1414,6 +1436,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     message: SDKMessage,
   ) {
     if (!nativeEventLogger) {
+      return;
+    }
+    if (!shouldLogClaudeNativeSdkMessage(message)) {
       return;
     }
 

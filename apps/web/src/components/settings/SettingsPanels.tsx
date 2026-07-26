@@ -425,6 +425,10 @@ export function useSettingsRestore(onRestored?: () => void) {
       DEFAULT_UNIFIED_SETTINGS.enableProviderUpdateChecks
         ? ["Provider update checks"]
         : []),
+      ...(settings.injectToolportMcpInProviderSessions !==
+      DEFAULT_UNIFIED_SETTINGS.injectToolportMcpInProviderSessions
+        ? ["Toolport tools in sessions"]
+        : []),
       ...(Duration.toMillis(settings.automaticGitFetchInterval) !==
       Duration.toMillis(DEFAULT_UNIFIED_SETTINGS.automaticGitFetchInterval)
         ? ["Automatic Git fetch interval"]
@@ -460,6 +464,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.automaticGitFetchInterval,
       settings.enableAssistantStreaming,
       settings.enableProviderUpdateChecks,
+      settings.injectToolportMcpInProviderSessions,
       settings.sidebarProjectGroupingMode,
       settings.sidebarThreadPreviewCount,
       settings.timestampFormat,
@@ -489,6 +494,8 @@ export function useSettingsRestore(onRestored?: () => void) {
       autoOpenPlanSidebar: DEFAULT_UNIFIED_SETTINGS.autoOpenPlanSidebar,
       enableAssistantStreaming: DEFAULT_UNIFIED_SETTINGS.enableAssistantStreaming,
       enableProviderUpdateChecks: DEFAULT_UNIFIED_SETTINGS.enableProviderUpdateChecks,
+      injectToolportMcpInProviderSessions:
+        DEFAULT_UNIFIED_SETTINGS.injectToolportMcpInProviderSessions,
       automaticGitFetchInterval: DEFAULT_UNIFIED_SETTINGS.automaticGitFetchInterval,
       defaultThreadEnvMode: DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode,
       newWorktreesStartFromOrigin: DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromOrigin,
@@ -812,6 +819,34 @@ export function GeneralSettingsPanel() {
                 updateSettings({ enableProviderUpdateChecks: Boolean(checked) })
               }
               aria-label="Check provider versions"
+            />
+          }
+        />
+
+        <SettingsRow
+          title="Toolport tools in sessions"
+          description="Inject the Toolport gateway into provider sessions (Linear, email, and other MCP tools). Off by default so coding turns stay lean; turn on when the agent should use Toolport."
+          resetAction={
+            settings.injectToolportMcpInProviderSessions !==
+            DEFAULT_UNIFIED_SETTINGS.injectToolportMcpInProviderSessions ? (
+              <SettingResetButton
+                label="Toolport tools in sessions"
+                onClick={() =>
+                  updateSettings({
+                    injectToolportMcpInProviderSessions:
+                      DEFAULT_UNIFIED_SETTINGS.injectToolportMcpInProviderSessions,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.injectToolportMcpInProviderSessions}
+              onCheckedChange={(checked) =>
+                updateSettings({ injectToolportMcpInProviderSessions: Boolean(checked) })
+              }
+              aria-label="Inject Toolport tools into provider sessions"
             />
           }
         />

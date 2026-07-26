@@ -48,6 +48,7 @@ import * as ServerConfig from "./config.ts";
 import { type DeepPartial, deepMerge } from "@t3tools/shared/Struct";
 import { fromJsonStringPretty, fromLenientJson } from "@t3tools/shared/schemaJson";
 import { applyServerSettingsPatch } from "@t3tools/shared/serverSettings";
+import { applyToolportMcpInjectionEnv } from "./mcp/McpProviderSession.ts";
 import * as ServerSecretStore from "./auth/ServerSecretStore.ts";
 
 const encodeServerSettings = Schema.encodeEffect(ServerSettings);
@@ -544,7 +545,8 @@ const make = Effect.gen(function* () {
     const startup = Effect.gen(function* () {
       yield* startWatcher;
       yield* Cache.invalidate(settingsCache, cacheKey);
-      yield* getSettingsFromCache;
+      const settings = yield* getSettingsFromCache;
+      applyToolportMcpInjectionEnv(settings.injectToolportMcpInProviderSessions);
     });
 
     const startupExit = yield* Effect.exit(startup);
@@ -574,6 +576,7 @@ const make = Effect.gen(function* () {
           const next = yield* normalizeServerSettings(nextPersisted);
           yield* writeSettingsAtomically(next);
           yield* Cache.set(settingsCache, cacheKey, next);
+          applyToolportMcpInjectionEnv(next.injectToolportMcpInProviderSessions);
           yield* emitChange(next);
           const materialized = yield* materializeProviderEnvironmentSecrets(next);
           return resolveTextGenerationProvider(materialized);
