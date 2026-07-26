@@ -281,13 +281,14 @@ function pickCheckpointSummary(
   if (withFiles.length === 0) {
     return null;
   }
+  // When a specific turn is active (or settled latest is known), only use that
+  // turn's checkpoint. Falling back to an older turn's files made mid-flight
+  // Activity show a previous turn's +/− table while the current turn only had
+  // work-log paths (or none) — sessions looked inconsistent for no good reason.
   if (preferredTurnId != null) {
-    const match = withFiles.find((summary) => summary.turnId === preferredTurnId);
-    if (match) {
-      return match;
-    }
+    return withFiles.find((summary) => summary.turnId === preferredTurnId) ?? null;
   }
-  // Prefer highest checkpoint turn count, then latest completedAt.
+  // Idle / no preferred turn: show the most recent checkpoint that has files.
   return [...withFiles].toSorted((left, right) => {
     if (left.checkpointTurnCount !== right.checkpointTurnCount) {
       return right.checkpointTurnCount - left.checkpointTurnCount;

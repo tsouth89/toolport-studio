@@ -641,4 +641,77 @@ describe("deriveActivityChangedFiles", () => {
     expect(result?.files[0]?.path).toBe("new.ts");
     expect(result?.additions).toBe(9);
   });
+
+  it("does not show a previous turn's checkpoint while the preferred turn has no files yet", () => {
+    const older = TurnId.make("turn-old");
+    const active = TurnId.make("turn-active");
+    const result = deriveActivityChangedFiles({
+      preferredTurnId: active,
+      workEntries: [
+        workEntry({
+          id: "edit",
+          label: "Edit file",
+          toolTitle: "Edit file",
+          itemType: "file_change",
+          turnId: active,
+          createdAt: "2026-07-26T12:01:00.000Z",
+          toolLifecycleStatus: "completed",
+          changedFiles: ["src/active.ts"],
+        }),
+      ],
+      turnDiffSummaries: [
+        {
+          turnId: older,
+          checkpointTurnCount: 1,
+          checkpointRef: "ckpt-1" as never,
+          status: "ready",
+          assistantMessageId: null,
+          completedAt: "2026-07-26T11:00:00.000Z",
+          files: [
+            { path: "apps/server/src/ws.ts", kind: "modified", additions: 550, deletions: 7 },
+          ],
+        },
+      ],
+    });
+
+    expect(result).toMatchObject({
+      turnId: active,
+      source: "work-log",
+      hasStats: false,
+      fileCount: 1,
+    });
+    expect(result?.files.map((file) => file.path)).toEqual(["src/active.ts"]);
+  });
+
+  it("uses the latest checkpoint when no preferred turn is set", () => {
+    const older = TurnId.make("turn-old");
+    const newer = TurnId.make("turn-new");
+    const result = deriveActivityChangedFiles({
+      preferredTurnId: null,
+      workEntries: [],
+      turnDiffSummaries: [
+        {
+          turnId: older,
+          checkpointTurnCount: 1,
+          checkpointRef: "ckpt-1" as never,
+          status: "ready",
+          assistantMessageId: null,
+          completedAt: "2026-07-26T11:00:00.000Z",
+          files: [{ path: "old.ts", kind: "modified", additions: 1, deletions: 0 }],
+        },
+        {
+          turnId: newer,
+          checkpointTurnCount: 2,
+          checkpointRef: "ckpt-2" as never,
+          status: "ready",
+          assistantMessageId: null,
+          completedAt: "2026-07-26T12:00:00.000Z",
+          files: [{ path: "new.ts", kind: "modified", additions: 9, deletions: 3 }],
+        },
+      ],
+    });
+
+    expect(result?.turnId).toBe(newer);
+    expect(result?.files[0]?.path).toBe("new.ts");
+  });
 });
