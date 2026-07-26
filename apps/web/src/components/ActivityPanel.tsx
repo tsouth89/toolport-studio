@@ -1,13 +1,24 @@
-import { Activity, AlertTriangle, CheckCircle2, Circle, Loader2, XCircle } from "lucide-react";
+import type { TurnId } from "@t3tools/contracts";
+import {
+  Activity,
+  AlertTriangle,
+  CheckCircle2,
+  Circle,
+  ExternalLink,
+  Loader2,
+  XCircle,
+} from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { formatDuration } from "../session-logic";
 import type {
+  ThreadActivityChangedFiles,
   ThreadActivityStep,
   ThreadActivityStepStatus,
   ThreadActivityViewModel,
 } from "../threadActivityViewModel";
 import { cn } from "../lib/utils";
+import { DiffStatLabel, hasNonZeroStat } from "./chat/DiffStatLabel";
 import { ScrollArea } from "./ui/scroll-area";
 
 function useElapsedLabel(startedAt: string | null, active: boolean): string | null {
@@ -81,7 +92,93 @@ function RecentStepRow({ step }: { step: ThreadActivityStep }) {
   );
 }
 
-export function ActivityPanel({ model }: { model: ThreadActivityViewModel }) {
+function ChangedFilesSection({
+  model,
+  onOpenTurnDiff,
+}: {
+  model: ThreadActivityChangedFiles;
+  onOpenTurnDiff?: (turnId: TurnId, filePath?: string) => void;
+}) {
+  const remaining = model.fileCount - model.files.length;
+  return (
+    <section className="min-w-0 space-y-1.5">
+      <div className="flex min-w-0 items-center justify-between gap-2">
+        <h3 className="flex min-w-0 items-center gap-1.5 text-[10px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
+          <span>Changed files</span>
+          <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-muted-foreground normal-case tracking-normal">
+            {model.fileCount}
+          </span>
+        </h3>
+        {hasNonZeroStat({ additions: model.additions, deletions: model.deletions }) ? (
+          <DiffStatLabel
+            additions={model.additions}
+            deletions={model.deletions}
+            className="text-[11px]"
+            layout="inline"
+          />
+        ) : null}
+      </div>
+
+      <ul className="min-w-0 divide-y divide-border/40 overflow-hidden rounded-lg border border-border/60 bg-card/30 px-1.5 py-0.5">
+        {model.files.map((file) => (
+          <li key={file.path}>
+            <button
+              type="button"
+              className={cn(
+                "flex w-full min-w-0 items-center gap-2 px-1 py-1.5 text-left text-[12px]",
+                onOpenTurnDiff
+                  ? "cursor-pointer rounded-md hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  : "cursor-default",
+              )}
+              disabled={!onOpenTurnDiff}
+              onClick={() => onOpenTurnDiff?.(model.turnId, file.path)}
+            >
+              <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-foreground/90">
+                {file.path}
+              </span>
+              {model.hasStats ? (
+                <DiffStatLabel
+                  additions={file.additions}
+                  deletions={file.deletions}
+                  className="shrink-0 text-[11px]"
+                  layout="inline"
+                />
+              ) : null}
+            </button>
+          </li>
+        ))}
+      </ul>
+
+      <div className="flex min-w-0 items-center justify-between gap-2 px-0.5">
+        {remaining > 0 ? (
+          <span className="text-[11px] text-muted-foreground">
+            +{remaining} more file{remaining === 1 ? "" : "s"}
+          </span>
+        ) : (
+          <span />
+        )}
+        {onOpenTurnDiff ? (
+          <button
+            type="button"
+            className="inline-flex items-center gap-1 text-[11.5px] font-medium text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            onClick={() => onOpenTurnDiff(model.turnId)}
+          >
+            View diff
+            <ExternalLink className="size-3 shrink-0" aria-hidden />
+          </button>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+export function ActivityPanel({
+  model,
+  onOpenTurnDiff,
+}: {
+  model: ThreadActivityViewModel;
+  onOpenTurnDiff?: (turnId: TurnId, filePath?: string) => void;
+}) {
   const elapsed = useElapsedLabel(model.elapsedStartedAt, model.isWorking);
   const currentElapsed = useElapsedLabel(model.current?.startedAt ?? null, model.isWorking);
   // Newest first, matching mockup top-of-list recency while still showing plan order
@@ -175,7 +272,11 @@ export function ActivityPanel({ model }: { model: ThreadActivityViewModel }) {
             )}
           </section>
 
-          {/* MCP / changed files / artifacts: later slices when data is authoritative. */}
+          {model.changedFiles ? (
+            <ChangedFilesSection model={model.changedFiles} onOpenTurnDiff={onOpenTurnDiff} />
+          ) : null}
+
+          {/* MCP / artifacts: later slices when data is authoritative. */}
           {!model.hasAuthoritativeMcpStatus ? null : null}
         </div>
       </ScrollArea>

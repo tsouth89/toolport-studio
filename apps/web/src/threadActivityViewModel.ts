@@ -4,6 +4,7 @@
  */
 import type { TurnId } from "@t3tools/contracts";
 
+import { summarizeTurnDiffStats } from "./lib/turnDiffTree";
 import {
   workEntryIndicatesToolFailure,
   workEntryIndicatesToolNeutralStatus,
@@ -12,6 +13,7 @@ import {
   type TimelineEntry,
   type WorkLogEntry,
 } from "./session-logic";
+import type { TurnDiffFileChange, TurnDiffSummary } from "./types";
 
 export type ThreadActivityStepStatus =
   | "pending"
@@ -40,11 +42,29 @@ export interface ThreadActivityCurrentStep {
   readonly source: "tool" | "thinking" | "working" | "approval" | "user-input" | "error";
 }
 
+export interface ThreadActivityChangedFile {
+  readonly path: string;
+  readonly additions: number;
+  readonly deletions: number;
+}
+
+export interface ThreadActivityChangedFiles {
+  readonly turnId: TurnId;
+  readonly fileCount: number;
+  readonly additions: number;
+  readonly deletions: number;
+  /** Preview rows for the panel (capped). Full set lives in Diff panel. */
+  readonly files: ReadonlyArray<ThreadActivityChangedFile>;
+  readonly hasStats: boolean;
+  readonly source: "checkpoint" | "work-log";
+}
+
 export interface ThreadActivityViewModel {
   readonly isWorking: boolean;
   readonly elapsedStartedAt: string | null;
   readonly current: ThreadActivityCurrentStep | null;
   readonly recentSteps: ReadonlyArray<ThreadActivityStep>;
+  readonly changedFiles: ThreadActivityChangedFiles | null;
   readonly attention:
     | { readonly kind: "approval"; readonly label: string }
     | { readonly kind: "user-input"; readonly label: string }
@@ -56,6 +76,7 @@ export interface ThreadActivityViewModel {
 /** Mockup-scale: short instrument list, not a transcript. */
 const MAX_RECENT_STEPS = 8;
 const MAX_ACTIVITY_DETAIL_CHARS = 96;
+const MAX_CHANGED_FILE_PREVIEW = 5;
 
 /** Compact detail: single line, hard-capped. */
 export function formatActivityDetail(detail: string | undefined): string | undefined {
@@ -183,6 +204,116 @@ function selectRecentMilestones(workEntries: ReadonlyArray<WorkLogEntry>): WorkL
   return milestones.slice(-MAX_RECENT_STEPS);
 }
 
+function normalizeRelativePath(pathValue: string): string {
+  return pathValue
+    .replaceAll("\\", "/")
+    .replace(/^\.?\//, "")
+    .trim();
+}
+
+function toChangedFileRow(file: TurnDiffFileChange): ThreadActivityChangedFile {
+  return {
+    path: normalizeRelativePath(file.path) || file.path,
+    additions: typeof file.additions === "number" ? file.additions : 0,
+    deletions: typeof file.deletions === "number" ? file.deletions : 0,
+  };
+}
+
+function pickCheckpointSummary(
+  summaries: ReadonlyArray<TurnDiffSummary>,
+  preferredTurnId: TurnId | null,
+): TurnDiffSummary | null {
+  const withFiles = summaries.filter((summary) => summary.files.length > 0);
+  if (withFiles.length === 0) {
+    return null;
+  }
+  if (preferredTurnId != null) {
+    const match = withFiles.find((summary) => summary.turnId === preferredTurnId);
+    if (match) {
+      return match;
+    }
+  }
+  // Prefer highest checkpoint turn count, then latest completedAt.
+  return [...withFiles].toSorted((left, right) => {
+    if (left.checkpointTurnCount !== right.checkpointTurnCount) {
+      return right.checkpointTurnCount - left.checkpointTurnCount;
+    }
+    return right.completedAt.localeCompare(left.completedAt);
+  })[0]!;
+}
+
+function collectWorkLogChangedPaths(
+  workEntries: ReadonlyArray<WorkLogEntry>,
+  preferredTurnId: TurnId | null,
+): string[] {
+  const seen = new Set<string>();
+  const paths: string[] = [];
+  for (const entry of workEntries) {
+    if (preferredTurnId != null && entry.turnId != null && entry.turnId !== preferredTurnId) {
+      continue;
+    }
+    for (const raw of entry.changedFiles ?? []) {
+      const path = normalizeRelativePath(raw);
+      if (path.length === 0 || seen.has(path)) {
+        continue;
+      }
+      seen.add(path);
+      paths.push(path);
+    }
+  }
+  return paths;
+}
+
+/**
+ * Prefer authoritative checkpoint files (+/-). Fall back to work-log paths
+ * when a turn is mid-flight and no checkpoint exists yet.
+ */
+export function deriveActivityChangedFiles(input: {
+  readonly turnDiffSummaries: ReadonlyArray<TurnDiffSummary>;
+  readonly preferredTurnId: TurnId | null;
+  readonly workEntries: ReadonlyArray<WorkLogEntry>;
+}): ThreadActivityChangedFiles | null {
+  const summary = pickCheckpointSummary(input.turnDiffSummaries, input.preferredTurnId);
+  if (summary) {
+    const stats = summarizeTurnDiffStats(summary.files);
+    const files = summary.files.slice(0, MAX_CHANGED_FILE_PREVIEW).map(toChangedFileRow);
+    return {
+      turnId: summary.turnId,
+      fileCount: summary.files.length,
+      additions: stats.additions,
+      deletions: stats.deletions,
+      files,
+      hasStats: stats.additions > 0 || stats.deletions > 0,
+      source: "checkpoint",
+    };
+  }
+
+  const paths = collectWorkLogChangedPaths(input.workEntries, input.preferredTurnId);
+  if (paths.length === 0) {
+    return null;
+  }
+
+  // Work-log paths lack a turnId on every entry; use preferred turn when known.
+  const turnId = input.preferredTurnId;
+  if (turnId == null) {
+    return null;
+  }
+
+  return {
+    turnId,
+    fileCount: paths.length,
+    additions: 0,
+    deletions: 0,
+    files: paths.slice(0, MAX_CHANGED_FILE_PREVIEW).map((path) => ({
+      path,
+      additions: 0,
+      deletions: 0,
+    })),
+    hasStats: false,
+    source: "work-log",
+  };
+}
+
 export function deriveThreadActivityViewModel(input: {
   readonly timelineEntries: ReadonlyArray<TimelineEntry>;
   readonly isWorking: boolean;
@@ -192,6 +323,9 @@ export function deriveThreadActivityViewModel(input: {
   readonly hasPendingApproval?: boolean;
   readonly hasPendingUserInput?: boolean;
   readonly threadError?: string | null;
+  readonly turnDiffSummaries?: ReadonlyArray<TurnDiffSummary>;
+  /** Settled latest turn id — used when selecting checkpoint / work-log files. */
+  readonly latestTurnId?: TurnId | null;
 }): ThreadActivityViewModel {
   const unsettledTurnId = input.unsettledTurnId ?? null;
   const turnActive = input.isWorking;
@@ -199,6 +333,12 @@ export function deriveThreadActivityViewModel(input: {
   const recentSteps = selectRecentMilestones(workEntries).map((entry) =>
     toActivityStep(entry, { turnActive }),
   );
+  const preferredTurnId = unsettledTurnId ?? input.latestTurnId ?? null;
+  const changedFiles = deriveActivityChangedFiles({
+    turnDiffSummaries: input.turnDiffSummaries ?? [],
+    preferredTurnId,
+    workEntries,
+  });
 
   let current: ThreadActivityCurrentStep | null = null;
   if (input.isWorking) {
@@ -249,6 +389,7 @@ export function deriveThreadActivityViewModel(input: {
     elapsedStartedAt: input.isWorking ? input.activeTurnStartedAt : null,
     current,
     recentSteps,
+    changedFiles,
     attention,
     hasAuthoritativeMcpStatus: false,
   };

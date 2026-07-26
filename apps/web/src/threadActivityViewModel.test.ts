@@ -2,7 +2,9 @@ import { TurnId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import type { TimelineEntry, WorkLogEntry } from "./session-logic";
+import type { TurnDiffSummary } from "./types";
 import {
+  deriveActivityChangedFiles,
   deriveThreadActivityViewModel,
   isActivityRecentMilestone,
 } from "./threadActivityViewModel";
@@ -311,5 +313,110 @@ describe("deriveThreadActivityViewModel", () => {
     expect(model.current?.label).toBe("Terminal");
     expect(model.current?.detail).toContain("vp test run");
     expect(model.current?.detail).not.toContain("stdout");
+  });
+
+  it("surfaces checkpoint changed files with stats and preview cap", () => {
+    const turnId = TurnId.make("turn-files");
+    const summary: TurnDiffSummary = {
+      turnId,
+      checkpointTurnCount: 3,
+      checkpointRef: "ckpt-3" as never,
+      status: "ready",
+      assistantMessageId: null,
+      completedAt: "2026-07-26T12:05:00.000Z",
+      files: [
+        { path: "docs/a.md", kind: "modified", additions: 10, deletions: 1 },
+        { path: "src/b.ts", kind: "modified", additions: 5, deletions: 2 },
+        { path: "src/c.ts", kind: "added", additions: 20, deletions: 0 },
+        { path: "tests/d.ts", kind: "modified", additions: 3, deletions: 1 },
+        { path: "package.json", kind: "modified", additions: 1, deletions: 0 },
+        { path: "extra.ts", kind: "modified", additions: 2, deletions: 0 },
+      ],
+    };
+
+    const model = deriveThreadActivityViewModel({
+      isWorking: false,
+      activeTurnStartedAt: null,
+      latestTurnId: turnId,
+      turnDiffSummaries: [summary],
+      timelineEntries: [],
+    });
+
+    expect(model.changedFiles).toMatchObject({
+      turnId,
+      fileCount: 6,
+      additions: 41,
+      deletions: 4,
+      hasStats: true,
+      source: "checkpoint",
+    });
+    expect(model.changedFiles?.files).toHaveLength(5);
+    expect(model.changedFiles?.files[0]?.path).toBe("docs/a.md");
+  });
+
+  it("falls back to work-log paths when no checkpoint exists", () => {
+    const turnId = TurnId.make("turn-wip");
+    const model = deriveThreadActivityViewModel({
+      isWorking: true,
+      activeTurnStartedAt: "2026-07-26T12:00:00.000Z",
+      unsettledTurnId: turnId,
+      latestTurnId: turnId,
+      turnDiffSummaries: [],
+      timelineEntries: workTimeline([
+        workEntry({
+          id: "edit",
+          label: "Edit file",
+          turnId,
+          toolLifecycleStatus: "completed",
+          changedFiles: ["src/foo.ts", "src\\foo.ts", "docs/bar.md"],
+        }),
+      ]),
+    });
+
+    expect(model.changedFiles).toMatchObject({
+      turnId,
+      fileCount: 2,
+      hasStats: false,
+      source: "work-log",
+    });
+    expect(model.changedFiles?.files.map((file) => file.path)).toEqual([
+      "src/foo.ts",
+      "docs/bar.md",
+    ]);
+  });
+});
+
+describe("deriveActivityChangedFiles", () => {
+  it("prefers the matching turn checkpoint over an older one", () => {
+    const older = TurnId.make("turn-old");
+    const newer = TurnId.make("turn-new");
+    const result = deriveActivityChangedFiles({
+      preferredTurnId: newer,
+      workEntries: [],
+      turnDiffSummaries: [
+        {
+          turnId: older,
+          checkpointTurnCount: 1,
+          checkpointRef: "ckpt-1" as never,
+          status: "ready",
+          assistantMessageId: null,
+          completedAt: "2026-07-26T11:00:00.000Z",
+          files: [{ path: "old.ts", kind: "modified", additions: 1, deletions: 0 }],
+        },
+        {
+          turnId: newer,
+          checkpointTurnCount: 2,
+          checkpointRef: "ckpt-2" as never,
+          status: "ready",
+          assistantMessageId: null,
+          completedAt: "2026-07-26T12:00:00.000Z",
+          files: [{ path: "new.ts", kind: "modified", additions: 9, deletions: 3 }],
+        },
+      ],
+    });
+
+    expect(result?.turnId).toBe(newer);
+    expect(result?.files[0]?.path).toBe("new.ts");
+    expect(result?.additions).toBe(9);
   });
 });

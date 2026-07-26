@@ -2328,6 +2328,18 @@ function ChatViewContent(props: ChatViewProps) {
       deriveTimelineEntries(timelineMessages, activeThread?.proposedPlans ?? [], workLogEntries),
     [activeThread?.proposedPlans, timelineMessages, workLogEntries],
   );
+  const [dockedDraftHeroThreadKey, setDockedDraftHeroThreadKey] = useState<string | null>(null);
+  const draftHeroDockRequested =
+    activeThreadKey !== null && dockedDraftHeroThreadKey === activeThreadKey;
+  const isDraftHeroState =
+    isLocalDraftThread && timelineEntries.length === 0 && !isWorking && !draftHeroDockRequested;
+  const [
+    attachDraftHeroTransitionGroupRef,
+    attachDraftHeroComposerAnchorRef,
+    captureDraftHeroComposerRect,
+  ] = useDraftHeroLayoutTransition(isDraftHeroState);
+  const { turnDiffSummaries, inferredCheckpointTurnCountByTurnId } =
+    useTurnDiffSummaries(activeThread);
   const activityViewModel = useMemo(() => {
     const unsettledTurnId = !latestTurnSettled ? (activeLatestTurn?.turnId ?? null) : null;
     return deriveThreadActivityViewModel({
@@ -2342,6 +2354,8 @@ function ChatViewContent(props: ChatViewProps) {
       hasPendingApproval: pendingApprovals.length > 0,
       hasPendingUserInput: pendingUserInputs.length > 0,
       threadError,
+      turnDiffSummaries,
+      latestTurnId: activeLatestTurn?.turnId ?? null,
     });
   }, [
     activeLatestTurn?.turnId,
@@ -2352,19 +2366,8 @@ function ChatViewContent(props: ChatViewProps) {
     pendingUserInputs.length,
     threadError,
     timelineEntries,
+    turnDiffSummaries,
   ]);
-  const [dockedDraftHeroThreadKey, setDockedDraftHeroThreadKey] = useState<string | null>(null);
-  const draftHeroDockRequested =
-    activeThreadKey !== null && dockedDraftHeroThreadKey === activeThreadKey;
-  const isDraftHeroState =
-    isLocalDraftThread && timelineEntries.length === 0 && !isWorking && !draftHeroDockRequested;
-  const [
-    attachDraftHeroTransitionGroupRef,
-    attachDraftHeroComposerAnchorRef,
-    captureDraftHeroComposerRect,
-  ] = useDraftHeroLayoutTransition(isDraftHeroState);
-  const { turnDiffSummaries, inferredCheckpointTurnCountByTurnId } =
-    useTurnDiffSummaries(activeThread);
   const turnDiffSummaryByAssistantMessageId = useMemo(() => {
     const byMessageId = new Map<MessageId, TurnDiffSummary>();
     for (const summary of turnDiffSummaries) {
@@ -5920,7 +5923,7 @@ function ChatViewContent(props: ChatViewProps) {
         mode="embedded"
       />
     ) : activeRightPanelSurface?.kind === "activity" ? (
-      <ActivityPanel model={activityViewModel} />
+      <ActivityPanel model={activityViewModel} onOpenTurnDiff={onOpenTurnDiff} />
     ) : (activeRightPanelSurface?.kind === "files" || activeRightPanelSurface?.kind === "file") &&
       activeProject &&
       activeWorkspaceRoot ? (

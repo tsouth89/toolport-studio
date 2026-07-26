@@ -71,7 +71,8 @@ behavior classes keep working.
 - [x] `ActivityPanel` UI: current step, elapsed, recent steps, attention
 - [x] MCP section omitted until authoritative status exists
 - [x] Mockup-shaped recent list: tools/milestones only, cap 8, clocks, quiet rows
+- [x] Changed files block from checkpoints (+ work-log path fallback) + View diff
 - [ ] Timeline “View in Activity” deep-link (follow-up)
-- [ ] Changed files / artifacts blocks (follow-up; reuse existing surfaces)
+- [ ] Artifacts block when real artifacts exist
 - [ ] MCP list when authoritative live status exists
 - [ ] Current-step progress bar only when provider supplies a total
