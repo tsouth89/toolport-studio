@@ -583,6 +583,31 @@ function asRuntimeRequestId(value: ApprovalRequestId): RuntimeRequestId {
   return RuntimeRequestId.make(value);
 }
 
+/** True when createQuery failed in a way that usually means resume is gone. */
+export function isClaudeResumeMissError(error: unknown): boolean {
+  const detail =
+    error && typeof error === "object" && "detail" in error
+      ? String((error as { detail?: unknown }).detail ?? "")
+      : "";
+  const message =
+    error instanceof Error
+      ? error.message
+      : error && typeof error === "object" && "cause" in error
+        ? String((error as { cause?: unknown }).cause ?? "")
+        : String(error ?? "");
+  const haystack = `${detail} ${message}`.toLowerCase();
+  return (
+    haystack.includes("resume") ||
+    haystack.includes("session not found") ||
+    haystack.includes("no conversation") ||
+    haystack.includes("conversation not found") ||
+    haystack.includes("invalid session") ||
+    haystack.includes("does not exist") ||
+    haystack.includes("not found") ||
+    haystack.includes("enoent")
+  );
+}
+
 function readClaudeResumeState(resumeCursor: unknown): ClaudeResumeState | undefined {
   if (!resumeCursor || typeof resumeCursor !== "object") {
     return undefined;
@@ -3633,20 +3658,61 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         "claude.query.path_to_executable": claudeBinaryPath,
       });
 
-      const queryRuntime = yield* Effect.try({
-        try: () =>
-          createQuery({
-            prompt,
-            options: queryOptions,
-          }),
-        catch: (cause) =>
-          new ProviderAdapterProcessError({
-            provider: PROVIDER,
-            threadId,
-            detail: "Failed to start Claude runtime session.",
-            cause,
-          }),
-      });
+      const startQuery = (options: ClaudeQueryOptions) =>
+        Effect.try({
+          try: () =>
+            createQuery({
+              prompt,
+              options,
+            }),
+          catch: (cause) =>
+            new ProviderAdapterProcessError({
+              provider: PROVIDER,
+              threadId,
+              detail: "Failed to start Claude runtime session.",
+              cause,
+            }),
+        });
+
+      // Prefer native resume. If the SDK rejects a stale resume id (common after
+      // app update / missing on-disk session), fall back to a fresh session and
+      // arm Studio history rehydration so the next turn is not blank.
+      let queryRuntime: ClaudeQueryRuntime;
+      let effectiveSessionId = sessionId;
+      let needsContextRehydration = existingResumeSessionId === undefined;
+      let effectiveResumeSessionAt = resumeState?.resumeSessionAt;
+
+      if (existingResumeSessionId !== undefined) {
+        const resumeAttempt = yield* Effect.result(startQuery(queryOptions));
+        if (resumeAttempt._tag === "Success") {
+          queryRuntime = resumeAttempt.success;
+          needsContextRehydration = false;
+        } else if (isClaudeResumeMissError(resumeAttempt.failure)) {
+          const freshSessionId = yield* randomUUIDv4;
+          const { resume: _droppedResume, ...optionsWithoutResume } = queryOptions;
+          const freshOptions: ClaudeQueryOptions = {
+            ...optionsWithoutResume,
+            sessionId: freshSessionId,
+          };
+          yield* Effect.logWarning(
+            "Claude native resume failed; starting fresh session with Studio rehydration armed",
+            {
+              threadId,
+              resumeSessionId: existingResumeSessionId,
+              cause: resumeAttempt.failure,
+            },
+          );
+          queryRuntime = yield* startQuery(freshOptions);
+          effectiveSessionId = freshSessionId;
+          needsContextRehydration = true;
+          effectiveResumeSessionAt = undefined;
+        } else {
+          return yield* resumeAttempt.failure;
+        }
+      } else {
+        queryRuntime = yield* startQuery(queryOptions);
+        needsContextRehydration = true;
+      }
 
       const session: ProviderSession = {
         threadId,
@@ -3659,8 +3725,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ...(threadId ? { threadId } : {}),
         resumeCursor: {
           ...(threadId ? { threadId } : {}),
-          ...(sessionId ? { resume: sessionId } : {}),
-          ...(resumeState?.resumeSessionAt ? { resumeSessionAt: resumeState.resumeSessionAt } : {}),
+          ...(effectiveSessionId ? { resume: effectiveSessionId } : {}),
+          ...(effectiveResumeSessionAt ? { resumeSessionAt: effectiveResumeSessionAt } : {}),
           turnCount: resumeState?.turnCount ?? 0,
         },
         createdAt: startedAt,
@@ -3675,7 +3741,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         startedAt,
         basePermissionMode: permissionMode,
         currentApiModelId: apiModelId,
-        resumeSessionId: sessionId,
+        resumeSessionId: effectiveSessionId,
         pendingApprovals,
         pendingUserInputs,
         turns: [],
@@ -3685,11 +3751,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         lastKnownContextWindow: initialContextWindow,
         lastKnownTokenUsage: undefined,
         lastKnownTotalProcessedTokens: undefined,
-        lastAssistantUuid: resumeState?.resumeSessionAt,
+        lastAssistantUuid: effectiveResumeSessionAt,
         lastThreadStartedId: undefined,
-        // Only arm when we did not hand the SDK a resume id. Native resume
-        // already carries history; cold start after update/restart does not.
-        needsContextRehydration: existingResumeSessionId === undefined,
+        needsContextRehydration,
         stopped: false,
       };
       yield* Ref.set(contextRef, context);
@@ -3853,17 +3917,19 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     }
 
     let sendInput = input;
+    const historyTurns = input.conversationHistory ?? [];
+    const toolSummaries = input.recentToolSummaries ?? [];
     if (
       steeringTurnState === null &&
       context.needsContextRehydration &&
-      input.conversationHistory !== undefined &&
-      input.conversationHistory.length > 0
+      (historyTurns.length > 0 || toolSummaries.length > 0)
     ) {
       const prefix = buildConversationRehydrationPrefix(
-        input.conversationHistory.map((turn) => ({ role: turn.role, text: turn.text })),
+        historyTurns.map((turn) => ({ role: turn.role, text: turn.text })),
         {
           reason:
             "This Toolport Studio thread has prior conversation history that is not loaded in the current Claude session (common after app restart or update).",
+          ...(toolSummaries.length > 0 ? { toolSummaries } : {}),
         },
       );
       if (prefix) {
@@ -3875,14 +3941,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         context.needsContextRehydration = false;
         yield* Effect.logInfo("Claude cold-start rehydration applied from Studio history", {
           threadId: input.threadId,
-          historyTurns: input.conversationHistory.length,
+          historyTurns: historyTurns.length,
+          toolSummaries: toolSummaries.length,
         });
       }
-    } else if (
-      steeringTurnState === null &&
-      context.needsContextRehydration &&
-      (input.conversationHistory === undefined || input.conversationHistory.length === 0)
-    ) {
+    } else if (steeringTurnState === null && context.needsContextRehydration) {
       // No Studio history available; clear the arm so we do not keep retrying.
       context.needsContextRehydration = false;
     }

@@ -4,6 +4,7 @@ import {
   appendConversationHistoryText,
   buildConversationRehydrationPrefix,
   orchestrationMessagesToConversationHistory,
+  selectToolSummariesForRehydration,
 } from "./conversationRehydration.ts";
 
 describe("orchestrationMessagesToConversationHistory", () => {
@@ -66,6 +67,30 @@ describe("buildConversationRehydrationPrefix", () => {
     expect(prefix).toBeDefined();
     expect(prefix).toContain("NEW");
     expect(prefix).not.toContain("OLD");
+  });
+
+  it("includes recent tool summaries when provided", () => {
+    const prefix = buildConversationRehydrationPrefix([{ role: "user", text: "fix it" }], {
+      toolSummaries: ["Read package.json", "list_issues"],
+    });
+    expect(prefix).toContain("Recent tool work from Studio");
+    expect(prefix).toContain("Read package.json");
+    expect(prefix).toContain("list_issues");
+  });
+});
+
+describe("selectToolSummariesForRehydration", () => {
+  it("keeps the newest tool-like activities only", () => {
+    expect(
+      selectToolSummariesForRehydration(
+        [
+          { kind: "info.note", summary: "skip me", tone: "info" },
+          { kind: "tool.started", summary: "old tool", tone: "tool" },
+          { kind: "tool.completed", summary: "new tool", tone: "tool" },
+        ],
+        1,
+      ),
+    ).toEqual(["new tool"]);
   });
 });
 

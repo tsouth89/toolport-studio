@@ -53,16 +53,23 @@ export function orchestrationMessagesToConversationHistory(
 /**
  * Build a prompt prefix that restores Studio-known history when the provider
  * session could not be resumed. Newest turns are preferred within maxChars.
+ * Optional tool summaries capture work that never landed as assistant text.
  */
 export function buildConversationRehydrationPrefix(
   log: ReadonlyArray<ConversationHistoryTurn>,
   options?: {
     readonly maxChars?: number;
     readonly reason?: string;
+    readonly toolSummaries?: ReadonlyArray<string>;
   },
 ): string | undefined {
   const maxChars = options?.maxChars ?? DEFAULT_CONVERSATION_REHYDRATION_MAX_CHARS;
-  if (log.length === 0 || maxChars <= 0) {
+  const toolLines = (options?.toolSummaries ?? [])
+    .map((summary) => summary.trim())
+    .filter((summary) => summary.length > 0)
+    .slice(-20)
+    .map((summary) => `- ${summary}`);
+  if ((log.length === 0 && toolLines.length === 0) || maxChars <= 0) {
     return undefined;
   }
   const lines: string[] = [];
@@ -84,20 +91,52 @@ export function buildConversationRehydrationPrefix(
     lines.unshift(block);
     used += cost;
   }
-  if (lines.length === 0) {
+  if (lines.length === 0 && toolLines.length === 0) {
     return undefined;
   }
   const reason = options?.reason?.trim() || DEFAULT_REHYDRATION_REASON;
+  const toolsBlock =
+    toolLines.length > 0
+      ? ["", "Recent tool work from Studio (may not appear as assistant text):", ...toolLines]
+      : [];
   return [
     reason,
     "Here is the conversation so far from Toolport Studio. Treat it as your memory of this thread and continue without asking the user to restate it.",
     "",
-    lines.join("\n\n"),
+    ...(lines.length > 0 ? [lines.join("\n\n"), ...toolsBlock] : toolsBlock),
     "",
     "---",
     "Latest user message:",
     "",
   ].join("\n");
+}
+
+/** Keep recent tool activity summaries for rehydration (newest last). */
+export function selectToolSummariesForRehydration(
+  activities: ReadonlyArray<{
+    readonly kind: string;
+    readonly summary: string;
+    readonly tone?: string;
+  }>,
+  limit = 20,
+): Array<string> {
+  const selected: string[] = [];
+  for (let index = activities.length - 1; index >= 0; index -= 1) {
+    const activity = activities[index];
+    if (!activity) continue;
+    const kind = activity.kind.toLowerCase();
+    const isTool =
+      activity.tone === "tool" ||
+      kind.startsWith("tool.") ||
+      kind.includes("command") ||
+      kind.includes("mcp");
+    if (!isTool) continue;
+    const summary = activity.summary.trim();
+    if (summary.length === 0) continue;
+    selected.push(summary);
+    if (selected.length >= limit) break;
+  }
+  return selected.reverse();
 }
 
 /** Merge consecutive same-role turns (streamed assistant deltas / multi-part user). */

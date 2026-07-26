@@ -38,7 +38,11 @@ import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderAdapterProcessError, ProviderAdapterValidationError } from "../Errors.ts";
 import type { ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
-import { makeClaudeAdapter, type ClaudeAdapterLiveOptions } from "./ClaudeAdapter.ts";
+import {
+  isClaudeResumeMissError,
+  makeClaudeAdapter,
+  type ClaudeAdapterLiveOptions,
+} from "./ClaudeAdapter.ts";
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 
 // Test-local service tag so the rest of the file can keep using `yield* ClaudeAdapter`.
@@ -3030,6 +3034,21 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it("classifies Claude resume-miss errors for soft fallback", () => {
+    assert.isTrue(
+      isClaudeResumeMissError(
+        new ProviderAdapterProcessError({
+          provider: ProviderDriverKind.make("claudeAgent"),
+          threadId: RESUME_THREAD_ID,
+          detail: "Failed to start Claude runtime session.",
+          cause: new Error("Session not found for resume"),
+        }),
+      ),
+    );
+    assert.isTrue(isClaudeResumeMissError(new Error("No conversation found")));
+    assert.isFalse(isClaudeResumeMissError(new Error("permission denied for binary")));
+  });
+
   it.effect("passes Claude resume ids without pinning a stale assistant checkpoint", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
@@ -3062,6 +3081,66 @@ describe("ClaudeAdapterLive", () => {
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("falls back to a fresh session when Claude resume create fails", () => {
+    let createCount = 0;
+    let lastCreateInput:
+      | {
+          readonly options: ClaudeQueryOptions;
+        }
+      | undefined;
+    const query = new FakeClaudeQuery();
+    const layer = Layer.effect(
+      ClaudeAdapter,
+      Effect.gen(function* () {
+        const claudeConfig = decodeClaudeSettings({});
+        return yield* makeClaudeAdapter(claudeConfig, {
+          createQuery: (input) => {
+            createCount += 1;
+            lastCreateInput = input;
+            if (createCount === 1 && input.options.resume) {
+              throw new Error("Session not found for resume");
+            }
+            return query;
+          },
+        });
+      }),
+    ).pipe(
+      Layer.provideMerge(ServerConfig.layerTest("/tmp/claude-adapter-test", "/tmp")),
+      Layer.provideMerge(ServerSettingsService.layerTest()),
+      Layer.provideMerge(NodeServices.layer),
+    );
+
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const session = yield* adapter.startSession({
+        threadId: RESUME_THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        resumeCursor: {
+          threadId: "resume-thread-1",
+          resume: "550e8400-e29b-41d4-a716-446655440000",
+          resumeSessionAt: "assistant-99",
+          turnCount: 3,
+        },
+        runtimeMode: "full-access",
+      });
+
+      assert.equal(createCount, 2);
+      assert.equal(lastCreateInput?.options.resume, undefined);
+      assert.isString(lastCreateInput?.options.sessionId);
+      assert.equal(
+        (session.resumeCursor as { resume?: string } | undefined)?.resume,
+        lastCreateInput?.options.sessionId,
+      );
+      assert.equal(
+        (session.resumeCursor as { resumeSessionAt?: string } | undefined)?.resumeSessionAt,
+        undefined,
+      );
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(layer),
     );
   });
 

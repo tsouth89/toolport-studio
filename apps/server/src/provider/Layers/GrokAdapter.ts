@@ -479,11 +479,13 @@ export function appendGrokConversationText(
 export function buildGrokContextRehydrationPrefix(
   log: ReadonlyArray<GrokConversationTurn>,
   maxChars = GROK_CONTEXT_REHYDRATION_MAX_CHARS,
+  toolSummaries?: ReadonlyArray<string>,
 ): string | undefined {
   return buildConversationRehydrationPrefix(log, {
     maxChars,
     reason:
       "The previous Grok provider session was interrupted and could not be resumed (common after Stop, app restart, or update).",
+    ...(toolSummaries !== undefined && toolSummaries.length > 0 ? { toolSummaries } : {}),
   });
 }
 
@@ -2028,7 +2030,11 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               }
               const rehydrationPrefix =
                 steeringTurnId === undefined && ctx.needsContextRehydration
-                  ? buildGrokContextRehydrationPrefix(ctx.conversationLog)
+                  ? buildGrokContextRehydrationPrefix(
+                      ctx.conversationLog,
+                      GROK_CONTEXT_REHYDRATION_MAX_CHARS,
+                      input.recentToolSummaries,
+                    )
                   : undefined;
               const usesContextRehydration = rehydrationPrefix !== undefined;
               const promptText =

@@ -717,8 +717,8 @@ const make = Effect.gen(function* () {
           : requestedModelSelection
         : input.modelSelection;
 
-    // Prior projected messages for cold-start rehydration when native resume
-    // fails (app update/restart). Exclude the message currently being sent.
+    // Prior projected messages + tool summaries for cold-start rehydration when
+    // native resume fails (app update/restart). Exclude the message being sent.
     const conversationHistory = thread.messages.flatMap((entry) => {
       if (input.messageId !== undefined && entry.id === input.messageId) {
         return [];
@@ -732,6 +732,19 @@ const make = Effect.gen(function* () {
       }
       return [{ role: entry.role as "user" | "assistant", text }];
     });
+    const recentToolSummaries = thread.activities
+      .filter((activity) => {
+        const kind = activity.kind.toLowerCase();
+        return (
+          activity.tone === "tool" ||
+          kind.startsWith("tool.") ||
+          kind.includes("command") ||
+          kind.includes("mcp")
+        );
+      })
+      .map((activity) => activity.summary.trim())
+      .filter((summary) => summary.length > 0)
+      .slice(-20);
 
     return {
       threadId: input.threadId,
@@ -740,6 +753,7 @@ const make = Effect.gen(function* () {
       ...(modelForTurn !== undefined ? { modelSelection: modelForTurn } : {}),
       ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
       ...(conversationHistory.length > 0 ? { conversationHistory } : {}),
+      ...(recentToolSummaries.length > 0 ? { recentToolSummaries } : {}),
     };
   });
 

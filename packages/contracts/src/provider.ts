@@ -90,6 +90,12 @@ export const ProviderSendTurnInput = Schema.Struct({
    * message currently being sent — that is `input`.
    */
   conversationHistory: Schema.optional(Schema.Array(ProviderConversationHistoryTurn)),
+  /**
+   * Recent tool/work-log summaries from Studio projections (not full payloads).
+   * Used when rehydrating so long tool work is not lost if it never became
+   * assistant text.
+   */
+  recentToolSummaries: Schema.optional(Schema.Array(Schema.String)),
 });
 export type ProviderSendTurnInput = typeof ProviderSendTurnInput.Type;
 
