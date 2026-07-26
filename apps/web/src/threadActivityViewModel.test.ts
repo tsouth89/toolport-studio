@@ -6,6 +6,7 @@ import type { TurnDiffSummary } from "./types";
 import {
   deriveActivityArtifacts,
   deriveActivityChangedFiles,
+  deriveActivityMcpStatus,
   deriveThreadActivityViewModel,
   isActivityRecentMilestone,
 } from "./threadActivityViewModel";
@@ -224,6 +225,7 @@ describe("deriveThreadActivityViewModel", () => {
     expect(model.attention).toEqual({ kind: "approval", label: "Approval required" });
     expect(model.current?.source).toBe("working");
     expect(model.hasAuthoritativeMcpStatus).toBe(false);
+    expect(model.mcp).toBeNull();
   });
 
   it("prefers thinking label when no tool is open", () => {
@@ -491,6 +493,52 @@ describe("deriveThreadActivityViewModel", () => {
       "docs/COMPETITIVE.md",
       "apps/web/src/real-file.ts",
     ]);
+  });
+});
+
+describe("deriveActivityMcpStatus", () => {
+  it("ranks enabled servers and session usage first", () => {
+    const status = deriveActivityMcpStatus({
+      mcpStatus: {
+        gatewayAvailable: true,
+        activeProfileId: "default",
+        activeProfileName: "Default",
+        servers: [
+          { id: "expo", name: "expo", enabled: false, transport: "http" },
+          { id: "github", name: "GitHub", enabled: true, transport: "http" },
+          { id: "linear-2", name: "Linear", enabled: true, transport: "http" },
+        ],
+      },
+      timelineEntries: workTimeline([
+        workEntry({
+          id: "m1",
+          label: "list issues",
+          toolTitle: "Linear · list issues",
+          itemType: "mcp_tool_call",
+          toolLifecycleStatus: "completed",
+          toolData: { server: "linear-2", tool: "list_issues" },
+        }),
+        workEntry({
+          id: "m2",
+          label: "list issues",
+          toolTitle: "Linear · list issues",
+          itemType: "mcp_tool_call",
+          toolLifecycleStatus: "completed",
+          toolData: { server: "linear-2", tool: "list_issues" },
+        }),
+      ]),
+    });
+
+    expect(status?.gatewayAvailable).toBe(true);
+    expect(status?.servers[0]?.name).toBe("Linear");
+    expect(status?.servers[0]?.useCount).toBe(2);
+    expect(status?.servers[0]?.health).toBe("ready");
+    expect(status?.servers.find((s) => s.id === "expo")?.health).toBe("disabled");
+    expect(status?.totalServerCount).toBe(3);
+  });
+
+  it("returns null without Toolport registry status", () => {
+    expect(deriveActivityMcpStatus({ mcpStatus: null, timelineEntries: [] })).toBeNull();
   });
 });
 

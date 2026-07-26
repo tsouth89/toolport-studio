@@ -15,6 +15,8 @@ import { formatDuration } from "../session-logic";
 import type {
   ThreadActivityArtifact,
   ThreadActivityChangedFiles,
+  ThreadActivityMcpServer,
+  ThreadActivityMcpStatus,
   ThreadActivityStep,
   ThreadActivityStepStatus,
   ThreadActivityViewModel,
@@ -166,6 +168,94 @@ function ArtifactsSection({
   );
 }
 
+function mcpHealthDotClass(health: ThreadActivityMcpServer["health"]): string {
+  switch (health) {
+    case "ready":
+      return "bg-success";
+    case "offline":
+      return "bg-destructive/80";
+    case "disabled":
+    default:
+      return "bg-muted-foreground/40";
+  }
+}
+
+function McpServersSection({
+  model,
+  onViewAllMcp,
+}: {
+  model: ThreadActivityMcpStatus;
+  onViewAllMcp?: () => void;
+}) {
+  const remaining = model.totalServerCount - model.servers.length;
+  return (
+    <section className="min-w-0 space-y-1.5">
+      <div className="flex min-w-0 items-center justify-between gap-2">
+        <SectionLabel>
+          <span className="inline-flex items-center gap-1.5">
+            MCP servers
+            <span className="rounded-full bg-muted/80 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-muted-foreground normal-case tracking-normal">
+              {model.totalServerCount}
+            </span>
+          </span>
+        </SectionLabel>
+        {model.activeProfileName ? (
+          <span className="truncate text-[10px] text-muted-foreground/75">
+            {model.activeProfileName}
+          </span>
+        ) : null}
+      </div>
+      {!model.gatewayAvailable ? (
+        <p className="px-0.5 text-[11px] text-muted-foreground">
+          Toolport gateway not found. Servers are listed from your Toolport registry.
+        </p>
+      ) : null}
+      <ul className="min-w-0 divide-y divide-border/35 overflow-hidden rounded-xl border border-border/55 bg-[color-mix(in_srgb,var(--shell-surface-raised,var(--card))_88%,transparent)] px-0.5 py-0.5 shadow-sm">
+        {model.servers.map((server) => (
+          <li key={server.id} className="flex min-w-0 items-center gap-2 px-2 py-1.5 text-[12px]">
+            <span
+              className={cn("size-1.5 shrink-0 rounded-full", mcpHealthDotClass(server.health))}
+              title={
+                server.health === "ready"
+                  ? "Enabled"
+                  : server.health === "offline"
+                    ? "Gateway offline"
+                    : "Disabled in profile"
+              }
+              aria-hidden
+            />
+            <span className="min-w-0 flex-1 truncate font-medium text-foreground/90">
+              {server.name}
+            </span>
+            <span className="shrink-0 text-[10px] text-muted-foreground/70">
+              {server.transport === "unknown" ? "" : server.transport}
+            </span>
+          </li>
+        ))}
+      </ul>
+      <div className="flex min-w-0 items-center justify-between gap-2 px-0.5">
+        {remaining > 0 ? (
+          <span className="text-[11px] text-muted-foreground">
+            +{remaining} more server{remaining === 1 ? "" : "s"}
+          </span>
+        ) : (
+          <span />
+        )}
+        {onViewAllMcp ? (
+          <button
+            type="button"
+            className="inline-flex items-center gap-1 text-[11.5px] font-medium text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            onClick={onViewAllMcp}
+          >
+            View all
+            <ExternalLink className="size-3 shrink-0" aria-hidden />
+          </button>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
 function ChangedFilesSection({
   model,
   onOpenTurnDiff,
@@ -252,10 +342,12 @@ export function ActivityPanel({
   model,
   onOpenTurnDiff,
   onOpenPlan,
+  onViewAllMcp,
 }: {
   model: ThreadActivityViewModel;
   onOpenTurnDiff?: (turnId: TurnId, filePath?: string) => void;
   onOpenPlan?: () => void;
+  onViewAllMcp?: () => void;
 }) {
   const elapsed = useElapsedLabel(model.elapsedStartedAt, model.isWorking);
   const currentElapsed = useElapsedLabel(model.current?.startedAt ?? null, model.isWorking);
@@ -355,8 +447,9 @@ export function ActivityPanel({
             <ArtifactsSection artifacts={model.artifacts} onOpenPlan={onOpenPlan} />
           ) : null}
 
-          {/* MCP only when authoritative live status exists. */}
-          {!model.hasAuthoritativeMcpStatus ? null : null}
+          {model.mcp && model.hasAuthoritativeMcpStatus ? (
+            <McpServersSection model={model.mcp} onViewAllMcp={onViewAllMcp} />
+          ) : null}
         </div>
       </ScrollArea>
     </div>

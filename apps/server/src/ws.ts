@@ -66,6 +66,7 @@ import { RpcSerialization, RpcServer } from "effect/unstable/rpc";
 
 import * as CheckpointDiffQuery from "./checkpointing/CheckpointDiffQuery.ts";
 import * as ServerConfig from "./config.ts";
+import { readToolportMcpStatusSnapshot } from "./mcp/ToolportRegistry.ts";
 import * as Keybindings from "./keybindings.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import { normalizeDispatchCommand } from "./orchestration/Normalizer.ts";
@@ -1075,6 +1076,7 @@ const makeWsRpcLayer = (
         const environment = yield* serverEnvironment.getDescriptor;
         const auth = yield* serverAuth.getDescriptor();
 
+        const toolportMcp = readToolportMcpStatusSnapshot();
         return {
           environment,
           auth,
@@ -1097,6 +1099,16 @@ const makeWsRpcLayer = (
           settings,
           shellResumeCompletionMarker: true,
           threadResumeCompletionMarker: true,
+          ...(toolportMcp
+            ? {
+                mcpStatus: {
+                  gatewayAvailable: toolportMcp.gatewayAvailable,
+                  activeProfileId: toolportMcp.activeProfileId,
+                  activeProfileName: toolportMcp.activeProfileName,
+                  servers: toolportMcp.servers,
+                },
+              }
+            : {}),
         };
       });
 

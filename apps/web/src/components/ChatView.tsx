@@ -69,7 +69,7 @@ import {
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { isElectron } from "../env";
-import { readLocalApi } from "../localApi";
+import { ensureLocalApi, readLocalApi } from "../localApi";
 import { useDiffPanelStore } from "../diffPanelStore";
 import {
   collapseExpandedComposerCursor,
@@ -2357,6 +2357,7 @@ function ChatViewContent(props: ChatViewProps) {
       turnDiffSummaries,
       latestTurnId: activeLatestTurn?.turnId ?? null,
       proposedPlans: activeThread?.proposedPlans ?? [],
+      mcpStatus: serverConfig?.mcpStatus ?? null,
     });
   }, [
     activeLatestTurn?.turnId,
@@ -2366,6 +2367,7 @@ function ChatViewContent(props: ChatViewProps) {
     latestTurnSettled,
     pendingApprovals.length,
     pendingUserInputs.length,
+    serverConfig?.mcpStatus,
     threadError,
     timelineEntries,
     turnDiffSummaries,
@@ -3114,6 +3116,13 @@ function ChatViewContent(props: ChatViewProps) {
     if (!activeThreadRef) return;
     useRightPanelStore.getState().open(activeThreadRef, "plan");
   }, [activeThreadRef]);
+  const openToolportMcp = useCallback(() => {
+    // Toolport owns the full MCP catalog/control plane (product vision).
+    const api = readLocalApi() ?? ensureLocalApi();
+    void api.shell.openExternal("https://toolport.studio").catch(() => {
+      /* best-effort View all */
+    });
+  }, []);
   const openFileSurface = useCallback(
     (relativePath: string) => {
       if (!activeThreadRef || !activeProject) return;
@@ -5895,6 +5904,7 @@ function ChatViewContent(props: ChatViewProps) {
         model={activityViewModel}
         onOpenTurnDiff={onOpenTurnDiff}
         onOpenPlan={addPlanSurface}
+        onViewAllMcp={openToolportMcp}
       />
     ) : (activeRightPanelSurface?.kind === "files" || activeRightPanelSurface?.kind === "file") &&
       activeProject &&

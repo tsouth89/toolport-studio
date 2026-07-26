@@ -2,7 +2,7 @@
  * Shared Activity projection for timeline Working row + right-panel Activity.
  * Pure: no React, no store writes. SOU-386 PR2+ (mockup-shaped recent list).
  */
-import type { TurnId } from "@t3tools/contracts";
+import type { ToolportMcpStatus, TurnId } from "@t3tools/contracts";
 
 import { summarizeTurnDiffStats } from "./lib/turnDiffTree";
 import {
@@ -72,6 +72,26 @@ export interface ThreadActivityArtifact {
   readonly implemented: boolean;
 }
 
+export type ThreadActivityMcpHealth = "ready" | "disabled" | "offline";
+
+export interface ThreadActivityMcpServer {
+  readonly id: string;
+  readonly name: string;
+  readonly health: ThreadActivityMcpHealth;
+  readonly transport: "http" | "stdio" | "unknown";
+  readonly source?: string;
+  /** Session tool-call hits used for ranking (most used first). */
+  readonly useCount: number;
+}
+
+export interface ThreadActivityMcpStatus {
+  readonly gatewayAvailable: boolean;
+  readonly activeProfileName: string | null;
+  readonly servers: ReadonlyArray<ThreadActivityMcpServer>;
+  /** Total servers in Toolport registry (for View all copy). */
+  readonly totalServerCount: number;
+}
+
 export interface ThreadActivityViewModel {
   readonly isWorking: boolean;
   readonly elapsedStartedAt: string | null;
@@ -85,7 +105,9 @@ export interface ThreadActivityViewModel {
     | { readonly kind: "user-input"; readonly label: string }
     | { readonly kind: "error"; readonly label: string }
     | null;
-  readonly hasAuthoritativeMcpStatus: false;
+  /** Toolport registry projection; null when no authoritative status. */
+  readonly mcp: ThreadActivityMcpStatus | null;
+  readonly hasAuthoritativeMcpStatus: boolean;
 }
 
 /** Mockup-scale: short instrument list, not a transcript. */
@@ -93,6 +115,7 @@ const MAX_RECENT_STEPS = 8;
 const MAX_ACTIVITY_DETAIL_CHARS = 96;
 const MAX_CHANGED_FILE_PREVIEW = 5;
 const MAX_ACTIVITY_ARTIFACTS = 5;
+const MAX_ACTIVITY_MCP_SERVERS = 6;
 
 /** Compact detail: single line, hard-capped. */
 export function formatActivityDetail(detail: string | undefined): string | undefined {
@@ -391,6 +414,91 @@ export function deriveActivityChangedFiles(input: {
  * Proposed plans are the first real Activity artifact type. Prefer plans for
  * the active/preferred turn; otherwise surface recent unimplemented plans.
  */
+/**
+ * Rank Toolport servers for Activity: enabled + gateway first, then session
+ * usage, then name. Preview caps at MAX_ACTIVITY_MCP_SERVERS.
+ */
+export function deriveActivityMcpStatus(input: {
+  readonly mcpStatus: ToolportMcpStatus | null | undefined;
+  readonly timelineEntries: ReadonlyArray<TimelineEntry>;
+  readonly preferredTurnId?: TurnId | null;
+}): ThreadActivityMcpStatus | null {
+  const status = input.mcpStatus;
+  if (!status || status.servers.length === 0) {
+    return null;
+  }
+
+  const useCounts = new Map<string, number>();
+  const preferredTurnId = input.preferredTurnId ?? null;
+  for (const timelineEntry of input.timelineEntries) {
+    if (timelineEntry.kind !== "work") continue;
+    const entry = timelineEntry.entry;
+    if (preferredTurnId != null && entry.turnId != null && entry.turnId !== preferredTurnId) {
+      continue;
+    }
+    if (entry.itemType !== "mcp_tool_call" && entry.tone !== "tool") {
+      continue;
+    }
+    const fromData =
+      typeof entry.toolData === "object" &&
+      entry.toolData !== null &&
+      "server" in entry.toolData &&
+      typeof (entry.toolData as { server?: unknown }).server === "string"
+        ? (entry.toolData as { server: string }).server.trim().toLowerCase()
+        : "";
+    const fromTitle = (entry.toolTitle ?? entry.label).trim().toLowerCase();
+    const titleServer = fromTitle.includes("·") ? fromTitle.split("·")[0]!.trim() : fromTitle;
+    const keys = new Set<string>();
+    if (fromData && fromData !== "tool" && fromData !== "tool call") keys.add(fromData);
+    if (titleServer && titleServer !== "tool" && titleServer !== "tool call") {
+      keys.add(titleServer);
+    }
+    if (keys.size === 0) continue;
+    // One hit per tool call, attributed to every matching key (id and display name).
+    for (const key of keys) {
+      useCounts.set(key, (useCounts.get(key) ?? 0) + 1);
+    }
+  }
+
+  const scored = status.servers.map((server) => {
+    const idKey = server.id.trim().toLowerCase();
+    const nameKey = server.name.trim().toLowerCase();
+    const useCount = Math.max(useCounts.get(idKey) ?? 0, useCounts.get(nameKey) ?? 0);
+    let health: ThreadActivityMcpHealth = "disabled";
+    if (!server.enabled) {
+      health = "disabled";
+    } else if (!status.gatewayAvailable) {
+      health = "offline";
+    } else {
+      health = "ready";
+    }
+    return {
+      id: server.id,
+      name: server.name,
+      health,
+      transport: server.transport,
+      ...(server.source ? { source: server.source } : {}),
+      useCount,
+    } satisfies ThreadActivityMcpServer;
+  });
+
+  scored.sort((left, right) => {
+    const healthRank = (h: ThreadActivityMcpHealth) =>
+      h === "ready" ? 0 : h === "offline" ? 1 : 2;
+    const byHealth = healthRank(left.health) - healthRank(right.health);
+    if (byHealth !== 0) return byHealth;
+    if (right.useCount !== left.useCount) return right.useCount - left.useCount;
+    return left.name.localeCompare(right.name);
+  });
+
+  return {
+    gatewayAvailable: status.gatewayAvailable,
+    activeProfileName: status.activeProfileName,
+    servers: scored.slice(0, MAX_ACTIVITY_MCP_SERVERS),
+    totalServerCount: status.servers.length,
+  };
+}
+
 export function deriveActivityArtifacts(input: {
   readonly proposedPlans: ReadonlyArray<ProposedPlan>;
   readonly preferredTurnId: TurnId | null;
@@ -437,6 +545,7 @@ export function deriveThreadActivityViewModel(input: {
   /** Settled latest turn id — used when selecting checkpoint / work-log files. */
   readonly latestTurnId?: TurnId | null;
   readonly proposedPlans?: ReadonlyArray<ProposedPlan>;
+  readonly mcpStatus?: ToolportMcpStatus | null;
 }): ThreadActivityViewModel {
   const unsettledTurnId = input.unsettledTurnId ?? null;
   const turnActive = input.isWorking;
@@ -452,6 +561,11 @@ export function deriveThreadActivityViewModel(input: {
   });
   const artifacts = deriveActivityArtifacts({
     proposedPlans: input.proposedPlans ?? [],
+    preferredTurnId,
+  });
+  const mcp = deriveActivityMcpStatus({
+    mcpStatus: input.mcpStatus,
+    timelineEntries: input.timelineEntries,
     preferredTurnId,
   });
 
@@ -526,6 +640,7 @@ export function deriveThreadActivityViewModel(input: {
     changedFiles,
     artifacts,
     attention,
-    hasAuthoritativeMcpStatus: false,
+    mcp,
+    hasAuthoritativeMcpStatus: mcp !== null,
   };
 }

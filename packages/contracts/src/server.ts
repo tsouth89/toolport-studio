@@ -407,6 +407,27 @@ export const ServerSignalProcessResult = Schema.Struct({
 });
 export type ServerSignalProcessResult = typeof ServerSignalProcessResult.Type;
 
+/**
+ * Toolport-backed MCP inventory for Activity (SOU-386).
+ * Only present when Toolport's registry.json is readable on this machine.
+ */
+export const ToolportMcpServerStatus = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  name: TrimmedNonEmptyString,
+  enabled: Schema.Boolean,
+  transport: Schema.Literals(["http", "stdio", "unknown"]),
+  source: Schema.optional(TrimmedNonEmptyString),
+});
+export type ToolportMcpServerStatus = typeof ToolportMcpServerStatus.Type;
+
+export const ToolportMcpStatus = Schema.Struct({
+  gatewayAvailable: Schema.Boolean,
+  activeProfileId: Schema.NullOr(TrimmedNonEmptyString),
+  activeProfileName: Schema.NullOr(TrimmedNonEmptyString),
+  servers: Schema.Array(ToolportMcpServerStatus),
+});
+export type ToolportMcpStatus = typeof ToolportMcpStatus.Type;
+
 export const ServerConfig = Schema.Struct({
   environment: ExecutionEnvironmentDescriptor,
   auth: ServerAuthDescriptor,
@@ -422,6 +443,8 @@ export const ServerConfig = Schema.Struct({
   shellResumeCompletionMarker: Schema.optionalKey(Schema.Boolean),
   /** Whether thread subscriptions can emit an opt-in catch-up completion marker. */
   threadResumeCompletionMarker: Schema.optionalKey(Schema.Boolean),
+  /** Toolport MCP registry projection when available on this machine. */
+  mcpStatus: Schema.optionalKey(ToolportMcpStatus),
 });
 export type ServerConfig = typeof ServerConfig.Type;
 

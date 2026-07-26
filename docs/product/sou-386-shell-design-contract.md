@@ -77,7 +77,7 @@ behavior classes keep working.
 - [x] Timeline Working-row “View in Activity” deep-link
 - [x] Artifacts block for proposed plans (other artifact types when they exist)
 - [x] Activity instrument-panel density (raised cards, tighter sections, shared tool labels)
-- [ ] MCP list when authoritative live status exists
+- [x] MCP list from Toolport registry (enabled/disabled + gateway; View all → Toolport)
 - [ ] Current-step progress bar only when provider supplies a total
 
 ## PR 3 slice (timeline hierarchy) — in progress
