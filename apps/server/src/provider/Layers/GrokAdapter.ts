@@ -407,6 +407,22 @@ export function grokPromptSettlementBelongsToContext(input: {
   );
 }
 
+/**
+ * Whether a new sendTurn should continue the current live turn (steer) vs open
+ * a fresh turn id. Stop/watchdog must never leave a cancelled turn eligible.
+ */
+export function canSteerGrokSendTurn(input: {
+  readonly promptsInFlight: number;
+  readonly activeTurnId: TurnId | undefined;
+  readonly interruptedTurnIds: ReadonlySet<TurnId>;
+}): boolean {
+  return (
+    input.promptsInFlight > 0 &&
+    input.activeTurnId !== undefined &&
+    !input.interruptedTurnIds.has(input.activeTurnId)
+  );
+}
+
 export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapterLiveOptions) {
   return Effect.gen(function* () {
     const boundInstanceId = options?.instanceId ?? ProviderInstanceId.make("grok");
@@ -502,6 +518,12 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           turnId,
         });
         if (!settlementBelongsToLiveContext) {
+          // Still drop leftover prompt slots on explicit cancel/interrupt so a
+          // follow-up cannot "steer" into a dead turn (Stop → next message
+          // fails with "interrupted during preparation").
+          if (options?.settleAllPrompts) {
+            liveCtx.promptsInFlight = 0;
+          }
           // interruptTurn already consumed every prompt slot for this turn. A
           // late prompt result must neither emit a second terminal event nor
           // consume a slot belonging to a newer turn on the same ACP session.
@@ -1221,6 +1243,20 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         ctx.notificationFiber = yield* startNotificationFiber(ctx);
         ctx.acpDisposed = false;
         ctx.acpCompromised = false;
+        // Fresh ACP process: drop residual Stop/watchdog interrupt bookkeeping so
+        // the next user message cannot steer into a cancelled turn id and fail
+        // preparation with "Grok prompt was interrupted during preparation."
+        ctx.promptsInFlight = 0;
+        ctx.activeTurnId = undefined;
+        ctx.interruptedTurnIds.clear();
+        if (ctx.session.activeTurnId !== undefined) {
+          const { activeTurnId: _clearedActiveTurnId, ...readySession } = ctx.session;
+          ctx.session = {
+            ...readySession,
+            status: "ready",
+            updatedAt: yield* nowIso,
+          };
+        }
       });
 
     const startSession: GrokAdapterShape["startSession"] = (input) =>
@@ -1413,10 +1449,24 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             if (ctx.acpCompromised) {
               yield* recycleCompromisedAcp(ctx);
             }
-            // A sendTurn while a prompt is in flight is a steer: the agent
-            // folds the new prompt into the ongoing work, so the active turn
-            // id is reused instead of opening a new turn.
-            const steeringTurnId = ctx.promptsInFlight > 0 ? ctx.activeTurnId : undefined;
+            // A sendTurn while a live (non-interrupted) prompt is in flight is a
+            // steer: the agent folds the new prompt into the ongoing work.
+            // Never reuse a turn that Stop/watchdog already cancelled — that is
+            // the "next message after Stop always errors" race.
+            const liveActiveTurnId = ctx.activeTurnId ?? ctx.session.activeTurnId;
+            const steeringTurnId = canSteerGrokSendTurn({
+              promptsInFlight: ctx.promptsInFlight,
+              activeTurnId: liveActiveTurnId,
+              interruptedTurnIds: ctx.interruptedTurnIds,
+            })
+              ? liveActiveTurnId
+              : undefined;
+            if (steeringTurnId === undefined && (ctx.promptsInFlight > 0 || liveActiveTurnId)) {
+              // Drop residual slots/ids from a cancelled or half-settled turn so
+              // follow-up preparation starts clean.
+              ctx.promptsInFlight = 0;
+              ctx.activeTurnId = undefined;
+            }
             const turnId = steeringTurnId ?? TurnId.make(yield* randomUUIDv4);
             // Count this prompt immediately so a superseded in-flight prompt
             // resolving from here on does not settle the turn; decremented on

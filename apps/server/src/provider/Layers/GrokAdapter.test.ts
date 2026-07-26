@@ -30,6 +30,7 @@ import {
   appendGrokConversationText,
   buildGrokContextRehydrationPrefix,
   buildGrokImagePromptPart,
+  canSteerGrokSendTurn,
   classifyGrokSilentTurn,
   grokPromptSettlementBelongsToContext,
   makeGrokAdapter,
@@ -76,6 +77,39 @@ it("classifies Grok silence by active tool, completed tool loop, or pure thinkin
       hasObservedToolCall: false,
     }),
     "thinking",
+  );
+});
+
+it("refuses to steer into a cancelled/interrupted turn after Stop", () => {
+  const liveTurn = TurnId.make("turn-live");
+  const cancelledTurn = TurnId.make("turn-cancelled");
+  assert.isTrue(
+    canSteerGrokSendTurn({
+      promptsInFlight: 1,
+      activeTurnId: liveTurn,
+      interruptedTurnIds: new Set(),
+    }),
+  );
+  assert.isFalse(
+    canSteerGrokSendTurn({
+      promptsInFlight: 1,
+      activeTurnId: cancelledTurn,
+      interruptedTurnIds: new Set([cancelledTurn]),
+    }),
+  );
+  assert.isFalse(
+    canSteerGrokSendTurn({
+      promptsInFlight: 0,
+      activeTurnId: liveTurn,
+      interruptedTurnIds: new Set(),
+    }),
+  );
+  assert.isFalse(
+    canSteerGrokSendTurn({
+      promptsInFlight: 1,
+      activeTurnId: undefined,
+      interruptedTurnIds: new Set(),
+    }),
   );
 });
 
@@ -759,6 +793,91 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
       yield* Fiber.interrupt(runtimeEventsFiber);
       yield* adapter.stopSession(threadId);
     }).pipe(TestClock.withLive),
+  );
+
+  it.effect(
+    "accepts an immediate follow-up after session-scoped Stop without preparation interrupt",
+    () =>
+      Effect.gen(function* () {
+        // Mirrors production: ProviderCommandReactor interrupts by thread only
+        // (no provider turn id). Follow-up must not reuse the cancelled turn.
+        const threadId = ThreadId.make("grok-stop-session-scoped-followup");
+        const tempDir = yield* Effect.promise(() =>
+          NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "grok-session-stop-followup-")),
+        );
+        const requestLogPath = NodePath.join(tempDir, "requests.ndjson");
+        const adapter = yield* makeMockTestAdapter({
+          T3_ACP_REQUEST_LOG_PATH: requestLogPath,
+          T3_ACP_HANG_PROMPT: "1",
+        });
+
+        const runtimeEvents: ProviderRuntimeEvent[] = [];
+        const turnStarted = yield* Deferred.make<TurnId>();
+        const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+          Effect.sync(() => {
+            runtimeEvents.push(event);
+          }).pipe(
+            Effect.andThen(
+              event.type === "turn.started" &&
+                event.turnId !== undefined &&
+                String(event.threadId) === String(threadId)
+                ? Deferred.succeed(turnStarted, event.turnId).pipe(Effect.asVoid)
+                : Effect.void,
+            ),
+          ),
+        ).pipe(Effect.forkChild);
+
+        yield* adapter.startSession({
+          threadId,
+          provider: ProviderDriverKind.make("grok"),
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+        });
+
+        const hangFiber = yield* adapter
+          .sendTurn({
+            threadId,
+            input: "hang forever",
+            attachments: [],
+          })
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(turnStarted).pipe(Effect.timeout("2 seconds"));
+        // Session-scoped interrupt (no turn id), then follow-up without waiting
+        // for the cancelled hang fiber — the user-visible Stop → Send path.
+        yield* adapter.interruptTurn(threadId).pipe(Effect.timeout("3 seconds"));
+
+        // Must succeed (not fail preparation with the cancelled hang turn id).
+        yield* adapter
+          .sendTurn({
+            threadId,
+            input: "are you stuck? what happened?",
+            attachments: [],
+          })
+          .pipe(Effect.timeout("10 seconds"));
+
+        const prepFailures = runtimeEvents.filter(
+          (event) =>
+            event.type === "turn.completed" &&
+            event.payload.state === "failed" &&
+            String(event.payload.errorMessage ?? "").includes("interrupted during preparation"),
+        );
+        assert.lengthOf(
+          prepFailures,
+          0,
+          "follow-up must not fail with interrupted-during-preparation",
+        );
+        const followUpCompleted = runtimeEvents.filter(
+          (event): event is Extract<ProviderRuntimeEvent, { type: "turn.completed" }> =>
+            event.type === "turn.completed" &&
+            String(event.threadId) === String(threadId) &&
+            event.payload.state === "completed",
+        );
+        assert.isAtLeast(followUpCompleted.length, 1);
+
+        yield* Fiber.join(hangFiber).pipe(Effect.timeout("3 seconds"), Effect.ignore);
+        yield* Fiber.interrupt(runtimeEventsFiber);
+        yield* adapter.stopSession(threadId);
+      }).pipe(TestClock.withLive),
   );
 
   it.effect("fails silent empty end_turn and recycles before the next message", () =>
