@@ -141,7 +141,9 @@ import { DiffWorkerPoolProvider } from "./DiffWorkerPoolProvider";
 import { BranchToolbar } from "./BranchToolbar";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
 import PlanSidebar from "./PlanSidebar";
+import { ActivityPanel } from "./ActivityPanel";
 import ThreadTerminalDrawer from "./ThreadTerminalDrawer";
+import { deriveThreadActivityViewModel } from "../threadActivityViewModel";
 import {
   AlarmClockIcon,
   CheckCircle2Icon,
@@ -222,7 +224,10 @@ import { DraftHeroHeadline } from "./chat/DraftHeroHeadline";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { MessagesTimeline } from "./chat/MessagesTimeline";
-import { shouldOfferLastUserMessageRetry } from "./chat/MessagesTimeline.logic";
+import {
+  deriveActiveWorkingToolLabel,
+  shouldOfferLastUserMessageRetry,
+} from "./chat/MessagesTimeline.logic";
 import { ChatHeader } from "./chat/ChatHeader";
 import { PanelLayoutControls, RightPanelMaximizeControl } from "./chat/PanelLayoutControls";
 import { type ExpandedImagePreview } from "./chat/ExpandedImagePreview";
@@ -2323,6 +2328,31 @@ function ChatViewContent(props: ChatViewProps) {
       deriveTimelineEntries(timelineMessages, activeThread?.proposedPlans ?? [], workLogEntries),
     [activeThread?.proposedPlans, timelineMessages, workLogEntries],
   );
+  const activityViewModel = useMemo(() => {
+    const unsettledTurnId = !latestTurnSettled ? (activeLatestTurn?.turnId ?? null) : null;
+    return deriveThreadActivityViewModel({
+      timelineEntries,
+      isWorking,
+      activeTurnStartedAt: activeWorkStartedAt,
+      unsettledTurnId,
+      activeToolLabel: deriveActiveWorkingToolLabel({
+        timelineEntries,
+        unsettledTurnId,
+      }),
+      hasPendingApproval: pendingApprovals.length > 0,
+      hasPendingUserInput: pendingUserInputs.length > 0,
+      threadError,
+    });
+  }, [
+    activeLatestTurn?.turnId,
+    activeWorkStartedAt,
+    isWorking,
+    latestTurnSettled,
+    pendingApprovals.length,
+    pendingUserInputs.length,
+    threadError,
+    timelineEntries,
+  ]);
   const [dockedDraftHeroThreadKey, setDockedDraftHeroThreadKey] = useState<string | null>(null);
   const draftHeroDockRequested =
     activeThreadKey !== null && dockedDraftHeroThreadKey === activeThreadKey;
@@ -3071,6 +3101,10 @@ function ChatViewContent(props: ChatViewProps) {
     if (!activeThreadRef || !activeProject) return;
     useRightPanelStore.getState().open(activeThreadRef, "files");
   }, [activeProject, activeThreadRef]);
+  const addActivitySurface = useCallback(() => {
+    if (!activeThreadRef) return;
+    useRightPanelStore.getState().open(activeThreadRef, "activity");
+  }, [activeThreadRef]);
   const openFileSurface = useCallback(
     (relativePath: string) => {
       if (!activeThreadRef || !activeProject) return;
@@ -5885,6 +5919,8 @@ function ChatViewContent(props: ChatViewProps) {
         timestampFormat={timestampFormat}
         mode="embedded"
       />
+    ) : activeRightPanelSurface?.kind === "activity" ? (
+      <ActivityPanel model={activityViewModel} />
     ) : (activeRightPanelSurface?.kind === "files" || activeRightPanelSurface?.kind === "file") &&
       activeProject &&
       activeWorkspaceRoot ? (
@@ -6380,6 +6416,7 @@ function ChatViewContent(props: ChatViewProps) {
           onAddTerminal={addTerminalSurface}
           onAddDiff={addDiffSurface}
           onAddFiles={addFilesSurface}
+          onAddActivity={addActivitySurface}
           browserAvailable={isPreviewSupportedInRuntime()}
           diffAvailable={isServerThread && isGitRepo}
           filesAvailable={activeProject !== null}
@@ -6407,6 +6444,7 @@ function ChatViewContent(props: ChatViewProps) {
             onAddTerminal={addTerminalSurface}
             onAddDiff={addDiffSurface}
             onAddFiles={addFilesSurface}
+            onAddActivity={addActivitySurface}
             browserAvailable={isPreviewSupportedInRuntime()}
             diffAvailable={isServerThread && isGitRepo}
             filesAvailable={activeProject !== null}

@@ -63,3 +63,12 @@ behavior classes keep working.
 - [x] Alpha/release builds show Toolport blueprint identity (not stage-gated only)
 - [x] Dark sidebar/canvas no longer pure `#000`
 - [x] No behavior changes to send/stop/queue/tools
+
+## PR 2 slice (Activity surface)
+
+- [x] Shared pure projection: `apps/web/src/threadActivityViewModel.ts`
+- [x] Right-panel singleton surface `activity` (store v8)
+- [x] `ActivityPanel` UI: current step, elapsed, recent steps, attention
+- [x] MCP section omitted until authoritative status exists
+- [ ] Timeline “View in Activity” deep-link (follow-up)
+- [ ] Changed files / artifacts blocks (follow-up; reuse existing surfaces)
