@@ -29,7 +29,7 @@ export function resolveSidebarStageBackdropVariant(
   return "brand";
 }
 
-export function useSidebarStageBackdropVariant(): SidebarStageBackdropVariant | null {
+export function useSidebarStageBackdropVariant(): SidebarStageBackdropVariant {
   const primaryServerVersion =
     useAtomValue(primaryServerConfigAtom)?.environment.serverVersion ?? null;
 
