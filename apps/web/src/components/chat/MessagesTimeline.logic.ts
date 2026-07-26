@@ -268,6 +268,11 @@ export function shouldOfferLastUserMessageRetry(error: string | null | undefined
   ) {
     return false;
   }
+  // Stop/interrupt failures leave the turn running — Retry must not re-send the
+  // last user prompt; the user should hit Stop again (or wait for recovery).
+  if (/stop failed|interrupt failed|provider turn interrupt failed/i.test(message)) {
+    return false;
+  }
   return (
     /send again|stopped automatically|went silent|turn failed|turn was stopped|no progress|provider/i.test(
       message,

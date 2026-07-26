@@ -1259,4 +1259,13 @@ describe("shouldOfferLastUserMessageRetry", () => {
     expect(shouldOfferLastUserMessageRetry(null)).toBe(false);
     expect(shouldOfferLastUserMessageRetry("")).toBe(false);
   });
+
+  it("does not offer resend when Stop/interrupt failed while the turn is still live", () => {
+    expect(
+      shouldOfferLastUserMessageRetry(
+        "Stop failed: expected active turn id turn-a but found turn-b",
+      ),
+    ).toBe(false);
+    expect(shouldOfferLastUserMessageRetry("Provider turn interrupt failed")).toBe(false);
+  });
 });

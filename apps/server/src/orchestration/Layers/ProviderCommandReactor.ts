@@ -310,6 +310,63 @@ const make = Effect.gen(function* () {
     });
   });
 
+  /**
+   * Surface a Stop/interrupt failure without lying about lifecycle.
+   * Keep status + activeTurnId so the UI still shows Stop / Working while the
+   * provider turn is actually still running (SOU-376 / t3code#4524).
+   */
+  const setThreadSessionLastErrorPreservingLifecycle = Effect.fnUntraced(function* (input: {
+    readonly threadId: ThreadId;
+    readonly detail: string;
+    readonly createdAt: string;
+  }) {
+    const thread = yield* resolveThread(input.threadId);
+    const session = thread?.session;
+    if (!session) {
+      return;
+    }
+    yield* setThreadSession({
+      threadId: input.threadId,
+      session: {
+        threadId: session.threadId,
+        status: session.status,
+        providerName: session.providerName,
+        ...(session.providerInstanceId !== undefined
+          ? { providerInstanceId: session.providerInstanceId }
+          : {}),
+        runtimeMode: session.runtimeMode,
+        activeTurnId: session.activeTurnId,
+        lastError: input.detail,
+        updatedAt: input.createdAt,
+      },
+      createdAt: input.createdAt,
+    });
+  });
+
+  const reportTurnInterruptFailure = (input: {
+    readonly threadId: ThreadId;
+    readonly turnId: TurnId | null;
+    readonly createdAt: string;
+    readonly detail: string;
+  }) =>
+    setThreadSessionLastErrorPreservingLifecycle({
+      threadId: input.threadId,
+      detail: input.detail,
+      createdAt: input.createdAt,
+    }).pipe(
+      Effect.flatMap(() =>
+        appendProviderFailureActivity({
+          threadId: input.threadId,
+          kind: "provider.turn.interrupt.failed",
+          summary: "Provider turn interrupt failed",
+          detail: input.detail,
+          turnId: input.turnId,
+          createdAt: input.createdAt,
+        }),
+      ),
+      Effect.asVoid,
+    );
+
   const resolveProject = Effect.fnUntraced(function* (projectId: ProjectId) {
     return yield* projectionSnapshotQuery
       .getProjectShellById(projectId)
@@ -891,20 +948,51 @@ const make = Effect.gen(function* () {
     if (!thread) {
       return;
     }
+    const turnId = event.payload.turnId ?? null;
     const hasSession = thread.session && thread.session.status !== "stopped";
     if (!hasSession) {
+      // No live session: activity only (nothing to preserve on session state).
       return yield* appendProviderFailureActivity({
         threadId: event.payload.threadId,
         kind: "provider.turn.interrupt.failed",
         summary: "Provider turn interrupt failed",
         detail: "No active provider session is bound to this thread.",
-        turnId: event.payload.turnId ?? null,
+        turnId,
         createdAt: event.payload.createdAt,
       });
     }
 
     // Orchestration turn ids are not provider turn ids, so interrupt by session.
-    yield* providerService.interruptTurn({ threadId: event.payload.threadId });
+    // Provider rejections must not be swallowed by processDomainEventSafely —
+    // Stop would look successful while the turn keeps running (SOU-376).
+    yield* providerService.interruptTurn({ threadId: event.payload.threadId }).pipe(
+      Effect.catchCause((cause) => {
+        if (Cause.hasInterruptsOnly(cause)) {
+          return Effect.void;
+        }
+        const failureDetail = formatFailureDetail(cause);
+        // Prefix so the thread banner is unambiguous: dispatch accepted, stop did not.
+        const detail =
+          failureDetail.length > 0
+            ? `Stop failed: ${failureDetail}`
+            : "Stop failed: the provider rejected the interrupt request.";
+        return reportTurnInterruptFailure({
+          threadId: event.payload.threadId,
+          turnId,
+          createdAt: event.payload.createdAt,
+          detail,
+        }).pipe(
+          Effect.catchCause((recoveryCause) =>
+            Effect.logWarning("provider command reactor failed to recover turn interrupt failure", {
+              eventType: event.type,
+              threadId: event.payload.threadId,
+              cause: Cause.pretty(recoveryCause),
+              originalCause: Cause.pretty(cause),
+            }),
+          ),
+        );
+      }),
+    );
   });
 
   const processApprovalResponseRequested = Effect.fn("processApprovalResponseRequested")(function* (
