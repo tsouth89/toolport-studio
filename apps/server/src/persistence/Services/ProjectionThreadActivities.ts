@@ -44,6 +44,19 @@ export const DeleteProjectionThreadActivitiesInput = Schema.Struct({
 export type DeleteProjectionThreadActivitiesInput =
   typeof DeleteProjectionThreadActivitiesInput.Type;
 
+export const PruneProjectionThreadActivitiesKeepLastInput = Schema.Struct({
+  threadId: ThreadId,
+  keepLast: NonNegativeInt,
+});
+export type PruneProjectionThreadActivitiesKeepLastInput =
+  typeof PruneProjectionThreadActivitiesKeepLastInput.Type;
+
+export const PruneAllProjectionThreadActivitiesKeepLastInput = Schema.Struct({
+  keepLast: NonNegativeInt,
+});
+export type PruneAllProjectionThreadActivitiesKeepLastInput =
+  typeof PruneAllProjectionThreadActivitiesKeepLastInput.Type;
+
 /**
  * ProjectionThreadActivityRepositoryShape - Service API for projected thread activity.
  */
@@ -72,6 +85,24 @@ export interface ProjectionThreadActivityRepositoryShape {
    */
   readonly deleteByThreadId: (
     input: DeleteProjectionThreadActivitiesInput,
+  ) => Effect.Effect<void, ProjectionRepositoryError>;
+
+  /**
+   * Keep only the newest `keepLast` activity rows for a single thread.
+   *
+   * Ordering matches the live projector (sequence, then createdAt, then id).
+   * Older rows are hard-deleted to bound SQLite growth (SOU-400).
+   */
+  readonly pruneKeepLastByThreadId: (
+    input: PruneProjectionThreadActivitiesKeepLastInput,
+  ) => Effect.Effect<void, ProjectionRepositoryError>;
+
+  /**
+   * Apply {@link pruneKeepLastByThreadId} across every thread that has
+   * activities. Used on projection bootstrap / startup maintenance.
+   */
+  readonly pruneAllThreadsKeepLast: (
+    input: PruneAllProjectionThreadActivitiesKeepLastInput,
   ) => Effect.Effect<void, ProjectionRepositoryError>;
 }
 

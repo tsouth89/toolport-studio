@@ -11,6 +11,8 @@ import { toPersistenceDecodeError, toPersistenceSqlError } from "../Errors.ts";
 import {
   DeleteProjectionThreadActivitiesInput,
   ListProjectionThreadActivitiesInput,
+  PruneAllProjectionThreadActivitiesKeepLastInput,
+  PruneProjectionThreadActivitiesKeepLastInput,
   ProjectionThreadActivity,
   ProjectionThreadActivityRepository,
   type ProjectionThreadActivityRepositoryShape,
@@ -106,6 +108,54 @@ const makeProjectionThreadActivityRepository = Effect.gen(function* () {
       `,
   });
 
+  const pruneProjectionThreadActivityRowsKeepLast = SqlSchema.void({
+    Request: PruneProjectionThreadActivitiesKeepLastInput,
+    execute: ({ threadId, keepLast }) =>
+      sql`
+        DELETE FROM projection_thread_activities
+        WHERE thread_id = ${threadId}
+          AND activity_id NOT IN (
+            SELECT activity_id
+            FROM (
+              SELECT activity_id
+              FROM projection_thread_activities
+              WHERE thread_id = ${threadId}
+              ORDER BY
+                CASE WHEN sequence IS NULL THEN 0 ELSE 1 END DESC,
+                sequence DESC,
+                created_at DESC,
+                activity_id DESC
+              LIMIT ${keepLast}
+            )
+          )
+      `,
+  });
+
+  const pruneAllProjectionThreadActivityRowsKeepLast = SqlSchema.void({
+    Request: PruneAllProjectionThreadActivitiesKeepLastInput,
+    execute: ({ keepLast }) =>
+      sql`
+        DELETE FROM projection_thread_activities
+        WHERE activity_id IN (
+          SELECT activity_id
+          FROM (
+            SELECT
+              activity_id,
+              ROW_NUMBER() OVER (
+                PARTITION BY thread_id
+                ORDER BY
+                  CASE WHEN sequence IS NULL THEN 0 ELSE 1 END DESC,
+                  sequence DESC,
+                  created_at DESC,
+                  activity_id DESC
+              ) AS row_num
+            FROM projection_thread_activities
+          ) ranked
+          WHERE ranked.row_num > ${keepLast}
+        )
+      `,
+  });
+
   const upsert: ProjectionThreadActivityRepositoryShape["upsert"] = (row) =>
     upsertProjectionThreadActivityRow(row).pipe(
       Effect.mapError(
@@ -146,10 +196,34 @@ const makeProjectionThreadActivityRepository = Effect.gen(function* () {
       ),
     );
 
+  const pruneKeepLastByThreadId: ProjectionThreadActivityRepositoryShape["pruneKeepLastByThreadId"] =
+    (input) =>
+      pruneProjectionThreadActivityRowsKeepLast(input).pipe(
+        Effect.mapError(
+          toPersistenceSqlOrDecodeError(
+            "ProjectionThreadActivityRepository.pruneKeepLastByThreadId:query",
+            "ProjectionThreadActivityRepository.pruneKeepLastByThreadId:encodeRequest",
+          ),
+        ),
+      );
+
+  const pruneAllThreadsKeepLast: ProjectionThreadActivityRepositoryShape["pruneAllThreadsKeepLast"] =
+    (input) =>
+      pruneAllProjectionThreadActivityRowsKeepLast(input).pipe(
+        Effect.mapError(
+          toPersistenceSqlOrDecodeError(
+            "ProjectionThreadActivityRepository.pruneAllThreadsKeepLast:query",
+            "ProjectionThreadActivityRepository.pruneAllThreadsKeepLast:encodeRequest",
+          ),
+        ),
+      );
+
   return {
     upsert,
     listByThreadId,
     deleteByThreadId,
+    pruneKeepLastByThreadId,
+    pruneAllThreadsKeepLast,
   } satisfies ProjectionThreadActivityRepositoryShape;
 });
 

@@ -64,6 +64,9 @@ const ReadFromSequenceRequestSchema = Schema.Struct({
   sequenceExclusive: NonNegativeInt,
   limit: Schema.Number,
 });
+const DeleteUpToSequenceRequestSchema = Schema.Struct({
+  sequenceInclusive: NonNegativeInt,
+});
 const DEFAULT_READ_FROM_SEQUENCE_LIMIT = 1_000;
 const READ_PAGE_SIZE = 500;
 
@@ -181,6 +184,15 @@ const makeEventStore = Effect.gen(function* () {
       `,
   });
 
+  const deleteEventRowsUpToSequence = SqlSchema.void({
+    Request: DeleteUpToSequenceRequestSchema,
+    execute: ({ sequenceInclusive }) =>
+      sql`
+        DELETE FROM orchestration_events
+        WHERE sequence <= ${sequenceInclusive}
+      `,
+  });
+
   const append: OrchestrationEventStoreShape["append"] = (event) =>
     appendEventRow({
       eventId: event.eventId,
@@ -260,10 +272,28 @@ const makeEventStore = Effect.gen(function* () {
     return readPage(sequenceExclusive, normalizedLimit);
   };
 
+  const deleteUpToSequenceInclusive: OrchestrationEventStoreShape["deleteUpToSequenceInclusive"] = (
+    sequenceInclusive,
+  ) => {
+    const normalizedSequence = Math.max(0, Math.floor(sequenceInclusive));
+    if (normalizedSequence <= 0) {
+      return Effect.void;
+    }
+    return deleteEventRowsUpToSequence({ sequenceInclusive: normalizedSequence }).pipe(
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "OrchestrationEventStore.deleteUpToSequenceInclusive:query",
+          "OrchestrationEventStore.deleteUpToSequenceInclusive:encodeRequest",
+        ),
+      ),
+    );
+  };
+
   return {
     append,
     readFromSequence,
     readAll: () => readFromSequence(0, Number.MAX_SAFE_INTEGER),
+    deleteUpToSequenceInclusive,
   } satisfies OrchestrationEventStoreShape;
 });
 

@@ -52,6 +52,15 @@ export interface OrchestrationEventStoreShape {
    * @returns Stream containing all stored events.
    */
   readonly readAll: () => Stream.Stream<OrchestrationEvent, OrchestrationEventStoreError>;
+
+  /**
+   * Hard-delete orchestration events with sequence at or below the inclusive
+   * cursor. Only safe after every projector has applied that sequence
+   * (SOU-400 event retention).
+   */
+  readonly deleteUpToSequenceInclusive: (
+    sequenceInclusive: number,
+  ) => Effect.Effect<void, OrchestrationEventStoreError>;
 }
 
 /**

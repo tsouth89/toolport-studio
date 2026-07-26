@@ -14,6 +14,10 @@ import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { toPersistenceSqlError, type ProjectionRepositoryError } from "../../persistence/Errors.ts";
+import {
+  MAX_PROJECTED_THREAD_ACTIVITIES,
+  ORCHESTRATION_EVENT_RETENTION_SEQUENCE_CUSHION,
+} from "../../persistence/retentionLimits.ts";
 import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
 import { ProjectionPendingApprovalRepository } from "../../persistence/Services/ProjectionPendingApprovals.ts";
 import { ProjectionProjectRepository } from "../../persistence/Services/ProjectionProjects.ts";
@@ -1026,6 +1030,11 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               : {}),
             createdAt: event.payload.activity.createdAt,
           });
+          // Bound SQLite growth to the same window the live projector keeps.
+          yield* projectionThreadActivityRepository.pruneKeepLastByThreadId({
+            threadId: event.payload.threadId,
+            keepLast: MAX_PROJECTED_THREAD_ACTIVITIES,
+          });
           return;
 
         case "thread.reverted": {
@@ -1640,6 +1649,46 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         ),
       );
 
+    /**
+     * After projectors catch up, drop unbounded activity history and fully
+     * applied event-log rows so state.sqlite cannot grow without bound.
+     */
+    const runRetentionMaintenance = Effect.fn("runProjectionRetentionMaintenance")(function* () {
+      yield* projectionThreadActivityRepository.pruneAllThreadsKeepLast({
+        keepLast: MAX_PROJECTED_THREAD_ACTIVITIES,
+      });
+
+      const projectorStates = yield* projectionStateRepository.listAll();
+      const projectorNames = new Set(Object.values(ORCHESTRATION_PROJECTOR_NAMES));
+      const appliedByProjector = new Map(
+        projectorStates.map((row) => [row.projector, row.lastAppliedSequence] as const),
+      );
+      const allProjectorsHaveState = [...projectorNames].every((name) =>
+        appliedByProjector.has(name),
+      );
+      if (!allProjectorsHaveState) {
+        yield* Effect.logDebug(
+          "skipping orchestration event retention; projector state incomplete",
+        );
+        return;
+      }
+
+      const minLastApplied = yield* projectionStateRepository.minLastAppliedSequence();
+      if (
+        minLastApplied === null ||
+        minLastApplied <= ORCHESTRATION_EVENT_RETENTION_SEQUENCE_CUSHION
+      ) {
+        return;
+      }
+
+      const sequenceInclusive = minLastApplied - ORCHESTRATION_EVENT_RETENTION_SEQUENCE_CUSHION;
+      yield* eventStore.deleteUpToSequenceInclusive(sequenceInclusive);
+      yield* Effect.logDebug("pruned fully-applied orchestration events", {
+        sequenceInclusive,
+        minLastApplied,
+      });
+    });
+
     const bootstrap: OrchestrationProjectionPipelineShape["bootstrap"] = Effect.forEach(
       projectors,
       bootstrapProjector,
@@ -1648,6 +1697,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       Effect.provideService(FileSystem.FileSystem, fileSystem),
       Effect.provideService(Path.Path, path),
       Effect.provideService(ServerConfig, serverConfig),
+      Effect.flatMap(() => runRetentionMaintenance()),
       Effect.asVoid,
       Effect.tap(() =>
         Effect.logDebug("orchestration projection pipeline bootstrapped").pipe(

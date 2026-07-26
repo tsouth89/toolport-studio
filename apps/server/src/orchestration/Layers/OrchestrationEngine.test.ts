@@ -109,6 +109,7 @@ describe("OrchestrationEngine", () => {
             detail: "historical replay should not be used during bootstrap",
           }),
         ),
+      deleteUpToSequenceInclusive: () => Effect.void,
     };
 
     const projectionSnapshot = {
@@ -844,6 +845,9 @@ describe("OrchestrationEngine", () => {
       readAll() {
         return Stream.fromIterable(events);
       },
+      deleteUpToSequenceInclusive() {
+        return Effect.void;
+      },
     };
 
     const ServerConfigLayer = ServerConfig.layerTest(process.cwd(), {
@@ -1075,6 +1079,9 @@ describe("OrchestrationEngine", () => {
       },
       readAll() {
         return Stream.fromIterable(events);
+      },
+      deleteUpToSequenceInclusive() {
+        return Effect.void;
       },
     };
 

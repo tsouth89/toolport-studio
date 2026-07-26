@@ -120,4 +120,52 @@ layer("OrchestrationEventStore", (it) => {
       }
     }),
   );
+
+  it.effect("deletes events at or below an inclusive sequence cursor", () =>
+    Effect.gen(function* () {
+      const eventStore = yield* OrchestrationEventStore;
+      const now = "2026-01-01T00:00:00.000Z";
+      const appended = [];
+
+      for (let index = 1; index <= 4; index += 1) {
+        appended.push(
+          yield* eventStore.append({
+            type: "project.created",
+            eventId: EventId.make(`evt-delete-${index}`),
+            aggregateKind: "project",
+            aggregateId: ProjectId.make(`project-delete-${index}`),
+            occurredAt: now,
+            commandId: CommandId.make(`cmd-delete-${index}`),
+            causationEventId: null,
+            correlationId: CommandId.make(`cmd-delete-${index}`),
+            metadata: {},
+            payload: {
+              projectId: ProjectId.make(`project-delete-${index}`),
+              title: `Delete Project ${index}`,
+              workspaceRoot: `/tmp/project-delete-${index}`,
+              defaultModelSelection: null,
+              scripts: [],
+              createdAt: now,
+              updatedAt: now,
+            },
+          }),
+        );
+      }
+
+      const cutoffSequence = appended[1]!.sequence;
+      yield* eventStore.deleteUpToSequenceInclusive(cutoffSequence);
+
+      const remainingDeleteBatch = yield* Stream.runCollect(
+        eventStore.readFromSequence(appended[0]!.sequence - 1, 20),
+      ).pipe(Effect.map((chunk) => Array.from(chunk)));
+
+      assert.deepStrictEqual(
+        remainingDeleteBatch
+          .filter((event) => event.eventId.startsWith("evt-delete-"))
+          .map((event) => event.eventId),
+        [EventId.make("evt-delete-3"), EventId.make("evt-delete-4")],
+      );
+      assert.ok(remainingDeleteBatch.every((event) => event.sequence > cutoffSequence));
+    }),
+  );
 });
