@@ -95,6 +95,16 @@ const GROK_SILENT_POST_TOOL_WATCHDOG_MS = 2 * 60_000;
 /** Absolute ceiling so a pure-think wedge cannot run forever. */
 const GROK_SILENT_THINK_WATCHDOG_MS = 15 * 60_000;
 const GROK_SILENT_TURN_WATCHDOG_POLL_MS = 10_000;
+/**
+ * How long a permission dialog can sit without a user decision before Studio
+ * auto-cancels it. Without this, approval-required turns can hang forever.
+ */
+const GROK_PENDING_APPROVAL_TIMEOUT_MS = 3 * 60_000;
+/**
+ * How long an ask-user-question can sit unanswered before auto-cancel.
+ * Slightly longer than approval: multi-question forms need more read time.
+ */
+const GROK_PENDING_USER_INPUT_TIMEOUT_MS = 5 * 60_000;
 
 export type GrokSilentTurnWatchdogConfig = {
   readonly openToolMs: number;
@@ -200,6 +210,10 @@ export interface GrokAdapterLiveOptions {
   readonly instanceId?: ProviderInstanceId;
   /** Test-only overrides for silence auto-stop timings. */
   readonly silentTurnWatchdog?: Partial<GrokSilentTurnWatchdogConfig>;
+  /** Override pending permission auto-cancel (default 3 minutes). */
+  readonly pendingApprovalTimeoutMs?: number;
+  /** Override pending user-input auto-cancel (default 5 minutes). */
+  readonly pendingUserInputTimeoutMs?: number;
 }
 
 interface PendingApproval {
@@ -519,6 +533,10 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
       thinkMs: options?.silentTurnWatchdog?.thinkMs ?? DEFAULT_GROK_SILENT_TURN_WATCHDOG.thinkMs,
       pollMs: options?.silentTurnWatchdog?.pollMs ?? DEFAULT_GROK_SILENT_TURN_WATCHDOG.pollMs,
     };
+    const pendingApprovalTimeoutMs =
+      options?.pendingApprovalTimeoutMs ?? GROK_PENDING_APPROVAL_TIMEOUT_MS;
+    const pendingUserInputTimeoutMs =
+      options?.pendingUserInputTimeoutMs ?? GROK_PENDING_USER_INPUT_TIMEOUT_MS;
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -968,7 +986,34 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                       payload: params,
                     },
                   });
-                  const resolved = yield* Deferred.await(resolution);
+                  const raceResult = yield* Effect.raceFirst(
+                    Deferred.await(resolution).pipe(
+                      Effect.map((value) => ({ _tag: "answered" as const, value })),
+                    ),
+                    Effect.sleep(`${pendingUserInputTimeoutMs} millis`).pipe(
+                      Effect.as({ _tag: "timeout" as const }),
+                    ),
+                  );
+                  const resolved: PendingUserInputResolution =
+                    raceResult._tag === "timeout" ? { _tag: "cancelled" } : raceResult.value;
+                  if (raceResult._tag === "timeout") {
+                    yield* Deferred.succeed(resolution, { _tag: "cancelled" }).pipe(Effect.ignore);
+                    yield* Effect.logWarning("Grok user-input request timed out; auto-cancelled", {
+                      threadId: input.threadId,
+                      requestId,
+                      timeoutMs: pendingUserInputTimeoutMs,
+                    });
+                    yield* offerRuntimeEvent({
+                      type: "runtime.warning",
+                      ...(yield* makeEventStamp()),
+                      provider: PROVIDER,
+                      threadId: input.threadId,
+                      turnId,
+                      payload: {
+                        message: `User input timed out after ${Math.round(pendingUserInputTimeoutMs / 1000)}s with no answer. Request was cancelled automatically.`,
+                      },
+                    });
+                  }
                   input.pendingUserInputs.delete(requestId);
                   const resolvedAnswers = resolved._tag === "answered" ? resolved.answers : {};
                   yield* offerRuntimeEvent({
@@ -1035,7 +1080,34 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   rawPayload: params,
                 }),
               );
-              const resolved = yield* Deferred.await(decision);
+              const raceResult = yield* Effect.raceFirst(
+                Deferred.await(decision).pipe(
+                  Effect.map((value) => ({ _tag: "decided" as const, value })),
+                ),
+                Effect.sleep(`${pendingApprovalTimeoutMs} millis`).pipe(
+                  Effect.as({ _tag: "timeout" as const }),
+                ),
+              );
+              const resolved: ProviderApprovalDecision =
+                raceResult._tag === "timeout" ? "cancel" : raceResult.value;
+              if (raceResult._tag === "timeout") {
+                yield* Deferred.succeed(decision, "cancel").pipe(Effect.ignore);
+                yield* Effect.logWarning("Grok approval request timed out; auto-cancelled", {
+                  threadId: input.threadId,
+                  requestId,
+                  timeoutMs: pendingApprovalTimeoutMs,
+                });
+                yield* offerRuntimeEvent({
+                  type: "runtime.warning",
+                  ...(yield* makeEventStamp()),
+                  provider: PROVIDER,
+                  threadId: input.threadId,
+                  turnId,
+                  payload: {
+                    message: `Permission request timed out after ${Math.round(pendingApprovalTimeoutMs / 1000)}s with no decision. Request was cancelled automatically.`,
+                  },
+                });
+              }
               input.pendingApprovals.delete(requestId);
               yield* offerRuntimeEvent(
                 makeAcpRequestResolvedEvent({

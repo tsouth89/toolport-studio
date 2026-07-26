@@ -462,6 +462,80 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
     }),
   );
 
+  it.effect("auto-cancels a permission request that sits unanswered", () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("grok-approval-timeout");
+      const adapter = yield* makeMockTestAdapter(
+        {
+          T3_ACP_EMIT_TOOL_CALLS: "1",
+        },
+        {
+          // Short timeout so the test does not wait minutes.
+          pendingApprovalTimeoutMs: 250,
+        },
+      );
+
+      const runtimeEvents: ProviderRuntimeEvent[] = [];
+      const requestOpened = yield* Deferred.make<void>();
+      const requestResolved =
+        yield* Deferred.make<Extract<ProviderRuntimeEvent, { type: "request.resolved" }>>();
+      const turnCompleted = yield* Deferred.make<void>();
+      const eventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          runtimeEvents.push(event);
+        }).pipe(
+          Effect.andThen(
+            event.type === "request.opened" && String(event.threadId) === String(threadId)
+              ? Deferred.succeed(requestOpened, undefined).pipe(Effect.ignore, Effect.asVoid)
+              : Effect.void,
+          ),
+          Effect.andThen(
+            event.type === "request.resolved" && String(event.threadId) === String(threadId)
+              ? Deferred.succeed(requestResolved, event).pipe(Effect.ignore, Effect.asVoid)
+              : Effect.void,
+          ),
+          Effect.andThen(
+            event.type === "turn.completed" && String(event.threadId) === String(threadId)
+              ? Deferred.succeed(turnCompleted, undefined).pipe(Effect.ignore, Effect.asVoid)
+              : Effect.void,
+          ),
+        ),
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("grok"),
+        cwd: process.cwd(),
+        runtimeMode: "approval-required",
+      });
+
+      // Do not call respondToRequest — timeout must clear the hang.
+      const sendFiber = yield* adapter
+        .sendTurn({ threadId, input: "needs approval then continue", attachments: [] })
+        .pipe(Effect.forkChild);
+
+      yield* Deferred.await(requestOpened).pipe(Effect.timeout("5 seconds"));
+      const resolved = yield* Deferred.await(requestResolved).pipe(Effect.timeout("5 seconds"));
+      assert.equal(resolved.payload.decision, "cancel");
+      yield* Deferred.await(turnCompleted).pipe(Effect.timeout("8 seconds"));
+      yield* Fiber.join(sendFiber).pipe(Effect.timeout("5 seconds"));
+
+      const warnings = runtimeEvents.filter(
+        (event) =>
+          event.type === "runtime.warning" &&
+          String(event.payload.message ?? "").includes("Permission request timed out"),
+      );
+      assert.isAtLeast(warnings.length, 1);
+
+      const readySessions = yield* adapter.listSessions();
+      const readySession = readySessions.find((session) => session.threadId === threadId);
+      assert.equal(readySession?.status, "ready");
+
+      yield* Fiber.interrupt(eventsFiber);
+      yield* adapter.stopSession(threadId);
+    }).pipe(TestClock.withLive),
+  );
+
   it.effect("restores ready without completing an unstarted turn when preparation fails", () =>
     Effect.gen(function* () {
       const threadId = ThreadId.make("grok-preparation-failure-while-connecting");
