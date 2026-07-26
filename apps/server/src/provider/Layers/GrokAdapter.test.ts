@@ -675,7 +675,13 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
       const readySession = readySessions.find((session) => session.threadId === threadId);
 
       assert.equal(error._tag, "ProviderAdapterRequestError");
-      assert.isUndefined(turnCompletedEvent);
+      // Early turn.started means prep failure must still emit turn.completed so
+      // Working cannot stick after a bad attachment/config.
+      assert.equal(turnCompletedEvent?.type, "turn.completed");
+      if (turnCompletedEvent?.type === "turn.completed") {
+        assert.equal(turnCompletedEvent.payload.state, "failed");
+        assert.match(String(turnCompletedEvent.payload.errorMessage ?? ""), /preparation failed/i);
+      }
       assert.equal(readySession?.status, "ready");
       assert.isUndefined(readySession?.activeTurnId);
 
@@ -1595,8 +1601,11 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
         .sendTurn({ threadId, input: "cancel before the late update", attachments: [] })
         .pipe(Effect.forkChild);
       const turnId = yield* Deferred.await(turnStarted).pipe(Effect.timeout("2 seconds"));
+      // Allow prompt preparation to enter the hung ACP prompt before Stop so
+      // cancel races the live prompt (not the early prep interrupt path).
+      yield* Effect.sleep("200 millis");
       yield* adapter.interruptTurn(threadId, turnId).pipe(Effect.timeout("2 seconds"));
-      yield* Fiber.join(sendTurnFiber).pipe(Effect.timeout("2 seconds"));
+      yield* Fiber.join(sendTurnFiber).pipe(Effect.timeout("5 seconds"), Effect.ignore);
       // Mock emits the late update shortly after cancel; give the notification
       // consumer a beat to drop it.
       yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 300)));

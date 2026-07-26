@@ -1954,13 +1954,33 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             ctx.activeTurnId = turnId;
             if (steeringTurnId === undefined) {
               ctx.turnVisibleUpdateCount = 0;
+              ctx.lastPlanFingerprint = undefined;
             }
+            // Surface live chrome before set_model / attachment IO (can take
+            // seconds). Preparation failure settles via the tapCause below.
+            const provisionalModel =
+              input.modelSelection?.instanceId === boundInstanceId && input.modelSelection.model
+                ? resolveGrokAcpBaseModelId(input.modelSelection.model)
+                : ctx.currentModelId
+                  ? resolveGrokAcpBaseModelId(ctx.currentModelId)
+                  : undefined;
             ctx.session = {
               ...ctx.session,
-              status: steeringTurnId === undefined ? "connecting" : "running",
+              status: "running",
               activeTurnId: turnId,
               updatedAt: yield* nowIso,
+              ...(provisionalModel ? { model: provisionalModel } : {}),
             };
+            if (steeringTurnId === undefined) {
+              yield* offerRuntimeEvent({
+                type: "turn.started",
+                ...(yield* makeEventStamp()),
+                provider: PROVIDER,
+                threadId: input.threadId,
+                turnId,
+                payload: provisionalModel ? { model: provisionalModel } : {},
+              });
+            }
 
             return yield* Effect.gen(function* () {
               const turnModelSelection =
@@ -2067,9 +2087,10 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 yield* Effect.yieldNow;
               }
               if (ctx.interruptedTurnIds.has(turnId)) {
+                // turn.started already fired; emit cancelled so Working settles.
                 yield* settlePromptInFlight(input.threadId, turnId, ctx.acpSessionId, {
                   completedStopReason: "cancelled",
-                  emitTurnCompletion: false,
+                  emitTurnCompletion: true,
                   settleAllPrompts: true,
                 });
                 return yield* new ProviderAdapterRequestError({
@@ -2078,9 +2099,6 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   detail: "Grok prompt was interrupted during preparation.",
                 });
               }
-              if (steeringTurnId === undefined) {
-                ctx.lastPlanFingerprint = undefined;
-              }
               ctx.session = {
                 ...ctx.session,
                 status: "running",
@@ -2088,17 +2106,6 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 updatedAt: yield* nowIso,
                 ...(displayModel ? { model: displayModel } : {}),
               };
-
-              if (steeringTurnId === undefined) {
-                yield* offerRuntimeEvent({
-                  type: "turn.started",
-                  ...(yield* makeEventStamp()),
-                  provider: PROVIDER,
-                  threadId: input.threadId,
-                  turnId,
-                  payload: displayModel ? { model: displayModel } : {},
-                });
-              }
 
               return {
                 acp: ctx.acp,
@@ -2115,9 +2122,12 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   if (!liveCtx) {
                     return;
                   }
+                  // turn.started already fired above — always emit terminal
+                  // completion so Working cannot stick after prep failure.
                   yield* settlePromptInFlight(input.threadId, turnId, liveCtx.acpSessionId, {
                     errorMessage: "Grok prompt preparation failed.",
-                    emitTurnCompletion: false,
+                    emitTurnCompletion: true,
+                    settleAllPrompts: true,
                   });
                 }),
               ),
