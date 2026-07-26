@@ -5,6 +5,7 @@ import {
   CheckCircle2,
   Circle,
   ExternalLink,
+  FileText,
   Loader2,
   XCircle,
 } from "lucide-react";
@@ -12,6 +13,7 @@ import { useEffect, useState } from "react";
 
 import { formatDuration } from "../session-logic";
 import type {
+  ThreadActivityArtifact,
   ThreadActivityChangedFiles,
   ThreadActivityStep,
   ThreadActivityStepStatus,
@@ -89,6 +91,66 @@ function RecentStepRow({ step }: { step: ThreadActivityStep }) {
         {clock || "—"}
       </span>
     </li>
+  );
+}
+
+function ArtifactsSection({
+  artifacts,
+  onOpenPlan,
+}: {
+  artifacts: ReadonlyArray<ThreadActivityArtifact>;
+  onOpenPlan?: () => void;
+}) {
+  return (
+    <section className="min-w-0 space-y-1.5">
+      <div className="flex min-w-0 items-center justify-between gap-2">
+        <h3 className="flex min-w-0 items-center gap-1.5 text-[10px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
+          <span>Artifacts</span>
+          <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-muted-foreground normal-case tracking-normal">
+            {artifacts.length}
+          </span>
+        </h3>
+      </div>
+      <ul className="min-w-0 divide-y divide-border/40 overflow-hidden rounded-lg border border-border/60 bg-card/30 px-1.5 py-0.5">
+        {artifacts.map((artifact) => (
+          <li key={artifact.id}>
+            <button
+              type="button"
+              className={cn(
+                "flex w-full min-w-0 items-center gap-2 px-1 py-1.5 text-left text-[12px]",
+                onOpenPlan
+                  ? "cursor-pointer rounded-md hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  : "cursor-default",
+              )}
+              disabled={!onOpenPlan}
+              onClick={() => onOpenPlan?.()}
+            >
+              <FileText className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+              <span className="min-w-0 flex-1 truncate font-medium text-foreground/90">
+                {artifact.label}
+              </span>
+              {artifact.implemented ? (
+                <span className="shrink-0 text-[10px] text-muted-foreground">Done</span>
+              ) : (
+                <span className="shrink-0 text-[10px] text-muted-foreground">Plan</span>
+              )}
+            </button>
+          </li>
+        ))}
+      </ul>
+      {onOpenPlan ? (
+        <div className="flex justify-end px-0.5">
+          <button
+            type="button"
+            className="inline-flex items-center gap-1 text-[11.5px] font-medium text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            onClick={onOpenPlan}
+          >
+            View plan
+            <ExternalLink className="size-3 shrink-0" aria-hidden />
+          </button>
+        </div>
+      ) : null}
+    </section>
   );
 }
 
@@ -175,9 +237,11 @@ function ChangedFilesSection({
 export function ActivityPanel({
   model,
   onOpenTurnDiff,
+  onOpenPlan,
 }: {
   model: ThreadActivityViewModel;
   onOpenTurnDiff?: (turnId: TurnId, filePath?: string) => void;
+  onOpenPlan?: () => void;
 }) {
   const elapsed = useElapsedLabel(model.elapsedStartedAt, model.isWorking);
   const currentElapsed = useElapsedLabel(model.current?.startedAt ?? null, model.isWorking);
@@ -276,7 +340,11 @@ export function ActivityPanel({
             <ChangedFilesSection model={model.changedFiles} onOpenTurnDiff={onOpenTurnDiff} />
           ) : null}
 
-          {/* MCP / artifacts: later slices when data is authoritative. */}
+          {model.artifacts.length > 0 ? (
+            <ArtifactsSection artifacts={model.artifacts} onOpenPlan={onOpenPlan} />
+          ) : null}
+
+          {/* MCP only when authoritative live status exists. */}
           {!model.hasAuthoritativeMcpStatus ? null : null}
         </div>
       </ScrollArea>

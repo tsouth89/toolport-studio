@@ -150,6 +150,8 @@ interface TimelineRowActivityState {
   /** Last client-observed stream/orchestration activity for the running turn. */
   lastStreamActivityAt: string | null;
   onInterrupt: (() => void) | null;
+  /** Open the Activity right panel (Working-row deep link). */
+  onOpenActivity: (() => void) | null;
 }
 
 const TimelineRowCtx = createContext<TimelineRowSharedState>(null!);
@@ -180,8 +182,10 @@ interface MessagesTimelineProps {
   onRevertUserMessage: (messageId: MessageId) => void;
   isRevertingCheckpoint: boolean;
   onImageExpand: (preview: ExpandedImagePreview) => void;
-  /** Stop the running turn from the stalled-working indicator. */
+  /** Stop the running turn from the Working-row indicator. */
   onInterrupt?: () => void;
+  /** Open Activity panel from the Working-row deep link. */
+  onOpenActivity?: () => void;
   activeThreadEnvironmentId: EnvironmentId;
   markdownCwd: string | undefined;
   resolvedTheme: "light" | "dark";
@@ -219,6 +223,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   isRevertingCheckpoint,
   onImageExpand,
   onInterrupt = undefined,
+  onOpenActivity = undefined,
   activeThreadEnvironmentId,
   markdownCwd,
   resolvedTheme,
@@ -468,6 +473,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       latestTurnId: latestTurn?.turnId ?? null,
       lastStreamActivityAt,
       onInterrupt: onInterrupt ?? null,
+      onOpenActivity: onOpenActivity ?? null,
     }),
     [
       activeTurnInProgress,
@@ -476,6 +482,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       lastStreamActivityAt,
       latestTurn?.turnId,
       onInterrupt,
+      onOpenActivity,
     ],
   );
 
@@ -1120,6 +1127,7 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
   const toolLabel = row.activeToolLabel?.trim() || null;
   const toolDetail = row.activeToolDetail?.trim() || null;
   const toolTitle = [toolLabel, toolDetail].filter(Boolean).join(" — ") || undefined;
+  const onOpenActivity = activity.onOpenActivity;
 
   return (
     <div className="py-0.5 pl-1.5">
@@ -1177,6 +1185,20 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
             >
               {quiet.notice}
             </span>
+          </>
+        ) : null}
+        {onOpenActivity ? (
+          <>
+            <span className="text-muted-foreground/40" aria-hidden="true">
+              ·
+            </span>
+            <button
+              type="button"
+              className="font-medium text-primary/90 hover:text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              onClick={onOpenActivity}
+            >
+              View in Activity
+            </button>
           </>
         ) : null}
       </div>

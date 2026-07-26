@@ -2356,9 +2356,11 @@ function ChatViewContent(props: ChatViewProps) {
       threadError,
       turnDiffSummaries,
       latestTurnId: activeLatestTurn?.turnId ?? null,
+      proposedPlans: activeThread?.proposedPlans ?? [],
     });
   }, [
     activeLatestTurn?.turnId,
+    activeThread?.proposedPlans,
     activeWorkStartedAt,
     isWorking,
     latestTurnSettled,
@@ -3107,6 +3109,10 @@ function ChatViewContent(props: ChatViewProps) {
   const addActivitySurface = useCallback(() => {
     if (!activeThreadRef) return;
     useRightPanelStore.getState().open(activeThreadRef, "activity");
+  }, [activeThreadRef]);
+  const addPlanSurface = useCallback(() => {
+    if (!activeThreadRef) return;
+    useRightPanelStore.getState().open(activeThreadRef, "plan");
   }, [activeThreadRef]);
   const openFileSurface = useCallback(
     (relativePath: string) => {
@@ -5923,7 +5929,11 @@ function ChatViewContent(props: ChatViewProps) {
         mode="embedded"
       />
     ) : activeRightPanelSurface?.kind === "activity" ? (
-      <ActivityPanel model={activityViewModel} onOpenTurnDiff={onOpenTurnDiff} />
+      <ActivityPanel
+        model={activityViewModel}
+        onOpenTurnDiff={onOpenTurnDiff}
+        onOpenPlan={addPlanSurface}
+      />
     ) : (activeRightPanelSurface?.kind === "files" || activeRightPanelSurface?.kind === "file") &&
       activeProject &&
       activeWorkspaceRoot ? (
@@ -6047,6 +6057,7 @@ function ChatViewContent(props: ChatViewProps) {
                 isRevertingCheckpoint={isRevertingCheckpoint}
                 onImageExpand={onExpandTimelineImage}
                 onInterrupt={onInterrupt}
+                onOpenActivity={addActivitySurface}
                 markdownCwd={gitCwd ?? undefined}
                 resolvedTheme={resolvedTheme}
                 timestampFormat={timestampFormat}

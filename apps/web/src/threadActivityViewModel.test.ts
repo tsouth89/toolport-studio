@@ -4,6 +4,7 @@ import { describe, expect, it } from "vite-plus/test";
 import type { TimelineEntry, WorkLogEntry } from "./session-logic";
 import type { TurnDiffSummary } from "./types";
 import {
+  deriveActivityArtifacts,
   deriveActivityChangedFiles,
   deriveThreadActivityViewModel,
   isActivityRecentMilestone,
@@ -453,6 +454,72 @@ describe("deriveThreadActivityViewModel", () => {
       "apps/web/src/threadActivityViewModel.ts",
       "apps/web/src/components/ActivityPanel.tsx",
     ]);
+  });
+});
+
+describe("deriveActivityArtifacts", () => {
+  it("prefers proposed plans for the preferred turn", () => {
+    const turnA = TurnId.make("turn-a");
+    const turnB = TurnId.make("turn-b");
+    const artifacts = deriveActivityArtifacts({
+      preferredTurnId: turnB,
+      proposedPlans: [
+        {
+          id: "plan-a" as never,
+          turnId: turnA,
+          planMarkdown: "# Older plan\n\nDo A.",
+          implementedAt: null,
+          implementationThreadId: null,
+          createdAt: "2026-07-26T11:00:00.000Z",
+          updatedAt: "2026-07-26T11:00:00.000Z",
+        },
+        {
+          id: "plan-b" as never,
+          turnId: turnB,
+          planMarkdown: "# Native MCP Resource Subscriptions\n\nDo B.",
+          implementedAt: null,
+          implementationThreadId: null,
+          createdAt: "2026-07-26T12:00:00.000Z",
+          updatedAt: "2026-07-26T12:05:00.000Z",
+        },
+      ],
+    });
+
+    expect(artifacts).toHaveLength(1);
+    expect(artifacts[0]).toMatchObject({
+      id: "plan-b",
+      label: "Native MCP Resource Subscriptions",
+      kind: "proposed-plan",
+      implemented: false,
+    });
+  });
+
+  it("falls back to recent unimplemented plans when no turn match", () => {
+    const artifacts = deriveActivityArtifacts({
+      preferredTurnId: TurnId.make("turn-missing"),
+      proposedPlans: [
+        {
+          id: "plan-done" as never,
+          turnId: TurnId.make("turn-old"),
+          planMarkdown: "# Done plan",
+          implementedAt: "2026-07-26T10:00:00.000Z",
+          implementationThreadId: null,
+          createdAt: "2026-07-26T09:00:00.000Z",
+          updatedAt: "2026-07-26T10:00:00.000Z",
+        },
+        {
+          id: "plan-open" as never,
+          turnId: TurnId.make("turn-open"),
+          planMarkdown: "# Open plan",
+          implementedAt: null,
+          implementationThreadId: null,
+          createdAt: "2026-07-26T11:00:00.000Z",
+          updatedAt: "2026-07-26T12:00:00.000Z",
+        },
+      ],
+    });
+
+    expect(artifacts.map((item) => item.id)).toEqual(["plan-open"]);
   });
 });
 

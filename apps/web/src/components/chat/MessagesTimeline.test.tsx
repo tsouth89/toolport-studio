@@ -697,6 +697,20 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain("text-warning");
   });
 
+  it("links the Working row to Activity when onOpenActivity is provided", () => {
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        isWorking
+        activeTurnStartedAt={new Date(Date.now() - 60_000).toISOString()}
+        onOpenActivity={() => {}}
+        timelineEntries={[]}
+      />,
+    );
+
+    expect(markup).toContain("View in Activity");
+  });
+
   it("shows the open tool title on the Working row while a turn is running", () => {
     const markup = renderToStaticMarkup(
       <MessagesTimeline

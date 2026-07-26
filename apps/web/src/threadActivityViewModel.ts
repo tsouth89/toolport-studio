@@ -15,7 +15,8 @@ import {
   type TimelineEntry,
   type WorkLogEntry,
 } from "./session-logic";
-import type { TurnDiffFileChange, TurnDiffSummary } from "./types";
+import { proposedPlanTitle } from "./proposedPlan";
+import type { ProposedPlan, TurnDiffFileChange, TurnDiffSummary } from "./types";
 
 export type ThreadActivityStepStatus =
   | "pending"
@@ -61,12 +62,23 @@ export interface ThreadActivityChangedFiles {
   readonly source: "checkpoint" | "work-log";
 }
 
+export interface ThreadActivityArtifact {
+  readonly id: string;
+  readonly label: string;
+  readonly kind: "proposed-plan";
+  readonly turnId: TurnId | null;
+  readonly updatedAt: string;
+  readonly implemented: boolean;
+}
+
 export interface ThreadActivityViewModel {
   readonly isWorking: boolean;
   readonly elapsedStartedAt: string | null;
   readonly current: ThreadActivityCurrentStep | null;
   readonly recentSteps: ReadonlyArray<ThreadActivityStep>;
   readonly changedFiles: ThreadActivityChangedFiles | null;
+  /** Real artifacts only (e.g. proposed plans). Empty → section omitted. */
+  readonly artifacts: ReadonlyArray<ThreadActivityArtifact>;
   readonly attention:
     | { readonly kind: "approval"; readonly label: string }
     | { readonly kind: "user-input"; readonly label: string }
@@ -79,6 +91,7 @@ export interface ThreadActivityViewModel {
 const MAX_RECENT_STEPS = 8;
 const MAX_ACTIVITY_DETAIL_CHARS = 96;
 const MAX_CHANGED_FILE_PREVIEW = 5;
+const MAX_ACTIVITY_ARTIFACTS = 5;
 
 /** Compact detail: single line, hard-capped. */
 export function formatActivityDetail(detail: string | undefined): string | undefined {
@@ -365,6 +378,43 @@ export function deriveActivityChangedFiles(input: {
   };
 }
 
+/**
+ * Proposed plans are the first real Activity artifact type. Prefer plans for
+ * the active/preferred turn; otherwise surface recent unimplemented plans.
+ */
+export function deriveActivityArtifacts(input: {
+  readonly proposedPlans: ReadonlyArray<ProposedPlan>;
+  readonly preferredTurnId: TurnId | null;
+}): ThreadActivityArtifact[] {
+  const plans = input.proposedPlans;
+  if (plans.length === 0) {
+    return [];
+  }
+
+  const preferred =
+    input.preferredTurnId != null
+      ? plans.filter((plan) => plan.turnId === input.preferredTurnId)
+      : [];
+  const source =
+    preferred.length > 0
+      ? preferred
+      : [...plans]
+          .filter((plan) => plan.implementedAt === null)
+          .toSorted((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+
+  return source.slice(0, MAX_ACTIVITY_ARTIFACTS).map((plan) => {
+    const title = proposedPlanTitle(plan.planMarkdown)?.trim();
+    return {
+      id: plan.id,
+      label: title && title.length > 0 ? title : "Proposed plan",
+      kind: "proposed-plan" as const,
+      turnId: plan.turnId,
+      updatedAt: plan.updatedAt,
+      implemented: plan.implementedAt !== null,
+    };
+  });
+}
+
 export function deriveThreadActivityViewModel(input: {
   readonly timelineEntries: ReadonlyArray<TimelineEntry>;
   readonly isWorking: boolean;
@@ -377,6 +427,7 @@ export function deriveThreadActivityViewModel(input: {
   readonly turnDiffSummaries?: ReadonlyArray<TurnDiffSummary>;
   /** Settled latest turn id — used when selecting checkpoint / work-log files. */
   readonly latestTurnId?: TurnId | null;
+  readonly proposedPlans?: ReadonlyArray<ProposedPlan>;
 }): ThreadActivityViewModel {
   const unsettledTurnId = input.unsettledTurnId ?? null;
   const turnActive = input.isWorking;
@@ -389,6 +440,10 @@ export function deriveThreadActivityViewModel(input: {
     turnDiffSummaries: input.turnDiffSummaries ?? [],
     preferredTurnId,
     workEntries,
+  });
+  const artifacts = deriveActivityArtifacts({
+    proposedPlans: input.proposedPlans ?? [],
+    preferredTurnId,
   });
 
   let current: ThreadActivityCurrentStep | null = null;
@@ -460,6 +515,7 @@ export function deriveThreadActivityViewModel(input: {
     current,
     recentSteps,
     changedFiles,
+    artifacts,
     attention,
     hasAuthoritativeMcpStatus: false,
   };
