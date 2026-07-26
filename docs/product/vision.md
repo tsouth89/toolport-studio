@@ -59,7 +59,7 @@ their internal implementations.
 - Provider health and authentication recovery
 - Recommended models and complete model catalog
 - Consistent image and file attachments
-- Toolport MCP session injection
+- Toolport MCP available **on demand** (not forced every session; SOU-402)
 
 ### Daily-driver desktop
 
@@ -69,6 +69,7 @@ their internal implementations.
 - Unified usage panel powered by Ceiling
 - Search across conversations and projects
 - Reliable auto-update and signed installers
+- First-class provider parity scorecard (SOU-354 / SOU-401): Codex, Claude, Grok, then Cursor and Gemini
 
 ### Provider-neutral workspace
 

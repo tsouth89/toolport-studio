@@ -838,12 +838,7 @@ export function makeCursorAdapter(
                     );
                     return;
                   case "ContentDelta":
-                    yield* logNative(
-                      ctx.threadId,
-                      "session/update",
-                      event.rawPayload,
-                      "acp.jsonrpc",
-                    );
+                    // Skip native log for high-frequency text deltas (SOU-400 host tax).
                     yield* offerRuntimeEvent(
                       makeAcpContentDeltaEvent({
                         stamp: yield* makeEventStamp(),
@@ -858,7 +853,7 @@ export function makeCursorAdapter(
                     return;
                   case "ThoughtDelta":
                     // Cursor path ignores reasoning stream for transcript; Grok
-                    // uses it for stalled-turn liveness.
+                    // uses it for stalled-turn liveness. No native log (host tax).
                     return;
                 }
               }),
