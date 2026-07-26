@@ -1492,20 +1492,49 @@ function extractWorkLogRequestKind(
   return requestKindFromRequestType(payload?.requestType) ?? undefined;
 }
 
-function looksLikeFilePath(value: string): boolean {
-  const trimmed = value.trim();
+/**
+ * True only for path-like *files*, not prose, directory roots, or shell noise.
+ * Used for work-log → Activity Changed files (checkpoint stats are authoritative).
+ */
+export function looksLikeFilePath(value: string): boolean {
+  const trimmed = value.trim().replace(/^["']|["']$/g, "");
   if (trimmed.length === 0 || trimmed.length > 512) {
     return false;
   }
-  // Reject obvious non-paths (JSON blobs, multi-line dumps, pure prose).
-  if (trimmed.includes("\n") || trimmed.includes("{") || /\s{2,}/.test(trimmed)) {
+  // Reject JSON, multi-line dumps, and sentences (slash in prose is common).
+  if (trimmed.includes("\n") || trimmed.includes("{") || trimmed.includes("}")) {
     return false;
   }
+  if (/\s/.test(trimmed)) {
+    return false;
+  }
+  // Reject obvious prose / prompt fragments that include a slash.
+  if (
+    /^(the|a|an|i|we|you|user|please|implement|fix|add|update)\b/i.test(trimmed) ||
+    /\b(asking|about|should|would|could|gaps?)\b/i.test(trimmed)
+  ) {
+    return false;
+  }
+
+  const normalized = trimmed.replaceAll("\\", "/");
+  const segments = normalized.split("/").filter((segment) => segment.length > 0);
+  if (segments.length === 0) {
+    return false;
+  }
+  const basename = segments.at(-1) ?? "";
+  // Dotfiles (`.gitignore`) and files with extensions only — not bare directories.
+  if (basename.startsWith(".") && basename.length > 1) {
+    return true;
+  }
+  if (!/\.[a-z0-9]{1,16}$/i.test(basename)) {
+    return false;
+  }
+  // Need a path-ish shape or a plain relative filename.
   return (
-    trimmed.includes("/") ||
-    trimmed.includes("\\") ||
-    trimmed.startsWith(".") ||
-    /\.[a-z0-9]{1,12}$/i.test(trimmed)
+    normalized.includes("/") ||
+    normalized.startsWith(".") ||
+    /^[A-Za-z]:\//.test(normalized) ||
+    segments.length === 1
   );
 }
 

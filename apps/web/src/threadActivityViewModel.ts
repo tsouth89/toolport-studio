@@ -8,6 +8,7 @@ import { summarizeTurnDiffStats } from "./lib/turnDiffTree";
 import {
   formatWorkLogToolContext,
   formatWorkLogToolLabel,
+  looksLikeFilePath,
   workEntryIndicatesToolFailure,
   workEntryIndicatesToolNeutralStatus,
   workEntryIndicatesToolSuccess,
@@ -272,20 +273,25 @@ function pickCheckpointSummary(
   })[0]!;
 }
 
-function looksLikeActivityFilePath(value: string): boolean {
-  const trimmed = value.trim();
-  if (trimmed.length === 0 || trimmed.length > 512) {
-    return false;
+/** Prefer workspace-relative display when an absolute path contains a project root. */
+function displayPathForActivity(pathValue: string): string {
+  const normalized = normalizeRelativePath(pathValue);
+  // .../toolport/... or .../toolport-studio/... → path under that repo root.
+  const repoMatch = /\/(?:toolport(?:-studio)?|t3-code)\/(.+)$/i.exec(`/${normalized}`);
+  if (repoMatch?.[1]) {
+    return repoMatch[1];
   }
-  if (trimmed.includes("\n") || trimmed.includes("{")) {
-    return false;
+  if (/^[A-Za-z]:\//.test(normalized) || normalized.startsWith("/")) {
+    const parts = normalized
+      .replace(/^[A-Za-z]:\//, "")
+      .split("/")
+      .filter(Boolean);
+    if (parts.length > 3) {
+      return parts.slice(-3).join("/");
+    }
+    return parts.join("/");
   }
-  return (
-    trimmed.includes("/") ||
-    trimmed.includes("\\") ||
-    trimmed.startsWith(".") ||
-    /\.[a-z0-9]{1,12}$/i.test(trimmed)
-  );
+  return normalized;
 }
 
 function collectWorkLogChangedPaths(
@@ -298,8 +304,11 @@ function collectWorkLogChangedPaths(
     if (!raw) {
       return;
     }
-    const path = normalizeRelativePath(raw);
-    if (path.length === 0 || seen.has(path) || !looksLikeActivityFilePath(path)) {
+    if (!looksLikeFilePath(raw)) {
+      return;
+    }
+    const path = displayPathForActivity(raw);
+    if (path.length === 0 || seen.has(path) || !looksLikeFilePath(path)) {
       return;
     }
     seen.add(path);

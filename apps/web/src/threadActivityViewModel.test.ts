@@ -455,6 +455,43 @@ describe("deriveThreadActivityViewModel", () => {
       "apps/web/src/components/ActivityPanel.tsx",
     ]);
   });
+
+  it("rejects prose, directories, and junk from work-log Changed files", () => {
+    const turnId = TurnId.make("turn-junk");
+    const model = deriveThreadActivityViewModel({
+      isWorking: true,
+      activeTurnStartedAt: "2026-07-26T12:00:00.000Z",
+      unsettledTurnId: turnId,
+      latestTurnId: turnId,
+      turnDiffSummaries: [],
+      timelineEntries: workTimeline([
+        workEntry({
+          id: "noise",
+          label: "Changed files",
+          toolTitle: "Changed files",
+          itemType: "file_change",
+          turnId,
+          toolLifecycleStatus: "completed",
+          changedFiles: [
+            "The user is asking about Rate1 gaps/improvements",
+            "C:/projects/personal/toolport",
+            "C:/projects/personal/toolport/docs",
+            "C:/projects/personal/toolport/docs/drafts",
+            "C:/projects/personal/toolport/docs/COMPETITIVE.md",
+            "apps/web/src/real-file.ts",
+          ],
+          detail: "The user is asking about Rate1 gaps/improvements",
+        }),
+      ]),
+    });
+
+    expect(model.changedFiles?.source).toBe("work-log");
+    expect(model.changedFiles?.hasStats).toBe(false);
+    expect(model.changedFiles?.files.map((file) => file.path)).toEqual([
+      "docs/COMPETITIVE.md",
+      "apps/web/src/real-file.ts",
+    ]);
+  });
 });
 
 describe("deriveActivityArtifacts", () => {

@@ -1209,6 +1209,32 @@ describe("deriveWorkLogEntries", () => {
     ]);
   });
 
+  it("does not treat prose or directories as changed file paths", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "noisy-edit",
+        kind: "tool.completed",
+        summary: "Changed files",
+        payload: {
+          itemType: "file_change",
+          title: "Changed files",
+          detail: "The user is asking about Rate1 gaps/improvements",
+          data: {
+            kind: "edit",
+            locations: [
+              { path: "C:/projects/personal/toolport" },
+              { path: "C:/projects/personal/toolport/docs/drafts" },
+              { path: "C:/projects/personal/toolport/docs/COMPETITIVE.md" },
+            ],
+          },
+        },
+      }),
+    ];
+
+    const [entry] = deriveWorkLogEntries(activities);
+    expect(entry?.changedFiles).toEqual(["C:/projects/personal/toolport/docs/COMPETITIVE.md"]);
+  });
+
   it("drops duplicated tool detail when it only repeats the title", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({
