@@ -53,16 +53,34 @@ export interface ThreadActivityViewModel {
 }
 
 const MAX_RECENT_STEPS = 24;
+const MAX_ACTIVITY_DETAIL_CHARS = 140;
 
-function stepStatusFromWorkEntry(entry: WorkLogEntry): ThreadActivityStepStatus {
+/** Compact detail for the Activity panel: single line, hard-capped, no wall of text. */
+function formatActivityDetail(detail: string | undefined): string | undefined {
+  if (!detail) {
+    return undefined;
+  }
+  const normalized = detail.replace(/\s+/g, " ").trim();
+  if (normalized.length === 0) {
+    return undefined;
+  }
+  if (normalized.length <= MAX_ACTIVITY_DETAIL_CHARS) {
+    return normalized;
+  }
+  return `${normalized.slice(0, MAX_ACTIVITY_DETAIL_CHARS - 1).trimEnd()}…`;
+}
+
+function stepStatusFromWorkEntry(
+  entry: WorkLogEntry,
+  options: { turnActive: boolean },
+): ThreadActivityStepStatus {
   if (entry.tone === "error" || workEntryIndicatesToolFailure(entry)) {
     return "failed";
   }
-  // Only explicit in-progress lifecycle may spin. Neutral (stopped, ambiguous,
-  // thinking-shaped tools) used to map to "running" and left finished Recent
-  // steps with permanent loaders.
+  // Only explicit in-progress lifecycle may spin — and only while the turn is
+  // still active. Settled turns must never leave zombie loaders.
   if (entry.toolLifecycleStatus === "inProgress") {
-    return "running";
+    return options.turnActive ? "running" : "completed";
   }
   if (entry.toolLifecycleStatus === "stopped") {
     return "interrupted";
@@ -76,12 +94,13 @@ function stepStatusFromWorkEntry(entry: WorkLogEntry): ThreadActivityStepStatus 
   return "info";
 }
 
-function toActivityStep(entry: WorkLogEntry): ThreadActivityStep {
+function toActivityStep(entry: WorkLogEntry, options: { turnActive: boolean }): ThreadActivityStep {
+  const detail = formatActivityDetail(entry.detail);
   return {
     id: entry.id,
     label: (entry.toolTitle ?? entry.label).trim() || "Step",
-    ...(entry.detail?.trim() ? { detail: entry.detail.trim() } : {}),
-    status: stepStatusFromWorkEntry(entry),
+    ...(detail ? { detail } : {}),
+    status: stepStatusFromWorkEntry(entry, options),
     createdAt: entry.createdAt,
     turnId: entry.turnId,
     tone: entry.tone,
@@ -116,8 +135,11 @@ export function deriveThreadActivityViewModel(input: {
   readonly threadError?: string | null;
 }): ThreadActivityViewModel {
   const unsettledTurnId = input.unsettledTurnId ?? null;
+  const turnActive = input.isWorking;
   const workEntries = collectWorkEntries(input.timelineEntries, unsettledTurnId);
-  const recentSteps = workEntries.slice(-MAX_RECENT_STEPS).map(toActivityStep);
+  const recentSteps = workEntries
+    .slice(-MAX_RECENT_STEPS)
+    .map((entry) => toActivityStep(entry, { turnActive }));
 
   let current: ThreadActivityCurrentStep | null = null;
   if (input.isWorking) {
@@ -127,19 +149,23 @@ export function deriveThreadActivityViewModel(input: {
     const thinking = [...workEntries]
       .reverse()
       .find((entry) => entry.tone === "thinking" || entry.sourceActivityKind === "task.progress");
-    const toolLabel = input.activeToolLabel?.trim() || null;
 
-    if (runningTool || toolLabel) {
+    // Only an explicit in-progress tool is Current. Do not promote the last
+    // finished tool (activeToolLabel fallback) — that left Searched/Read rows
+    // spinning in Current after they had already completed.
+    if (runningTool) {
+      const detail = formatActivityDetail(runningTool.detail);
       current = {
-        label: toolLabel || (runningTool?.toolTitle ?? runningTool?.label ?? "Working").trim(),
-        ...(runningTool?.detail?.trim() ? { detail: runningTool.detail.trim() } : {}),
-        startedAt: runningTool?.createdAt ?? input.activeTurnStartedAt,
+        label: (runningTool.toolTitle ?? runningTool.label ?? "Working").trim(),
+        ...(detail ? { detail } : {}),
+        startedAt: runningTool.createdAt ?? input.activeTurnStartedAt,
         source: "tool",
       };
     } else if (thinking) {
+      const detail = formatActivityDetail(thinking.detail);
       current = {
         label: thinking.label.trim() || "Thinking",
-        ...(thinking.detail?.trim() ? { detail: thinking.detail.trim() } : {}),
+        ...(detail ? { detail } : {}),
         startedAt: thinking.createdAt,
         source: "thinking",
       };

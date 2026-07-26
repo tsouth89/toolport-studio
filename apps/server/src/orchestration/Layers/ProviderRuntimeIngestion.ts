@@ -269,6 +269,38 @@ function truncateDetail(value: string, limit = 180): string {
   return value.length > limit ? `${value.slice(0, limit - 3)}...` : value;
 }
 
+/**
+ * Tool activity `data` bag for the work log. Ensures `toolCallId` is present so
+ * concurrent tools can collapse even when the provider data omitted it (ACP
+ * stamps itemId = toolCallId).
+ */
+function toolActivityDataPayload(
+  event: Extract<ProviderRuntimeEvent, { type: "item.updated" | "item.completed" }>,
+): { data: Record<string, unknown> } | Record<string, never> {
+  const existing =
+    event.payload.data && typeof event.payload.data === "object"
+      ? (event.payload.data as Record<string, unknown>)
+      : {};
+  const existingToolCallId =
+    typeof existing.toolCallId === "string" && existing.toolCallId.trim().length > 0
+      ? existing.toolCallId.trim()
+      : null;
+  const itemId =
+    event.itemId !== undefined && String(event.itemId).trim().length > 0
+      ? String(event.itemId).trim()
+      : null;
+  const toolCallId = existingToolCallId ?? itemId;
+  if (!toolCallId && Object.keys(existing).length === 0) {
+    return {};
+  }
+  return {
+    data: {
+      ...existing,
+      ...(toolCallId && !existingToolCallId ? { toolCallId } : {}),
+    },
+  };
+}
+
 function normalizeProposedPlanMarkdown(planMarkdown: string | undefined): string | undefined {
   const trimmed = planMarkdown?.trim();
   if (!trimmed) {
@@ -692,8 +724,9 @@ export function runtimeEventToActivities(
           payload: {
             itemType: event.payload.itemType,
             ...(event.payload.status ? { status: event.payload.status } : {}),
+            ...(event.payload.title ? { title: event.payload.title } : {}),
             ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
-            ...(event.payload.data !== undefined ? { data: event.payload.data } : {}),
+            ...toolActivityDataPayload(event),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -714,8 +747,9 @@ export function runtimeEventToActivities(
           summary: event.payload.title ?? "Tool",
           payload: {
             itemType: event.payload.itemType,
+            ...(event.payload.title ? { title: event.payload.title } : {}),
             ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
-            ...(event.payload.data !== undefined ? { data: event.payload.data } : {}),
+            ...toolActivityDataPayload(event),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,

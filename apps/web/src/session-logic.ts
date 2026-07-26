@@ -769,18 +769,81 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   return entry;
 }
 
+function isTerminalToolLifecycleStatus(status: WorkLogToolLifecycleStatus | undefined): boolean {
+  return (
+    status === "completed" || status === "failed" || status === "declined" || status === "stopped"
+  );
+}
+
+function isToolLifecycleActivityKind(
+  kind: OrchestrationThreadActivity["kind"] | undefined,
+): boolean {
+  return kind === "tool.updated" || kind === "tool.completed";
+}
+
 function collapseDerivedWorkLogEntries(
   entries: ReadonlyArray<DerivedWorkLogEntry>,
 ): DerivedWorkLogEntry[] {
   const collapsed: DerivedWorkLogEntry[] = [];
+  // Open (non-terminal) row index per collapse key. Adjacent-only merge left
+  // concurrent tools stuck inProgress when another tool updated in between.
+  const openIndexByKey = new Map<string, number>();
+
   for (const entry of entries) {
+    const key = entry.collapseKey;
+    if (key && isToolLifecycleActivityKind(entry.activityKind)) {
+      const openIdx = openIndexByKey.get(key);
+      if (openIdx !== undefined) {
+        const previous = collapsed[openIdx];
+        if (
+          previous &&
+          isToolLifecycleActivityKind(previous.activityKind) &&
+          previous.activityKind !== "tool.completed" &&
+          !isTerminalToolLifecycleStatus(previous.toolLifecycleStatus)
+        ) {
+          const merged = mergeDerivedWorkLogEntries(previous, entry);
+          collapsed[openIdx] = merged;
+          if (
+            entry.activityKind === "tool.completed" ||
+            isTerminalToolLifecycleStatus(merged.toolLifecycleStatus)
+          ) {
+            openIndexByKey.delete(key);
+          }
+          continue;
+        }
+      }
+    }
+
     const previous = collapsed.at(-1);
     if (previous && shouldCollapseToolLifecycleEntries(previous, entry)) {
-      collapsed[collapsed.length - 1] = mergeDerivedWorkLogEntries(previous, entry);
+      const merged = mergeDerivedWorkLogEntries(previous, entry);
+      collapsed[collapsed.length - 1] = merged;
+      const prevKey = previous.collapseKey ?? merged.collapseKey;
+      if (prevKey) {
+        if (
+          entry.activityKind === "tool.completed" ||
+          isTerminalToolLifecycleStatus(merged.toolLifecycleStatus)
+        ) {
+          openIndexByKey.delete(prevKey);
+        } else {
+          openIndexByKey.set(prevKey, collapsed.length - 1);
+        }
+      }
       continue;
     }
+
     collapsed.push(entry);
+
+    if (
+      key &&
+      isToolLifecycleActivityKind(entry.activityKind) &&
+      entry.activityKind !== "tool.completed" &&
+      !isTerminalToolLifecycleStatus(entry.toolLifecycleStatus)
+    ) {
+      openIndexByKey.set(key, collapsed.length - 1);
+    }
   }
+
   return collapsed;
 }
 
@@ -788,13 +851,16 @@ function shouldCollapseToolLifecycleEntries(
   previous: DerivedWorkLogEntry,
   next: DerivedWorkLogEntry,
 ): boolean {
-  if (previous.activityKind !== "tool.updated" && previous.activityKind !== "tool.completed") {
+  if (!isToolLifecycleActivityKind(previous.activityKind)) {
     return false;
   }
-  if (next.activityKind !== "tool.updated" && next.activityKind !== "tool.completed") {
+  if (!isToolLifecycleActivityKind(next.activityKind)) {
     return false;
   }
   if (previous.activityKind === "tool.completed") {
+    return false;
+  }
+  if (isTerminalToolLifecycleStatus(previous.toolLifecycleStatus)) {
     return false;
   }
   if (previous.collapseKey !== undefined && previous.collapseKey === next.collapseKey) {
@@ -1088,8 +1154,23 @@ function extractToolTitle(payload: Record<string, unknown> | null): string | nul
 }
 
 function extractToolCallId(payload: Record<string, unknown> | null): string | null {
-  const data = asRecord(payload?.data);
-  return asTrimmedString(data?.toolCallId);
+  if (!payload) {
+    return null;
+  }
+  const topLevel = asTrimmedString(payload.toolCallId);
+  if (topLevel) {
+    return topLevel;
+  }
+  const data = asRecord(payload.data);
+  if (!data) {
+    return null;
+  }
+  const fromData = asTrimmedString(data.toolCallId);
+  if (fromData) {
+    return fromData;
+  }
+  const item = asRecord(data.item);
+  return asTrimmedString(item?.toolCallId) ?? asTrimmedString(item?.id);
 }
 
 function normalizeInlinePreview(value: string): string {

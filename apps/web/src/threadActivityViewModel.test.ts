@@ -177,4 +177,49 @@ describe("deriveThreadActivityViewModel", () => {
     expect(model.current?.source).toBe("thinking");
     expect(model.current?.label).toBe("Planning next steps");
   });
+
+  it("does not promote a finished tool into Current via activeToolLabel", () => {
+    const turnId = TurnId.make("turn-3");
+    const model = deriveThreadActivityViewModel({
+      isWorking: true,
+      activeTurnStartedAt: "2026-07-26T12:00:00.000Z",
+      unsettledTurnId: turnId,
+      activeToolLabel: "Searched files",
+      timelineEntries: workTimeline([
+        workEntry({
+          id: "search",
+          label: "Searched files",
+          toolTitle: "Searched files",
+          turnId,
+          toolLifecycleStatus: "completed",
+          detail: "deriveThreadActivityViewModelisWorkingactiveToolLabelAct",
+          createdAt: "2026-07-26T12:00:01.000Z",
+        }),
+      ]),
+    });
+
+    expect(model.current?.source).toBe("working");
+    expect(model.current?.label).toBe("Working");
+    expect(model.recentSteps[0]?.status).toBe("completed");
+    expect(model.recentSteps[0]?.detail?.length).toBeLessThanOrEqual(140);
+  });
+
+  it("clears leftover inProgress spinners once the turn is idle", () => {
+    const model = deriveThreadActivityViewModel({
+      isWorking: false,
+      activeTurnStartedAt: null,
+      timelineEntries: workTimeline([
+        workEntry({
+          id: "stuck",
+          label: "Read files",
+          toolTitle: "Read files",
+          toolLifecycleStatus: "inProgress",
+          createdAt: "2026-07-26T12:00:01.000Z",
+        }),
+      ]),
+    });
+
+    expect(model.current).toBeNull();
+    expect(model.recentSteps[0]?.status).toBe("completed");
+  });
 });

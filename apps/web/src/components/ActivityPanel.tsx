@@ -41,14 +41,16 @@ function StepStatusIcon({ status }: { status: ThreadActivityStepStatus }) {
 
 function RecentStepRow({ step }: { step: ThreadActivityStep }) {
   return (
-    <li className="flex items-start gap-2 rounded-md px-1 py-1.5 text-[12px]">
-      <span className="mt-0.5">
+    <li className="flex min-w-0 items-start gap-2 overflow-hidden rounded-md px-1 py-1.5 text-[12px]">
+      <span className="mt-0.5 shrink-0">
         <StepStatusIcon status={step.status} />
       </span>
-      <div className="min-w-0 flex-1">
+      <div className="min-w-0 flex-1 overflow-hidden">
         <p className="truncate font-medium text-foreground/90">{step.label}</p>
         {step.detail ? (
-          <p className="mt-0.5 line-clamp-2 text-[11px] text-muted-foreground">{step.detail}</p>
+          <p className="mt-0.5 line-clamp-2 break-all text-[11px] text-muted-foreground">
+            {step.detail}
+          </p>
         ) : null}
       </div>
     </li>
@@ -60,7 +62,7 @@ export function ActivityPanel({ model }: { model: ThreadActivityViewModel }) {
   const recent = [...model.recentSteps].reverse();
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-background text-foreground">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden bg-background text-foreground">
       <header className="flex shrink-0 items-center justify-between gap-2 border-b border-border/70 px-3 py-2.5">
         <div className="flex min-w-0 items-center gap-1.5">
           <Activity className="size-3.5 shrink-0 text-primary" aria-hidden />
@@ -75,42 +77,42 @@ export function ActivityPanel({ model }: { model: ThreadActivityViewModel }) {
         )}
       </header>
 
-      <ScrollArea className="min-h-0 flex-1">
-        <div className="flex flex-col gap-4 p-3">
+      <ScrollArea className="min-w-0 min-h-0 flex-1">
+        <div className="flex min-w-0 flex-col gap-4 overflow-x-hidden p-3">
           {model.attention ? (
             <section
               className={cn(
-                "rounded-lg border px-2.5 py-2 text-[12px]",
+                "min-w-0 overflow-hidden rounded-lg border px-2.5 py-2 text-[12px]",
                 model.attention.kind === "error"
                   ? "border-destructive/40 bg-destructive/10 text-destructive"
                   : "border-warning/40 bg-warning/10 text-warning",
               )}
             >
-              <div className="flex items-start gap-1.5">
+              <div className="flex min-w-0 items-start gap-1.5">
                 <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden />
-                <p className="min-w-0 leading-snug">{model.attention.label}</p>
+                <p className="min-w-0 break-words leading-snug">{model.attention.label}</p>
               </div>
             </section>
           ) : null}
 
-          <section className="space-y-1.5">
+          <section className="min-w-0 space-y-1.5">
             <h3 className="text-[10px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
               Current step
             </h3>
             {model.current ? (
-              <div className="rounded-lg border border-primary/30 bg-primary/8 px-2.5 py-2.5 shadow-sm">
-                <div className="flex items-start gap-2">
+              <div className="min-w-0 overflow-hidden rounded-lg border border-primary/30 bg-primary/8 px-2.5 py-2.5 shadow-sm">
+                <div className="flex min-w-0 items-start gap-2">
                   {model.isWorking ? (
                     <Loader2 className="mt-0.5 size-3.5 shrink-0 animate-spin text-primary" />
                   ) : (
                     <CheckCircle2 className="mt-0.5 size-3.5 shrink-0 text-success" />
                   )}
-                  <div className="min-w-0 flex-1">
-                    <p className="text-[12.5px] font-semibold text-foreground">
+                  <div className="min-w-0 flex-1 overflow-hidden">
+                    <p className="truncate text-[12.5px] font-semibold text-foreground">
                       {model.current.label}
                     </p>
                     {model.current.detail ? (
-                      <p className="mt-0.5 text-[11px] text-muted-foreground">
+                      <p className="mt-0.5 line-clamp-2 break-all text-[11px] text-muted-foreground">
                         {model.current.detail}
                       </p>
                     ) : null}
@@ -124,12 +126,12 @@ export function ActivityPanel({ model }: { model: ThreadActivityViewModel }) {
             )}
           </section>
 
-          <section className="space-y-1.5">
+          <section className="min-w-0 space-y-1.5">
             <h3 className="text-[10px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
               Recent steps
             </h3>
             {recent.length > 0 ? (
-              <ul className="divide-y divide-border/50 rounded-lg border border-border/60 bg-card/30 px-1.5 py-0.5">
+              <ul className="min-w-0 divide-y divide-border/50 overflow-hidden rounded-lg border border-border/60 bg-card/30 px-1.5 py-0.5">
                 {recent.map((step) => (
                   <RecentStepRow key={step.id} step={step} />
                 ))}

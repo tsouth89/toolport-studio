@@ -1524,6 +1524,67 @@ describe("deriveWorkLogEntries", () => {
     expect(entries).toHaveLength(1);
     expect(entries[0]?.id).toBe("a-complete-same-timestamp");
   });
+
+  it("collapses concurrent tools even when another tool updates in between", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "search-a-open",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "tool.updated",
+        summary: "Searched files",
+        payload: {
+          itemType: "web_search",
+          title: "Searched files",
+          status: "inProgress",
+          detail: "patternA",
+          data: { toolCallId: "search-a" },
+        },
+      }),
+      makeActivity({
+        id: "read-b-open",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "tool.updated",
+        summary: "Read files",
+        payload: {
+          itemType: "dynamic_tool_call",
+          title: "Read files",
+          status: "inProgress",
+          detail: "path/b.ts",
+          data: { toolCallId: "read-b" },
+        },
+      }),
+      makeActivity({
+        id: "search-a-done",
+        createdAt: "2026-02-23T00:00:03.000Z",
+        kind: "tool.completed",
+        summary: "Searched files",
+        payload: {
+          itemType: "web_search",
+          title: "Searched files",
+          detail: "found 3 matches",
+          data: { toolCallId: "search-a" },
+        },
+      }),
+      makeActivity({
+        id: "read-b-done",
+        createdAt: "2026-02-23T00:00:04.000Z",
+        kind: "tool.completed",
+        summary: "Read files",
+        payload: {
+          itemType: "dynamic_tool_call",
+          title: "Read files",
+          detail: "path/b.ts",
+          data: { toolCallId: "read-b" },
+        },
+      }),
+    ];
+
+    const entries = deriveWorkLogEntries(activities);
+    expect(entries).toHaveLength(2);
+    expect(entries.map((entry) => entry.toolLifecycleStatus)).toEqual(["completed", "completed"]);
+    expect(entries.map((entry) => entry.toolTitle)).toEqual(["Searched files", "Read files"]);
+    expect(entries.every((entry) => entry.toolLifecycleStatus !== "inProgress")).toBe(true);
+  });
 });
 
 describe("deriveTimelineEntries", () => {

@@ -113,6 +113,10 @@ describe("AcpCoreRuntimeEvents", () => {
       payload: {
         itemType: "command_execution",
         status: "completed",
+        data: {
+          command: "bun run test",
+          toolCallId: "tool-1",
+        },
       },
     });
 

@@ -167,6 +167,12 @@ export function makeAcpToolCallEvent(input: {
   readonly rawPayload: unknown;
 }): ProviderRuntimeEvent {
   const runtimeStatus = runtimeItemStatusFromAcpToolStatus(input.toolCall.status);
+  // Always stamp toolCallId into data so client work-log collapse can match
+  // concurrent tools even when the ACP payload's own data bag omits it.
+  const data: Record<string, unknown> = {
+    ...input.toolCall.data,
+    toolCallId: input.toolCall.toolCallId,
+  };
   return {
     type:
       input.toolCall.status === "completed" || input.toolCall.status === "failed"
@@ -182,7 +188,7 @@ export function makeAcpToolCallEvent(input: {
       ...(runtimeStatus ? { status: runtimeStatus } : {}),
       ...(input.toolCall.title ? { title: input.toolCall.title } : {}),
       ...(input.toolCall.detail ? { detail: input.toolCall.detail } : {}),
-      ...(Object.keys(input.toolCall.data).length > 0 ? { data: input.toolCall.data } : {}),
+      data,
     },
     raw: {
       source: "acp.jsonrpc",

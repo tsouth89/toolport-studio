@@ -245,7 +245,9 @@ export function deriveActiveWorkingToolLabel(input: {
       continue;
     }
     lastToolLabel = label;
-    if (workEntryIndicatesToolNeutralStatus(entry) || entry.toolLifecycleStatus === "inProgress") {
+    // Only explicit in-progress is "open". Neutral (stopped / ambiguous) used
+    // to keep the Working row on a finished tool indefinitely.
+    if (entry.toolLifecycleStatus === "inProgress") {
       openToolLabel = label;
     }
   }
