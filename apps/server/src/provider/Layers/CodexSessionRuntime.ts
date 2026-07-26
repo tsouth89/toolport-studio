@@ -54,6 +54,10 @@ const BENIGN_ERROR_LOG_SNIPPETS = [
   "state db record_discrepancy: find_thread_path_by_id_str_in_subdir, falling_back",
 ];
 const CODEX_APP_SERVER_FORCE_KILL_AFTER = "2 seconds" as const;
+/** Auto-cancel unanswered permission prompts so multi-session dogfood cannot hang forever. */
+const CODEX_PENDING_APPROVAL_TIMEOUT_MS = 3 * 60_000;
+/** Slightly longer for multi-question forms. */
+const CODEX_PENDING_USER_INPUT_TIMEOUT_MS = 5 * 60_000;
 const RECOVERABLE_THREAD_RESUME_ERROR_SNIPPETS = [
   "not found",
   "missing thread",
@@ -108,6 +112,10 @@ export interface CodexSessionRuntimeOptions {
   readonly serviceTier?: CodexServiceTier | undefined;
   readonly resumeCursor?: CodexResumeCursor;
   readonly appServerArgs?: ReadonlyArray<string>;
+  /** Override pending permission auto-cancel (default 3 minutes). */
+  readonly pendingApprovalTimeoutMs?: number;
+  /** Override pending user-input auto-cancel (default 5 minutes). */
+  readonly pendingUserInputTimeoutMs?: number;
 }
 
 export interface CodexSessionRuntimeSendTurnInput {
@@ -741,6 +749,10 @@ export const makeCodexSessionRuntime = (
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const runtimeScope = yield* Scope.Scope;
     const crypto = yield* Crypto.Crypto;
+    const pendingApprovalTimeoutMs =
+      options.pendingApprovalTimeoutMs ?? CODEX_PENDING_APPROVAL_TIMEOUT_MS;
+    const pendingUserInputTimeoutMs =
+      options.pendingUserInputTimeoutMs ?? CODEX_PENDING_USER_INPUT_TIMEOUT_MS;
     const events = yield* Queue.unbounded<ProviderEvent>();
     const pendingApprovalsRef = yield* Ref.make(new Map<ApprovalRequestId, PendingApproval>());
     const approvalCorrelationsRef = yield* Ref.make(new Map<string, ApprovalCorrelation>());
@@ -748,6 +760,11 @@ export const makeCodexSessionRuntime = (
     const collabReceiverTurnsRef = yield* Ref.make(new Map<string, TurnId>());
     /** Turns force-settled by Stop so late turn/completed notifications do not double-fire. */
     const forceSettledTurnIdsRef = yield* Ref.make(new Set<string>());
+    /**
+     * Turns for which we already emitted synthetic turn/started after turn/start
+     * so a later native notification does not double-fire turn.started in the UI.
+     */
+    const earlyTurnStartedIdsRef = yield* Ref.make(new Set<string>());
     /**
      * When true, the next sendTurn may inject Studio conversationHistory
      * (fresh thread start or recoverable resume miss).
@@ -869,6 +886,104 @@ export const makeCodexSessionRuntime = (
         ),
       );
 
+    const awaitApprovalDecision = (
+      decision: Deferred.Deferred<ProviderApprovalDecision>,
+      meta: {
+        readonly requestId: ApprovalRequestId;
+        readonly requestKind: ProviderRequestKind;
+        readonly turnId?: TurnId;
+        readonly itemId?: ProviderItemId;
+      },
+    ) =>
+      Effect.gen(function* () {
+        const raceResult = yield* Effect.raceFirst(
+          Deferred.await(decision).pipe(
+            Effect.map((value) => ({ _tag: "decided" as const, value })),
+          ),
+          Effect.sleep(`${pendingApprovalTimeoutMs} millis`).pipe(
+            Effect.as({ _tag: "timeout" as const }),
+          ),
+        );
+        if (raceResult._tag === "timeout") {
+          yield* Deferred.succeed(decision, "cancel").pipe(Effect.ignore);
+          yield* Effect.logWarning("Codex approval request timed out; auto-cancelled", {
+            threadId: options.threadId,
+            requestId: meta.requestId,
+            timeoutMs: pendingApprovalTimeoutMs,
+          });
+          yield* emitEvent({
+            kind: "notification",
+            threadId: options.threadId,
+            method: "process/stderr",
+            ...(meta.turnId ? { turnId: meta.turnId } : {}),
+            message: `Permission request timed out after ${Math.round(pendingApprovalTimeoutMs / 1000)}s with no decision. Request was cancelled automatically.`,
+          });
+          yield* emitEvent({
+            kind: "notification",
+            threadId: options.threadId,
+            method: "item/requestApproval/decision",
+            requestId: meta.requestId,
+            requestKind: meta.requestKind,
+            ...(meta.turnId ? { turnId: meta.turnId } : {}),
+            ...(meta.itemId ? { itemId: meta.itemId } : {}),
+            payload: {
+              requestId: meta.requestId,
+              requestKind: meta.requestKind,
+              decision: "cancel" as const,
+            },
+          });
+          return "cancel" as const satisfies ProviderApprovalDecision;
+        }
+        return raceResult.value;
+      });
+
+    const awaitUserInputAnswers = (
+      answers: Deferred.Deferred<ProviderUserInputAnswers>,
+      meta: {
+        readonly requestId: ApprovalRequestId;
+        readonly turnId?: TurnId;
+        readonly itemId?: ProviderItemId;
+      },
+    ) =>
+      Effect.gen(function* () {
+        const raceResult = yield* Effect.raceFirst(
+          Deferred.await(answers).pipe(
+            Effect.map((value) => ({ _tag: "answered" as const, value })),
+          ),
+          Effect.sleep(`${pendingUserInputTimeoutMs} millis`).pipe(
+            Effect.as({ _tag: "timeout" as const }),
+          ),
+        );
+        if (raceResult._tag === "timeout") {
+          yield* Deferred.succeed(answers, {}).pipe(Effect.ignore);
+          yield* Effect.logWarning("Codex user-input request timed out; auto-cancelled", {
+            threadId: options.threadId,
+            requestId: meta.requestId,
+            timeoutMs: pendingUserInputTimeoutMs,
+          });
+          yield* emitEvent({
+            kind: "notification",
+            threadId: options.threadId,
+            method: "process/stderr",
+            ...(meta.turnId ? { turnId: meta.turnId } : {}),
+            message: `User input timed out after ${Math.round(pendingUserInputTimeoutMs / 1000)}s with no answer. Request was cancelled automatically.`,
+          });
+          yield* emitEvent({
+            kind: "notification",
+            threadId: options.threadId,
+            method: "item/tool/requestUserInput/answered",
+            requestId: meta.requestId,
+            ...(meta.turnId ? { turnId: meta.turnId } : {}),
+            ...(meta.itemId ? { itemId: meta.itemId } : {}),
+            payload: {
+              answers: {},
+            },
+          });
+          return {} as ProviderUserInputAnswers;
+        }
+        return raceResult.value;
+      });
+
     const handleRawNotification = (notification: CodexServerNotification) =>
       Effect.gen(function* () {
         const payload = notification.params;
@@ -920,6 +1035,20 @@ export const makeCodexSessionRuntime = (
         if (notification.method === "turn/completed" && turnId !== undefined) {
           const forceSettled = yield* Ref.get(forceSettledTurnIdsRef);
           if (forceSettled.has(String(turnId))) {
+            return;
+          }
+        }
+
+        // sendTurn already emitted synthetic turn/started for chrome honesty;
+        // drop the native duplicate so the UI does not see two start events.
+        if (notification.method === "turn/started" && turnId !== undefined) {
+          const earlyStarted = yield* Ref.get(earlyTurnStartedIdsRef);
+          if (earlyStarted.has(String(turnId))) {
+            yield* Ref.update(earlyTurnStartedIdsRef, (current) => {
+              const next = new Set(current);
+              next.delete(String(turnId));
+              return next;
+            });
             return;
           }
         }
@@ -1045,7 +1174,12 @@ export const makeCodexSessionRuntime = (
           payload,
         });
 
-        const resolved = yield* Deferred.await(decision).pipe(
+        const resolved = yield* awaitApprovalDecision(decision, {
+          requestId,
+          requestKind: "command",
+          turnId,
+          itemId,
+        }).pipe(
           Effect.ensuring(
             Ref.update(pendingApprovalsRef, (current) => {
               const next = new Map(current);
@@ -1103,7 +1237,12 @@ export const makeCodexSessionRuntime = (
           payload,
         });
 
-        const resolved = yield* Deferred.await(decision).pipe(
+        const resolved = yield* awaitApprovalDecision(decision, {
+          requestId,
+          requestKind: "file-change",
+          turnId,
+          itemId,
+        }).pipe(
           Effect.ensuring(
             Ref.update(pendingApprovalsRef, (current) => {
               const next = new Map(current);
@@ -1146,7 +1285,11 @@ export const makeCodexSessionRuntime = (
           payload,
         });
 
-        const resolvedAnswers = yield* Deferred.await(answers).pipe(
+        const resolvedAnswers = yield* awaitUserInputAnswers(answers, {
+          requestId,
+          turnId,
+          itemId,
+        }).pipe(
           Effect.ensuring(
             Ref.update(pendingUserInputsRef, (current) => {
               const next = new Map(current);
@@ -1394,6 +1537,23 @@ export const makeCodexSessionRuntime = (
             status: "running",
             activeTurnId: turnId,
             ...(normalizedModel ? { model: normalizedModel } : {}),
+          });
+          // Surface Working chrome as soon as turn/start returns; native
+          // turn/started can lag slightly after the RPC response.
+          yield* Ref.update(earlyTurnStartedIdsRef, (current) => {
+            const next = new Set(current);
+            next.add(String(turnId));
+            return next;
+          });
+          yield* emitEvent({
+            kind: "notification",
+            threadId: options.threadId,
+            method: "turn/started",
+            turnId,
+            payload: {
+              turn: response.turn,
+              threadId: providerThreadId,
+            },
           });
           const resumedProviderThreadId = currentProviderThreadId(yield* Ref.get(sessionRef));
           return {
