@@ -668,6 +668,7 @@ const make = Effect.gen(function* () {
   const buildSendTurnRequestForThread = Effect.fnUntraced(function* (input: {
     readonly threadId: ThreadId;
     readonly messageText: string;
+    readonly messageId?: string;
     readonly attachments?: ReadonlyArray<ChatAttachment>;
     readonly modelSelection?: ModelSelection;
     readonly interactionMode?: "default" | "plan";
@@ -716,12 +717,29 @@ const make = Effect.gen(function* () {
           : requestedModelSelection
         : input.modelSelection;
 
+    // Prior projected messages for cold-start rehydration when native resume
+    // fails (app update/restart). Exclude the message currently being sent.
+    const conversationHistory = thread.messages.flatMap((entry) => {
+      if (input.messageId !== undefined && entry.id === input.messageId) {
+        return [];
+      }
+      if (entry.role !== "user" && entry.role !== "assistant") {
+        return [];
+      }
+      const text = entry.text.trim();
+      if (text.length === 0) {
+        return [];
+      }
+      return [{ role: entry.role as "user" | "assistant", text }];
+    });
+
     return {
       threadId: input.threadId,
       ...(normalizedInput ? { input: normalizedInput } : {}),
       ...(normalizedAttachments.length > 0 ? { attachments: normalizedAttachments } : {}),
       ...(modelForTurn !== undefined ? { modelSelection: modelForTurn } : {}),
       ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
+      ...(conversationHistory.length > 0 ? { conversationHistory } : {}),
     };
   });
 
@@ -921,6 +939,7 @@ const make = Effect.gen(function* () {
     const sendTurnRequest = yield* buildSendTurnRequestForThread({
       threadId: event.payload.threadId,
       messageText: message.text,
+      messageId: String(message.id),
       ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
       ...(event.payload.modelSelection !== undefined
         ? { modelSelection: event.payload.modelSelection }

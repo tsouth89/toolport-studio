@@ -89,6 +89,7 @@ import {
   type ProviderAdapterError,
 } from "../Errors.ts";
 import { type ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
+import { buildConversationRehydrationPrefix } from "../conversationRehydration.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.UnknownFromJsonString);
 const decodeUnknownJsonStringExit = Schema.decodeUnknownExit(Schema.UnknownFromJsonString);
@@ -223,6 +224,11 @@ interface ClaudeSessionContext {
   lastKnownTotalProcessedTokens: number | undefined;
   lastAssistantUuid: string | undefined;
   lastThreadStartedId: string | undefined;
+  /**
+   * When true, the first sendTurn may inject Studio conversationHistory
+   * (no native Claude resume session id on cold start).
+   */
+  needsContextRehydration: boolean;
   stopped: boolean;
 }
 
@@ -3681,6 +3687,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         lastKnownTotalProcessedTokens: undefined,
         lastAssistantUuid: resumeState?.resumeSessionAt,
         lastThreadStartedId: undefined,
+        // Only arm when we did not hand the SDK a resume id. Native resume
+        // already carries history; cold start after update/restart does not.
+        needsContextRehydration: existingResumeSessionId === undefined,
         stopped: false,
       };
       yield* Ref.set(contextRef, context);
@@ -3843,7 +3852,42 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       });
     }
 
-    const message = yield* buildUserMessageEffect(input, {
+    let sendInput = input;
+    if (
+      steeringTurnState === null &&
+      context.needsContextRehydration &&
+      input.conversationHistory !== undefined &&
+      input.conversationHistory.length > 0
+    ) {
+      const prefix = buildConversationRehydrationPrefix(
+        input.conversationHistory.map((turn) => ({ role: turn.role, text: turn.text })),
+        {
+          reason:
+            "This Toolport Studio thread has prior conversation history that is not loaded in the current Claude session (common after app restart or update).",
+        },
+      );
+      if (prefix) {
+        const latest = input.input?.trim() ?? "";
+        sendInput = {
+          ...input,
+          input: latest.length > 0 ? `${prefix}${latest}` : `${prefix}(continue)`,
+        };
+        context.needsContextRehydration = false;
+        yield* Effect.logInfo("Claude cold-start rehydration applied from Studio history", {
+          threadId: input.threadId,
+          historyTurns: input.conversationHistory.length,
+        });
+      }
+    } else if (
+      steeringTurnState === null &&
+      context.needsContextRehydration &&
+      (input.conversationHistory === undefined || input.conversationHistory.length === 0)
+    ) {
+      // No Studio history available; clear the arm so we do not keep retrying.
+      context.needsContextRehydration = false;
+    }
+
+    const message = yield* buildUserMessageEffect(sendInput, {
       fileSystem,
       attachmentsDir: serverConfig.attachmentsDir,
       boundInstanceId,

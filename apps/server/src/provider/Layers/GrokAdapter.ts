@@ -73,13 +73,19 @@ import {
 } from "../acp/XAiAcpExtension.ts";
 import { type GrokAdapterShape } from "../Services/GrokAdapter.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
+import {
+  appendConversationHistoryText,
+  buildConversationRehydrationPrefix,
+  DEFAULT_CONVERSATION_REHYDRATION_MAX_CHARS,
+  type ConversationHistoryTurn,
+} from "../conversationRehydration.ts";
 
 const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.UnknownFromJsonString);
 
 const PROVIDER = ProviderDriverKind.make("grok");
 const GROK_RESUME_VERSION = 1 as const;
 /** Cap rehydrated transcript so a long thread cannot blow the next prompt. */
-const GROK_CONTEXT_REHYDRATION_MAX_CHARS = 60_000;
+const GROK_CONTEXT_REHYDRATION_MAX_CHARS = DEFAULT_CONVERSATION_REHYDRATION_MAX_CHARS;
 /**
  * Opt-in only: thresholds used when `killOpenToolsOnSilence` is true (tests or
  * future settings). Product default never auto-stops a turn while a tool is
@@ -455,10 +461,7 @@ interface GrokSessionContext {
   needsContextRehydration: boolean;
 }
 
-export type GrokConversationTurn = {
-  readonly role: "user" | "assistant";
-  readonly text: string;
-};
+export type GrokConversationTurn = ConversationHistoryTurn;
 
 /** Append streamed/user text into a role-merged conversation log. Exported for tests. */
 export function appendGrokConversationText(
@@ -466,17 +469,7 @@ export function appendGrokConversationText(
   role: GrokConversationTurn["role"],
   text: string,
 ): Array<GrokConversationTurn> {
-  // Assistant deltas are raw stream chunks (preserve spaces). User lines trim.
-  const nextText = role === "assistant" ? text : text.trim();
-  if (nextText.length === 0) {
-    return [...log];
-  }
-  const last = log[log.length - 1];
-  if (last && last.role === role) {
-    const separator = role === "assistant" ? "" : "\n";
-    return [...log.slice(0, -1), { role, text: `${last.text}${separator}${nextText}` }];
-  }
-  return [...log, { role, text: nextText }];
+  return appendConversationHistoryText(log, role, text);
 }
 
 /**
@@ -487,41 +480,11 @@ export function buildGrokContextRehydrationPrefix(
   log: ReadonlyArray<GrokConversationTurn>,
   maxChars = GROK_CONTEXT_REHYDRATION_MAX_CHARS,
 ): string | undefined {
-  if (log.length === 0 || maxChars <= 0) {
-    return undefined;
-  }
-  const lines: string[] = [];
-  let used = 0;
-  for (let index = log.length - 1; index >= 0; index -= 1) {
-    const turn = log[index];
-    if (!turn) continue;
-    const label = turn.role === "user" ? "User" : "Assistant";
-    const block = `${label}:\n${turn.text}`;
-    const cost = block.length + (lines.length > 0 ? 2 : 0);
-    if (used + cost > maxChars && lines.length > 0) {
-      break;
-    }
-    if (used + cost > maxChars) {
-      const remaining = Math.max(0, maxChars - used - `${label}:\n`.length - 20);
-      lines.unshift(`${label}:\n${turn.text.slice(-remaining)}\n…`);
-      break;
-    }
-    lines.unshift(block);
-    used += cost;
-  }
-  if (lines.length === 0) {
-    return undefined;
-  }
-  return [
-    "The previous Grok provider session was interrupted and could not be resumed (common after Stop).",
-    "Here is the conversation so far from Toolport Studio. Treat it as your memory of this thread and continue without asking the user to restate it.",
-    "",
-    lines.join("\n\n"),
-    "",
-    "---",
-    "Latest user message:",
-    "",
-  ].join("\n");
+  return buildConversationRehydrationPrefix(log, {
+    maxChars,
+    reason:
+      "The previous Grok provider session was interrupted and could not be resumed (common after Stop, app restart, or update).",
+  });
 }
 
 export function buildGrokImagePromptPart(input: {
@@ -1903,12 +1866,26 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             notificationGeneration: 0,
             acpDisposed: false,
             conversationLog: [],
-            needsContextRehydration: false,
+            // True resume keeps Grok's own history. session/new (cold start,
+            // failed load, no resume cursor) needs Studio rehydration on the
+            // next prompt if the thread has projected messages.
+            needsContextRehydration: !started.resumedExistingSession,
           };
 
           ctx.notificationFiber = yield* startNotificationFiber(ctx);
           sessions.set(input.threadId, ctx);
           sessionScopeTransferred = true;
+
+          if (ctx.needsContextRehydration) {
+            yield* Effect.logInfo(
+              "Grok session started without native resume; Studio history rehydration armed",
+              {
+                threadId: input.threadId,
+                hadResumeCursor: resumeSessionId !== undefined,
+                sessionId: started.sessionId,
+              },
+            );
+          }
 
           yield* offerRuntimeEvent({
             type: "session.started",
@@ -2034,8 +2011,21 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                     });
                   }),
               );
-              // When Stop forced a blank session/new, inject Studio-side history
-              // so Grok still has prior turns (session/load often Path not found).
+              // When Stop/cold-start forced a blank session/new, inject Studio
+              // history so Grok still has prior turns (session/load often Path
+              // not found; in-memory log is empty after app restart).
+              if (
+                steeringTurnId === undefined &&
+                ctx.needsContextRehydration &&
+                ctx.conversationLog.length === 0 &&
+                input.conversationHistory !== undefined &&
+                input.conversationHistory.length > 0
+              ) {
+                ctx.conversationLog = input.conversationHistory.map((turn) => ({
+                  role: turn.role,
+                  text: turn.text,
+                }));
+              }
               const rehydrationPrefix =
                 steeringTurnId === undefined && ctx.needsContextRehydration
                   ? buildGrokContextRehydrationPrefix(ctx.conversationLog)

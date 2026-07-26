@@ -151,6 +151,21 @@ describe("ProviderSendTurnInput", () => {
     expect(getOptionValue(parsed.modelSelection?.options, "effort")).toBe("ultrathink");
     expect(getOptionValue(parsed.modelSelection?.options, "fastMode")).toBe(true);
   });
+
+  it("accepts conversationHistory for cold-start rehydration", () => {
+    const parsed = decodeProviderSendTurnInput({
+      threadId: "thread-1",
+      input: "continue",
+      conversationHistory: [
+        { role: "user", text: "Secret code is zebra-42" },
+        { role: "assistant", text: "Got it." },
+      ],
+    });
+    expect(parsed.conversationHistory).toEqual([
+      { role: "user", text: "Secret code is zebra-42" },
+      { role: "assistant", text: "Got it." },
+    ]);
+  });
 });
 
 describe("providerInstanceId routing key (slice-2 invariant)", () => {

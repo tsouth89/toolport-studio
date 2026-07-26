@@ -64,6 +64,17 @@ export const ProviderSessionStartInput = Schema.Struct({
 });
 export type ProviderSessionStartInput = typeof ProviderSessionStartInput.Type;
 
+/**
+ * Prior thread turns from Studio projections, used when a provider session
+ * cannot be resumed (cold start after update/restart, Stop → blank session).
+ * Adapters that already have native resume history should ignore this.
+ */
+export const ProviderConversationHistoryTurn = Schema.Struct({
+  role: Schema.Literals(["user", "assistant"]),
+  text: Schema.String,
+});
+export type ProviderConversationHistoryTurn = typeof ProviderConversationHistoryTurn.Type;
+
 export const ProviderSendTurnInput = Schema.Struct({
   threadId: ThreadId,
   input: Schema.optional(
@@ -74,6 +85,11 @@ export const ProviderSendTurnInput = Schema.Struct({
   ),
   modelSelection: Schema.optional(ModelSelection),
   interactionMode: Schema.optional(ProviderInteractionMode),
+  /**
+   * Optional Studio-side history for cold-start rehydration. Exclude the
+   * message currently being sent — that is `input`.
+   */
+  conversationHistory: Schema.optional(Schema.Array(ProviderConversationHistoryTurn)),
 });
 export type ProviderSendTurnInput = typeof ProviderSendTurnInput.Type;
 

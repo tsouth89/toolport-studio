@@ -2002,6 +2002,60 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
     }).pipe(TestClock.withLive),
   );
 
+  it.effect("cold-starts rehydrate conversationHistory when native session is not resumed", () =>
+    Effect.gen(function* () {
+      // Simulates open-prior-thread after app update: empty in-memory log, Studio
+      // projects prior messages via conversationHistory on sendTurn.
+      const threadId = ThreadId.make("grok-cold-start-rehydrate");
+      const tempDir = yield* Effect.promise(() =>
+        NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "grok-cold-rehydrate-")),
+      );
+      const requestLogPath = NodePath.join(tempDir, "requests.ndjson");
+      const adapter = yield* makeMockTestAdapter({
+        T3_ACP_REQUEST_LOG_PATH: requestLogPath,
+      });
+
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("grok"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+
+      yield* adapter
+        .sendTurn({
+          threadId,
+          input: "What was the secret code?",
+          attachments: [],
+          conversationHistory: [
+            { role: "user", text: "Secret code is zebra-42" },
+            { role: "assistant", text: "Got it, zebra-42." },
+          ],
+        })
+        .pipe(Effect.timeout("10 seconds"));
+
+      yield* waitForFileContent(requestLogPath, 80, "Secret code is zebra-42");
+      const requests = yield* Effect.promise(() => readJsonLines(requestLogPath));
+      const promptWithHistory = requests.find((entry) => {
+        if (entry.method !== "session/prompt") return false;
+        const params = entry.params;
+        if (typeof params !== "object" || params === null || !("prompt" in params)) return false;
+        const serializedPrompt = JSON.stringify((params as { prompt?: unknown }).prompt);
+        return (
+          serializedPrompt.includes("What was the secret code?") &&
+          serializedPrompt.includes("Secret code is zebra-42") &&
+          serializedPrompt.includes("Got it, zebra-42.")
+        );
+      });
+      assert.isDefined(
+        promptWithHistory,
+        "expected cold-start session/prompt to include Studio conversationHistory",
+      );
+
+      yield* adapter.stopSession(threadId);
+    }).pipe(TestClock.withLive),
+  );
+
   it.effect("rejects startSession when provider mismatches", () =>
     Effect.gen(function* () {
       const adapter = yield* makeMockTestAdapter();
