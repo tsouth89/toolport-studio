@@ -84,6 +84,7 @@ import { useThreadSelectionStore } from "../threadSelectionStore";
 import { useThreadActions } from "../hooks/useThreadActions";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { openCommandPalette } from "../commandPaletteBus";
+import { isGeneralChatProject } from "../lib/generalChat";
 import { startNewThreadFromContext } from "../lib/chatThreadActions";
 import { useClientSettings, useUpdateClientSettings } from "../hooks/useSettings";
 import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
@@ -997,6 +998,10 @@ function latestTurnDiff(
 
 export default function Sidebar() {
   const projects = useProjects();
+  const visibleProjects = useMemo(
+    () => projects.filter((project) => !isGeneralChatProject(project)),
+    [projects],
+  );
   const projectOrder = useUiStateStore((store) => store.projectOrder);
   const threads = useThreadShells();
   const router = useRouter();
@@ -1076,7 +1081,7 @@ export default function Sidebar() {
   const orderedProjects = useMemo(
     () =>
       orderItemsByPreferredIds({
-        items: projects,
+        items: visibleProjects,
         preferredIds: projectOrder,
         getId: getProjectOrderKey,
         getPreferenceIds: (project) => [
@@ -1084,12 +1089,12 @@ export default function Sidebar() {
           legacyProjectCwdPreferenceKey(project.workspaceRoot),
         ],
       }),
-    [projectOrder, projects],
+    [projectOrder, visibleProjects],
   );
   const unsortedProjectGroups = useMemo(
     () =>
       buildSidebarProjectSnapshots({
-        projects: sidebarProjectSortOrder === "manual" ? orderedProjects : projects,
+        projects: sidebarProjectSortOrder === "manual" ? orderedProjects : visibleProjects,
         settings: projectGroupingSettings,
         primaryEnvironmentId,
         resolveEnvironmentLabel: (environmentId) => environmentLabelById.get(environmentId) ?? null,
@@ -1099,7 +1104,7 @@ export default function Sidebar() {
       orderedProjects,
       primaryEnvironmentId,
       projectGroupingSettings,
-      projects,
+      visibleProjects,
       sidebarProjectSortOrder,
     ],
   );

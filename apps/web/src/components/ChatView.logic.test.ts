@@ -6,7 +6,7 @@ import {
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
-import { describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import type { Thread } from "../types";
 import {
@@ -23,6 +23,7 @@ import {
   isBranchMismatchDismissedForSession,
   reconcileMountedTerminalThreadIds,
   reconcileRetainedMountedThreadIds,
+  readFileAsDataUrl,
   resolveThreadMetadataUpdateForNextTurn,
   resolveSendEnvMode,
   shouldAutoDrainQueuedTurn,
@@ -34,6 +35,52 @@ const environmentId = EnvironmentId.make("environment-local");
 const projectId = ProjectId.make("project-1");
 const threadId = ThreadId.make("thread-1");
 const now = "2026-03-29T00:00:00.000Z";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+describe("readFileAsDataUrl", () => {
+  it("aborts an in-flight image read when send preparation is cancelled", async () => {
+    const listeners = new Map<string, Set<() => void>>();
+    let abortCalls = 0;
+    class HangingFileReader {
+      result: string | ArrayBuffer | null = null;
+      error: DOMException | null = null;
+
+      addEventListener(type: string, listener: () => void) {
+        const registered = listeners.get(type) ?? new Set();
+        registered.add(listener);
+        listeners.set(type, registered);
+      }
+
+      abort() {
+        abortCalls += 1;
+        for (const listener of listeners.get("abort") ?? []) {
+          listener();
+        }
+      }
+
+      readAsDataURL() {}
+    }
+    vi.stubGlobal("FileReader", HangingFileReader);
+    const controller = new AbortController();
+    const read = readFileAsDataUrl(
+      {
+        name: "daily-driver.png",
+      } as File,
+      { signal: controller.signal },
+    );
+
+    controller.abort();
+
+    await expect(read).rejects.toMatchObject({
+      name: "AbortError",
+      message: "Image read was cancelled for 'daily-driver.png'.",
+    });
+    expect(abortCalls).toBe(1);
+  });
+});
 
 describe("shouldAutoDrainQueuedTurn", () => {
   const ready = {

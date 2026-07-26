@@ -115,7 +115,8 @@ import {
 } from "../types";
 import { useTheme } from "../hooks/useTheme";
 import { useTurnDiffSummaries } from "../hooks/useTurnDiffSummaries";
-import { isCommandPaletteOpen } from "../commandPaletteBus";
+import { isCommandPaletteOpen, openCommandPalette } from "../commandPaletteBus";
+import { isGeneralChatProject } from "../lib/generalChat";
 import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/git";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY } from "../rightPanelLayout";
@@ -1333,6 +1334,7 @@ function ChatViewContent(props: ChatViewProps) {
   const attachmentPreviewHandoffByMessageIdRef = useRef<Record<string, string[]>>({});
   const attachmentPreviewPromotionInFlightByMessageIdRef = useRef<Record<string, true>>({});
   const sendInFlightRef = useRef(false);
+  const sendPreparationAbortRef = useRef<AbortController | null>(null);
   const terminalUiOpenByThreadRef = useRef<Record<string, boolean>>({});
 
   useLayoutEffect(() => {
@@ -1460,6 +1462,8 @@ function ChatViewContent(props: ChatViewProps) {
   const isLocalDraftThread = !isServerThread && localDraftThread !== undefined;
   const canCheckoutPullRequestIntoThread = isLocalDraftThread;
   const activeThreadId = activeThread?.id ?? null;
+  const activeThreadIdRef = useRef(activeThreadId);
+  activeThreadIdRef.current = activeThreadId;
   const runningTerminalIds = useThreadRunningTerminalIds({
     environmentId: activeThread?.environmentId ?? null,
     threadId: activeThreadId,
@@ -1601,6 +1605,7 @@ function ChatViewContent(props: ChatViewProps) {
     ? scopeProjectRef(activeThread.environmentId, activeThread.projectId)
     : null;
   const activeProject = useProject(activeProjectRef);
+  const isProjectless = activeProject ? isGeneralChatProject(activeProject) : false;
   const activeEnvironmentShell = useEnvironmentQuery(
     activeThread ? environmentShell.stateAtom(activeThread.environmentId) : null,
   );
@@ -2410,6 +2415,8 @@ function ChatViewContent(props: ChatViewProps) {
     return providerStatuses.find((status) => status.instanceId === defaultInstanceId) ?? null;
   }, [activeProviderInstanceId, providerStatuses, selectedProvider]);
   const providerStatusBannerKey = getProviderStatusBannerKey(activeProviderStatus);
+  const latestAssistantActivityAt =
+    activeThread?.messages.findLast((message) => message.role === "assistant")?.updatedAt ?? null;
   const [dismissedProviderStatusBannerKey, setDismissedProviderStatusBannerKey] = useState<
     string | null
   >(null);
@@ -2421,6 +2428,7 @@ function ChatViewContent(props: ChatViewProps) {
   const visibleProviderStatus = shouldShowProviderStatusBanner(
     activeProviderStatus,
     dismissedProviderStatusBannerKey,
+    latestAssistantActivityAt,
   )
     ? activeProviderStatus
     : null;
@@ -3833,6 +3841,8 @@ function ChatViewContent(props: ChatViewProps) {
   }, [activeThread?.id, activeThread?.messages, handoffAttachmentPreviews, optimisticUserMessages]);
 
   useEffect(() => {
+    sendPreparationAbortRef.current?.abort();
+    sendPreparationAbortRef.current = null;
     setOptimisticUserMessages((existing) => {
       for (const message of existing) {
         revokeUserMessagePreviewUrls(message);
@@ -4640,6 +4650,9 @@ function ChatViewContent(props: ChatViewProps) {
     }
 
     sendInFlightRef.current = true;
+    const sendPreparationAbort = new AbortController();
+    sendPreparationAbortRef.current?.abort();
+    sendPreparationAbortRef.current = sendPreparationAbort;
     if (isDraftHeroState && activeThreadKey) {
       let resolveDockStarted: (() => void) | undefined;
       const dockStarted = new Promise<void>((resolve) => {
@@ -4689,7 +4702,9 @@ function ChatViewContent(props: ChatViewProps) {
         name: image.name,
         mimeType: image.mimeType,
         sizeBytes: image.sizeBytes,
-        dataUrl: await readFileAsDataUrl(image.file),
+        dataUrl: await readFileAsDataUrl(image.file, {
+          signal: sendPreparationAbort.signal,
+        }),
       })),
     );
     const optimisticAttachments = composerImagesSnapshot.map((image) => ({
@@ -4811,7 +4826,11 @@ function ChatViewContent(props: ChatViewProps) {
     }
 
     let turnStartSucceeded = false;
-    if (failure === null && turnAttachmentsResult._tag === "Success") {
+    if (
+      failure === null &&
+      turnAttachmentsResult._tag === "Success" &&
+      !sendPreparationAbort.signal.aborted
+    ) {
       const bootstrap =
         isLocalDraftThread || baseBranchForWorktree
           ? {
@@ -4865,11 +4884,19 @@ function ChatViewContent(props: ChatViewProps) {
         failure = startResult;
       } else {
         turnStartSucceeded = true;
+        if (sendPreparationAbort.signal.aborted) {
+          await interruptThreadTurn({
+            environmentId,
+            input: { threadId: threadIdForSend },
+          });
+        }
       }
     }
 
-    if (failure !== null) {
+    const preparationWasCancelled = sendPreparationAbort.signal.aborted;
+    if (failure !== null || (preparationWasCancelled && !turnStartSucceeded)) {
       if (
+        activeThreadIdRef.current === threadIdForSend &&
         promptRef.current.length === 0 &&
         composerImagesRef.current.length === 0 &&
         composerTerminalContextsRef.current.length === 0 &&
@@ -4904,7 +4931,7 @@ function ChatViewContent(props: ChatViewProps) {
           detectTrigger: true,
         });
       }
-      if (!isAtomCommandInterrupted(failure)) {
+      if (failure !== null && !preparationWasCancelled && !isAtomCommandInterrupted(failure)) {
         const error = squashAtomCommandFailure(failure);
         const detail = error instanceof Error ? error.message : "Failed to send message.";
         const imageHint =
@@ -4917,6 +4944,9 @@ function ChatViewContent(props: ChatViewProps) {
             : "";
         setThreadError(threadIdForSend, `${detail}${imageHint}`);
       }
+    }
+    if (sendPreparationAbortRef.current === sendPreparationAbort) {
+      sendPreparationAbortRef.current = null;
     }
     sendInFlightRef.current = false;
     if (!turnStartSucceeded) {
@@ -4933,6 +4963,8 @@ function ChatViewContent(props: ChatViewProps) {
     // Always clear local "Sending" busy state. Stop must work even when the
     // provider turn never reached phase=running (stuck image read/upload or
     // missing projection ack).
+    sendPreparationAbortRef.current?.abort();
+    sendPreparationAbortRef.current = null;
     resetLocalDispatch();
     sendInFlightRef.current = false;
     if (phase !== "running") {
@@ -5871,10 +5903,15 @@ function ChatViewContent(props: ChatViewProps) {
             activeThreadId={activeThread.id}
             {...(routeKind === "draft" && draftId ? { draftId } : {})}
             activeThreadTitle={activeThread.title}
-            activeProjectName={activeProject?.title}
-            activeProjectCwd={activeProject?.workspaceRoot ?? null}
+            activeProjectName={isProjectless ? undefined : activeProject?.title}
+            activeProjectCwd={isProjectless ? null : (activeProject?.workspaceRoot ?? null)}
+            isProjectless={isProjectless}
+            canAttachProject={
+              activeThread.session?.status !== "starting" &&
+              activeThread.session?.status !== "running"
+            }
             openInCwd={gitCwd}
-            activeProjectScripts={activeProject?.scripts}
+            activeProjectScripts={isProjectless ? undefined : activeProject?.scripts}
             preferredScriptId={
               activeProject ? (lastInvokedScriptByProjectId[activeProject.id] ?? null) : null
             }
@@ -5886,6 +5923,7 @@ function ChatViewContent(props: ChatViewProps) {
             onAddProjectScript={saveProjectScript}
             onUpdateProjectScript={updateProjectScript}
             onDeleteProjectScript={deleteProjectScript}
+            onAttachProject={() => openCommandPalette({ open: "attach-project" })}
           />
         </header>
 
@@ -5995,6 +6033,7 @@ function ChatViewContent(props: ChatViewProps) {
                         <DraftHeroHeadline
                           activeProjectRef={activeProjectRef}
                           activeProjectTitle={activeProject?.title ?? null}
+                          isProjectless={isProjectless}
                         />
                       </div>
                       <ComposerBannerStack className="relative z-0" items={composerBannerItems} />

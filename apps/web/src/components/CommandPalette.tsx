@@ -1,6 +1,10 @@
 "use client";
 
-import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime/environment";
+import {
+  scopedProjectKey,
+  scopeProjectRef,
+  scopeThreadRef,
+} from "@t3tools/client-runtime/environment";
 import {
   isAtomCommandInterrupted,
   settlePromise,
@@ -52,6 +56,7 @@ import { readLocalApi } from "../localApi";
 import { desktopLocalBackendId } from "../connection/desktopLocal";
 import { filesystemEnvironment } from "../state/filesystem";
 import { projectEnvironment } from "../state/projects";
+import { threadEnvironment } from "../state/threads";
 import { useEnvironmentQuery } from "../state/query";
 import { sourceControlEnvironment } from "../state/sourceControl";
 import { useAtomCommand } from "../state/use-atom-command";
@@ -59,6 +64,8 @@ import { useAtomQueryRunner } from "../state/use-atom-query-runner";
 import { useEnvironments, usePrimaryEnvironmentId } from "../state/environments";
 import { useProjects, useThreadShells } from "../state/entities";
 import { resolveThreadActionProjectRef, startNewThreadFromContext } from "../lib/chatThreadActions";
+import { useComposerDraftStore } from "../composerDraftStore";
+import { deriveLogicalProjectKeyFromSettings } from "../logicalProject";
 import {
   appendBrowsePathSegment,
   canNavigateUp,
@@ -77,6 +84,7 @@ import {
 import { onOpenCommandPalette } from "../commandPaletteBus";
 import { isTerminalFocused } from "../lib/terminalFocus";
 import { getLatestThreadForProject, sortThreads } from "../lib/threadSort";
+import { isGeneralChatProject } from "../lib/generalChat";
 import { cn, isMacPlatform, isWindowsPlatform, newProjectId } from "../lib/utils";
 import { selectThreadTerminalUiState, useTerminalUiStateStore } from "../terminalUiStateStore";
 import { buildThreadRouteParams, resolveThreadRouteTarget } from "../threadRoutes";
@@ -340,7 +348,7 @@ function errorMessage(error: unknown): string {
 }
 
 interface CommandPaletteOpenIntent {
-  readonly kind: "add-project" | "new-thread-in";
+  readonly kind: "add-project" | "attach-project" | "new-thread-in";
 }
 
 interface CommandPaletteUiState {
@@ -352,6 +360,7 @@ type CommandPaletteUiAction =
   | { readonly _tag: "SetOpen"; readonly open: boolean }
   | { readonly _tag: "Toggle" }
   | { readonly _tag: "OpenAddProject" }
+  | { readonly _tag: "OpenAttachProject" }
   | { readonly _tag: "OpenNewThreadIn" }
   | { readonly _tag: "ClearOpenIntent" };
 
@@ -369,6 +378,8 @@ function reduceCommandPaletteUiState(
       return { open: !state.open, openIntent: null };
     case "OpenAddProject":
       return { open: true, openIntent: { kind: "add-project" } };
+    case "OpenAttachProject":
+      return { open: true, openIntent: { kind: "attach-project" } };
     case "OpenNewThreadIn":
       return { open: true, openIntent: { kind: "new-thread-in" } };
     case "ClearOpenIntent":
@@ -384,6 +395,7 @@ export function CommandPalette({ children }: { children: ReactNode }) {
   const setOpen = useCallback((open: boolean) => dispatch({ _tag: "SetOpen", open }), []);
   const toggleOpen = useCallback(() => dispatch({ _tag: "Toggle" }), []);
   const openAddProject = useCallback(() => dispatch({ _tag: "OpenAddProject" }), []);
+  const openAttachProject = useCallback(() => dispatch({ _tag: "OpenAttachProject" }), []);
   const openNewThreadIn = useCallback(() => dispatch({ _tag: "OpenNewThreadIn" }), []);
   const clearOpenIntent = useCallback(() => dispatch({ _tag: "ClearOpenIntent" }), []);
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
@@ -424,13 +436,15 @@ export function CommandPalette({ children }: { children: ReactNode }) {
       onOpenCommandPalette((detail) => {
         if (detail.open === "new-thread-in") {
           openNewThreadIn();
+        } else if (detail.open === "attach-project") {
+          openAttachProject();
         } else if (detail.open === "add-project") {
           openAddProject();
         } else {
           setOpen(true);
         }
       }),
-    [openAddProject, openNewThreadIn, setOpen],
+    [openAddProject, openAttachProject, openNewThreadIn, setOpen],
   );
 
   return (
@@ -473,6 +487,11 @@ function OpenCommandPaletteDialog(props: {
   readonly clearOpenIntent: () => void;
 }) {
   const navigate = useNavigate();
+  const activeRouteTarget = useParams({
+    strict: false,
+    select: (params) => resolveThreadRouteTarget(params),
+  });
+  const activeDraftId = activeRouteTarget?.kind === "draft" ? activeRouteTarget.draftId : null;
   const { clearOpenIntent, openIntent, setOpen } = props;
   const composerHandleRef = useComposerHandleContext();
   const [query, setQuery] = useState("");
@@ -481,6 +500,9 @@ function OpenCommandPaletteDialog(props: {
   const [highlightedItemValue, setHighlightedItemValue] = useState<string | null>(null);
   const clientSettings = useClientSettings();
   const createProject = useAtomCommand(projectEnvironment.create, {
+    reportFailure: false,
+  });
+  const updateThreadMetadata = useAtomCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
   });
   const lookupRepository = useAtomQueryRunner(sourceControlEnvironment.repository, {
@@ -495,6 +517,10 @@ function OpenCommandPaletteDialog(props: {
   const { activeDraftThread, activeThread, defaultProjectRef, handleNewThread } =
     useHandleNewThread();
   const projects = useProjects();
+  const visibleProjects = useMemo(
+    () => projects.filter((project) => !isGeneralChatProject(project)),
+    [projects],
+  );
   const projectOrder = useUiStateStore((store) => store.projectOrder);
   const threads = useThreadShells();
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
@@ -509,6 +535,7 @@ function OpenCommandPaletteDialog(props: {
   const [addProjectCloneFlow, setAddProjectCloneFlow] = useState<AddProjectCloneFlow | null>(null);
   const [isRemoteProjectLookingUp, setIsRemoteProjectLookingUp] = useState(false);
   const [isRemoteProjectCloning, setIsRemoteProjectCloning] = useState(false);
+  const [isAttachingProject, setIsAttachingProject] = useState(false);
   const projectGroupingSettings = useMemo(
     () => selectProjectGroupingSettings(clientSettings),
     [clientSettings],
@@ -524,7 +551,7 @@ function OpenCommandPaletteDialog(props: {
   const orderedProjects = useMemo(
     () =>
       orderItemsByPreferredIds({
-        items: projects,
+        items: visibleProjects,
         preferredIds: projectOrder,
         getId: getProjectOrderKey,
         getPreferenceIds: (project) => [
@@ -532,12 +559,13 @@ function OpenCommandPaletteDialog(props: {
           legacyProjectCwdPreferenceKey(project.workspaceRoot),
         ],
       }),
-    [projectOrder, projects],
+    [projectOrder, visibleProjects],
   );
   const unsortedProjectGroups = useMemo(
     () =>
       buildSidebarProjectSnapshots({
-        projects: clientSettings.sidebarProjectSortOrder === "manual" ? orderedProjects : projects,
+        projects:
+          clientSettings.sidebarProjectSortOrder === "manual" ? orderedProjects : visibleProjects,
         settings: projectGroupingSettings,
         primaryEnvironmentId,
         resolveEnvironmentLabel: (environmentId) => environmentLabelById.get(environmentId) ?? null,
@@ -548,7 +576,7 @@ function OpenCommandPaletteDialog(props: {
       orderedProjects,
       primaryEnvironmentId,
       projectGroupingSettings,
-      projects,
+      visibleProjects,
     ],
   );
   const projectGroups = useMemo(
@@ -695,8 +723,8 @@ function OpenCommandPaletteDialog(props: {
     [projects],
   );
   const projectTitleById = useMemo(
-    () => new Map<ProjectId, string>(projects.map((project) => [project.id, project.title])),
-    [projects],
+    () => new Map<ProjectId, string>(visibleProjects.map((project) => [project.id, project.title])),
+    [visibleProjects],
   );
 
   const activeThreadId = activeThread?.id;
@@ -843,6 +871,108 @@ function OpenCommandPaletteDialog(props: {
       ),
     [contextualProjectRef, handleNewThread, pickerProjects, projectGroupByTargetKey],
   );
+
+  const attachCurrentThreadToProject = useCallback(
+    async (project: Pick<(typeof projects)[number], "environmentId" | "id">) => {
+      if (activeThread) {
+        if (activeThread.environmentId !== project.environmentId) {
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: "Couldn’t attach folder",
+              description: "A conversation can only move within its current environment.",
+            }),
+          );
+          return false;
+        }
+        const result = await updateThreadMetadata({
+          environmentId: activeThread.environmentId,
+          input: {
+            threadId: activeThread.id,
+            projectId: project.id,
+            branch: null,
+            worktreePath: null,
+          },
+        });
+        if (result._tag === "Failure") {
+          if (!isAtomCommandInterrupted(result)) {
+            const error = squashAtomCommandFailure(result);
+            toastManager.add(
+              stackedThreadToast({
+                type: "error",
+                title: "Couldn’t attach folder",
+                description: error instanceof Error ? error.message : "An error occurred.",
+              }),
+            );
+          }
+          return false;
+        }
+      } else if (activeDraftThread && activeDraftId) {
+        const targetProject = projects.find(
+          (candidate) =>
+            candidate.environmentId === project.environmentId && candidate.id === project.id,
+        );
+        const targetProjectRef = scopeProjectRef(project.environmentId, project.id);
+        const logicalProjectKey = targetProject
+          ? deriveLogicalProjectKeyFromSettings(targetProject, projectGroupingSettings)
+          : scopedProjectKey(targetProjectRef);
+        useComposerDraftStore
+          .getState()
+          .setLogicalProjectDraftThreadId(logicalProjectKey, targetProjectRef, activeDraftId, {
+            threadId: activeDraftThread.threadId,
+            createdAt: activeDraftThread.createdAt,
+            runtimeMode: activeDraftThread.runtimeMode,
+            interactionMode: activeDraftThread.interactionMode,
+            branch: null,
+            worktreePath: null,
+            envMode: "local",
+            startFromOrigin: false,
+          });
+      } else {
+        return false;
+      }
+      setOpen(false);
+      return true;
+    },
+    [
+      activeDraftThread,
+      activeDraftId,
+      activeThread,
+      projectGroupingSettings,
+      projects,
+      setOpen,
+      updateThreadMetadata,
+    ],
+  );
+
+  const attachProjectItems = useMemo(() => {
+    const targetEnvironmentId =
+      activeThread?.environmentId ?? activeDraftThread?.environmentId ?? null;
+    if (targetEnvironmentId === null) {
+      return [];
+    }
+    return enumerateCommandPaletteItems(
+      buildProjectActionItems({
+        projects: pickerProjects.filter((project) => project.environmentId === targetEnvironmentId),
+        valuePrefix: "attach-project",
+        icon: (project) => (
+          <ProjectFavicon
+            environmentId={project.environmentId}
+            cwd={project.workspaceRoot}
+            className={ITEM_ICON_CLASS}
+          />
+        ),
+        runProject: async (project) => {
+          await attachCurrentThreadToProject(project);
+        },
+      }),
+    );
+  }, [
+    activeDraftThread?.environmentId,
+    activeThread?.environmentId,
+    attachCurrentThreadToProject,
+    pickerProjects,
+  ]);
 
   const allThreadItems = useMemo(
     () =>
@@ -1105,9 +1235,47 @@ function OpenCommandPaletteDialog(props: {
     if (openIntent?.kind !== "add-project") {
       return;
     }
+    setIsAttachingProject(false);
     clearOpenIntent();
     openAddProjectFlow();
   }, [clearOpenIntent, openAddProjectFlow, openIntent]);
+
+  useLayoutEffect(() => {
+    if (openIntent?.kind !== "attach-project") {
+      return;
+    }
+    clearOpenIntent();
+    setIsAttachingProject(true);
+    setAddProjectCloneFlow(null);
+    setViewStack([
+      {
+        addonIcon: <FolderPlusIcon className={ADDON_ICON_CLASS} />,
+        groups: [
+          ...(attachProjectItems.length > 0
+            ? [{ value: "attach-projects", label: "Projects", items: attachProjectItems }]
+            : []),
+          {
+            value: "attach-folder",
+            label: "Folder",
+            items: [
+              {
+                kind: "action" as const,
+                value: "attach-project:browse",
+                searchTerms: ["attach", "folder", "project", "browse"],
+                title: "Choose another folder…",
+                icon: <FolderPlusIcon className={ITEM_ICON_CLASS} />,
+                keepOpen: true,
+                run: async () => {
+                  openAddProjectFlow();
+                },
+              },
+            ],
+          },
+        ],
+      },
+    ]);
+    setQuery("");
+  }, [attachProjectItems, clearOpenIntent, openAddProjectFlow, openIntent]);
 
   useLayoutEffect(() => {
     if (openIntent?.kind !== "new-thread-in" || projectThreadItems.length === 0) {
@@ -1301,6 +1469,10 @@ function OpenCommandPaletteDialog(props: {
         cwd,
       );
       if (existing) {
+        if (isAttachingProject) {
+          await attachCurrentThreadToProject(existing);
+          return;
+        }
         const latestThread = getLatestThreadForProject(
           threads.filter((thread) => thread.environmentId === existing.environmentId),
           existing.id,
@@ -1365,6 +1537,15 @@ function OpenCommandPaletteDialog(props: {
         return;
       }
 
+      if (isAttachingProject) {
+        const createdProject = {
+          environmentId: input.environmentId,
+          id: projectId,
+        };
+        await attachCurrentThreadToProject(createdProject);
+        return;
+      }
+
       const navigationResult = await settlePromise(() =>
         handleNewThread(scopeProjectRef(input.environmentId, projectId)),
       );
@@ -1383,11 +1564,13 @@ function OpenCommandPaletteDialog(props: {
     },
     [
       handleNewThread,
+      attachCurrentThreadToProject,
       createProject,
       environments,
       navigate,
       primaryEnvironmentId,
       projects,
+      isAttachingProject,
       providers,
       setOpen,
       clientSettings.sidebarThreadSortOrder,

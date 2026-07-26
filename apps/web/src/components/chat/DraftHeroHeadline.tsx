@@ -6,6 +6,7 @@ import { useCallback, useMemo } from "react";
 import { openCommandPalette } from "~/commandPaletteBus";
 import { useNewThreadHandler } from "~/hooks/useHandleNewThread";
 import { useClientSettings } from "~/hooks/useSettings";
+import { isGeneralChatProject } from "~/lib/generalChat";
 import { selectProjectGroupingSettings } from "~/logicalProject";
 import {
   buildSidebarProjectPickerEntries,
@@ -27,13 +28,19 @@ import {
 interface DraftHeroHeadlineProps {
   readonly activeProjectRef: ScopedProjectRef | null;
   readonly activeProjectTitle: string | null;
+  readonly isProjectless: boolean;
 }
 
 export function DraftHeroHeadline({
   activeProjectRef,
   activeProjectTitle,
+  isProjectless,
 }: DraftHeroHeadlineProps) {
   const projects = useProjects();
+  const visibleProjects = useMemo(
+    () => projects.filter((project) => !isGeneralChatProject(project)),
+    [projects],
+  );
   const threads = useThreadShells();
   const { environments } = useEnvironments();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
@@ -53,7 +60,7 @@ export function DraftHeroHeadline({
     () =>
       sortLogicalProjectsForSidebar(
         buildSidebarProjectSnapshots({
-          projects,
+          projects: visibleProjects,
           settings: projectGroupingSettings,
           primaryEnvironmentId,
           resolveEnvironmentLabel: (environmentId) =>
@@ -67,7 +74,7 @@ export function DraftHeroHeadline({
       primaryEnvironmentId,
       projectGroupingSettings,
       projectSortOrder,
-      projects,
+      visibleProjects,
       threads,
     ],
   );
@@ -93,7 +100,7 @@ export function DraftHeroHeadline({
         ) ?? null);
   const activeProjectKey = activeProjectGroup?.projectKey ?? "";
   const activeProjectDisplayName = activeProjectGroup?.displayName ?? activeProjectTitle;
-  const hasResolvedProject = activeProjectTitle !== null;
+  const hasResolvedProject = activeProjectTitle !== null && !isProjectless;
   const canChooseProject = projectPickerEntries.length > 0;
   const shouldShowProjectMenu = canChooseProject;
 
@@ -103,7 +110,7 @@ export function DraftHeroHeadline({
         aria-label={hasResolvedProject ? "Change project" : "Choose a project"}
         className="pointer-events-auto inline cursor-pointer border-current border-b border-dotted text-foreground underline-offset-8 transition-opacity hover:opacity-75 focus-visible:rounded-sm focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
       >
-        {activeProjectDisplayName ?? "Choose a project"}
+        {activeProjectDisplayName ?? "Attach a folder"}
       </MenuTrigger>
       <MenuPopup align="center" className="max-h-80 w-64 overflow-y-auto">
         <MenuRadioGroup
@@ -140,13 +147,18 @@ export function DraftHeroHeadline({
       onClick={openAddProject}
       className="pointer-events-auto inline cursor-pointer border-current border-b border-dotted text-muted-foreground/60 underline-offset-8 transition-opacity hover:opacity-75 focus-visible:rounded-sm focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
     >
-      {activeProjectTitle ?? "Add a project"}
+      {isProjectless ? "Attach a folder" : (activeProjectTitle ?? "Add a project")}
     </button>
   );
 
   return (
     <h1 className="mx-auto w-full max-w-5xl text-center font-normal text-2xl text-foreground tracking-tight sm:text-3xl">
-      {hasResolvedProject ? (
+      {isProjectless ? (
+        <>
+          What&apos;s on your mind?
+          <span className="mt-3 block text-base text-muted-foreground">{projectSelector}</span>
+        </>
+      ) : hasResolvedProject ? (
         <>What should we build in {projectSelector}?</>
       ) : canChooseProject ? (
         <>{projectSelector} to start</>

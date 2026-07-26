@@ -14,9 +14,23 @@ export function getProviderStatusBannerKey(status: ServerProvider | null): strin
 export function shouldShowProviderStatusBanner(
   status: ServerProvider | null,
   dismissedBannerKey: string | null,
+  latestSuccessfulActivityAt?: string | null,
 ): boolean {
+  if (!status) {
+    return false;
+  }
   const bannerKey = getProviderStatusBannerKey(status);
-  return bannerKey !== null && bannerKey !== dismissedBannerKey;
+  if (bannerKey === null || bannerKey === dismissedBannerKey) {
+    return false;
+  }
+  if (
+    status.auth.status !== "unauthenticated" &&
+    latestSuccessfulActivityAt &&
+    Date.parse(latestSuccessfulActivityAt) > Date.parse(status.checkedAt)
+  ) {
+    return false;
+  }
+  return true;
 }
 
 export const ProviderStatusBanner = memo(function ProviderStatusBanner({

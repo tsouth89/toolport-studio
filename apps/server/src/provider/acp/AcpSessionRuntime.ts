@@ -51,6 +51,7 @@ export type AcpSessionRuntimeEvent = AcpParsedSessionEvent | AcpSessionEventStre
 
 const defaultSessionLoadTimeout = Duration.seconds(90);
 const defaultSessionLoadReplayIdleGap = Duration.seconds(2);
+const defaultStartupRequestTimeout = Duration.seconds(30);
 
 export interface AcpSpawnInput {
   readonly command: string;
@@ -63,6 +64,7 @@ export interface AcpSessionRuntimeOptions {
   readonly spawn: AcpSpawnInput;
   readonly cwd: string;
   readonly resumeSessionId?: string;
+  readonly startupRequestTimeout?: Duration.Input;
   readonly sessionLoadTimeout?: Duration.Input;
   readonly sessionLoadReplayIdleGap?: Duration.Input;
   readonly clientCapabilities?: EffectAcpSchema.InitializeRequest["clientCapabilities"];
@@ -354,6 +356,30 @@ export const make = (
         ),
       );
 
+    const startupRequestTimeout = Duration.fromInputUnsafe(
+      options.startupRequestTimeout ?? defaultStartupRequestTimeout,
+    );
+    const runStartupRequest = <A>(
+      method: string,
+      payload: unknown,
+      effect: Effect.Effect<A, EffectAcpErrors.AcpError>,
+    ): Effect.Effect<A, EffectAcpErrors.AcpError> =>
+      runLoggedRequest(method, payload, effect).pipe(
+        Effect.timeoutOption(startupRequestTimeout),
+        Effect.flatMap(
+          Option.match({
+            onNone: () =>
+              Effect.fail(
+                new EffectAcpErrors.AcpTransportError({
+                  detail: `ACP ${method} timed out during session startup`,
+                  cause: `ACP ${method} timed out during session startup`,
+                }),
+              ),
+            onSome: Effect.succeed,
+          }),
+        ),
+      );
+
     const spawnCommand = yield* resolveSpawnCommand(
       options.spawn.command,
       options.spawn.args,
@@ -560,7 +586,7 @@ export const make = (
         clientInfo: options.clientInfo,
       } satisfies EffectAcpSchema.InitializeRequest;
 
-      const initializeResult = yield* runLoggedRequest(
+      const initializeResult = yield* runStartupRequest(
         "initialize",
         initializePayload,
         acp.agent.initialize(initializePayload),
@@ -570,7 +596,7 @@ export const make = (
         methodId: options.authMethodId,
       } satisfies EffectAcpSchema.AuthenticateRequest;
 
-      yield* runLoggedRequest(
+      yield* runStartupRequest(
         "authenticate",
         authenticatePayload,
         acp.agent.authenticate(authenticatePayload),

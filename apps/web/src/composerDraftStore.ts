@@ -2273,7 +2273,12 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               return state;
             }
             const nextLogicalProjectDraftThreadKeyByLogicalProjectKey: Record<string, string> = {
-              ...state.logicalProjectDraftThreadKeyByLogicalProjectKey,
+              ...Object.fromEntries(
+                Object.entries(state.logicalProjectDraftThreadKeyByLogicalProjectKey).filter(
+                  ([logicalProjectKey, mappedDraftId]) =>
+                    logicalProjectKey === normalizedLogicalProjectKey || mappedDraftId !== draftId,
+                ),
+              ),
               [normalizedLogicalProjectKey]: draftId,
             };
             const nextDraftThreadsByThreadKey: Record<string, DraftThreadState> = {

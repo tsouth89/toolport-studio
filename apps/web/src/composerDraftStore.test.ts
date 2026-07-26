@@ -1125,6 +1125,24 @@ describe("composerDraftStore project draft thread mapping", () => {
     });
   });
 
+  it("moves one draft mapping to another project without losing composer content", () => {
+    const store = useComposerDraftStore.getState();
+    store.setProjectDraftThreadId(projectRef, draftId, { threadId });
+    store.setPrompt(draftId, "Keep this brainstorm");
+
+    store.setLogicalProjectDraftThreadId(
+      scopedProjectKey(otherProjectRef),
+      otherProjectRef,
+      draftId,
+      { threadId },
+    );
+
+    const nextState = useComposerDraftStore.getState();
+    expect(nextState.getComposerDraft(draftId)?.prompt).toBe("Keep this brainstorm");
+    expect(nextState.getDraftThreadByProjectRef(projectRef)).toBeNull();
+    expect(nextState.getDraftThreadByProjectRef(otherProjectRef)?.draftId).toBe(draftId);
+  });
+
   it("clears branch and worktree context when changing a draft thread project ref", () => {
     const store = useComposerDraftStore.getState();
     store.setProjectDraftThreadId(projectRef, draftId, {

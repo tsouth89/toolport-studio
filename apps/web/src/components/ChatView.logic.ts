@@ -203,13 +203,29 @@ export const COMPOSER_IMAGE_READ_TIMEOUT_MS = 30_000;
 
 export function readFileAsDataUrl(
   file: File,
-  options?: { readonly timeoutMs?: number },
+  options?: {
+    readonly timeoutMs?: number;
+    readonly signal?: AbortSignal;
+  },
 ): Promise<string> {
   const timeoutMs = options?.timeoutMs ?? COMPOSER_IMAGE_READ_TIMEOUT_MS;
+  const signal = options?.signal;
   const label = file.name?.trim() || "image";
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     let settled = false;
+    const abortError = () =>
+      new DOMException(`Image read was cancelled for '${label}'.`, "AbortError");
+    const onAbort = () => {
+      if (settled) {
+        return;
+      }
+      try {
+        reader.abort();
+      } finally {
+        finish(() => reject(abortError()));
+      }
+    };
     const timer = setTimeout(() => {
       if (settled) {
         return;
@@ -232,6 +248,7 @@ export function readFileAsDataUrl(
       }
       settled = true;
       clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
       fn();
     };
     reader.addEventListener("load", () => {
@@ -254,9 +271,14 @@ export function readFileAsDataUrl(
     });
     reader.addEventListener("abort", () => {
       finish(() => {
-        reject(new Error(`Image read was cancelled for '${label}'.`));
+        reject(abortError());
       });
     });
+    if (signal?.aborted) {
+      finish(() => reject(abortError()));
+      return;
+    }
+    signal?.addEventListener("abort", onAbort, { once: true });
     try {
       reader.readAsDataURL(file);
     } catch (error) {

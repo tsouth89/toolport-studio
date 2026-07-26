@@ -12,13 +12,13 @@ describe("generalChat", () => {
     expect(GENERAL_CHAT_WORKSPACE_ROOT.startsWith("~/")).toBe(true);
   });
 
-  it("detects general chat projects by title or path", () => {
+  it("detects the system project by path without hiding real projects named General", () => {
     expect(
       isGeneralChatProject({
         title: "General",
         workspaceRoot: "C:\\Users\\me\\somewhere",
       }),
-    ).toBe(true);
+    ).toBe(false);
     expect(
       isGeneralChatProject({
         title: "Other",

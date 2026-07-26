@@ -13,9 +13,6 @@ export function isGeneralChatProject(project: {
   readonly title: string;
   readonly workspaceRoot: string;
 }): boolean {
-  if (project.title.trim() === GENERAL_CHAT_TITLE) {
-    return true;
-  }
   const normalized = project.workspaceRoot.replaceAll("\\", "/").toLowerCase();
   return (
     normalized.endsWith("/toolport studio/general") ||

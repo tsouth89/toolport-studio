@@ -636,6 +636,32 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      if (command.projectId !== undefined) {
+        yield* requireProject({
+          readModel,
+          command,
+          projectId: command.projectId,
+        });
+        if (
+          command.projectId !== thread.projectId &&
+          (thread.session?.status === "starting" || thread.session?.status === "running")
+        ) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: `Thread '${command.threadId}' cannot move projects while its provider session is ${thread.session.status}.`,
+          });
+        }
+        if (
+          command.projectId !== thread.projectId &&
+          thread.worktreePath !== null &&
+          command.worktreePath !== null
+        ) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: `Thread '${command.threadId}' must leave its worktree before moving projects.`,
+          });
+        }
+      }
       const branch =
         command.branch !== undefined &&
         command.expectedBranch !== undefined &&
@@ -653,6 +679,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         type: "thread.meta-updated",
         payload: {
           threadId: command.threadId,
+          ...(command.projectId !== undefined ? { projectId: command.projectId } : {}),
           ...(command.title !== undefined ? { title: command.title } : {}),
           ...(command.modelSelection !== undefined
             ? { modelSelection: command.modelSelection }

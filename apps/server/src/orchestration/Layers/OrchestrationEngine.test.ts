@@ -481,6 +481,71 @@ describe("OrchestrationEngine", () => {
     await system.dispose();
   });
 
+  it("moves a thread to an existing project without replacing its conversation", async () => {
+    const system = await createOrchestrationSystem();
+    const { engine } = system;
+    const createdAt = now();
+    const sourceProjectId = asProjectId("project-move-source");
+    const targetProjectId = asProjectId("project-move-target");
+    const threadId = ThreadId.make("thread-move");
+
+    for (const [projectId, title] of [
+      [sourceProjectId, "Source"],
+      [targetProjectId, "Target"],
+    ] as const) {
+      await system.run(
+        engine.dispatch({
+          type: "project.create",
+          commandId: CommandId.make(`cmd-${projectId}-create`),
+          projectId,
+          title,
+          workspaceRoot: `/tmp/${projectId}`,
+          defaultModelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5-codex",
+          },
+          createdAt,
+        }),
+      );
+    }
+    await system.run(
+      engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-thread-move-create"),
+        threadId,
+        projectId: sourceProjectId,
+        title: "Keep this brainstorm",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "full-access",
+        branch: null,
+        worktreePath: null,
+        createdAt,
+      }),
+    );
+
+    await system.run(
+      engine.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.make("cmd-thread-move"),
+        threadId,
+        projectId: targetProjectId,
+      }),
+    );
+
+    const snapshot = await system.readModel();
+    expect(snapshot.threads.find((thread) => thread.id === threadId)?.projectId).toBe(
+      targetProjectId,
+    );
+    expect(snapshot.threads.find((thread) => thread.id === threadId)?.title).toBe(
+      "Keep this brainstorm",
+    );
+    await system.dispose();
+  });
+
   it("does not regress a generated branch to a stale temporary worktree branch", async () => {
     const system = await createOrchestrationSystem();
     const { engine } = system;

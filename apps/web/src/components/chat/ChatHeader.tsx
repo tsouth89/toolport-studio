@@ -19,6 +19,7 @@ import { usePrimaryEnvironmentId } from "../../state/environments";
 import { useT3ProjectFileScripts } from "~/hooks/useT3ProjectFileScripts";
 import { ProjectFavicon } from "../ProjectFavicon";
 import { cn } from "~/lib/utils";
+import { FolderPlusIcon } from "lucide-react";
 
 interface ChatHeaderProps {
   activeThreadEnvironmentId: EnvironmentId;
@@ -27,6 +28,8 @@ interface ChatHeaderProps {
   activeThreadTitle: string;
   activeProjectName: string | undefined;
   activeProjectCwd: string | null;
+  isProjectless: boolean;
+  canAttachProject: boolean;
   openInCwd: string | null;
   activeProjectScripts: ReadonlyArray<ProjectScript> | undefined;
   preferredScriptId: string | null;
@@ -41,6 +44,7 @@ interface ChatHeaderProps {
     input: NewProjectScriptInput,
   ) => Promise<ProjectScriptActionResult>;
   onDeleteProjectScript: (scriptId: string) => Promise<ProjectScriptActionResult>;
+  onAttachProject: () => void;
 }
 
 export function shouldShowOpenInPicker(input: {
@@ -62,6 +66,8 @@ export const ChatHeader = memo(function ChatHeader({
   activeThreadTitle,
   activeProjectName,
   activeProjectCwd,
+  isProjectless,
+  canAttachProject,
   openInCwd,
   activeProjectScripts,
   preferredScriptId,
@@ -73,6 +79,7 @@ export const ChatHeader = memo(function ChatHeader({
   onAddProjectScript,
   onUpdateProjectScript,
   onDeleteProjectScript,
+  onAttachProject,
 }: ChatHeaderProps) {
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const fileScripts = useT3ProjectFileScripts(
@@ -128,6 +135,28 @@ export const ChatHeader = memo(function ChatHeader({
           rightPanelOpen ? "pr-0" : "pr-16",
         )}
       >
+        {isProjectless ? (
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <button
+                  type="button"
+                  onClick={onAttachProject}
+                  disabled={!canAttachProject}
+                  className="no-drag inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-md px-2 text-xs font-medium text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <FolderPlusIcon className="size-3.5" />
+                  <span className="hidden @3xl/header-actions:inline">Attach folder</span>
+                </button>
+              }
+            />
+            <TooltipPopup side="bottom">
+              {canAttachProject
+                ? "Attach this conversation to a folder"
+                : "Wait for the current response to finish"}
+            </TooltipPopup>
+          </Tooltip>
+        ) : null}
         {activeProjectScripts && (
           <ProjectScriptsControl
             scripts={activeProjectScripts}

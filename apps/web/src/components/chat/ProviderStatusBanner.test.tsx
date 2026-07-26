@@ -34,6 +34,23 @@ describe("ProviderStatusBanner", () => {
     expect(shouldShowProviderStatusBanner(status, getProviderStatusBannerKey(status))).toBe(false);
   });
 
+  it("hides a transient probe error after newer successful provider activity", () => {
+    const status = { ...warningProvider(), status: "error" as const };
+
+    expect(shouldShowProviderStatusBanner(status, null, "2026-07-23T12:00:01.000Z")).toBe(false);
+    expect(shouldShowProviderStatusBanner(status, null, "2026-07-23T11:59:59.000Z")).toBe(true);
+  });
+
+  it("keeps authentication errors visible despite newer thread activity", () => {
+    const status = {
+      ...warningProvider(),
+      status: "error" as const,
+      auth: { status: "unauthenticated" as const },
+    };
+
+    expect(shouldShowProviderStatusBanner(status, null, "2026-07-23T12:00:01.000Z")).toBe(true);
+  });
+
   it("renders an accessible dismiss control for provider warnings", () => {
     const markup = renderToStaticMarkup(
       <ProviderStatusBanner status={warningProvider()} onDismiss={() => {}} />,

@@ -530,6 +530,38 @@ describe("AcpSessionRuntime", () => {
     ),
   );
 
+  it.effect("fails boundedly when ACP authentication hangs during startup", () =>
+    Effect.gen(function* () {
+      const runtime = yield* AcpSessionRuntime.AcpSessionRuntime;
+      const error = yield* runtime.start().pipe(Effect.flip);
+
+      expect(error._tag).toBe("AcpTransportError");
+      if (error._tag !== "AcpTransportError") {
+        throw error;
+      }
+      expect(error.detail).toContain("authenticate timed out during session startup");
+    }).pipe(
+      Effect.provide(
+        AcpSessionRuntime.layer({
+          authMethodId: "test",
+          spawn: {
+            command: mockAgentCommand,
+            args: mockAgentArgs,
+            env: {
+              T3_ACP_HANG_AUTHENTICATE: "1",
+            },
+          },
+          cwd: process.cwd(),
+          startupRequestTimeout: "2 seconds",
+          clientInfo: { name: "t3-test", version: "0.0.0" },
+        }),
+      ),
+      Effect.scoped,
+      Effect.provide(NodeServices.layer),
+      TestClock.withLive,
+    ),
+  );
+
   it.effect("falls back to session/new when session/load reports the session is gone", () =>
     Effect.gen(function* () {
       const runtime = yield* AcpSessionRuntime.AcpSessionRuntime;
