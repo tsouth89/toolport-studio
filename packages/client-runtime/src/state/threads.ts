@@ -274,14 +274,15 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         yield* setSynchronizing;
 
         let current = yield* SubscriptionRef.get(state);
-        // A cached body with no messages but a current snapshot sequence would
-        // resume past the events that carried the messages and could never
-        // self-heal, so treat it like a cold cache and reload the snapshot.
+        // Always prefer an authoritative HTTP snapshot when online (same as
+        // shell resume). Warm IndexedDB caches used to skip this and resume
+        // only via afterSequence, which replayed every activity/message event
+        // one-by-one through the reducer — visible as the UI "reprocessing"
+        // the whole thread after a dev restart or hard refresh.
+        //
         // If the loader yields nothing (offline/404) we still resume from the
-        // cached sequence below, exactly as before.
-        const needsSnapshot =
-          Option.isNone(current.data) || current.data.value.messages.length === 0;
-        if (needsSnapshot && current.status !== "deleted") {
+        // cached sequence below, with a server-side max-gap snapshot fallback.
+        if (current.status !== "deleted") {
           const prepared = yield* SubscriptionRef.get(supervisor.prepared).pipe(
             Effect.flatMap(
               Option.match({

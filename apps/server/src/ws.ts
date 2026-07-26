@@ -286,6 +286,11 @@ const PROVIDER_STATUS_DEBOUNCE_MS = 200;
 // Matches the event store's default page size (DEFAULT_READ_FROM_SEQUENCE_LIMIT).
 const SHELL_RESUME_MAX_GAP = 1_000;
 
+// Thread detail is denser than shell (every activity/message is an event). A
+// large afterSequence gap used to stream thousands of events one-by-one and
+// the client re-rendered each step. Prefer one thread snapshot past this gap.
+const THREAD_RESUME_MAX_GAP = 500;
+
 const RPC_REQUIRED_SCOPE = new Map<string, AuthEnvironmentScope>([
   [ORCHESTRATION_WS_METHODS.dispatchCommand, AuthOrchestrationOperateScope],
   [ORCHESTRATION_WS_METHODS.getTurnDiff, AuthOrchestrationReadScope],
@@ -1397,38 +1402,17 @@ const makeWsRpcLayer = (
               // catch-up followed by the buffered/ongoing live events. Overlapping
               // events are deduped by sequence on the client.
               //
-              // Read the full range after the cursor (not the store's default
-              // page-bounded limit): the range is normally tiny (a fresh HTTP
-              // snapshot sequence) and the per-thread filter runs after reading,
-              // so a global cap could otherwise omit this thread's events.
-              if (input.afterSequence !== undefined) {
-                const afterSequence = input.afterSequence;
-                const catchUpStream = orchestrationEngine
-                  .readEvents(afterSequence, Number.MAX_SAFE_INTEGER)
-                  .pipe(
-                    Stream.filter(isThisThreadDetailEvent),
-                    Stream.map((event) => ({ kind: "event" as const, event })),
-                    Stream.mapError(
-                      (cause) =>
-                        new OrchestrationGetSnapshotError({
-                          message: `Failed to replay thread ${input.threadId} events`,
-                          cause,
-                        }),
-                    ),
-                  );
-                const afterCatchUp =
-                  input.requestCompletionMarker === true
-                    ? Stream.concat(
-                        Stream.fromEffect(
-                          Queue.offer(liveBuffer, { kind: "synchronized" as const }),
-                        ).pipe(Stream.drain),
-                        bufferedLiveStream,
-                      )
-                    : bufferedLiveStream;
-                return Stream.concat(catchUpStream, afterCatchUp);
-              }
+              const afterCatchUp =
+                input.requestCompletionMarker === true
+                  ? Stream.concat(
+                      Stream.fromEffect(
+                        Queue.offer(liveBuffer, { kind: "synchronized" as const }),
+                      ).pipe(Stream.drain),
+                      bufferedLiveStream,
+                    )
+                  : bufferedLiveStream;
 
-              const snapshot = yield* projectionSnapshotQuery
+              const loadThreadSnapshot = projectionSnapshotQuery
                 .getThreadDetailSnapshot(input.threadId)
                 .pipe(
                   Effect.mapError(
@@ -1440,6 +1424,46 @@ const makeWsRpcLayer = (
                   ),
                 );
 
+              // Read the range after the cursor. When the client already holds a
+              // near-head snapshot (HTTP), the gap is tiny. A large gap (stale
+              // IndexedDB cache after a long dogfood turn) is cheaper as one
+              // snapshot than thousands of per-event reducer applies.
+              if (input.afterSequence !== undefined) {
+                const afterSequence = input.afterSequence;
+                const headSequence = yield* orchestrationEngine.latestSequence;
+                const replayGap = headSequence - afterSequence;
+                if (replayGap < 0 || replayGap > THREAD_RESUME_MAX_GAP) {
+                  const snapshot = yield* loadThreadSnapshot;
+                  if (Option.isNone(snapshot)) {
+                    return yield* new OrchestrationGetSnapshotError({
+                      message: `Thread ${input.threadId} was not found`,
+                      cause: input.threadId,
+                    });
+                  }
+                  return Stream.concat(
+                    Stream.make({
+                      kind: "snapshot" as const,
+                      snapshot: snapshot.value,
+                    }),
+                    afterCatchUp,
+                  );
+                }
+                const catchUpStream = orchestrationEngine.readEvents(afterSequence, replayGap).pipe(
+                  Stream.filter(isThisThreadDetailEvent),
+                  Stream.map((event) => ({ kind: "event" as const, event })),
+                  Stream.mapError(
+                    (cause) =>
+                      new OrchestrationGetSnapshotError({
+                        message: `Failed to replay thread ${input.threadId} events`,
+                        cause,
+                      }),
+                  ),
+                );
+                return Stream.concat(catchUpStream, afterCatchUp);
+              }
+
+              const snapshot = yield* loadThreadSnapshot;
+
               if (Option.isNone(snapshot)) {
                 return yield* new OrchestrationGetSnapshotError({
                   message: `Thread ${input.threadId} was not found`,
@@ -1447,21 +1471,12 @@ const makeWsRpcLayer = (
                 });
               }
 
-              const afterSnapshot =
-                input.requestCompletionMarker === true
-                  ? Stream.concat(
-                      Stream.fromEffect(
-                        Queue.offer(liveBuffer, { kind: "synchronized" as const }),
-                      ).pipe(Stream.drain),
-                      bufferedLiveStream,
-                    )
-                  : bufferedLiveStream;
               return Stream.concat(
                 Stream.make({
                   kind: "snapshot" as const,
                   snapshot: snapshot.value,
                 }),
-                afterSnapshot,
+                afterCatchUp,
               );
             }),
             { "rpc.aggregate": "orchestration" },

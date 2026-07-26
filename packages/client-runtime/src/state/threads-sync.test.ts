@@ -334,12 +334,37 @@ describe("EnvironmentThreads", () => {
     }),
   );
 
-  it.effect("resumes a warm cache via afterSequence without an HTTP fetch", () =>
+  it.effect("always loads an HTTP snapshot when available even with a warm cache", () =>
+    Effect.gen(function* () {
+      // Prefer one authoritative snapshot over replaying every cached event
+      // (dev restart / hard refresh thrash).
+      const httpSequence = CACHED_SNAPSHOT_SEQUENCE + 2;
+      const harness = yield* makeHarness({
+        cached: BASE_THREAD,
+        httpSnapshot: Option.some({
+          snapshotSequence: httpSequence,
+          thread: { ...BASE_THREAD, title: "HTTP title" },
+        }),
+      });
+      yield* Queue.offer(harness.inputs, titleUpdated("Live title", httpSequence + 1));
+      yield* awaitThreadState(
+        harness.observed,
+        (value) =>
+          value.status === "live" &&
+          Option.isSome(value.data) &&
+          value.data.value.title === "Live title",
+      );
+
+      expect(yield* Ref.get(harness.loaderCalls)).toBe(1);
+      expect(yield* Ref.get(harness.lastSubscribeAfterSequence)).toBe(httpSequence);
+      expect(Option.getOrThrow((yield* Ref.get(harness.latest)).data).title).toBe("Live title");
+    }),
+  );
+
+  it.effect("resumes from the cached sequence when the HTTP snapshot yields nothing", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness({ cached: BASE_THREAD });
 
-      // The warm cache reaches live from the cached data, and a live event
-      // applies on top of it.
       yield* Queue.offer(harness.inputs, titleUpdated("Live title", CACHED_SNAPSHOT_SEQUENCE + 1));
       yield* awaitThreadState(
         harness.observed,
@@ -349,10 +374,8 @@ describe("EnvironmentThreads", () => {
           value.data.value.title === "Live title",
       );
 
-      // The subscription resumed from the cached sequence and never fetched the
-      // full snapshot over HTTP.
+      expect(yield* Ref.get(harness.loaderCalls)).toBe(1);
       expect(yield* Ref.get(harness.lastSubscribeAfterSequence)).toBe(CACHED_SNAPSHOT_SEQUENCE);
-      expect(yield* Ref.get(harness.loaderCalls)).toBe(0);
     }),
   );
 
@@ -527,7 +550,9 @@ describe("EnvironmentThreads", () => {
       yield* Queue.offer(harness.inputs, deleted());
       yield* awaitThreadState(harness.observed, (value) => value.status === "deleted");
 
-      expect(yield* Ref.get(harness.loaderCalls)).toBe(0);
+      // Initial subscribe always hits HTTP (even with warm cache); deleted
+      // status must not trigger another load on foreground.
+      expect(yield* Ref.get(harness.loaderCalls)).toBe(1);
       yield* Queue.offer(harness.wakeups, "application-active");
       for (let attempt = 0; attempt < 100; attempt += 1) {
         if ((yield* Ref.get(harness.subscriptionCount)) >= 2) break;
@@ -536,7 +561,7 @@ describe("EnvironmentThreads", () => {
 
       const latest = yield* Ref.get(harness.latest);
       expect(yield* Ref.get(harness.subscriptionCount)).toBe(2);
-      expect(yield* Ref.get(harness.loaderCalls)).toBe(0);
+      expect(yield* Ref.get(harness.loaderCalls)).toBe(1);
       expect(latest.status).toBe("deleted");
       expect(Option.isNone(latest.data)).toBe(true);
     }),
@@ -842,7 +867,9 @@ describe("EnvironmentThreads", () => {
       expect(yield* Ref.get(harness.subscriptionCount)).toBe(2);
       expect(yield* Ref.get(harness.lastSubscribeAfterSequence)).toBe(CACHED_SNAPSHOT_SEQUENCE + 1);
       expect(yield* Ref.get(harness.lastRequestCompletionMarker)).toBe(true);
-      expect(yield* Ref.get(harness.loaderCalls)).toBe(0);
+      // Initial subscribe + foreground resubscribe both prefer HTTP (loader
+      // returns none here, so we still resume from the cached afterSequence).
+      expect(yield* Ref.get(harness.loaderCalls)).toBe(2);
 
       yield* Queue.offer(harness.inputs, synchronized());
       const live = yield* awaitThreadState(
