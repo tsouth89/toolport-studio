@@ -32,6 +32,11 @@ const hangFirstPromptForever = process.env.T3_ACP_HANG_FIRST_PROMPT_FOREVER === 
  */
 const emitToolThenHang = process.env.T3_ACP_EMIT_TOOL_THEN_HANG === "1";
 /**
+ * Emit tool pending/in_progress then hang without ever completing the tool.
+ * Exercises open-tool stuck auto-stop + force-close on settle.
+ */
+const emitToolStartThenHang = process.env.T3_ACP_EMIT_TOOL_START_THEN_HANG === "1";
+/**
  * When set, hang any prompt whose text includes this substring until cancel.
  * Preferred over HANG_FIRST_PROMPT_FOREVER when the adapter recycles the ACP
  * process after Stop (a new process would otherwise re-hang its first prompt).
@@ -570,6 +575,38 @@ const program = Effect.gen(function* () {
         // still force-cancels via local latch for fully silent agents.
         // Prefer T3_ACP_HANG_PROMPT_TEXT when Stop recycles the process: a fresh
         // process resets promptCount and would otherwise re-hang follow-ups.
+        while (!cancelledSessions.has(requestedSessionId)) {
+          yield* Effect.sleep("25 millis");
+        }
+        cancelledSessions.delete(requestedSessionId);
+        return { stopReason: "cancelled" as const };
+      }
+
+      if (emitToolStartThenHang) {
+        const toolCallId = "tool-start-hang-1";
+        // Mirror the working tool-then-hang shape; only omit completion so the
+        // tool stays open until silence watchdog cancels the prompt.
+        yield* agent.client.sessionUpdate({
+          sessionId: requestedSessionId,
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId,
+            title: "Stuck tool",
+            kind: "execute",
+            status: "pending",
+            rawInput: {
+              command: ["sleep", "999"],
+            },
+          },
+        });
+        yield* agent.client.sessionUpdate({
+          sessionId: requestedSessionId,
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId,
+            status: "in_progress",
+          },
+        });
         while (!cancelledSessions.has(requestedSessionId)) {
           yield* Effect.sleep("25 millis");
         }

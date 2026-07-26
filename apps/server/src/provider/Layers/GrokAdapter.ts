@@ -112,8 +112,22 @@ const DEFAULT_GROK_SILENT_TURN_WATCHDOG: GrokSilentTurnWatchdogConfig = {
 
 export type GrokSilentTurnKind = "open-tool" | "post-tool" | "thinking" | null;
 
+/**
+ * Classify a silent Grok turn for auto-stop.
+ *
+ * Open-tool silence uses **tool activity only** (`openToolSilentMs`). Thought /
+ * assistant stream deltas must not reset that clock — otherwise a stuck tool
+ * can sit inProgress forever while CoT still trickles (or after total silence
+ * if we only looked at the wrong clock).
+ */
 export function classifyGrokSilentTurn(input: {
+  /** Silence since any stream activity (thoughts, text, tools). */
   readonly silentMs: number;
+  /**
+   * Silence since last tool_call update. Defaults to `silentMs` when omitted
+   * (unit tests / callers that do not track a separate tool clock).
+   */
+  readonly openToolSilentMs?: number;
   readonly openToolCount: number;
   readonly hasObservedToolCall: boolean;
   readonly thresholds?: Partial<GrokSilentTurnWatchdogConfig>;
@@ -121,7 +135,8 @@ export function classifyGrokSilentTurn(input: {
   const openToolMs = input.thresholds?.openToolMs ?? GROK_SILENT_OPEN_TOOL_WATCHDOG_MS;
   const postToolMs = input.thresholds?.postToolMs ?? GROK_SILENT_POST_TOOL_WATCHDOG_MS;
   const thinkMs = input.thresholds?.thinkMs ?? GROK_SILENT_THINK_WATCHDOG_MS;
-  if (input.openToolCount > 0 && input.silentMs >= openToolMs) {
+  const openToolSilentMs = input.openToolSilentMs ?? input.silentMs;
+  if (input.openToolCount > 0 && openToolSilentMs >= openToolMs) {
     return "open-tool";
   }
   if (input.openToolCount === 0 && input.hasObservedToolCall && input.silentMs >= postToolMs) {
@@ -235,8 +250,15 @@ interface GrokSessionContext {
   turnVisibleUpdateCount: number;
   /** Wall-clock ms of the last ACP stream/tool event for the active turn. */
   lastTurnActivityAtMs: number;
+  /**
+   * Wall-clock ms of the last tool_call update only. Used for open-tool
+   * watchdog so thought/text stream cannot mask a stuck tool.
+   */
+  lastToolActivityAtMs: number;
   /** Open toolCallIds still pending/inProgress for the active turn. */
   openToolCallIds: Set<string>;
+  /** Titles for open tools (force-close + errors). */
+  openToolTitles: Map<string, string>;
   /** Whether the active prompt has entered a tool loop, including completed tools. */
   hasObservedToolCall: boolean;
   /** Best-effort title of the most recent open tool (for logs / errors). */
@@ -564,6 +586,49 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
     const withThreadLock = <A, E, R>(threadId: string, effect: Effect.Effect<A, E, R>) =>
       Effect.flatMap(getThreadSemaphore(threadId), (semaphore) => semaphore.withPermit(effect));
 
+    /**
+     * When a turn ends (Stop, silence watchdog, failure, or completion) any
+     * tool still pending/inProgress must be force-closed. Otherwise the work
+     * log leaves ghost "Tool" rows forever — looks like tools are stuck even
+     * after the turn is dead.
+     */
+    const forceCloseOpenTools = (ctx: GrokSessionContext, threadId: ThreadId, turnId: TurnId) =>
+      Effect.gen(function* () {
+        if (ctx.openToolCallIds.size === 0) {
+          return;
+        }
+        const stamp = yield* makeEventStamp();
+        const openIds = [...ctx.openToolCallIds];
+        for (const toolCallId of openIds) {
+          const title =
+            ctx.openToolTitles.get(toolCallId)?.trim() || ctx.lastOpenToolTitle?.trim() || "tool";
+          yield* offerRuntimeEvent(
+            makeAcpToolCallEvent({
+              stamp,
+              provider: PROVIDER,
+              threadId,
+              turnId,
+              toolCall: {
+                toolCallId,
+                title,
+                status: "failed",
+                detail: "Tool did not complete before the turn stopped.",
+                data: { toolCallId, forcedClose: true },
+              },
+              rawPayload: {
+                source: "studio.open-tool-force-close",
+                toolCallId,
+                title,
+              },
+            }),
+          );
+          ctx.completedToolTitles.push(`${title} (stopped)`);
+        }
+        ctx.openToolCallIds.clear();
+        ctx.openToolTitles.clear();
+        ctx.lastOpenToolTitle = undefined;
+      });
+
     const settlePromptInFlight = (
       threadId: ThreadId,
       turnId: TurnId,
@@ -605,6 +670,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             return;
           }
           if (options?.emitTurnCompletion !== false) {
+            yield* forceCloseOpenTools(liveCtx, threadId, turnId);
             if (options?.errorMessage !== undefined) {
               yield* offerRuntimeEvent({
                 type: "turn.completed",
@@ -679,8 +745,14 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           updatedAt,
         };
         if (options?.emitTurnCompletion === false) {
+          // Still close open tools so a suppressed completion cannot leave
+          // ghost inProgress rows after Stop/watchdog.
+          yield* forceCloseOpenTools(liveCtx, threadId, settleTurnId);
           return;
         }
+        // Close tools before the terminal turn event so the UI never paints
+        // Working + inProgress tool after the turn is already dead.
+        yield* forceCloseOpenTools(liveCtx, threadId, settleTurnId);
         if (shouldEmitFailedTurn) {
           yield* offerRuntimeEvent({
             type: "turn.completed",
@@ -1085,28 +1157,41 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               case "ToolCallUpdated": {
                 ctx.turnVisibleUpdateCount += 1;
                 ctx.hasObservedToolCall = true;
+                ctx.lastToolActivityAtMs = yield* Clock.currentTimeMillis;
                 const toolCallId = event.toolCall.toolCallId;
                 const toolStatus = event.toolCall.status;
                 if (toolStatus === "completed" || toolStatus === "failed") {
                   ctx.openToolCallIds.delete(toolCallId);
                   const finishedTitle =
                     event.toolCall.title?.trim() ||
+                    ctx.openToolTitles.get(toolCallId) ||
                     ctx.lastOpenToolTitle ||
                     event.toolCall.kind ||
                     "tool";
+                  ctx.openToolTitles.delete(toolCallId);
                   ctx.completedToolTitles.push(
                     toolStatus === "failed" ? `${finishedTitle} (failed)` : finishedTitle,
                   );
                   if (ctx.openToolCallIds.size === 0) {
                     ctx.lastOpenToolTitle = undefined;
                   }
-                } else if (toolStatus === "pending" || toolStatus === "inProgress") {
+                } else if (
+                  toolStatus === "pending" ||
+                  toolStatus === "inProgress" ||
+                  // Grok sometimes omits status on the first tool_call; still track.
+                  toolStatus === undefined
+                ) {
                   ctx.openToolCallIds.add(toolCallId);
                   const title = event.toolCall.title?.trim();
                   if (title) {
                     ctx.lastOpenToolTitle = title;
-                  } else if (!ctx.lastOpenToolTitle) {
-                    ctx.lastOpenToolTitle = event.toolCall.kind ?? "tool";
+                    ctx.openToolTitles.set(toolCallId, title);
+                  } else if (!ctx.openToolTitles.has(toolCallId)) {
+                    const fallback = event.toolCall.kind ?? ctx.lastOpenToolTitle ?? "tool";
+                    ctx.openToolTitles.set(toolCallId, fallback);
+                    if (!ctx.lastOpenToolTitle) {
+                      ctx.lastOpenToolTitle = fallback;
+                    }
                   }
                 }
                 yield* offerRuntimeEvent(
@@ -1335,8 +1420,11 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           updatedAt: yield* nowIso,
         };
         ctx.turnVisibleUpdateCount = 0;
-        ctx.lastTurnActivityAtMs = yield* Clock.currentTimeMillis;
+        const recycleNow = yield* Clock.currentTimeMillis;
+        ctx.lastTurnActivityAtMs = recycleNow;
+        ctx.lastToolActivityAtMs = recycleNow;
         ctx.openToolCallIds = new Set();
+        ctx.openToolTitles = new Map();
         ctx.hasObservedToolCall = false;
         ctx.lastOpenToolTitle = undefined;
         ctx.completedToolTitles = [];
@@ -1518,7 +1606,9 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             acpCompromised: false,
             turnVisibleUpdateCount: 0,
             lastTurnActivityAtMs: yield* Clock.currentTimeMillis,
+            lastToolActivityAtMs: yield* Clock.currentTimeMillis,
             openToolCallIds: new Set(),
+            openToolTitles: new Map(),
             hasObservedToolCall: false,
             lastOpenToolTitle: undefined,
             completedToolTitles: [],
@@ -1763,8 +1853,11 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           // Reset activity clock at prompt start so prior turn silence cannot trip us.
           const activityCtx = sessions.get(input.threadId);
           if (activityCtx) {
-            activityCtx.lastTurnActivityAtMs = yield* Clock.currentTimeMillis;
+            const activityNow = yield* Clock.currentTimeMillis;
+            activityCtx.lastTurnActivityAtMs = activityNow;
+            activityCtx.lastToolActivityAtMs = activityNow;
             activityCtx.openToolCallIds = new Set();
+            activityCtx.openToolTitles = new Map();
             activityCtx.hasObservedToolCall = false;
             activityCtx.lastOpenToolTitle = undefined;
             activityCtx.completedToolTitles = [];
@@ -1784,10 +1877,13 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 // Parent fiber will interrupt this race arm when prompt settles.
                 continue;
               }
-              const silentMs = (yield* Clock.currentTimeMillis) - live.lastTurnActivityAtMs;
+              const nowMs = yield* Clock.currentTimeMillis;
+              const silentMs = nowMs - live.lastTurnActivityAtMs;
+              const openToolSilentMs = nowMs - live.lastToolActivityAtMs;
               const openToolCount = live.openToolCallIds.size;
               const silentTurnKind = classifyGrokSilentTurn({
                 silentMs,
+                openToolSilentMs,
                 openToolCount,
                 hasObservedToolCall: live.hasObservedToolCall,
                 thresholds: silentTurnWatchdog,
@@ -1795,9 +1891,10 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               if (silentTurnKind === null) {
                 continue;
               }
+              const watchdogSilentMs = silentTurnKind === "open-tool" ? openToolSilentMs : silentMs;
               const detail = buildGrokSilentTurnStopMessage({
                 silentTurnKind,
-                silentMs,
+                silentMs: watchdogSilentMs,
                 toolLabel: live.lastOpenToolTitle,
                 completedToolTitles: live.completedToolTitles,
               });
@@ -1805,6 +1902,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 threadId: input.threadId,
                 turnId: prepared.turnId,
                 silentMs,
+                openToolSilentMs,
                 openToolCount,
                 hasObservedToolCall: live.hasObservedToolCall,
                 silentTurnKind,
@@ -2004,6 +2102,9 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 const completedStopReason = completedStopReasonFromPromptResponse(result);
                 const cancelled = result.stopReason === "cancelled";
                 const silentEmptyCompletion = !cancelled && ctx.turnVisibleUpdateCount === 0;
+                // Agent end_turn without tool completion still leaves open tools
+                // in the work log unless we force-close them here.
+                yield* forceCloseOpenTools(ctx, input.threadId, prepared.turnId);
                 if (silentEmptyCompletion) {
                   // Real Grok sessions after Stop/recycle can return end_turn with
                   // zero stream updates. Treat that as failure + compromise so the

@@ -48,6 +48,26 @@ it("classifies Grok silence by active tool, completed tool loop, or pure thinkin
     }),
     "open-tool",
   );
+  // Thought stream must not mask an open tool: general silence can be low while
+  // tool activity has been quiet past the open-tool threshold.
+  assert.equal(
+    classifyGrokSilentTurn({
+      silentMs: 5_000,
+      openToolSilentMs: 90_000,
+      openToolCount: 1,
+      hasObservedToolCall: true,
+    }),
+    "open-tool",
+  );
+  assert.equal(
+    classifyGrokSilentTurn({
+      silentMs: 90_000,
+      openToolSilentMs: 10_000,
+      openToolCount: 1,
+      hasObservedToolCall: true,
+    }),
+    null,
+  );
   assert.equal(
     classifyGrokSilentTurn({
       silentMs: 119_999,
@@ -819,6 +839,111 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
         );
       assert.lengthOf(secondFollowUpCompleted, 1);
       assert.equal(secondFollowUpCompleted[0]?.payload.state, "completed");
+
+      yield* Fiber.interrupt(runtimeEventsFiber);
+      yield* adapter.stopSession(threadId);
+    }).pipe(TestClock.withLive),
+  );
+
+  it.effect("auto-stops a stuck open tool and force-closes it without manual Stop", () =>
+    Effect.gen(function* () {
+      // Tool starts and never completes (no tool_call completed). Open-tool
+      // silence uses the tool clock only; turn settle must force-close the tool.
+      const threadId = ThreadId.make("grok-open-tool-stuck-watchdog");
+      const adapter = yield* makeMockTestAdapter(
+        {
+          T3_ACP_EMIT_TOOL_START_THEN_HANG: "1",
+        },
+        {
+          silentTurnWatchdog: {
+            openToolMs: 300,
+            postToolMs: 30_000,
+            thinkMs: 30_000,
+            pollMs: 50,
+          },
+        },
+      );
+
+      const runtimeEvents: ProviderRuntimeEvent[] = [];
+      const toolOpened = yield* Deferred.make<void>();
+      const toolForceClosed = yield* Deferred.make<void>();
+      const turnFailed =
+        yield* Deferred.make<Extract<ProviderRuntimeEvent, { type: "turn.completed" }>>();
+      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          runtimeEvents.push(event);
+        }).pipe(
+          Effect.andThen(
+            event.type === "item.updated" &&
+              (event.payload.status === "inProgress" || event.payload.status === "pending") &&
+              String(event.threadId) === String(threadId)
+              ? Deferred.succeed(toolOpened, undefined).pipe(Effect.ignore, Effect.asVoid)
+              : Effect.void,
+          ),
+          Effect.andThen(
+            event.type === "item.completed" &&
+              event.payload.status === "failed" &&
+              String(event.threadId) === String(threadId) &&
+              String((event.payload.data as { forcedClose?: unknown } | undefined)?.forcedClose) ===
+                "true"
+              ? Deferred.succeed(toolForceClosed, undefined).pipe(Effect.ignore, Effect.asVoid)
+              : Effect.void,
+          ),
+          Effect.andThen(
+            // Also accept force-close via detail when data shape differs
+            event.type === "item.completed" &&
+              event.payload.status === "failed" &&
+              String(event.payload.detail ?? "").includes("did not complete") &&
+              String(event.threadId) === String(threadId)
+              ? Deferred.succeed(toolForceClosed, undefined).pipe(Effect.ignore, Effect.asVoid)
+              : Effect.void,
+          ),
+          Effect.andThen(
+            event.type === "turn.completed" &&
+              event.payload.state === "failed" &&
+              String(event.threadId) === String(threadId)
+              ? Deferred.succeed(turnFailed, event).pipe(Effect.ignore, Effect.asVoid)
+              : Effect.void,
+          ),
+        ),
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("grok"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+
+      const hangFiber = yield* adapter
+        .sendTurn({
+          threadId,
+          input: "start a tool that never finishes",
+          attachments: [],
+        })
+        .pipe(Effect.forkChild);
+
+      yield* Deferred.await(toolOpened).pipe(Effect.timeout("8 seconds"));
+      const failedEvent = yield* Deferred.await(turnFailed).pipe(Effect.timeout("10 seconds"));
+      assert.match(
+        String(failedEvent.payload.errorMessage ?? ""),
+        /while .* was still running|still running/i,
+      );
+      // Force-close may arrive just before or with turn.completed.
+      yield* Deferred.await(toolForceClosed).pipe(Effect.timeout("5 seconds"), Effect.ignore);
+      const forceClosedEvents = runtimeEvents.filter(
+        (event) =>
+          event.type === "item.completed" &&
+          event.payload.status === "failed" &&
+          (String(event.payload.detail ?? "").includes("did not complete") ||
+            (event.payload.data as { forcedClose?: unknown } | undefined)?.forcedClose === true),
+      );
+      assert.isAtLeast(forceClosedEvents.length, 1, "expected force-closed open tool");
+      yield* Fiber.join(hangFiber).pipe(Effect.timeout("5 seconds"));
+
+      const sessions = yield* adapter.listSessions();
+      const session = sessions.find((entry) => entry.threadId === threadId);
+      assert.equal(session?.status, "ready");
 
       yield* Fiber.interrupt(runtimeEventsFiber);
       yield* adapter.stopSession(threadId);
