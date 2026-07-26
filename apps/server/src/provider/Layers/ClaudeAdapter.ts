@@ -241,6 +241,27 @@ interface ClaudeQueryRuntime extends AsyncIterable<SDKMessage> {
   readonly close: () => void;
 }
 
+/** Auto-cancel unanswered permission prompts so multi-session dogfood cannot hang forever. */
+const CLAUDE_PENDING_APPROVAL_TIMEOUT_MS = 3 * 60_000;
+/** Slightly longer for multi-question forms. */
+const CLAUDE_PENDING_USER_INPUT_TIMEOUT_MS = 5 * 60_000;
+
+/**
+ * Wall-clock sleep for permission / user-input auto-cancel.
+ * Uses setTimeout rather than Effect.sleep so timeouts still fire when
+ * canUseTool runs via runPromiseWith under a TestClock (tests) or when the
+ * adapter's captured runtime context would otherwise pin a frozen clock.
+ */
+const sleepWallClock = (ms: number): Effect.Effect<void> =>
+  Effect.callback<void>((resume) => {
+    const handle = setTimeout(() => {
+      resume(Effect.void);
+    }, ms);
+    return Effect.sync(() => {
+      clearTimeout(handle);
+    });
+  });
+
 export interface ClaudeAdapterLiveOptions {
   readonly instanceId?: ProviderInstanceId;
   readonly environment?: NodeJS.ProcessEnv;
@@ -250,6 +271,10 @@ export interface ClaudeAdapterLiveOptions {
   }) => ClaudeQueryRuntime;
   readonly nativeEventLogPath?: string;
   readonly nativeEventLogger?: EventNdjsonLogger;
+  /** Override pending permission auto-cancel (default 3 minutes). */
+  readonly pendingApprovalTimeoutMs?: number;
+  /** Override pending user-input auto-cancel (default 5 minutes). */
+  readonly pendingUserInputTimeoutMs?: number;
 }
 
 function isUuid(value: string): boolean {
@@ -1411,6 +1436,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
   options?: ClaudeAdapterLiveOptions,
 ) {
   const boundInstanceId = options?.instanceId ?? ProviderInstanceId.make("claudeAgent");
+  const pendingApprovalTimeoutMs =
+    options?.pendingApprovalTimeoutMs ?? CLAUDE_PENDING_APPROVAL_TIMEOUT_MS;
+  const pendingUserInputTimeoutMs =
+    options?.pendingUserInputTimeoutMs ?? CLAUDE_PENDING_USER_INPUT_TIMEOUT_MS;
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const serverConfig = yield* ServerConfig;
@@ -3361,8 +3390,39 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           once: true,
         });
 
-        // Block until the user provides answers.
-        const answers = yield* Deferred.await(answersDeferred);
+        // Block until the user answers, or auto-cancel after timeout so a
+        // multi-session dogfood cannot hang forever on an unanswered form.
+        const raceResult = yield* Effect.raceFirst(
+          Deferred.await(answersDeferred).pipe(
+            Effect.map((value) => ({ _tag: "answered" as const, value })),
+          ),
+          sleepWallClock(pendingUserInputTimeoutMs).pipe(Effect.as({ _tag: "timeout" as const })),
+        );
+        const answers: ProviderUserInputAnswers =
+          raceResult._tag === "timeout" ? ({} as ProviderUserInputAnswers) : raceResult.value;
+        if (raceResult._tag === "timeout") {
+          aborted = true;
+          yield* Deferred.succeed(answersDeferred, answers).pipe(Effect.ignore);
+          yield* Effect.logWarning("Claude user-input request timed out; auto-cancelled", {
+            threadId: context.session.threadId,
+            requestId,
+            timeoutMs: pendingUserInputTimeoutMs,
+          });
+          yield* offerRuntimeEvent({
+            type: "runtime.warning",
+            ...(yield* makeEventStamp()),
+            provider: PROVIDER,
+            threadId: context.session.threadId,
+            ...(context.turnState
+              ? {
+                  turnId: asCanonicalTurnId(context.turnState.turnId),
+                }
+              : {}),
+            payload: {
+              message: `User input timed out after ${Math.round(pendingUserInputTimeoutMs / 1000)}s with no answer. Request was cancelled automatically.`,
+            },
+          });
+        }
         pendingUserInputs.delete(requestId);
 
         // Emit user-input.resolved so the UI knows the interaction completed.
@@ -3514,7 +3574,32 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           once: true,
         });
 
-        const decision = yield* Deferred.await(decisionDeferred);
+        const raceResult = yield* Effect.raceFirst(
+          Deferred.await(decisionDeferred).pipe(
+            Effect.map((value) => ({ _tag: "decided" as const, value })),
+          ),
+          sleepWallClock(pendingApprovalTimeoutMs).pipe(Effect.as({ _tag: "timeout" as const })),
+        );
+        const decision: ProviderApprovalDecision =
+          raceResult._tag === "timeout" ? "cancel" : raceResult.value;
+        if (raceResult._tag === "timeout") {
+          yield* Deferred.succeed(decisionDeferred, "cancel").pipe(Effect.ignore);
+          yield* Effect.logWarning("Claude approval request timed out; auto-cancelled", {
+            threadId: context.session.threadId,
+            requestId,
+            timeoutMs: pendingApprovalTimeoutMs,
+          });
+          yield* offerRuntimeEvent({
+            type: "runtime.warning",
+            ...(yield* makeEventStamp()),
+            provider: PROVIDER,
+            threadId: context.session.threadId,
+            ...(context.turnState ? { turnId: asCanonicalTurnId(context.turnState.turnId) } : {}),
+            payload: {
+              message: `Permission request timed out after ${Math.round(pendingApprovalTimeoutMs / 1000)}s with no decision. Request was cancelled automatically.`,
+            },
+          });
+        }
         pendingApprovals.delete(requestId);
 
         const resolvedStamp = yield* makeEventStamp();

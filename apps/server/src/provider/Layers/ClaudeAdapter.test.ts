@@ -161,6 +161,8 @@ function makeHarness(config?: {
   readonly baseDir?: string;
   readonly claudeConfig?: Partial<ClaudeSettings>;
   readonly instanceId?: ProviderInstanceId;
+  readonly pendingApprovalTimeoutMs?: number;
+  readonly pendingUserInputTimeoutMs?: number;
 }) {
   const query = new FakeClaudeQuery();
   let createInput:
@@ -184,6 +186,16 @@ function makeHarness(config?: {
     ...(config?.nativeEventLogPath
       ? {
           nativeEventLogPath: config.nativeEventLogPath,
+        }
+      : {}),
+    ...(config?.pendingApprovalTimeoutMs !== undefined
+      ? {
+          pendingApprovalTimeoutMs: config.pendingApprovalTimeoutMs,
+        }
+      : {}),
+    ...(config?.pendingUserInputTimeoutMs !== undefined
+      ? {
+          pendingUserInputTimeoutMs: config.pendingUserInputTimeoutMs,
         }
       : {}),
   };
@@ -2961,6 +2973,83 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("auto-cancels pending approval requests after timeout", () => {
+    // Short wall-clock timeout (adapter uses setTimeout, not Effect.sleep).
+    const harness = makeHarness({ pendingApprovalTimeoutMs: 200 });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEvents: ProviderRuntimeEvent[] = [];
+      const eventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          runtimeEvents.push(event);
+        }),
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "approval-required",
+      });
+
+      const createInput = harness.getLastCreateQueryInput();
+      const canUseTool = createInput?.options.canUseTool;
+      assert.equal(typeof canUseTool, "function");
+      if (!canUseTool) {
+        return;
+      }
+
+      // Do not call respondToRequest — timeout must clear the hang.
+      const permissionPromise = canUseTool(
+        "Bash",
+        { command: "rm -rf /" },
+        {
+          signal: new AbortController().signal,
+          toolUseID: "tool-approval-timeout",
+        },
+      );
+
+      const permissionResult = yield* Effect.promise(() =>
+        Promise.race([
+          permissionPromise,
+          new Promise<never>((_, reject) => {
+            setTimeout(() => reject(new Error("approval timeout did not fire within 3s")), 3_000);
+          }),
+        ]),
+      );
+      assert.deepEqual(permissionResult, {
+        behavior: "deny",
+        message: "User cancelled tool execution.",
+      } satisfies PermissionResult);
+
+      // Allow the event collector fiber to observe terminal events.
+      yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 50)));
+
+      assert.isTrue(
+        runtimeEvents.some((event) => event.type === "request.opened"),
+        "expected request.opened",
+      );
+      assert.isTrue(
+        runtimeEvents.some(
+          (event) =>
+            event.type === "runtime.warning" &&
+            String(event.payload.message ?? "").includes("Permission request timed out"),
+        ),
+        "expected permission timeout warning",
+      );
+      const resolved = runtimeEvents.find((event) => event.type === "request.resolved");
+      assert.equal(resolved?.type, "request.resolved");
+      if (resolved?.type === "request.resolved") {
+        assert.equal(resolved.payload.decision, "cancel");
+      }
+
+      yield* Fiber.interrupt(eventsFiber);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+      TestClock.withLive,
+    );
+  });
+
   it.effect("classifies Agent tools and read-only Claude tools correctly for approvals", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
@@ -4009,6 +4098,91 @@ describe("ClaudeAdapterLive", () => {
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("auto-cancels AskUserQuestion after user-input timeout", () => {
+    // Short wall-clock timeout (adapter uses setTimeout, not Effect.sleep).
+    const harness = makeHarness({ pendingUserInputTimeoutMs: 200 });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEvents: ProviderRuntimeEvent[] = [];
+      const eventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          runtimeEvents.push(event);
+        }),
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "approval-required",
+      });
+
+      const createInput = harness.getLastCreateQueryInput();
+      const canUseTool = createInput?.options.canUseTool;
+      assert.equal(typeof canUseTool, "function");
+      if (!canUseTool) {
+        return;
+      }
+
+      // Do not call respondToUserInput — timeout must clear the hang.
+      const permissionPromise = canUseTool(
+        "AskUserQuestion",
+        {
+          questions: [
+            {
+              question: "Pick a path?",
+              header: "Path",
+              options: [{ label: "A", description: "Option A" }],
+              multiSelect: false,
+            },
+          ],
+        },
+        {
+          signal: new AbortController().signal,
+          toolUseID: "tool-ask-timeout",
+        },
+      );
+
+      const permissionResult = yield* Effect.promise(() =>
+        Promise.race([
+          permissionPromise,
+          new Promise<never>((_, reject) => {
+            setTimeout(() => reject(new Error("user-input timeout did not fire within 3s")), 3_000);
+          }),
+        ]),
+      );
+      assert.deepEqual(permissionResult, {
+        behavior: "deny",
+        message: "User cancelled tool execution.",
+      } satisfies PermissionResult);
+
+      yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 50)));
+
+      assert.isTrue(
+        runtimeEvents.some((event) => event.type === "user-input.requested"),
+        "expected user-input.requested",
+      );
+      assert.isTrue(
+        runtimeEvents.some(
+          (event) =>
+            event.type === "runtime.warning" &&
+            String(event.payload.message ?? "").includes("User input timed out"),
+        ),
+        "expected user-input timeout warning",
+      );
+      const resolved = runtimeEvents.find((event) => event.type === "user-input.resolved");
+      assert.equal(resolved?.type, "user-input.resolved");
+      if (resolved?.type === "user-input.resolved") {
+        assert.deepEqual(resolved.payload.answers, {});
+      }
+
+      yield* Fiber.interrupt(eventsFiber);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+      TestClock.withLive,
     );
   });
 
