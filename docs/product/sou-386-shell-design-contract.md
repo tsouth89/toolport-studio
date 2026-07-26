@@ -87,3 +87,34 @@ behavior classes keep working.
 - [x] Further collapse / hierarchy for long tool spam
   - Activity: consecutive same-label tools densify (`Read file × 8`) before the cap
   - Timeline work-toggle: `+N previous Read file` when the hidden slice shares a label
+- [ ] Mockup-shaped center “Tool use · N steps” card (grouped expandable stack)
+- [ ] Keep Thinking / progress outside the tool group (never swallow commentary)
+
+## PR 4 slice (shell refinement) — not started
+
+- Sidebar hierarchy (provider / MCP / settings chrome toward mockup)
+- Composer proportions and instrument-panel density
+- Top chrome polish (without rewriting layout systems)
+
+## PR 5 / reliability dependency (blocking daily-driver dogfood)
+
+**Do not treat SOU-386 polish as “done” while false silence kills remain.**
+
+Dogfood 2026-07-26: a legitimate multi-tool SOU-386 research turn was auto-stopped
+after ~122s post-tool silence (`post-tool` watchdog in `GrokAdapter`). Message:
+
+> Grok stopped responding after its last tool completed. The turn was stopped
+> automatically after 122s with no progress — Send again to continue.
+
+Tracked as **SOU-399** (child of SOU-354): hard wall-clock silence kill is wrong for
+healthy multi-tool turns. Soft quiet UI is fine; auto-interrupt needs liveness-aware
+signals (session/prompt still open, tool lifecycle, process health) — not “no tokens
+for ~2m after a tool finished.”
+
+| Layer                                 | Role today                                                                 | Target                                                                    |
+| ------------------------------------- | -------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| UI quiet notice (`stalledTurn.ts`)    | Soft, 2m / 10m long tools                                                  | Keep calm; never panic-kill                                               |
+| Grok silence watchdog (`GrokAdapter`) | Hard auto-stop (90s open non-execute, **2m post-tool**, 15m think/execute) | Kill only true wedges; post-tool gaps must tolerate multi-minute planning |
+
+Shell PR sequence continues (PR 3 → 4), but **PR 5 dogfood acceptance requires SOU-399**
+(or equivalent) so Studio can be used for real multi-tool work without false stops.

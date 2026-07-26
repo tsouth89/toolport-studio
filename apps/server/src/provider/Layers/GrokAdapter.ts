@@ -93,9 +93,12 @@ const GROK_SILENT_OPEN_TOOL_WATCHDOG_MS = 90_000;
 const GROK_SILENT_OPEN_EXECUTE_TOOL_WATCHDOG_MS = 15 * 60_000;
 /**
  * Grok occasionally leaves the prompt RPC pending after a tool has already
- * completed. This is distinct from a legitimate long initial think: once the
- * agent has entered the tool loop, two minutes of total ACP silence is enough
- * to treat the turn as wedged and recycle it.
+ * completed. Distinct from pure initial think.
+ *
+ * WARNING (SOU-399): 2m post-tool silence also false-stops legitimate multi-tool
+ * turns (planning / tool-wave gaps with no ACP tokens). Dogfood 2026-07-26 killed
+ * a live research turn at ~122s. Do not lower this further; prefer liveness-aware
+ * policy over pure wall-clock kill before treating this as "done."
  */
 const GROK_SILENT_POST_TOOL_WATCHDOG_MS = 2 * 60_000;
 /** Absolute ceiling so a pure-think wedge cannot run forever. */

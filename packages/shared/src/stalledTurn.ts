@@ -5,9 +5,11 @@
  * Shared across providers: any adapter that leaves a session "running" while
  * silent will surface the same quiet signal.
  *
- * Product note (SOU-386 dogfood): this is a soft quiet notice, not a hang
- * warning. Server-side watchdogs own reliability. The UI should not paint
- * amber panic chrome on every long tool.
+ * Product note (SOU-386 / SOU-399): this is a **soft quiet notice only**, not a
+ * hang kill. Server Grok silence auto-stop (`GrokAdapter` post-tool ~2m) has
+ * already false-stopped legitimate multi-tool dogfood turns — do not add a
+ * second client-side interrupt here. Hard recovery belongs in liveness-aware
+ * server policy (SOU-399), not wall-clock UI panic.
  */
 
 /**
