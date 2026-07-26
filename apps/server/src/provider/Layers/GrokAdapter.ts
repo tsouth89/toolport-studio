@@ -133,19 +133,44 @@ export function classifyGrokSilentTurn(input: {
   return null;
 }
 
+const GROK_SILENT_WORK_SUMMARY_MAX_TOOLS = 6;
+
+/** Format completed tool titles for auto-stop recovery copy (no CoT). */
+export function formatGrokSilentTurnWorkSummary(
+  completedToolTitles: ReadonlyArray<string>,
+): string | undefined {
+  const titles = completedToolTitles
+    .map((title) => title.trim())
+    .filter((title) => title.length > 0);
+  if (titles.length === 0) {
+    return undefined;
+  }
+  const shown = titles.slice(-GROK_SILENT_WORK_SUMMARY_MAX_TOOLS);
+  const omitted = titles.length - shown.length;
+  const list = shown.join("; ");
+  const omittedSuffix = omitted > 0 ? ` (+${omitted} earlier)` : "";
+  return `Work before stop: ${list}${omittedSuffix}.`;
+}
+
 export function buildGrokSilentTurnStopMessage(input: {
   readonly silentTurnKind: Exclude<GrokSilentTurnKind, null>;
   readonly silentMs: number;
   readonly toolLabel?: string;
+  readonly completedToolTitles?: ReadonlyArray<string>;
 }): string {
   const toolLabel = input.toolLabel?.trim() || "a tool";
+  const seconds = Math.max(1, Math.round(input.silentMs / 1000));
+  const minutes = Math.max(1, Math.round(input.silentMs / 60_000));
+  let base: string;
   if (input.silentTurnKind === "open-tool") {
-    return `Grok went silent for ${Math.round(input.silentMs / 1000)}s while ${toolLabel} was still running. Turn was stopped automatically — try a smaller task or Send again.`;
+    base = `Grok went silent for ${seconds}s while ${toolLabel} was still running. Turn was stopped automatically — try a smaller task or Send again.`;
+  } else if (input.silentTurnKind === "post-tool") {
+    base = `Grok stopped responding after its last tool completed. The turn was stopped automatically after ${seconds}s with no progress — Send again to continue.`;
+  } else {
+    base = `Grok went silent for ${minutes}+ minutes with no tools or stream updates. Turn was stopped automatically — try again.`;
   }
-  if (input.silentTurnKind === "post-tool") {
-    return `Grok stopped responding after its last tool completed. The turn was stopped automatically after ${Math.round(input.silentMs / 1000)}s with no progress — Send again to continue.`;
-  }
-  return `Grok went silent for ${Math.round(input.silentMs / 60000)}+ minutes with no tools or stream updates. Turn was stopped automatically — try again.`;
+  const workSummary = formatGrokSilentTurnWorkSummary(input.completedToolTitles ?? []);
+  return workSummary ? `${base} ${workSummary}` : base;
 }
 
 function encodeJsonStringForDiagnostics(input: unknown): string | undefined {
@@ -216,6 +241,11 @@ interface GrokSessionContext {
   hasObservedToolCall: boolean;
   /** Best-effort title of the most recent open tool (for logs / errors). */
   lastOpenToolTitle: string | undefined;
+  /**
+   * Completed/failed tool titles for the active turn (checkpoint on auto-stop).
+   * Capped in the formatter; order is completion order.
+   */
+  completedToolTitles: string[];
   /**
    * User-facing reason when the silence watchdog (or equivalent) auto-stops a
    * turn. Must be settled into turn.completed even if cancel makes the prompt
@@ -1059,6 +1089,14 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 const toolStatus = event.toolCall.status;
                 if (toolStatus === "completed" || toolStatus === "failed") {
                   ctx.openToolCallIds.delete(toolCallId);
+                  const finishedTitle =
+                    event.toolCall.title?.trim() ||
+                    ctx.lastOpenToolTitle ||
+                    event.toolCall.kind ||
+                    "tool";
+                  ctx.completedToolTitles.push(
+                    toolStatus === "failed" ? `${finishedTitle} (failed)` : finishedTitle,
+                  );
                   if (ctx.openToolCallIds.size === 0) {
                     ctx.lastOpenToolTitle = undefined;
                   }
@@ -1301,6 +1339,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         ctx.openToolCallIds = new Set();
         ctx.hasObservedToolCall = false;
         ctx.lastOpenToolTitle = undefined;
+        ctx.completedToolTitles = [];
         ctx.silentTurnStopMessage = undefined;
         // Only a successful session/load proves Grok restored history. A
         // fallback session/new may legally reuse the same opaque id, so id
@@ -1482,6 +1521,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             openToolCallIds: new Set(),
             hasObservedToolCall: false,
             lastOpenToolTitle: undefined,
+            completedToolTitles: [],
             silentTurnStopMessage: undefined,
             notificationGeneration: 0,
             acpDisposed: false,
@@ -1727,6 +1767,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             activityCtx.openToolCallIds = new Set();
             activityCtx.hasObservedToolCall = false;
             activityCtx.lastOpenToolTitle = undefined;
+            activityCtx.completedToolTitles = [];
             activityCtx.silentTurnStopMessage = undefined;
           }
 
@@ -1758,6 +1799,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 silentTurnKind,
                 silentMs,
                 toolLabel: live.lastOpenToolTitle,
+                completedToolTitles: live.completedToolTitles,
               });
               yield* Effect.logWarning("Grok silent-turn watchdog fired", {
                 threadId: input.threadId,

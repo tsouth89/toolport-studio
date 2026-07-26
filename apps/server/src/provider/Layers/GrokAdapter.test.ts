@@ -33,6 +33,7 @@ import {
   buildGrokSilentTurnStopMessage,
   canSteerGrokSendTurn,
   classifyGrokSilentTurn,
+  formatGrokSilentTurnWorkSummary,
   grokPromptSettlementBelongsToContext,
   makeGrokAdapter,
 } from "./GrokAdapter.ts";
@@ -94,6 +95,18 @@ it("classifies Grok silence by active tool, completed tool loop, or pure thinkin
       silentMs: 125_000,
     }),
     /stopped responding after its last tool completed/i,
+  );
+  assert.equal(
+    formatGrokSilentTurnWorkSummary(["Terminal", "Grep"]),
+    "Work before stop: Terminal; Grep.",
+  );
+  assert.match(
+    buildGrokSilentTurnStopMessage({
+      silentTurnKind: "post-tool",
+      silentMs: 125_000,
+      completedToolTitles: ["Terminal", "Grep"],
+    }),
+    /Work before stop: Terminal; Grep\./,
   );
 });
 
@@ -879,6 +892,7 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
           String(failedEvent.payload.errorMessage ?? ""),
           /stopped responding after its last tool completed/i,
         );
+        assert.match(String(failedEvent.payload.errorMessage ?? ""), /Work before stop:/i);
 
         // sendTurn should complete (settle) without the parent needing Stop.
         yield* Fiber.join(hangFiber).pipe(Effect.timeout("5 seconds"));
