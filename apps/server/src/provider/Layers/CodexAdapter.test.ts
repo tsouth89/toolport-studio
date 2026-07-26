@@ -512,6 +512,45 @@ function startLifecycleRuntime() {
 }
 
 lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
+  it.effect("maps Stop force-settle turn/completed interrupted payloads", () =>
+    Effect.gen(function* () {
+      // Matches the synthetic payload CodexSessionRuntime.interruptTurn emits so
+      // Working settles even when app-server never sends turn/completed.
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+
+      yield* runtime.emit({
+        id: asEventId("evt-turn-force-settle"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        method: "turn/completed",
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-force-settle"),
+        payload: {
+          threadId: "provider-thread-1",
+          turn: {
+            id: "turn-force-settle",
+            status: "interrupted",
+            items: [],
+          },
+        },
+      });
+
+      const firstEvent = yield* Fiber.join(firstEventFiber);
+      NodeAssert.equal(firstEvent._tag, "Some");
+      if (firstEvent._tag !== "Some") {
+        return;
+      }
+      NodeAssert.equal(firstEvent.value.type, "turn.completed");
+      if (firstEvent.value.type !== "turn.completed") {
+        return;
+      }
+      NodeAssert.equal(firstEvent.value.turnId, "turn-force-settle");
+      NodeAssert.equal(firstEvent.value.payload.state, "interrupted");
+    }),
+  );
+
   it.effect("maps completed agent message items to canonical item.completed events", () =>
     Effect.gen(function* () {
       const { adapter, runtime } = yield* startLifecycleRuntime();

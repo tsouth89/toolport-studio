@@ -724,6 +724,8 @@ export const makeCodexSessionRuntime = (
     const approvalCorrelationsRef = yield* Ref.make(new Map<string, ApprovalCorrelation>());
     const pendingUserInputsRef = yield* Ref.make(new Map<ApprovalRequestId, PendingUserInput>());
     const collabReceiverTurnsRef = yield* Ref.make(new Map<string, TurnId>());
+    /** Turns force-settled by Stop so late turn/completed notifications do not double-fire. */
+    const forceSettledTurnIdsRef = yield* Ref.make(new Set<string>());
     const closedRef = yield* Ref.make(false);
 
     // `~` is not shell-expanded when env vars are set via
@@ -885,6 +887,16 @@ export const makeCodexSessionRuntime = (
         }
 
         yield* Ref.set(collabReceiverTurnsRef, collabReceiverTurns);
+
+        // Stop may already have force-settled this turn; skip the late
+        // turn/completed event so Working does not double-complete.
+        if (notification.method === "turn/completed" && turnId !== undefined) {
+          const forceSettled = yield* Ref.get(forceSettledTurnIdsRef);
+          if (forceSettled.has(String(turnId))) {
+            return;
+          }
+        }
+
         yield* emitEvent({
           kind: "notification",
           threadId: options.threadId,
@@ -1334,11 +1346,50 @@ export const makeCodexSessionRuntime = (
           const session = yield* Ref.get(sessionRef);
           const effectiveTurnId = turnId ?? session.activeTurnId;
           if (!effectiveTurnId) {
+            // Still force ready if session is stuck running without a turn id.
+            if (session.status === "running" || session.status === "starting") {
+              yield* updateSession(sessionRef, {
+                status: "ready",
+                activeTurnId: undefined,
+              });
+            }
             return;
           }
           yield* client.request("turn/interrupt", {
             threadId: providerThreadId,
             turnId: effectiveTurnId,
+          });
+          // Force-settle after a successful interrupt. turn/completed from
+          // app-server is best-effort; without this, Working sticks when the
+          // notification never arrives (Claude/Grok/Cursor Stop parity).
+          const alreadySettled = (yield* Ref.get(forceSettledTurnIdsRef)).has(
+            String(effectiveTurnId),
+          );
+          if (alreadySettled) {
+            return;
+          }
+          yield* Ref.update(forceSettledTurnIdsRef, (current) => {
+            const next = new Set(current);
+            next.add(String(effectiveTurnId));
+            return next;
+          });
+          yield* updateSession(sessionRef, {
+            status: "ready",
+            activeTurnId: undefined,
+          });
+          yield* emitEvent({
+            kind: "notification",
+            threadId: options.threadId,
+            turnId: effectiveTurnId,
+            method: "turn/completed",
+            payload: {
+              threadId: providerThreadId,
+              turn: {
+                id: String(effectiveTurnId),
+                status: "interrupted",
+                items: [],
+              },
+            },
           });
         }),
       readThread: Effect.gen(function* () {

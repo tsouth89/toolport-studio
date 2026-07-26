@@ -137,6 +137,11 @@ interface CursorSessionContext {
    * >0 means a turn is actively running, so a new sendTurn is a steer that
    * continues it, and only the last remaining prompt settles the turn. */
   promptsInFlight: number;
+  /**
+   * Turns already force-settled by Stop/interrupt. Prompt completion must not
+   * re-fire turn.completed for these ids (double-complete confuses Working).
+   */
+  forceSettledTurnIds: Set<string>;
   stopped: boolean;
 }
 
@@ -768,6 +773,7 @@ export function makeCursorAdapter(
             lastPlanFingerprint: undefined,
             activeTurnId: undefined,
             promptsInFlight: 0,
+            forceSettledTurnIds: new Set(),
             stopped: false,
           };
 
@@ -1018,7 +1024,17 @@ export function makeCursorAdapter(
           // Only the last remaining prompt settles the turn — a steer-
           // superseded prompt resolving (usually cancelled) while another is
           // in flight or pending must leave the merged turn running.
-          if (ctx.promptsInFlight === 1) {
+          // Skip if Stop already force-settled this turn.
+          if (ctx.promptsInFlight === 1 && !ctx.forceSettledTurnIds.has(String(turnId))) {
+            const updatedAt = yield* nowIso;
+            ctx.activeTurnId = undefined;
+            const { activeTurnId: _cleared, ...readySession } = ctx.session;
+            ctx.session = {
+              ...readySession,
+              status: "ready",
+              updatedAt,
+              model: resolvedModel,
+            };
             yield* offerRuntimeEvent({
               type: "turn.completed",
               ...(yield* makeEventStamp()),
@@ -1051,6 +1067,7 @@ export function makeCursorAdapter(
         const ctx = yield* requireSession(threadId);
         yield* settlePendingApprovalsAsCancelled(ctx.pendingApprovals);
         yield* settlePendingUserInputsAsEmptyAnswers(ctx.pendingUserInputs);
+        const settleTurnId = ctx.activeTurnId ?? ctx.session.activeTurnId;
         // Never block Stop on a wedged ACP child process.
         yield* ctx.acp.cancel.pipe(
           Effect.mapError((error) =>
@@ -1059,6 +1076,41 @@ export function makeCursorAdapter(
           Effect.timeout("2 seconds"),
           Effect.ignore,
         );
+        // Force-settle immediately so Working cannot stick if cancel never
+        // resolves the in-flight prompt (Claude/Grok parity).
+        if (settleTurnId !== undefined && !ctx.forceSettledTurnIds.has(String(settleTurnId))) {
+          ctx.forceSettledTurnIds.add(String(settleTurnId));
+          ctx.activeTurnId = undefined;
+          const updatedAt = yield* nowIso;
+          const { activeTurnId: _cleared, ...readySession } = ctx.session;
+          ctx.session = {
+            ...readySession,
+            status: "ready",
+            updatedAt,
+          };
+          yield* offerRuntimeEvent({
+            type: "turn.completed",
+            ...(yield* makeEventStamp()),
+            provider: PROVIDER,
+            threadId,
+            turnId: settleTurnId,
+            payload: {
+              state: "cancelled",
+              stopReason: "cancelled",
+            },
+          });
+        } else if (
+          settleTurnId === undefined &&
+          (ctx.session.status === "running" || ctx.session.status === "connecting")
+        ) {
+          const updatedAt = yield* nowIso;
+          const { activeTurnId: _cleared, ...readySession } = ctx.session;
+          ctx.session = {
+            ...readySession,
+            status: "ready",
+            updatedAt,
+          };
+        }
       });
 
     const respondToRequest: CursorAdapterShape["respondToRequest"] = (
