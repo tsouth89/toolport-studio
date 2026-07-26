@@ -92,15 +92,15 @@ const GROK_SILENT_OPEN_TOOL_WATCHDOG_MS = 90_000;
  */
 const GROK_SILENT_OPEN_EXECUTE_TOOL_WATCHDOG_MS = 15 * 60_000;
 /**
- * Grok occasionally leaves the prompt RPC pending after a tool has already
- * completed. Distinct from pure initial think.
+ * After tools have run, Grok often plans the next wave with no ACP stream tokens.
+ * That is healthy multi-tool work, not a wedge.
  *
- * WARNING (SOU-399): 2m post-tool silence also false-stops legitimate multi-tool
- * turns (planning / tool-wave gaps with no ACP tokens). Dogfood 2026-07-26 killed
- * a live research turn at ~122s. Do not lower this further; prefer liveness-aware
- * policy over pure wall-clock kill before treating this as "done."
+ * SOU-399: post-tool silence must use the long ceiling (same as pure-think), not a
+ * short wall-clock kill. Dogfood 2026-07-26 false-stopped a live research turn at
+ * ~122s when this was 2 minutes. Stuck open tools still use open-tool thresholds;
+ * dead ACP children still compromise via notification-stream end.
  */
-const GROK_SILENT_POST_TOOL_WATCHDOG_MS = 2 * 60_000;
+const GROK_SILENT_POST_TOOL_WATCHDOG_MS = 15 * 60_000;
 /** Absolute ceiling so a pure-think wedge cannot run forever. */
 const GROK_SILENT_THINK_WATCHDOG_MS = 15 * 60_000;
 const GROK_SILENT_TURN_WATCHDOG_POLL_MS = 10_000;
@@ -166,6 +166,10 @@ export function resolveGrokOpenToolWatchdogMs(input: {
  * assistant stream deltas must not reset that clock — otherwise a stuck tool
  * can sit inProgress forever while CoT still trickles (or after total silence
  * if we only looked at the wrong clock).
+ *
+ * Post-tool and pure-think share the long default ceiling (SOU-399): multi-tool
+ * planning gaps must not hard-stop after ~2m of token silence while the prompt
+ * is still open. Short kills remain for open tools only.
  */
 export function classifyGrokSilentTurn(input: {
   /** Silence since any stream activity (thoughts, text, tools). */
@@ -210,6 +214,82 @@ export function classifyGrokSilentTurn(input: {
 }
 
 const GROK_SILENT_WORK_SUMMARY_MAX_TOOLS = 6;
+/** Keep native stream-delta logs small but still greppable in tests/forensics. */
+const GROK_NATIVE_STREAM_DELTA_PREVIEW_CHARS = 160;
+
+/**
+ * Slim native log body for ContentDelta / ThoughtDelta.
+ * Preserves a short text preview (for dogfood grepping) without serializing full
+ * ACP payloads on every token.
+ */
+export function slimGrokStreamDeltaNativeLog(
+  kind: "ContentDelta" | "ThoughtDelta",
+  rawPayload: unknown,
+): Record<string, unknown> {
+  const preview = extractGrokStreamDeltaTextPreview(
+    rawPayload,
+    GROK_NATIVE_STREAM_DELTA_PREVIEW_CHARS,
+  );
+  return {
+    kind,
+    note: "high-frequency stream delta (payload slimmed)",
+    ...(preview !== undefined ? { textPreview: preview } : {}),
+  };
+}
+
+function extractGrokStreamDeltaTextPreview(
+  rawPayload: unknown,
+  maxChars: number,
+): string | undefined {
+  if (rawPayload === null || typeof rawPayload !== "object") {
+    return undefined;
+  }
+  const asRecord = rawPayload as Record<string, unknown>;
+  const candidates: unknown[] = [asRecord];
+  if (asRecord.update !== undefined) {
+    candidates.push(asRecord.update);
+  }
+  if (
+    asRecord.update !== null &&
+    typeof asRecord.update === "object" &&
+    "content" in (asRecord.update as object)
+  ) {
+    candidates.push((asRecord.update as { content?: unknown }).content);
+  }
+  for (const candidate of candidates) {
+    if (candidate === null || typeof candidate !== "object") {
+      continue;
+    }
+    const text = (candidate as { text?: unknown; content?: unknown }).text;
+    if (typeof text === "string" && text.length > 0) {
+      return text.length <= maxChars ? text : `${text.slice(0, maxChars)}…`;
+    }
+    const content = (candidate as { content?: unknown }).content;
+    if (typeof content === "string" && content.length > 0) {
+      return content.length <= maxChars ? content : `${content.slice(0, maxChars)}…`;
+    }
+    if (content !== null && typeof content === "object" && "text" in content) {
+      const nested = (content as { text?: unknown }).text;
+      if (typeof nested === "string" && nested.length > 0) {
+        return nested.length <= maxChars ? nested : `${nested.slice(0, maxChars)}…`;
+      }
+    }
+  }
+  // Fallback: search JSON string for short runs (tests emit plain "late after cancel").
+  try {
+    const encoded = JSON.stringify(rawPayload);
+    if (typeof encoded === "string" && encoded.length > 0 && encoded.length <= maxChars * 2) {
+      const textMatch = /"text"\s*:\s*"((?:\\.|[^"\\])*)"/.exec(encoded);
+      if (textMatch?.[1]) {
+        const unescaped = textMatch[1].replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+        return unescaped.length <= maxChars ? unescaped : `${unescaped.slice(0, maxChars)}…`;
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return undefined;
+}
 
 /** Format completed tool titles for auto-stop recovery copy (no CoT). */
 export function formatGrokSilentTurnWorkSummary(
@@ -1223,13 +1303,17 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             ) {
               ctx.lastTurnActivityAtMs = yield* Clock.currentTimeMillis;
             }
-            if (
-              event._tag === "PlanUpdated" ||
-              event._tag === "ToolCallUpdated" ||
-              event._tag === "ContentDelta" ||
-              event._tag === "ThoughtDelta"
-            ) {
+            // High-frequency text/thought deltas: log a short text preview only.
+            // Full raw payloads + every chunk balloon provider logs and starve
+            // the UI stream under disk IO (SOU-399 companion perf).
+            if (event._tag === "PlanUpdated" || event._tag === "ToolCallUpdated") {
               yield* logNative(ctx.threadId, "session/update", event.rawPayload);
+            } else if (event._tag === "ContentDelta" || event._tag === "ThoughtDelta") {
+              yield* logNative(
+                ctx.threadId,
+                "session/update",
+                slimGrokStreamDeltaNativeLog(event._tag, event.rawPayload),
+              );
             }
 
             if (event._tag === "ModeChanged") {

@@ -30,10 +30,47 @@ export function isTransportConnectionErrorMessage(message: string | null | undef
 }
 
 /**
- * Strip transport connection errors from user-facing error messages.
- * Returns `null` for transport errors so the UI can distinguish between
- * real errors and transient connection issues.
+ * Environment session-unavailable copy the user must see after a failed Send.
+ * These used to be stripped as "transport noise", which made dead sends look
+ * like the UI ignored the message entirely (no banner, no Working).
+ */
+const ACTIONABLE_ENVIRONMENT_DISCONNECT_PATTERNS = [
+  /\bis not connected\.$/i,
+  /\bcould not establish a WebSocket connection\.$/i,
+] as const;
+
+export function isActionableEnvironmentDisconnectMessage(
+  message: string | null | undefined,
+): boolean {
+  if (typeof message !== "string") {
+    return false;
+  }
+  const normalizedMessage = message.trim();
+  if (normalizedMessage.length === 0) {
+    return false;
+  }
+  return ACTIONABLE_ENVIRONMENT_DISCONNECT_PATTERNS.some((pattern) =>
+    pattern.test(normalizedMessage),
+  );
+}
+
+/**
+ * Strip transient transport noise from user-facing thread errors.
+ * Returns `null` for low-signal socket churn so the UI can stay quiet.
+ *
+ * Explicit environment-unavailable messages (`is not connected`, failed
+ * WebSocket establish) are preserved so Send failures are never silent.
  */
 export function sanitizeThreadErrorMessage(message: string | null | undefined): string | null {
-  return isTransportConnectionErrorMessage(message) ? null : (message ?? null);
+  if (typeof message !== "string") {
+    return null;
+  }
+  const normalizedMessage = message.trim();
+  if (normalizedMessage.length === 0) {
+    return null;
+  }
+  if (isActionableEnvironmentDisconnectMessage(normalizedMessage)) {
+    return normalizedMessage;
+  }
+  return isTransportConnectionErrorMessage(normalizedMessage) ? null : normalizedMessage;
 }

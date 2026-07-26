@@ -38,6 +38,7 @@ import {
   isGrokLongRunningToolKind,
   makeGrokAdapter,
   resolveGrokOpenToolWatchdogMs,
+  slimGrokStreamDeltaNativeLog,
 } from "./GrokAdapter.ts";
 const decodeGrokSettings = Schema.decodeSync(GrokSettings);
 
@@ -96,9 +97,11 @@ it("classifies Grok silence by active tool, completed tool loop, or pure thinkin
     }),
     "open-tool",
   );
+  // SOU-399: multi-tool planning gaps of several minutes must not hard-stop.
+  // Default post-tool ceiling matches pure-think (15m), not the old 2m knife.
   assert.equal(
     classifyGrokSilentTurn({
-      silentMs: 119_999,
+      silentMs: 122_000,
       openToolCount: 0,
       hasObservedToolCall: true,
     }),
@@ -106,7 +109,15 @@ it("classifies Grok silence by active tool, completed tool loop, or pure thinkin
   );
   assert.equal(
     classifyGrokSilentTurn({
-      silentMs: 120_000,
+      silentMs: 5 * 60_000,
+      openToolCount: 0,
+      hasObservedToolCall: true,
+    }),
+    null,
+  );
+  assert.equal(
+    classifyGrokSilentTurn({
+      silentMs: 15 * 60_000,
       openToolCount: 0,
       hasObservedToolCall: true,
     }),
@@ -156,6 +167,19 @@ it("classifies Grok silence by active tool, completed tool loop, or pure thinkin
     }),
     /Work before stop: Terminal; Grep\./,
   );
+});
+
+it("slims high-frequency stream delta native logs but keeps text previews", () => {
+  const slim = slimGrokStreamDeltaNativeLog("ContentDelta", {
+    sessionId: "s1",
+    update: {
+      sessionUpdate: "agent_message_chunk",
+      content: { type: "text", text: "late after cancel" },
+    },
+  });
+  assert.equal(slim.kind, "ContentDelta");
+  assert.equal(slim.textPreview, "late after cancel");
+  assert.isFalse(JSON.stringify(slim).includes("sessionUpdate"));
 });
 
 it("refuses to steer into a cancelled/interrupted turn after Stop", () => {

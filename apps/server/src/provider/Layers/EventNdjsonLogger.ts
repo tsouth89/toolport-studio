@@ -21,12 +21,26 @@ import * as SynchronizedRef from "effect/SynchronizedRef";
 
 import { toSafeThreadAttachmentSegment } from "../../attachmentStore.ts";
 
-const DEFAULT_MAX_BYTES = 10 * 1024 * 1024;
-const DEFAULT_MAX_FILES = 10;
+const DEFAULT_MAX_BYTES = 5 * 1024 * 1024;
+const DEFAULT_MAX_FILES = 6;
 const DEFAULT_BATCH_WINDOW_MS = 200;
+/** Cap a single log line so tool dumps and stream noise cannot thrash disk. */
+const DEFAULT_MAX_LINE_CHARS = 8 * 1024;
 const GLOBAL_THREAD_SEGMENT = "_global";
 const LOG_SCOPE = "provider-observability";
 const encodeUnknownJsonString = Schema.encodeUnknownEffect(Schema.UnknownFromJsonString);
+
+/** Truncate oversized serialized log lines (exported for unit tests). */
+export function truncateProviderLogLine(
+  message: string,
+  maxChars: number = DEFAULT_MAX_LINE_CHARS,
+): string {
+  if (maxChars <= 0 || message.length <= maxChars) {
+    return message;
+  }
+  const omitted = message.length - maxChars;
+  return `${message.slice(0, maxChars)}…[truncated ${omitted} chars]`;
+}
 
 export type EventNdjsonStream = "native" | "canonical" | "orchestration";
 
@@ -41,6 +55,8 @@ export interface EventNdjsonLoggerOptions {
   readonly maxBytes?: number;
   readonly maxFiles?: number;
   readonly batchWindowMs?: number;
+  /** Max characters of serialized JSON per log line (default 8KiB). */
+  readonly maxLineChars?: number;
 }
 
 interface ThreadWriter {
@@ -175,6 +191,7 @@ export const makeEventNdjsonLogger = Effect.fn("makeEventNdjsonLogger")(function
   const maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
   const maxFiles = options.maxFiles ?? DEFAULT_MAX_FILES;
   const batchWindowMs = options.batchWindowMs ?? DEFAULT_BATCH_WINDOW_MS;
+  const maxLineChars = options.maxLineChars ?? DEFAULT_MAX_LINE_CHARS;
   const streamLabel = resolveStreamLabel(options.stream);
 
   const directoryReady = yield* Effect.sync(() => {
@@ -257,7 +274,7 @@ export const makeEventNdjsonLogger = Effect.fn("makeEventNdjsonLogger")(function
       return;
     }
 
-    yield* writer.writeMessage(message);
+    yield* writer.writeMessage(truncateProviderLogLine(message, maxLineChars));
   });
 
   const close = Effect.fn("close")(function* () {

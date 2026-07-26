@@ -6,10 +6,9 @@
  * silent will surface the same quiet signal.
  *
  * Product note (SOU-386 / SOU-399): this is a **soft quiet notice only**, not a
- * hang kill. Server Grok silence auto-stop (`GrokAdapter` post-tool ~2m) has
- * already false-stopped legitimate multi-tool dogfood turns — do not add a
- * second client-side interrupt here. Hard recovery belongs in liveness-aware
- * server policy (SOU-399), not wall-clock UI panic.
+ * hang kill. Server post-tool silence uses the long (15m) ceiling so multi-tool
+ * planning gaps are not false-killed — do not add a second client-side interrupt
+ * here. Hard recovery stays server-side (stuck open tools / process death).
  */
 
 /**

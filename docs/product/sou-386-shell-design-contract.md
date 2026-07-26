@@ -106,15 +106,16 @@ after ~122s post-tool silence (`post-tool` watchdog in `GrokAdapter`). Message:
 > Grok stopped responding after its last tool completed. The turn was stopped
 > automatically after 122s with no progress — Send again to continue.
 
-Tracked as **SOU-399** (child of SOU-354): hard wall-clock silence kill is wrong for
-healthy multi-tool turns. Soft quiet UI is fine; auto-interrupt needs liveness-aware
-signals (session/prompt still open, tool lifecycle, process health) — not “no tokens
-for ~2m after a tool finished.”
+Tracked as **SOU-399** (child of SOU-354). **Shipped direction (P0):** post-tool silence
+uses the **same long ceiling as pure-think (15m)** so multi-tool planning gaps are not
+false-killed; open-tool stuck thresholds (90s / 15m execute) stay short; soft quiet UI
+unchanged. Companion P0: cap native provider log lines / omit high-frequency stream
+payloads; surface env `is not connected` on failed Send (no longer sanitized silent).
 
-| Layer                                 | Role today                                                                 | Target                                                                    |
-| ------------------------------------- | -------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
-| UI quiet notice (`stalledTurn.ts`)    | Soft, 2m / 10m long tools                                                  | Keep calm; never panic-kill                                               |
-| Grok silence watchdog (`GrokAdapter`) | Hard auto-stop (90s open non-execute, **2m post-tool**, 15m think/execute) | Kill only true wedges; post-tool gaps must tolerate multi-minute planning |
+| Layer                                 | Role                                                                        | Notes                                                                       |
+| ------------------------------------- | --------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| UI quiet notice (`stalledTurn.ts`)    | Soft, 2m / 10m long tools                                                   | Keep calm; never panic-kill                                                 |
+| Grok silence watchdog (`GrokAdapter`) | Hard auto-stop (90s open non-execute, **15m post-tool**, 15m think/execute) | Post-tool aligned with think (SOU-399); kill true wedges, not planning gaps |
 
-Shell PR sequence continues (PR 3 → 4), but **PR 5 dogfood acceptance requires SOU-399**
-(or equivalent) so Studio can be used for real multi-tool work without false stops.
+Shell PR sequence continues (PR 3 → 4). Further liveness (process-health-only hard kill)
+can still tighten SOU-399; the 2m false-stop path is closed.

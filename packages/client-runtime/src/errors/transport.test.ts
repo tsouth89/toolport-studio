@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { isTransportConnectionErrorMessage, sanitizeThreadErrorMessage } from "./transport.ts";
+import {
+  isActionableEnvironmentDisconnectMessage,
+  isTransportConnectionErrorMessage,
+  sanitizeThreadErrorMessage,
+} from "./transport.ts";
 
 describe("isTransportConnectionErrorMessage", () => {
   it("returns true for SocketCloseError", () => {
@@ -53,9 +57,31 @@ describe("isTransportConnectionErrorMessage", () => {
   });
 });
 
+describe("isActionableEnvironmentDisconnectMessage", () => {
+  it("recognizes env session unavailable copy", () => {
+    expect(isActionableEnvironmentDisconnectMessage("Local is not connected.")).toBe(true);
+    expect(
+      isActionableEnvironmentDisconnectMessage("Local could not establish a WebSocket connection."),
+    ).toBe(true);
+  });
+
+  it("ignores generic socket noise", () => {
+    expect(isActionableEnvironmentDisconnectMessage("SocketCloseError: oops")).toBe(false);
+    expect(isActionableEnvironmentDisconnectMessage("ping timeout")).toBe(false);
+  });
+});
+
 describe("sanitizeThreadErrorMessage", () => {
-  it("strips transport errors", () => {
+  it("strips low-signal transport errors", () => {
     expect(sanitizeThreadErrorMessage("SocketCloseError: oops")).toBeNull();
+    expect(sanitizeThreadErrorMessage("ping timeout")).toBeNull();
+  });
+
+  it("preserves environment not-connected so dead sends are not silent", () => {
+    expect(sanitizeThreadErrorMessage("Local is not connected.")).toBe("Local is not connected.");
+    expect(
+      sanitizeThreadErrorMessage("Test environment could not establish a WebSocket connection."),
+    ).toBe("Test environment could not establish a WebSocket connection.");
   });
 
   it("preserves non-transport errors", () => {

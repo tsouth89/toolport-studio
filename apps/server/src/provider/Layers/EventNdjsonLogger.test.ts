@@ -9,7 +9,7 @@ import * as Effect from "effect/Effect";
 import * as Logger from "effect/Logger";
 import * as Schema from "effect/Schema";
 
-import { makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
+import { makeEventNdjsonLogger, truncateProviderLogLine } from "./EventNdjsonLogger.ts";
 
 const encodeUnknownJson = Schema.encodeUnknownSync(Schema.UnknownFromJsonString);
 
@@ -31,6 +31,19 @@ function parseLogLine(line: string) {
     payload,
   };
 }
+
+describe("truncateProviderLogLine", () => {
+  it("leaves short lines alone", () => {
+    assert.equal(truncateProviderLogLine("hello", 100), "hello");
+  });
+
+  it("truncates oversized lines with a marker", () => {
+    const truncated = truncateProviderLogLine("abcdefghij", 5);
+    assert.equal(truncated.startsWith("abcde"), true);
+    assert.include(truncated, "truncated");
+    assert.isBelow(truncated.length, 40);
+  });
+});
 
 describe("EventNdjsonLogger", () => {
   it.effect("logs bounded diagnostics when an event cannot be serialized", () => {
@@ -184,6 +197,35 @@ describe("EventNdjsonLogger", () => {
           '{"id":"evt-concurrent-1"}',
           '{"id":"evt-concurrent-2"}',
         ]);
+      } finally {
+        NodeFS.rmSync(tempDir, { recursive: true, force: true });
+      }
+    }),
+  );
+
+  it.effect("truncates oversized serialized events before writing", () =>
+    Effect.gen(function* () {
+      const tempDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-provider-log-"));
+      const basePath = NodePath.join(tempDir, "provider-native.ndjson");
+
+      try {
+        const logger = yield* makeEventNdjsonLogger(basePath, {
+          stream: "native",
+          maxLineChars: 80,
+          batchWindowMs: 1,
+        });
+        assert.notEqual(logger, undefined);
+        if (!logger) {
+          return;
+        }
+
+        yield* logger.write({ bulky: "x".repeat(500) }, ThreadId.make("thread-truncate"));
+        yield* logger.close();
+
+        const threadLogPath = NodePath.join(tempDir, "thread-truncate.log");
+        const contents = NodeFS.readFileSync(threadLogPath, "utf8");
+        assert.include(contents, "truncated");
+        assert.notInclude(contents, "x".repeat(200));
       } finally {
         NodeFS.rmSync(tempDir, { recursive: true, force: true });
       }
