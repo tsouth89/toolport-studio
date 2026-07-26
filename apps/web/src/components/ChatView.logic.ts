@@ -103,14 +103,28 @@ export function shouldWriteThreadErrorToCurrentServerThread(input: {
   );
 }
 
-export function buildThreadTurnInterruptInput(thread: Pick<Thread, "id" | "session">): {
+export function buildThreadTurnInterruptInput(
+  thread: Pick<Thread, "id" | "session" | "latestTurn">,
+): {
   threadId: ThreadId;
   turnId?: TurnId;
 } {
-  const runningTurnId = thread.session?.status === "running" ? thread.session.activeTurnId : null;
+  // Include starting + unsettled latest turn so Stop works when projection is
+  // mid-recycle (session not yet "running") or activeTurnId is briefly null.
+  const sessionTurnId =
+    thread.session?.status === "running" || thread.session?.status === "starting"
+      ? thread.session.activeTurnId
+      : null;
+  const latestUnsettledTurnId =
+    thread.latestTurn !== null &&
+    thread.latestTurn !== undefined &&
+    thread.latestTurn.completedAt === null
+      ? thread.latestTurn.turnId
+      : null;
+  const turnId = sessionTurnId ?? latestUnsettledTurnId ?? null;
   return {
     threadId: thread.id,
-    ...(runningTurnId !== null ? { turnId: runningTurnId } : {}),
+    ...(turnId !== null ? { turnId } : {}),
   };
 }
 

@@ -1412,23 +1412,13 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
   it.effect("drops late ACP notifications after a turn is cancelled", () =>
     Effect.gen(function* () {
       const threadId = ThreadId.make("grok-drop-late-cancelled-notifications");
-      const lateNativeUpdate = yield* Deferred.make<void>();
-      const adapter = yield* makeMockTestAdapter(
-        {
-          T3_ACP_HANG_PROMPT_FOREVER: "1",
-          T3_ACP_EMIT_LATE_UPDATE_AFTER_CANCEL: "1",
-        },
-        {
-          nativeEventLogger: {
-            filePath: "memory://grok-cancelled-native-events",
-            write: (record: unknown) =>
-              JSON.stringify(record).includes("late after cancel")
-                ? Deferred.succeed(lateNativeUpdate, undefined).pipe(Effect.asVoid)
-                : Effect.void,
-            close: () => Effect.void,
-          },
-        },
-      );
+      // Content deltas are not written to the native event log (stream perf).
+      // Wait for the mock's post-cancel late update via wall clock, then assert
+      // it never became a runtime content event.
+      const adapter = yield* makeMockTestAdapter({
+        T3_ACP_HANG_PROMPT_FOREVER: "1",
+        T3_ACP_EMIT_LATE_UPDATE_AFTER_CANCEL: "1",
+      });
 
       const runtimeEvents: ProviderRuntimeEvent[] = [];
       const turnStarted = yield* Deferred.make<TurnId>();
@@ -1459,7 +1449,9 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
       const turnId = yield* Deferred.await(turnStarted).pipe(Effect.timeout("2 seconds"));
       yield* adapter.interruptTurn(threadId, turnId).pipe(Effect.timeout("2 seconds"));
       yield* Fiber.join(sendTurnFiber).pipe(Effect.timeout("2 seconds"));
-      yield* Deferred.await(lateNativeUpdate).pipe(Effect.timeout("2 seconds"));
+      // Mock emits the late update shortly after cancel; give the notification
+      // consumer a beat to drop it.
+      yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 300)));
       for (let yieldAttempt = 0; yieldAttempt < 8; yieldAttempt += 1) {
         yield* Effect.yieldNow;
       }

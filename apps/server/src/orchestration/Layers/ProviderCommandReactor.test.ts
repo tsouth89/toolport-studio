@@ -1756,6 +1756,13 @@ describe("ProviderCommandReactor", () => {
     expect(harness.interruptTurn.mock.calls[0]?.[0]).toEqual({
       threadId: "thread-1",
     });
+    // Successful Stop must clear running lifecycle even if the adapter never
+    // emitted turn.completed (Grok long-tool dogfood stuck-session bug).
+    await waitFor(async () => {
+      const readModel = await harness.readModel();
+      const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+      return thread?.session?.status === "ready" && thread.session.activeTurnId === null;
+    });
   });
 
   it("surfaces provider interrupt rejections without clearing the running turn (SOU-376)", async () => {

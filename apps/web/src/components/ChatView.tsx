@@ -5010,7 +5010,17 @@ function ChatViewContent(props: ChatViewProps) {
     sendPreparationAbortRef.current = null;
     resetLocalDispatch();
     sendInFlightRef.current = false;
-    if (phase !== "running") {
+    // Call the server whenever anything looks live — not only phase=running.
+    // Connecting recycle, sticky Working chrome, and unsettled turns all show
+    // Stop; gating only on running made Stop a silent no-op (Grok dogfood).
+    const sessionStatus = activeThread.session?.status;
+    const shouldInterruptServer =
+      phase === "running" ||
+      phase === "connecting" ||
+      isWorking ||
+      sessionStatus === "running" ||
+      sessionStatus === "starting";
+    if (!shouldInterruptServer) {
       return;
     }
     const result = await interruptThreadTurn({

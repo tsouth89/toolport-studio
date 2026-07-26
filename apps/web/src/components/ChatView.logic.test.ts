@@ -208,6 +208,43 @@ describe("buildThreadTurnInterruptInput", () => {
       threadId,
     });
   });
+
+  it("targets a starting session active turn for Stop during recycle", () => {
+    const activeTurnId = TurnId.make("turn-starting");
+    expect(
+      buildThreadTurnInterruptInput(
+        makeThread({
+          session: {
+            ...readySession,
+            status: "starting",
+            activeTurnId,
+          },
+        }),
+      ),
+    ).toEqual({ threadId, turnId: activeTurnId });
+  });
+
+  it("falls back to an unsettled latest turn when session has no activeTurnId", () => {
+    const unsettledTurnId = TurnId.make("turn-unsettled");
+    expect(
+      buildThreadTurnInterruptInput(
+        makeThread({
+          session: {
+            ...readySession,
+            status: "running",
+            activeTurnId: null,
+          },
+          latestTurn: {
+            turnId: unsettledTurnId,
+            state: "running",
+            requestedAt: now,
+            startedAt: now,
+            completedAt: null,
+          },
+        }),
+      ),
+    ).toEqual({ threadId, turnId: unsettledTurnId });
+  });
 });
 
 describe("deriveComposerSendState", () => {

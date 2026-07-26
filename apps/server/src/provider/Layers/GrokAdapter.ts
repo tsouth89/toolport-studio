@@ -815,9 +815,58 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           if (options?.settleAllPrompts) {
             liveCtx.promptsInFlight = 0;
           }
-          // interruptTurn already consumed every prompt slot for this turn. A
-          // late prompt result must neither emit a second terminal event nor
-          // consume a slot belonging to a newer turn on the same ACP session.
+          // Stop/watchdog must still force ready + emit a terminal event when
+          // the live turn id already moved. Otherwise orchestration keeps
+          // session.status=running and Stop looks like a no-op in the UI.
+          const forceTerminalOnInterrupt =
+            options?.settleAllPrompts === true &&
+            options?.emitTurnCompletion !== false &&
+            (options?.errorMessage !== undefined || options?.completedStopReason !== undefined);
+          if (forceTerminalOnInterrupt) {
+            const wasLive =
+              liveCtx.session.status === "running" || liveCtx.session.status === "connecting";
+            // Only emit when still live. A second settle after Stop already
+            // forced ready must not double-fire turn.completed.
+            if (!wasLive) {
+              return;
+            }
+            const updatedAt = yield* nowIso;
+            const { activeTurnId: _cleared, ...readySession } = liveCtx.session;
+            liveCtx.activeTurnId = undefined;
+            liveCtx.session = {
+              ...readySession,
+              status: "ready",
+              updatedAt,
+            };
+            yield* forceCloseOpenTools(liveCtx, threadId, turnId);
+            if (options?.errorMessage !== undefined) {
+              yield* offerRuntimeEvent({
+                type: "turn.completed",
+                ...(yield* makeEventStamp()),
+                provider: PROVIDER,
+                threadId,
+                turnId,
+                payload: {
+                  state: "failed",
+                  errorMessage: options.errorMessage,
+                },
+              });
+            } else if (options?.completedStopReason !== undefined) {
+              yield* offerRuntimeEvent({
+                type: "turn.completed",
+                ...(yield* makeEventStamp()),
+                provider: PROVIDER,
+                threadId,
+                turnId,
+                payload: {
+                  state: options.completedStopReason === "cancelled" ? "cancelled" : "completed",
+                  stopReason: options.completedStopReason ?? null,
+                },
+              });
+            }
+            return;
+          }
+          // Non-interrupt late settlement for a non-live turn: skip quietly.
           if (
             liveCtx.acpSessionId !== expectedAcpSessionId ||
             liveCtx.interruptedTurnIds.has(turnId)
@@ -2551,6 +2600,8 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               ctx.session.status === "running" ||
               ctx.session.status === "connecting"
             ) {
+              // No turn id to attach to turn.completed — still force ready so a
+              // stuck "running" adapter cannot leave the UI unstoppable.
               const updatedAt = yield* nowIso;
               ctx.promptsInFlight = 0;
               ctx.activeTurnId = undefined;

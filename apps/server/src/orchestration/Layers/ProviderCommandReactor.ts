@@ -941,6 +941,41 @@ const make = Effect.gen(function* () {
       .pipe(Effect.catchCause(recoverTurnStartFailure), Effect.forkScoped);
   });
 
+  /**
+   * After a successful provider interrupt, force orchestration session ready.
+   * Grok can clear its local session without turn.completed applying — UI then
+   * stays "running", Working/sidebar keep showing live, and Stop looks dead.
+   */
+  const forceSessionReadyAfterSuccessfulInterrupt = Effect.fnUntraced(function* (input: {
+    readonly threadId: ThreadId;
+    readonly createdAt: string;
+  }) {
+    const thread = yield* resolveThread(input.threadId);
+    const session = thread?.session;
+    if (!session) {
+      return;
+    }
+    if (session.status !== "running" && session.status !== "starting") {
+      return;
+    }
+    yield* setThreadSession({
+      threadId: input.threadId,
+      session: {
+        threadId: session.threadId,
+        status: "ready",
+        providerName: session.providerName,
+        ...(session.providerInstanceId !== undefined
+          ? { providerInstanceId: session.providerInstanceId }
+          : {}),
+        runtimeMode: session.runtimeMode,
+        activeTurnId: null,
+        lastError: null,
+        updatedAt: input.createdAt,
+      },
+      createdAt: input.createdAt,
+    });
+  });
+
   const processTurnInterruptRequested = Effect.fn("processTurnInterruptRequested")(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.turn-interrupt-requested" }>,
   ) {
@@ -966,6 +1001,12 @@ const make = Effect.gen(function* () {
     // Provider rejections must not be swallowed by processDomainEventSafely —
     // Stop would look successful while the turn keeps running (SOU-376).
     yield* providerService.interruptTurn({ threadId: event.payload.threadId }).pipe(
+      Effect.tap(() =>
+        forceSessionReadyAfterSuccessfulInterrupt({
+          threadId: event.payload.threadId,
+          createdAt: event.payload.createdAt,
+        }),
+      ),
       Effect.catchCause((cause) => {
         if (Cause.hasInterruptsOnly(cause)) {
           return Effect.void;
