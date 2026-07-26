@@ -3119,7 +3119,7 @@ function ChatViewContent(props: ChatViewProps) {
   const openToolportMcp = useCallback(() => {
     // Toolport owns the full MCP catalog/control plane (product vision).
     const api = readLocalApi() ?? ensureLocalApi();
-    void api.shell.openExternal("https://toolport.studio").catch(() => {
+    void api.shell.openExternal("https://toolport.app").catch(() => {
       /* best-effort View all */
     });
   }, []);
@@ -5945,7 +5945,8 @@ function ChatViewContent(props: ChatViewProps) {
         <header
           data-chat-header
           className={cn(
-            "bg-background transition-[padding-left] duration-200 ease-linear motion-reduce:transition-none",
+            // SOU-386 PR4: quiet instrument top bar — shell surface + hairline edge
+            "border-b border-border/50 bg-[color-mix(in_srgb,var(--shell-surface,var(--background))_92%,transparent)] transition-[padding-left] duration-200 ease-linear motion-reduce:transition-none",
             isElectron
               ? cn(
                   "workspace-topbar drag-region relative px-3 sm:px-5",
@@ -6117,7 +6118,7 @@ function ChatViewContent(props: ChatViewProps) {
                         showComposerContextStrip && "chat-composer-glass-shell-with-context",
                       )}
                     >
-                      <div className="chat-composer-glass-host relative z-10 w-full rounded-[22px]">
+                      <div className="chat-composer-glass-host relative z-10 w-full rounded-[18px]">
                         {activeThreadId && activeThreadQueueCount > 0 ? (
                           <div className="space-y-1.5 border-b border-border/50 px-3 py-2 text-xs text-muted-foreground sm:px-4">
                             <div className="flex items-center justify-between gap-2">

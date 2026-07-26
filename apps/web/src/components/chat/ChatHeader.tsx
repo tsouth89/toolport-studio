@@ -92,24 +92,24 @@ export const ChatHeader = memo(function ChatHeader({
     primaryEnvironmentId,
   });
   return (
-    <div className="@container/header-actions flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
-      <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden sm:gap-3">
+    <div className="@container/header-actions flex min-w-0 flex-1 items-center gap-1.5 sm:gap-2.5">
+      <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden sm:gap-2.5">
         {/* The project always leads the header: knowing which project a
             thread lives in is priority zero, and the thread title alone
             doesn't answer it. */}
         {activeProjectName ? (
-          <span className="inline-flex shrink-0 items-center gap-2">
+          <span className="inline-flex shrink-0 items-center gap-1.5">
             <span className="inline-flex min-w-0 items-center gap-1.5">
               <ProjectFavicon
                 environmentId={activeThreadEnvironmentId}
                 cwd={activeProjectCwd ?? ""}
                 className="size-3.5"
               />
-              <span className="max-w-40 truncate text-sm font-medium text-muted-foreground">
+              <span className="max-w-40 truncate text-[13px] font-medium text-muted-foreground">
                 {activeProjectName}
               </span>
             </span>
-            <span aria-hidden className="text-muted-foreground/40">
+            <span aria-hidden className="text-muted-foreground/35">
               /
             </span>
           </span>
@@ -119,7 +119,7 @@ export const ChatHeader = memo(function ChatHeader({
             render={
               <h2
                 aria-label={activeThreadTitle}
-                className="min-w-0 flex-1 truncate text-sm font-medium text-foreground"
+                className="min-w-0 flex-1 truncate text-[13px] font-medium tracking-tight text-foreground"
               >
                 {activeThreadTitle}
               </h2>
@@ -131,7 +131,7 @@ export const ChatHeader = memo(function ChatHeader({
       <div
         data-chat-header-actions
         className={cn(
-          "flex shrink-0 items-center justify-end gap-2 @3xl/header-actions:gap-3",
+          "flex shrink-0 items-center justify-end gap-1.5 @3xl/header-actions:gap-2",
           rightPanelOpen ? "pr-0" : "pr-16",
         )}
       >

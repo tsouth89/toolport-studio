@@ -1,9 +1,10 @@
 import { useAtomValue } from "@effect/atom-react";
-import { SettingsIcon } from "lucide-react";
+import { BoxesIcon, CircleHelpIcon, ServerIcon, SettingsIcon } from "lucide-react";
 import { memo, useCallback } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 
 import { APP_BASE_NAME, APP_STAGE_LABEL } from "../../branding";
+import { ensureLocalApi, readLocalApi } from "../../localApi";
 import { cn } from "../../lib/utils";
 import { primaryServerConfigAtom } from "../../state/server";
 import { resolveSidebarStageBadgeLabel } from "../Sidebar.logic";
@@ -17,6 +18,11 @@ import {
   SidebarTrigger,
   useSidebar,
 } from "../ui/sidebar";
+import {
+  formatSidebarChromeNavAriaLabel,
+  resolveSidebarChromeNavItems,
+  type SidebarChromeNavId,
+} from "./SidebarChrome.logic";
 import { SidebarProviderUpdatePill } from "./SidebarProviderUpdatePill";
 import { SidebarUpdatePill } from "./SidebarUpdatePill";
 
@@ -128,31 +134,70 @@ function ToolportStudioMark({ onBlueprint = false }: { onBlueprint?: boolean }) 
   );
 }
 
+function sidebarChromeNavIcon(id: SidebarChromeNavId) {
+  switch (id) {
+    case "providers":
+      return ServerIcon;
+    case "mcp":
+      return BoxesIcon;
+    case "settings":
+      return SettingsIcon;
+    case "help":
+      return CircleHelpIcon;
+  }
+}
+
 export const SidebarChromeFooter = memo(function SidebarChromeFooter() {
   const navigate = useNavigate();
   const { isMobile, setOpenMobile } = useSidebar();
-  const handleSettingsClick = useCallback(() => {
+  const navItems = resolveSidebarChromeNavItems();
+
+  const closeMobileSidebar = useCallback(() => {
     if (isMobile) {
       setOpenMobile(false);
     }
-    void navigate({ to: "/settings" });
-  }, [isMobile, navigate, setOpenMobile]);
+  }, [isMobile, setOpenMobile]);
+
+  const openExternal = useCallback((url: string) => {
+    const api = readLocalApi() ?? ensureLocalApi();
+    void api.shell.openExternal(url).catch(() => {
+      /* best-effort external nav */
+    });
+  }, []);
+
+  const handleNav = useCallback(
+    (item: (typeof navItems)[number]) => {
+      closeMobileSidebar();
+      if (item.kind === "external") {
+        openExternal(item.target);
+        return;
+      }
+      void navigate({ to: item.target });
+    },
+    [closeMobileSidebar, navigate, openExternal],
+  );
 
   return (
-    <SidebarFooter className="p-2">
+    <SidebarFooter className="gap-1.5 border-t border-sidebar-border/60 p-2">
       <SidebarProviderUpdatePill />
       <SidebarUpdatePill />
-      <SidebarMenu>
-        <SidebarMenuItem>
-          <SidebarMenuButton
-            size="sm"
-            className="h-8 items-center gap-2 rounded-md px-2 py-1.5 text-sm font-medium text-sidebar-muted-foreground/80 hover:bg-sidebar-row-hover hover:text-sidebar-foreground"
-            onClick={handleSettingsClick}
-          >
-            <SettingsIcon className="size-4.5 shrink-0" />
-            <span>Settings</span>
-          </SidebarMenuButton>
-        </SidebarMenuItem>
+      <SidebarMenu className="gap-0.5">
+        {navItems.map((item) => {
+          const Icon = sidebarChromeNavIcon(item.id);
+          return (
+            <SidebarMenuItem key={item.id}>
+              <SidebarMenuButton
+                size="sm"
+                className="h-8 items-center gap-2 rounded-md px-2 py-1.5 text-[13px] font-medium text-sidebar-muted-foreground/85 hover:bg-sidebar-row-hover hover:text-sidebar-foreground"
+                aria-label={formatSidebarChromeNavAriaLabel(item.label, item.kind)}
+                onClick={() => handleNav(item)}
+              >
+                <Icon className="size-4 shrink-0 opacity-90" />
+                <span className="truncate">{item.label}</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          );
+        })}
       </SidebarMenu>
     </SidebarFooter>
   );

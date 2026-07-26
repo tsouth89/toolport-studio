@@ -391,8 +391,12 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   }
 
   .chat-composer-glass-shell {
-    --chat-composer-glass-surface: var(--card);
-    --chat-composer-outline: rgb(0 0 0 / 8%);
+    --chat-composer-glass-surface: var(--shell-surface-raised, var(--card));
+    --chat-composer-outline: color-mix(
+      in srgb,
+      var(--shell-border, var(--border)) 55%,
+      transparent
+    );
 
     position: relative;
     isolation: isolate;
@@ -403,7 +407,8 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
     position: absolute;
     z-index: 0;
     inset: 0;
-    border-radius: 22px;
+    /* SOU-386 PR4: slightly tighter dock radius for instrument density */
+    border-radius: 18px;
     background: color-mix(
       in srgb,
       var(--chat-composer-glass-surface) var(--glass-opacity),
@@ -411,6 +416,9 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
     );
     -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturation));
     backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturation));
+    box-shadow:
+      0 0 0 1px var(--chat-composer-outline),
+      0 10px 28px rgb(0 0 0 / 12%);
     content: "";
   }
 

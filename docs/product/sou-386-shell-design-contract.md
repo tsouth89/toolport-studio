@@ -91,11 +91,11 @@ behavior classes keep working.
 - [x] Keep Thinking / progress outside the tool group (never swallow commentary)
   - Pure tool runs stay one timeline row → raised card; commentary stays message rows
 
-## PR 4 slice (shell refinement) — not started
+## PR 4 slice (shell refinement) — done
 
-- Sidebar hierarchy (provider / MCP / settings chrome toward mockup)
-- Composer proportions and instrument-panel density
-- Top chrome polish (without rewriting layout systems)
+- [x] Sidebar hierarchy (Providers / MCP / Settings / Help bottom stack)
+- [x] Composer proportions (tighter glass dock radius + outline density)
+- [x] Top chrome polish (shell surface hairline, denser title actions; no layout rewrite)
 
 ## PR 5 / reliability dependency (blocking daily-driver dogfood)
 
