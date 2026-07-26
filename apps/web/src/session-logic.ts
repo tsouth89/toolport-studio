@@ -12,6 +12,7 @@ import {
   type ThreadId,
   type TurnId,
 } from "@t3tools/contracts";
+import { deriveToolActivityPresentation } from "@t3tools/shared/toolActivity";
 
 import type {
   ChatMessage,
@@ -740,10 +741,10 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   if (title) {
     entry.toolTitle = title;
   }
+  const payloadData = asRecord(payload?.data);
   if (itemType === "mcp_tool_call") {
-    const data = asRecord(payload?.data);
-    if (data?.item !== undefined) {
-      entry.toolData = data.item;
+    if (payloadData?.item !== undefined) {
+      entry.toolData = payloadData.item;
     }
   }
   if (itemType) {
@@ -762,11 +763,61 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   if (toolLifecycleStatus) {
     entry.toolLifecycleStatus = toolLifecycleStatus;
   }
+
+  // Only rewrite when the provider left a generic "Tool" label. Keep specific
+  // titles (bash, grep, MCP server · tool) intact for the timeline.
+  const displaySeed = title ?? activity.summary;
+  if (
+    !isTaskActivity &&
+    (activity.kind === "tool.updated" || activity.kind === "tool.completed") &&
+    isGenericToolLabel(displaySeed)
+  ) {
+    const presentationData: Record<string, unknown> = {
+      ...(payloadData ?? {}),
+      ...(commandPreview.command ? { command: commandPreview.command } : {}),
+      ...(changedFiles.length > 0 ? { locations: changedFiles.map((path) => ({ path })) } : {}),
+    };
+    const presentation = deriveToolActivityPresentation({
+      itemType,
+      title: displaySeed,
+      detail: entry.detail,
+      data: presentationData,
+      fallbackSummary: activity.summary,
+    });
+    if (!isGenericToolLabel(presentation.summary)) {
+      entry.toolTitle = presentation.summary;
+      entry.label = presentation.summary;
+    }
+    if (presentation.detail) {
+      if (!entry.detail || isGenericToolLabel(entry.detail) || entry.detail === title) {
+        entry.detail = presentation.detail;
+      }
+    }
+  }
+
   const collapseKey = deriveToolLifecycleCollapseKey(entry);
   if (collapseKey) {
     entry.collapseKey = collapseKey;
   }
   return entry;
+}
+
+function isGenericToolLabel(value: string | undefined): boolean {
+  if (!value) {
+    return true;
+  }
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/\s+(?:complete|completed|started|updated)\s*$/u, "")
+    .trim();
+  return (
+    normalized.length === 0 ||
+    normalized === "tool" ||
+    normalized === "tool call" ||
+    normalized === "toolcall" ||
+    normalized === "terminal"
+  );
 }
 
 function isTerminalToolLifecycleStatus(status: WorkLogToolLifecycleStatus | undefined): boolean {

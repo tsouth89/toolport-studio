@@ -122,6 +122,7 @@ describe("deriveThreadActivityViewModel", () => {
         workEntry({
           id: "done-implicit",
           label: "grep",
+          toolTitle: "grep",
           createdAt: "2026-07-26T12:00:00.000Z",
         }),
         workEntry({
@@ -206,9 +207,9 @@ describe("deriveThreadActivityViewModel", () => {
     expect(model.recentSteps.map((step) => step.label)).toEqual(["Linear · list issues"]);
     expect(model.recentSteps[0]?.status).toBe("interrupted");
     expect(model.current?.source).toBe("thinking");
-    // Quiet current: no thought dump in the panel.
+    // Quiet current: no thought dump; real last-tool context is OK.
     expect(model.current?.label).toBe("Thinking");
-    expect(model.current?.detail).toBeUndefined();
+    expect(model.current?.detail).toBe("After Linear · list issues");
   });
 
   it("surfaces approval attention without inventing a tool", () => {
@@ -266,8 +267,9 @@ describe("deriveThreadActivityViewModel", () => {
 
     expect(model.current?.source).toBe("working");
     expect(model.current?.label).toBe("Working");
+    expect(model.current?.detail).toBe("After Searched files");
     expect(model.recentSteps[0]?.status).toBe("completed");
-    // Quiet completed rows: no dump under the label.
+    // Dumps stay out; short real context is allowed.
     expect(model.recentSteps[0]?.detail).toBeUndefined();
   });
 
@@ -301,6 +303,7 @@ describe("deriveThreadActivityViewModel", () => {
           id: "cmd",
           label: "Terminal",
           toolTitle: "Terminal",
+          itemType: "command_execution",
           turnId,
           toolLifecycleStatus: "inProgress",
           command: "vp test run apps/web/src/threadActivityViewModel.test.ts",
@@ -310,9 +313,38 @@ describe("deriveThreadActivityViewModel", () => {
       ]),
     });
 
-    expect(model.current?.label).toBe("Terminal");
+    expect(model.current?.label).toBe("Ran command");
     expect(model.current?.detail).toContain("vp test run");
     expect(model.current?.detail).not.toContain("stdout");
+  });
+
+  it("replaces generic Tool labels with itemType and short context", () => {
+    const model = deriveThreadActivityViewModel({
+      isWorking: false,
+      activeTurnStartedAt: null,
+      timelineEntries: workTimeline([
+        workEntry({
+          id: "a",
+          label: "Tool",
+          toolTitle: "Tool",
+          itemType: "web_search",
+          toolLifecycleStatus: "completed",
+          detail: "patternX",
+        }),
+        workEntry({
+          id: "b",
+          label: "Tool",
+          toolTitle: "Tool",
+          itemType: "dynamic_tool_call",
+          toolLifecycleStatus: "completed",
+          changedFiles: ["apps/web/src/threadActivityViewModel.ts"],
+        }),
+      ]),
+    });
+
+    expect(model.recentSteps.map((step) => step.label)).toEqual(["Searched files", "Tool call"]);
+    expect(model.recentSteps[0]?.detail).toBe("patternX");
+    expect(model.recentSteps[1]?.detail).toBe("apps/web/src/threadActivityViewModel.ts");
   });
 
   it("surfaces checkpoint changed files with stats and preview cap", () => {

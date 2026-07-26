@@ -54,4 +54,38 @@ describe("toolActivity", () => {
       summary: "Read file",
     });
   });
+
+  it("humanizes structured tool names instead of generic Tool", () => {
+    expect(
+      deriveToolActivityPresentation({
+        itemType: "dynamic_tool_call",
+        title: "Tool",
+        data: {
+          rawInput: {
+            tool_name: "toolport__toolport_run_script",
+          },
+        },
+        fallbackSummary: "Tool",
+      }),
+    ).toEqual({
+      summary: "Toolport run script",
+    });
+  });
+
+  it("falls back to itemType labels when title is generic", () => {
+    expect(
+      deriveToolActivityPresentation({
+        itemType: "web_search",
+        title: "Tool",
+        data: {
+          kind: "search",
+          rawInput: { pattern: "deriveThreadActivity" },
+        },
+        fallbackSummary: "Tool",
+      }),
+    ).toEqual({
+      summary: "Searched files",
+      detail: "deriveThreadActivity",
+    });
+  });
 });

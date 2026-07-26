@@ -154,6 +154,89 @@ function isEquivalent(left: string | undefined, right: string | undefined): bool
   return normalizedLeft !== undefined && normalizedLeft === normalizedRight;
 }
 
+function isGenericToolTitle(value: string | undefined): boolean {
+  if (!value) {
+    return true;
+  }
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/\s+(?:complete|completed|started|updated)\s*$/u, "")
+    .trim();
+  return (
+    normalized.length === 0 ||
+    normalized === "tool" ||
+    normalized === "tool call" ||
+    normalized === "toolcall" ||
+    normalized === "terminal"
+  );
+}
+
+function humanizeStructuredToolName(value: string): string {
+  let name = value.trim();
+  // Common MCP / Toolport prefixes: server__tool or toolport__toolport_run_script
+  name = name.replace(/^(?:mcp__|toolport__)+/iu, "");
+  name = name.replace(/__/gu, " · ");
+  name = name.replace(/[_-]+/gu, " ");
+  name = name.replace(/\s+/gu, " ").trim();
+  if (name.length === 0) {
+    return value.trim();
+  }
+  return name.charAt(0).toUpperCase() + name.slice(1);
+}
+
+function extractStructuredToolName(data: Record<string, unknown> | undefined): string | undefined {
+  if (!data) {
+    return undefined;
+  }
+  const rawInput = asRecord(data.rawInput);
+  const item = asRecord(data.item);
+  const candidates = [
+    asTrimmedString(rawInput?.tool_name),
+    asTrimmedString(rawInput?.toolName),
+    asTrimmedString(rawInput?.name),
+    asTrimmedString(rawInput?.tool),
+    asTrimmedString(item?.tool),
+    asTrimmedString(item?.name),
+    asTrimmedString(data.toolName),
+    asTrimmedString(data.tool),
+  ];
+  for (const candidate of candidates) {
+    if (candidate && !isGenericToolTitle(candidate)) {
+      return humanizeStructuredToolName(candidate);
+    }
+  }
+  const server = asTrimmedString(item?.server) ?? asTrimmedString(data.server);
+  const tool = asTrimmedString(item?.tool) ?? asTrimmedString(data.tool);
+  if (server && tool) {
+    return `${server} · ${humanizeStructuredToolName(tool)}`;
+  }
+  return undefined;
+}
+
+function defaultSummaryForItemType(
+  itemType: ToolLifecycleItemType | undefined,
+): string | undefined {
+  switch (itemType) {
+    case "command_execution":
+      return "Ran command";
+    case "file_change":
+      return "Changed files";
+    case "web_search":
+      return "Searched files";
+    case "image_view":
+      return "Viewed image";
+    case "mcp_tool_call":
+      return "MCP tool";
+    case "dynamic_tool_call":
+      return "Tool call";
+    case "collab_agent_tool_call":
+      return "Agent tool";
+    default:
+      return undefined;
+  }
+}
+
 function classifyToolAction(input: {
   readonly itemType?: ToolLifecycleItemType | null | undefined;
   readonly title?: string | undefined;
@@ -162,10 +245,15 @@ function classifyToolAction(input: {
   const itemType = input.itemType ?? undefined;
   const kind = asTrimmedString(input.data?.kind)?.toLowerCase();
   const title = asTrimmedString(input.title)?.toLowerCase();
-  if (itemType === "command_execution" || kind === "execute" || title === "terminal") {
+  if (
+    itemType === "command_execution" ||
+    kind === "execute" ||
+    title === "terminal" ||
+    title === "ran command"
+  ) {
     return "command";
   }
-  if (kind === "read" || title === "read file") {
+  if (kind === "read" || title === "read file" || title === "read files") {
     return "read";
   }
   if (
@@ -177,7 +265,14 @@ function classifyToolAction(input: {
   ) {
     return "file_change";
   }
-  if (itemType === "web_search" || kind === "search" || title === "find" || title === "grep") {
+  if (
+    itemType === "web_search" ||
+    kind === "search" ||
+    kind === "fetch" ||
+    title === "find" ||
+    title === "grep" ||
+    title === "searched files"
+  ) {
     return "search";
   }
   return "other";
@@ -205,6 +300,7 @@ export function deriveToolActivityPresentation(
   const data = asRecord(input.data);
   const command = extractToolCommand(data, title);
   const primaryPath = extractPrimaryPath(data);
+  const structuredName = extractStructuredToolName(data);
   const action = classifyToolAction({
     itemType: input.itemType,
     title,
@@ -241,21 +337,55 @@ export function deriveToolActivityPresentation(
     const query =
       asTrimmedString(asRecord(data?.rawInput)?.query) ??
       asTrimmedString(asRecord(data?.rawInput)?.pattern) ??
-      asTrimmedString(asRecord(data?.rawInput)?.searchTerm);
+      asTrimmedString(asRecord(data?.rawInput)?.searchTerm) ??
+      asTrimmedString(asRecord(data?.rawInput)?.path);
     return {
       summary: "Searched files",
       ...(query ? { detail: query } : {}),
     };
   }
 
+  // Prefer a real structured tool name over generic "Tool" titles.
+  if (structuredName) {
+    const subtitle =
+      detail && !isEquivalent(detail, title) && !isEquivalent(detail, structuredName)
+        ? detail
+        : (primaryPath ?? command);
+    return {
+      summary: structuredName,
+      ...(subtitle ? { detail: subtitle } : {}),
+    };
+  }
+
+  if (title && !isGenericToolTitle(title)) {
+    if (detail && !isEquivalent(detail, title) && !isEquivalent(detail, fallbackSummary)) {
+      return { summary: title, detail };
+    }
+    return { summary: title };
+  }
+
+  const itemTypeDefault = defaultSummaryForItemType(input.itemType ?? undefined);
+  if (itemTypeDefault) {
+    const subtitle =
+      primaryPath ?? command ?? (detail && !isGenericToolTitle(detail) ? detail : undefined);
+    return {
+      summary: itemTypeDefault,
+      ...(subtitle ? { detail: subtitle } : {}),
+    };
+  }
+
   if (detail && !isEquivalent(detail, title) && !isEquivalent(detail, fallbackSummary)) {
     return {
-      summary: title ?? fallbackSummary,
+      summary: isGenericToolTitle(fallbackSummary) ? "Tool call" : fallbackSummary,
       detail,
     };
   }
 
+  if (!isGenericToolTitle(fallbackSummary)) {
+    return { summary: fallbackSummary };
+  }
+
   return {
-    summary: title ?? fallbackSummary,
+    summary: "Tool call",
   };
 }

@@ -3,6 +3,7 @@
  * Pure: no React, no store writes. SOU-386 PR2+ (mockup-shaped recent list).
  */
 import type { TurnId } from "@t3tools/contracts";
+import { deriveToolActivityPresentation } from "@t3tools/shared/toolActivity";
 
 import { summarizeTurnDiffStats } from "./lib/turnDiffTree";
 import {
@@ -138,31 +139,119 @@ function stepStatusFromWorkEntry(
   return "info";
 }
 
-function stepLabel(entry: WorkLogEntry): string {
-  return (entry.toolTitle ?? entry.label).trim() || "Step";
+function isGenericActivityLabel(value: string | undefined): boolean {
+  if (!value) {
+    return true;
+  }
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/\s+(?:complete|completed|started|updated)\s*$/u, "")
+    .trim();
+  return (
+    normalized.length === 0 ||
+    normalized === "tool" ||
+    normalized === "tool call" ||
+    normalized === "toolcall" ||
+    normalized === "step" ||
+    normalized === "terminal"
+  );
 }
 
-/** Prefer a short command line over raw tool dumps for Current subtitle. */
+function looksLikeRawDump(value: string): boolean {
+  const trimmed = value.trim();
+  if (trimmed.includes("{") || trimmed.includes("\n") || /["']\s*:\s*["']/.test(trimmed)) {
+    return true;
+  }
+  if (trimmed.length > 96) {
+    return true;
+  }
+  // Long camelCase / jammed identifiers without path separators are dumps, not subtitles.
+  if (
+    trimmed.length > 36 &&
+    !trimmed.includes(" ") &&
+    !trimmed.includes("/") &&
+    !trimmed.includes("\\")
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/** Best human tool name from real entry fields — never invent free text. */
+function stepLabel(entry: WorkLogEntry): string {
+  const raw = (entry.toolTitle ?? entry.label).trim();
+  if (!workLogEntryIsToolLike(entry)) {
+    return raw || "Step";
+  }
+  // Keep specific provider titles (Linear · list issues, bash, grep).
+  if (!isGenericActivityLabel(raw)) {
+    return raw;
+  }
+
+  const presentation = deriveToolActivityPresentation({
+    itemType: entry.itemType,
+    title: entry.toolTitle ?? entry.label,
+    detail: entry.detail,
+    data: {
+      ...(entry.toolData && typeof entry.toolData === "object" ? { item: entry.toolData } : {}),
+      ...(entry.command ? { command: entry.command } : {}),
+      ...(entry.changedFiles && entry.changedFiles.length > 0
+        ? { locations: entry.changedFiles.map((path) => ({ path })) }
+        : {}),
+    },
+    fallbackSummary: entry.label,
+  });
+
+  const summary = presentation.summary.trim();
+  if (!isGenericActivityLabel(summary)) {
+    return summary;
+  }
+  return "Tool call";
+}
+
+/** Prefer a short command / path over raw tool dumps for Current subtitle. */
 function currentStepDetail(entry: WorkLogEntry): string | undefined {
   const command = formatActivityDetail(entry.command);
   if (command) {
     return command;
   }
-  return formatActivityDetail(entry.detail);
+  if (entry.changedFiles?.[0]) {
+    const first = entry.changedFiles[0]!;
+    const extra = entry.changedFiles.length - 1;
+    return formatActivityDetail(extra > 0 ? `${first} +${extra} more` : first);
+  }
+  const detail = entry.detail?.trim();
+  if (!detail || looksLikeRawDump(detail) || isGenericActivityLabel(detail)) {
+    return undefined;
+  }
+  return formatActivityDetail(detail);
 }
 
 /**
- * Mockup recent rows are label + status + time. Body text only on real failures
- * so the list stays quiet.
+ * Recent rows: label + optional short real context (path/command/query).
+ * Failures keep a one-line reason. No JSON dumps.
  */
 function recentStepDetail(
   entry: WorkLogEntry,
   status: ThreadActivityStepStatus,
 ): string | undefined {
-  if (status !== "failed" && status !== "interrupted") {
+  if (status === "failed" || status === "interrupted") {
+    return formatActivityDetail(entry.detail ?? entry.command);
+  }
+  if (entry.command) {
+    return formatActivityDetail(entry.command);
+  }
+  if (entry.changedFiles?.[0]) {
+    const first = entry.changedFiles[0]!;
+    const extra = entry.changedFiles.length - 1;
+    return formatActivityDetail(extra > 0 ? `${first} +${extra} more` : first);
+  }
+  const detail = entry.detail?.trim();
+  if (!detail || looksLikeRawDump(detail) || isGenericActivityLabel(detail)) {
     return undefined;
   }
-  return formatActivityDetail(entry.detail ?? entry.command);
+  return formatActivityDetail(detail);
 }
 
 function toActivityStep(entry: WorkLogEntry, options: { turnActive: boolean }): ThreadActivityStep {
@@ -348,6 +437,14 @@ export function deriveThreadActivityViewModel(input: {
     const thinking = [...workEntries]
       .reverse()
       .find((entry) => entry.tone === "thinking" || entry.sourceActivityKind === "task.progress");
+    const lastFinishedTool = [...workEntries]
+      .reverse()
+      .find(
+        (entry) =>
+          workLogEntryIsToolLike(entry) &&
+          entry.toolLifecycleStatus !== "inProgress" &&
+          stepLabel(entry) !== "Tool call",
+      );
 
     // Only an explicit in-progress tool is Current as a tool. Thinking may
     // label Current while tools are quiet; it is not a Recent milestone.
@@ -360,15 +457,23 @@ export function deriveThreadActivityViewModel(input: {
         source: "tool",
       };
     } else if (thinking) {
-      // Current only: short label, no dump of private chain-of-thought.
+      // No private CoT dump — but we can honestly note the last finished tool.
+      const afterLabel = lastFinishedTool ? stepLabel(lastFinishedTool) : null;
       current = {
         label: "Thinking",
+        ...(afterLabel && !isGenericActivityLabel(afterLabel)
+          ? { detail: `After ${afterLabel}` }
+          : {}),
         startedAt: thinking.createdAt,
         source: "thinking",
       };
     } else {
+      const afterLabel = lastFinishedTool ? stepLabel(lastFinishedTool) : null;
       current = {
         label: "Working",
+        ...(afterLabel && !isGenericActivityLabel(afterLabel)
+          ? { detail: `After ${afterLabel}` }
+          : {}),
         startedAt: input.activeTurnStartedAt,
         source: "working",
       };
