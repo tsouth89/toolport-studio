@@ -1002,6 +1002,8 @@ describe("deriveMessagesTimelineRows", () => {
       hiddenCount: 2,
       expanded: false,
       onlyToolEntries: true,
+      // Mixed tool labels in the hidden slice → generic copy.
+      sharedToolLabel: null,
     });
     expect(expandedRows.map((row) => row.id)).toEqual([
       "work-1",
@@ -1011,6 +1013,40 @@ describe("deriveMessagesTimelineRows", () => {
     ]);
     expect(expandedRows.find((row) => row.kind === "work-toggle")).toMatchObject({
       expanded: true,
+    });
+  });
+
+  it("labels the work-toggle with a shared tool name when hidden rows match", () => {
+    const timelineEntries = Array.from({ length: 4 }, (_, index) => ({
+      id: `work-entry-${index + 1}`,
+      kind: "work" as const,
+      createdAt: `2026-01-01T00:00:0${index}Z`,
+      entry: {
+        id: `work-${index + 1}`,
+        createdAt: `2026-01-01T00:00:0${index}Z`,
+        label: "Read file",
+        toolTitle: "Read file",
+        itemType: "dynamic_tool_call" as const,
+        toolLifecycleStatus: "completed" as const,
+        detail: `src/file-${index}.ts`,
+        tone: "tool" as const,
+      },
+    }));
+
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries,
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    expect(rows.map((row) => row.id)).toEqual(["work-4", "work-toggle:work-entry-1"]);
+    expect(rows.find((row) => row.kind === "work-toggle")).toMatchObject({
+      hiddenCount: 3,
+      onlyToolEntries: true,
+      sharedToolLabel: "Read file",
+      expanded: false,
     });
   });
 });

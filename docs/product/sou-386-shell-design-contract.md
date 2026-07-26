@@ -84,4 +84,6 @@ behavior classes keep working.
 
 - [x] Working-row quiet + View in Activity + real tool/context labels
 - [x] Timeline tool rows use the same `formatWorkLogToolLabel` as Activity
-- [ ] Further collapse / hierarchy for long tool spam (follow-up)
+- [x] Further collapse / hierarchy for long tool spam
+  - Activity: consecutive same-label tools densify (`Read file × 8`) before the cap
+  - Timeline work-toggle: `+N previous Read file` when the hidden slice shares a label

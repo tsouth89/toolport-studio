@@ -250,12 +250,77 @@ function collectWorkEntries(
   return entries;
 }
 
-function selectRecentMilestones(workEntries: ReadonlyArray<WorkLogEntry>): WorkLogEntry[] {
-  const milestones = workEntries.filter(isActivityRecentMilestone);
-  if (milestones.length <= MAX_RECENT_STEPS) {
-    return milestones;
+/** Strip a trailing " × N" so consecutive collapse can re-count cleanly. */
+function activityStepBaseLabel(label: string): string {
+  return label.replace(/\s+×\s+\d+\s*$/u, "").trim();
+}
+
+function mergeActivityStepStatus(
+  left: ThreadActivityStepStatus,
+  right: ThreadActivityStepStatus,
+): ThreadActivityStepStatus {
+  const rank: Record<ThreadActivityStepStatus, number> = {
+    failed: 5,
+    interrupted: 4,
+    running: 3,
+    pending: 2,
+    completed: 1,
+    info: 0,
+  };
+  return rank[left] >= rank[right] ? left : right;
+}
+
+/**
+ * Collapse consecutive same-label completed tools into one denser row
+ * (`Read file × 8`). Running tools stay individual so live work stays visible.
+ * Collapse runs before the mockup cap so 20 reads leave room for other steps.
+ */
+export function collapseConsecutiveActivitySteps(
+  steps: ReadonlyArray<ThreadActivityStep>,
+): ThreadActivityStep[] {
+  const collapsed: ThreadActivityStep[] = [];
+  for (const step of steps) {
+    const prev = collapsed[collapsed.length - 1];
+    const prevBase = prev ? activityStepBaseLabel(prev.label) : "";
+    const stepBase = activityStepBaseLabel(step.label);
+    const canMerge =
+      prev != null &&
+      prev.isToolLike &&
+      step.isToolLike &&
+      prev.status !== "running" &&
+      step.status !== "running" &&
+      prevBase.length > 0 &&
+      prevBase === stepBase;
+
+    if (!canMerge || !prev) {
+      collapsed.push(step);
+      continue;
+    }
+
+    const prevCount = Number(/×\s+(\d+)\s*$/u.exec(prev.label)?.[1] ?? 1);
+    const nextCount = prevCount + 1;
+    collapsed[collapsed.length - 1] = {
+      ...step,
+      label: `${stepBase} × ${nextCount}`,
+      status: mergeActivityStepStatus(prev.status, step.status),
+      // Keep the latest real context (path/command); drop empty.
+      detail: step.detail ?? prev.detail,
+    };
   }
-  return milestones.slice(-MAX_RECENT_STEPS);
+  return collapsed;
+}
+
+function selectRecentActivitySteps(
+  workEntries: ReadonlyArray<WorkLogEntry>,
+  turnActive: boolean,
+): ThreadActivityStep[] {
+  const milestones = workEntries.filter(isActivityRecentMilestone);
+  const steps = milestones.map((entry) => toActivityStep(entry, { turnActive }));
+  const collapsed = collapseConsecutiveActivitySteps(steps);
+  if (collapsed.length <= MAX_RECENT_STEPS) {
+    return collapsed;
+  }
+  return collapsed.slice(-MAX_RECENT_STEPS);
 }
 
 function normalizeRelativePath(pathValue: string): string {
@@ -551,9 +616,7 @@ export function deriveThreadActivityViewModel(input: {
   const unsettledTurnId = input.unsettledTurnId ?? null;
   const turnActive = input.isWorking;
   const workEntries = collectWorkEntries(input.timelineEntries, unsettledTurnId);
-  const recentSteps = selectRecentMilestones(workEntries).map((entry) =>
-    toActivityStep(entry, { turnActive }),
-  );
+  const recentSteps = selectRecentActivitySteps(workEntries, turnActive);
   const preferredTurnId = unsettledTurnId ?? input.latestTurnId ?? null;
   const changedFiles = deriveActivityChangedFiles({
     turnDiffSummaries: input.turnDiffSummaries ?? [],

@@ -14,6 +14,26 @@ import { type MessageId, type OrchestrationLatestTurn, type TurnId } from "@t3to
 
 export const MAX_VISIBLE_WORK_LOG_ENTRIES = 1;
 export const TIMELINE_MINIMAP_ITEM_SPACING = 8;
+
+/**
+ * When a collapsed work group is pure tools and they all share one display
+ * label, surface that label on the toggle (`+7 previous Read file`) instead of
+ * the generic "tool calls" copy.
+ */
+export function sharedToolLabelForWorkEntries(entries: ReadonlyArray<WorkLogEntry>): string | null {
+  if (entries.length === 0) {
+    return null;
+  }
+  if (!entries.every((entry) => workLogEntryIsToolLike(entry))) {
+    return null;
+  }
+  const labels = entries.map((entry) => formatWorkLogToolLabel(entry));
+  const first = labels[0];
+  if (!first || first.length === 0) {
+    return null;
+  }
+  return labels.every((label) => label === first) ? first : null;
+}
 export const TIMELINE_MINIMAP_MIN_ITEMS = 2;
 export const TIMELINE_MINIMAP_MAX_HEIGHT_CSS = "calc(100vh - 18rem)";
 export const TIMELINE_CONTENT_MAX_WIDTH = 768;
@@ -151,6 +171,8 @@ export type MessagesTimelineRow =
       hiddenCount: number;
       expanded: boolean;
       onlyToolEntries: boolean;
+      /** When every hidden tool shares one label (e.g. Read file). */
+      sharedToolLabel: string | null;
     }
   | {
       kind: "turn-fold";
@@ -595,6 +617,14 @@ export function deriveMessagesTimelineRows(input: {
           const hiddenEntries = visibleGroupedEntries.slice(0, -MAX_VISIBLE_WORK_LOG_ENTRIES);
           const visibleEntries = visibleGroupedEntries.slice(-MAX_VISIBLE_WORK_LOG_ENTRIES);
           const renderedEntries = expanded ? [...hiddenEntries, ...visibleEntries] : visibleEntries;
+          const onlyToolEntries = visibleGroupedEntries.every((entry) =>
+            workLogEntryIsToolLike(entry),
+          );
+          // Prefer the shared label of the *hidden* slice so the toggle
+          // describes what is collapsed, not the still-visible latest row.
+          const sharedToolLabel = onlyToolEntries
+            ? sharedToolLabelForWorkEntries(hiddenEntries)
+            : null;
 
           for (const workEntry of renderedEntries) {
             nextRows.push({
@@ -612,7 +642,8 @@ export function deriveMessagesTimelineRows(input: {
             groupId,
             hiddenCount: hiddenEntries.length,
             expanded,
-            onlyToolEntries: visibleGroupedEntries.every((entry) => workLogEntryIsToolLike(entry)),
+            onlyToolEntries,
+            sharedToolLabel,
           });
         }
       }
@@ -737,7 +768,8 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
         a.groupId === bw.groupId &&
         a.hiddenCount === bw.hiddenCount &&
         a.expanded === bw.expanded &&
-        a.onlyToolEntries === bw.onlyToolEntries
+        a.onlyToolEntries === bw.onlyToolEntries &&
+        a.sharedToolLabel === bw.sharedToolLabel
       );
     }
 

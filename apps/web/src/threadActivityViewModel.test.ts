@@ -4,11 +4,13 @@ import { describe, expect, it } from "vite-plus/test";
 import type { TimelineEntry, WorkLogEntry } from "./session-logic";
 import type { TurnDiffSummary } from "./types";
 import {
+  collapseConsecutiveActivitySteps,
   deriveActivityArtifacts,
   deriveActivityChangedFiles,
   deriveActivityMcpStatus,
   deriveThreadActivityViewModel,
   isActivityRecentMilestone,
+  type ThreadActivityStep,
 } from "./threadActivityViewModel";
 
 function workEntry(
@@ -178,6 +180,41 @@ describe("deriveThreadActivityViewModel", () => {
     expect(model.recentSteps).toHaveLength(8);
     expect(model.recentSteps[0]?.label).toBe("Tool 4");
     expect(model.recentSteps[7]?.label).toBe("Tool 11");
+  });
+
+  it("collapses consecutive same-label tools into denser recent steps", () => {
+    const entries = Array.from({ length: 10 }, (_, index) =>
+      workEntry({
+        id: `read-${index}`,
+        label: "Read file",
+        toolTitle: "Read file",
+        itemType: "dynamic_tool_call",
+        toolLifecycleStatus: "completed",
+        detail: `apps/web/src/file-${index}.ts`,
+        createdAt: `2026-07-26T12:00:${String(index).padStart(2, "0")}.000Z`,
+      }),
+    );
+    entries.push(
+      workEntry({
+        id: "cmd",
+        label: "Ran command",
+        toolTitle: "Ran command",
+        itemType: "command_execution",
+        toolLifecycleStatus: "completed",
+        command: "vp test run",
+        createdAt: "2026-07-26T12:00:10.000Z",
+      }),
+    );
+
+    const model = deriveThreadActivityViewModel({
+      isWorking: false,
+      activeTurnStartedAt: null,
+      timelineEntries: workTimeline(entries),
+    });
+
+    // 10 reads collapse to one denser row + the command stays distinct.
+    expect(model.recentSteps.map((step) => step.label)).toEqual(["Read file × 10", "Ran command"]);
+    expect(model.recentSteps[0]?.detail).toBe("apps/web/src/file-9.ts");
   });
 
   it("only treats explicit inProgress tools as the current step", () => {
@@ -605,6 +642,29 @@ describe("deriveActivityArtifacts", () => {
     });
 
     expect(artifacts.map((item) => item.id)).toEqual(["plan-open"]);
+  });
+});
+
+describe("collapseConsecutiveActivitySteps", () => {
+  function step(
+    partial: Partial<ThreadActivityStep> & Pick<ThreadActivityStep, "id" | "label">,
+  ): ThreadActivityStep {
+    return {
+      createdAt: "2026-07-26T12:00:00.000Z",
+      status: "completed",
+      tone: "tool",
+      isToolLike: true,
+      ...partial,
+    };
+  }
+
+  it("does not merge running tools or different labels", () => {
+    const result = collapseConsecutiveActivitySteps([
+      step({ id: "a", label: "Read file", status: "completed" }),
+      step({ id: "b", label: "Read file", status: "running" }),
+      step({ id: "c", label: "Ran command", status: "completed" }),
+    ]);
+    expect(result.map((entry) => entry.label)).toEqual(["Read file", "Read file", "Ran command"]);
   });
 });
 

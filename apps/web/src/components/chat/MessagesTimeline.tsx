@@ -1351,6 +1351,7 @@ function WorkGroupToggleTimelineRow({
   row: Extract<TimelineRow, { kind: "work-toggle" }>;
 }) {
   const ctx = use(TimelineRowCtx);
+  const sharedLabel = row.sharedToolLabel?.trim() || null;
   const labelNoun = row.onlyToolEntries
     ? row.hiddenCount === 1
       ? "tool call"
@@ -1358,6 +1359,12 @@ function WorkGroupToggleTimelineRow({
     : row.hiddenCount === 1
       ? "log entry"
       : "log entries";
+  const collapsedLabel = sharedLabel
+    ? `+${row.hiddenCount} previous ${sharedLabel}`
+    : `+${row.hiddenCount} previous ${labelNoun}`;
+  const expandedLabel = sharedLabel
+    ? "Show fewer"
+    : `Show fewer ${row.onlyToolEntries ? "tool calls" : "log entries"}`;
 
   return (
     <button
@@ -1379,13 +1386,9 @@ function WorkGroupToggleTimelineRow({
         />
       </span>
       {row.expanded ? (
-        <span className="font-medium text-foreground/82">
-          Show fewer {row.onlyToolEntries ? "tool calls" : "log entries"}
-        </span>
+        <span className="font-medium text-foreground/82">{expandedLabel}</span>
       ) : (
-        <span className="font-medium text-foreground/82">
-          +{row.hiddenCount} previous {labelNoun}
-        </span>
+        <span className="font-medium text-foreground/82">{collapsedLabel}</span>
       )}
     </button>
   );
