@@ -1180,6 +1180,35 @@ describe("deriveWorkLogEntries", () => {
     ]);
   });
 
+  it("extracts ACP locations into changedFiles for edit tools", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "acp-edit",
+        kind: "tool.completed",
+        summary: "Tool",
+        payload: {
+          itemType: "file_change",
+          title: "Tool",
+          status: "completed",
+          data: {
+            toolCallId: "edit-1",
+            kind: "edit",
+            locations: [
+              { path: "apps/web/src/threadActivityViewModel.ts" },
+              { path: "apps/web/src/components/ActivityPanel.tsx" },
+            ],
+          },
+        },
+      }),
+    ];
+
+    const [entry] = deriveWorkLogEntries(activities);
+    expect(entry?.changedFiles).toEqual([
+      "apps/web/src/threadActivityViewModel.ts",
+      "apps/web/src/components/ActivityPanel.tsx",
+    ]);
+  });
+
   it("drops duplicated tool detail when it only repeats the title", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({

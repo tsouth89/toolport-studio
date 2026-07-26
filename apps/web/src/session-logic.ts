@@ -1370,9 +1370,26 @@ function extractWorkLogRequestKind(
   return requestKindFromRequestType(payload?.requestType) ?? undefined;
 }
 
+function looksLikeFilePath(value: string): boolean {
+  const trimmed = value.trim();
+  if (trimmed.length === 0 || trimmed.length > 512) {
+    return false;
+  }
+  // Reject obvious non-paths (JSON blobs, multi-line dumps, pure prose).
+  if (trimmed.includes("\n") || trimmed.includes("{") || /\s{2,}/.test(trimmed)) {
+    return false;
+  }
+  return (
+    trimmed.includes("/") ||
+    trimmed.includes("\\") ||
+    trimmed.startsWith(".") ||
+    /\.[a-z0-9]{1,12}$/i.test(trimmed)
+  );
+}
+
 function pushChangedFile(target: string[], seen: Set<string>, value: unknown) {
   const normalized = asTrimmedString(value);
-  if (!normalized || seen.has(normalized)) {
+  if (!normalized || seen.has(normalized) || !looksLikeFilePath(normalized)) {
     return;
   }
   seen.add(normalized);
@@ -1385,6 +1402,10 @@ function collectChangedFiles(value: unknown, target: string[], seen: Set<string>
   }
   if (Array.isArray(value)) {
     for (const entry of value) {
+      if (typeof entry === "string") {
+        pushChangedFile(target, seen, entry);
+        continue;
+      }
       collectChangedFiles(entry, target, seen, depth + 1);
       if (target.length >= 12) {
         return;
@@ -1405,7 +1426,13 @@ function collectChangedFiles(value: unknown, target: string[], seen: Set<string>
   pushChangedFile(target, seen, record.newPath);
   pushChangedFile(target, seen, record.oldPath);
 
+  // ACP tool calls put paths under `locations` (and sometimes rawInput).
+  // Missing `locations` left Activity "Changed files" empty while Recent
+  // still showed "Changed files" tool rows from kind/title presentation.
   for (const nestedKey of [
+    "locations",
+    "rawInput",
+    "rawOutput",
     "item",
     "result",
     "input",
@@ -1431,6 +1458,11 @@ function extractChangedFiles(payload: Record<string, unknown> | null): string[] 
   const changedFiles: string[] = [];
   const seen = new Set<string>();
   collectChangedFiles(asRecord(payload?.data), changedFiles, seen, 0);
+  // Some providers put a single path only in detail / title presentation seed.
+  if (changedFiles.length === 0 && payload) {
+    pushChangedFile(changedFiles, seen, payload.detail);
+    pushChangedFile(changedFiles, seen, payload.title);
+  }
   return changedFiles;
 }
 

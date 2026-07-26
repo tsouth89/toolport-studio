@@ -331,23 +331,57 @@ function pickCheckpointSummary(
   })[0]!;
 }
 
+function looksLikeActivityFilePath(value: string): boolean {
+  const trimmed = value.trim();
+  if (trimmed.length === 0 || trimmed.length > 512) {
+    return false;
+  }
+  if (trimmed.includes("\n") || trimmed.includes("{")) {
+    return false;
+  }
+  return (
+    trimmed.includes("/") ||
+    trimmed.includes("\\") ||
+    trimmed.startsWith(".") ||
+    /\.[a-z0-9]{1,12}$/i.test(trimmed)
+  );
+}
+
 function collectWorkLogChangedPaths(
   workEntries: ReadonlyArray<WorkLogEntry>,
   preferredTurnId: TurnId | null,
 ): string[] {
   const seen = new Set<string>();
   const paths: string[] = [];
+  const push = (raw: string | undefined) => {
+    if (!raw) {
+      return;
+    }
+    const path = normalizeRelativePath(raw);
+    if (path.length === 0 || seen.has(path) || !looksLikeActivityFilePath(path)) {
+      return;
+    }
+    seen.add(path);
+    paths.push(path);
+  };
+
   for (const entry of workEntries) {
     if (preferredTurnId != null && entry.turnId != null && entry.turnId !== preferredTurnId) {
       continue;
     }
     for (const raw of entry.changedFiles ?? []) {
-      const path = normalizeRelativePath(raw);
-      if (path.length === 0 || seen.has(path)) {
-        continue;
-      }
-      seen.add(path);
-      paths.push(path);
+      push(raw);
+    }
+    // Fallback: presentation often puts the primary path in detail when the
+    // provider only sent ACP locations (and older clients omitted changedFiles).
+    const label = (entry.toolTitle ?? entry.label).trim().toLowerCase();
+    const isFileEditTool =
+      entry.itemType === "file_change" ||
+      label === "changed files" ||
+      label === "edit file" ||
+      label === "write file";
+    if (isFileEditTool) {
+      push(entry.detail);
     }
   }
   return paths;

@@ -416,6 +416,44 @@ describe("deriveThreadActivityViewModel", () => {
       "docs/bar.md",
     ]);
   });
+
+  it("surfaces Changed files section from edit tool detail path when locations were lost", () => {
+    const turnId = TurnId.make("turn-detail-path");
+    const model = deriveThreadActivityViewModel({
+      isWorking: true,
+      activeTurnStartedAt: "2026-07-26T12:00:00.000Z",
+      unsettledTurnId: turnId,
+      latestTurnId: turnId,
+      turnDiffSummaries: [],
+      timelineEntries: workTimeline([
+        workEntry({
+          id: "edit-a",
+          label: "Changed files",
+          toolTitle: "Changed files",
+          itemType: "file_change",
+          turnId,
+          toolLifecycleStatus: "completed",
+          detail: "apps/web/src/threadActivityViewModel.ts",
+        }),
+        workEntry({
+          id: "edit-b",
+          label: "Changed files",
+          toolTitle: "Changed files",
+          itemType: "file_change",
+          turnId,
+          toolLifecycleStatus: "completed",
+          detail: "apps/web/src/components/ActivityPanel.tsx",
+        }),
+      ]),
+    });
+
+    expect(model.changedFiles?.source).toBe("work-log");
+    expect(model.changedFiles?.fileCount).toBe(2);
+    expect(model.changedFiles?.files.map((file) => file.path)).toEqual([
+      "apps/web/src/threadActivityViewModel.ts",
+      "apps/web/src/components/ActivityPanel.tsx",
+    ]);
+  });
 });
 
 describe("deriveActivityChangedFiles", () => {
