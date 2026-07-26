@@ -35,7 +35,9 @@ import {
   classifyGrokSilentTurn,
   formatGrokSilentTurnWorkSummary,
   grokPromptSettlementBelongsToContext,
+  isGrokLongRunningToolKind,
   makeGrokAdapter,
+  resolveGrokOpenToolWatchdogMs,
 } from "./GrokAdapter.ts";
 const decodeGrokSettings = Schema.decodeSync(GrokSettings);
 
@@ -67,6 +69,32 @@ it("classifies Grok silence by active tool, completed tool loop, or pure thinkin
       hasObservedToolCall: true,
     }),
     null,
+  );
+  // Execute tools get a longer ceiling; 90s is not enough to kill them.
+  assert.isTrue(isGrokLongRunningToolKind("execute"));
+  assert.isFalse(isGrokLongRunningToolKind("search"));
+  assert.equal(resolveGrokOpenToolWatchdogMs({ openToolKinds: ["execute"] }), 15 * 60_000);
+  assert.equal(resolveGrokOpenToolWatchdogMs({ openToolKinds: ["search"] }), 90_000);
+  assert.equal(resolveGrokOpenToolWatchdogMs({ openToolKinds: ["execute", "search"] }), 90_000);
+  assert.equal(
+    classifyGrokSilentTurn({
+      silentMs: 5_000,
+      openToolSilentMs: 120_000,
+      openToolCount: 1,
+      openToolKinds: ["execute"],
+      hasObservedToolCall: true,
+    }),
+    null,
+  );
+  assert.equal(
+    classifyGrokSilentTurn({
+      silentMs: 5_000,
+      openToolSilentMs: 15 * 60_000,
+      openToolCount: 1,
+      openToolKinds: ["execute"],
+      hasObservedToolCall: true,
+    }),
+    "open-tool",
   );
   assert.equal(
     classifyGrokSilentTurn({
@@ -931,6 +959,8 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
         {
           silentTurnWatchdog: {
             openToolMs: 300,
+            // Mock uses execute tools; without this they would wait 15m.
+            openExecuteToolMs: 300,
             postToolMs: 30_000,
             thinkMs: 30_000,
             pollMs: 50,

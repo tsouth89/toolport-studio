@@ -82,9 +82,15 @@ const GROK_RESUME_VERSION = 1 as const;
 const GROK_CONTEXT_REHYDRATION_MAX_CHARS = 60_000;
 /**
  * Auto-stop only when a tool is still open and nothing streams (option C).
- * Pure thinking without open tools is allowed much longer.
+ * Applies to non-execute tools (MCP, search, etc.) that should not sit silent.
  */
 const GROK_SILENT_OPEN_TOOL_WATCHDOG_MS = 90_000;
+/**
+ * Shell/execute tools often run for minutes with no intermediate ACP updates
+ * (compile, install, long scripts). Allow much longer before treating them as
+ * stuck — still shorter than pure-think so a wedged bash cannot hang forever.
+ */
+const GROK_SILENT_OPEN_EXECUTE_TOOL_WATCHDOG_MS = 15 * 60_000;
 /**
  * Grok occasionally leaves the prompt RPC pending after a tool has already
  * completed. This is distinct from a legitimate long initial think: once the
@@ -107,7 +113,10 @@ const GROK_PENDING_APPROVAL_TIMEOUT_MS = 3 * 60_000;
 const GROK_PENDING_USER_INPUT_TIMEOUT_MS = 5 * 60_000;
 
 export type GrokSilentTurnWatchdogConfig = {
+  /** Non-execute open tools (MCP, etc.): short stuck threshold. */
   readonly openToolMs: number;
+  /** Execute/shell open tools: long threshold for real long-running commands. */
+  readonly openExecuteToolMs: number;
   readonly postToolMs: number;
   readonly thinkMs: number;
   readonly pollMs: number;
@@ -115,12 +124,37 @@ export type GrokSilentTurnWatchdogConfig = {
 
 const DEFAULT_GROK_SILENT_TURN_WATCHDOG: GrokSilentTurnWatchdogConfig = {
   openToolMs: GROK_SILENT_OPEN_TOOL_WATCHDOG_MS,
+  openExecuteToolMs: GROK_SILENT_OPEN_EXECUTE_TOOL_WATCHDOG_MS,
   postToolMs: GROK_SILENT_POST_TOOL_WATCHDOG_MS,
   thinkMs: GROK_SILENT_THINK_WATCHDOG_MS,
   pollMs: GROK_SILENT_TURN_WATCHDOG_POLL_MS,
 };
 
 export type GrokSilentTurnKind = "open-tool" | "post-tool" | "thinking" | null;
+
+/** ACP execute/shell tools may legitimately run long without intermediate updates. */
+export function isGrokLongRunningToolKind(kind: string | undefined): boolean {
+  return kind === "execute";
+}
+
+/**
+ * Pick open-tool silence threshold from the kinds of tools still open.
+ * Any non-execute open tool keeps the short 90s path; only pure-execute sets
+ * use the longer execute ceiling.
+ */
+export function resolveGrokOpenToolWatchdogMs(input: {
+  readonly openToolKinds: ReadonlyArray<string | undefined>;
+  readonly thresholds?: Partial<GrokSilentTurnWatchdogConfig>;
+}): number {
+  const openToolMs = input.thresholds?.openToolMs ?? GROK_SILENT_OPEN_TOOL_WATCHDOG_MS;
+  const openExecuteToolMs =
+    input.thresholds?.openExecuteToolMs ?? GROK_SILENT_OPEN_EXECUTE_TOOL_WATCHDOG_MS;
+  if (input.openToolKinds.length === 0) {
+    return openToolMs;
+  }
+  const allExecute = input.openToolKinds.every((kind) => isGrokLongRunningToolKind(kind));
+  return allExecute ? openExecuteToolMs : openToolMs;
+}
 
 /**
  * Classify a silent Grok turn for auto-stop.
@@ -139,15 +173,29 @@ export function classifyGrokSilentTurn(input: {
    */
   readonly openToolSilentMs?: number;
   readonly openToolCount: number;
+  /**
+   * Kinds of currently open tools (one entry per open toolCallId). Used to
+   * choose short vs execute open-tool thresholds.
+   */
+  readonly openToolKinds?: ReadonlyArray<string | undefined>;
   readonly hasObservedToolCall: boolean;
   readonly thresholds?: Partial<GrokSilentTurnWatchdogConfig>;
 }): GrokSilentTurnKind {
-  const openToolMs = input.thresholds?.openToolMs ?? GROK_SILENT_OPEN_TOOL_WATCHDOG_MS;
   const postToolMs = input.thresholds?.postToolMs ?? GROK_SILENT_POST_TOOL_WATCHDOG_MS;
   const thinkMs = input.thresholds?.thinkMs ?? GROK_SILENT_THINK_WATCHDOG_MS;
   const openToolSilentMs = input.openToolSilentMs ?? input.silentMs;
-  if (input.openToolCount > 0 && openToolSilentMs >= openToolMs) {
-    return "open-tool";
+  if (input.openToolCount > 0) {
+    const kinds =
+      input.openToolKinds ??
+      // Unknown kinds → short threshold (safer for stuck MCP).
+      Array.from({ length: input.openToolCount }, () => undefined);
+    const openToolMs = resolveGrokOpenToolWatchdogMs({
+      openToolKinds: kinds,
+      thresholds: input.thresholds,
+    });
+    if (openToolSilentMs >= openToolMs) {
+      return "open-tool";
+    }
   }
   if (input.openToolCount === 0 && input.hasObservedToolCall && input.silentMs >= postToolMs) {
     return "post-tool";
@@ -273,6 +321,8 @@ interface GrokSessionContext {
   openToolCallIds: Set<string>;
   /** Titles for open tools (force-close + errors). */
   openToolTitles: Map<string, string>;
+  /** ACP tool kinds for open tools (execute vs short-timeout tools). */
+  openToolKinds: Map<string, string | undefined>;
   /** Whether the active prompt has entered a tool loop, including completed tools. */
   hasObservedToolCall: boolean;
   /** Best-effort title of the most recent open tool (for logs / errors). */
@@ -528,6 +578,9 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
     const silentTurnWatchdog: GrokSilentTurnWatchdogConfig = {
       openToolMs:
         options?.silentTurnWatchdog?.openToolMs ?? DEFAULT_GROK_SILENT_TURN_WATCHDOG.openToolMs,
+      openExecuteToolMs:
+        options?.silentTurnWatchdog?.openExecuteToolMs ??
+        DEFAULT_GROK_SILENT_TURN_WATCHDOG.openExecuteToolMs,
       postToolMs:
         options?.silentTurnWatchdog?.postToolMs ?? DEFAULT_GROK_SILENT_TURN_WATCHDOG.postToolMs,
       thinkMs: options?.silentTurnWatchdog?.thinkMs ?? DEFAULT_GROK_SILENT_TURN_WATCHDOG.thinkMs,
@@ -644,6 +697,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         }
         ctx.openToolCallIds.clear();
         ctx.openToolTitles.clear();
+        ctx.openToolKinds.clear();
         ctx.lastOpenToolTitle = undefined;
       });
 
@@ -1232,6 +1286,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 ctx.lastToolActivityAtMs = yield* Clock.currentTimeMillis;
                 const toolCallId = event.toolCall.toolCallId;
                 const toolStatus = event.toolCall.status;
+                const toolKind = event.toolCall.kind;
                 if (toolStatus === "completed" || toolStatus === "failed") {
                   ctx.openToolCallIds.delete(toolCallId);
                   const finishedTitle =
@@ -1241,6 +1296,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                     event.toolCall.kind ||
                     "tool";
                   ctx.openToolTitles.delete(toolCallId);
+                  ctx.openToolKinds.delete(toolCallId);
                   ctx.completedToolTitles.push(
                     toolStatus === "failed" ? `${finishedTitle} (failed)` : finishedTitle,
                   );
@@ -1254,6 +1310,12 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   toolStatus === undefined
                 ) {
                   ctx.openToolCallIds.add(toolCallId);
+                  if (toolKind !== undefined || !ctx.openToolKinds.has(toolCallId)) {
+                    ctx.openToolKinds.set(
+                      toolCallId,
+                      toolKind ?? ctx.openToolKinds.get(toolCallId),
+                    );
+                  }
                   const title = event.toolCall.title?.trim();
                   if (title) {
                     ctx.lastOpenToolTitle = title;
@@ -1497,6 +1559,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         ctx.lastToolActivityAtMs = recycleNow;
         ctx.openToolCallIds = new Set();
         ctx.openToolTitles = new Map();
+        ctx.openToolKinds = new Map();
         ctx.hasObservedToolCall = false;
         ctx.lastOpenToolTitle = undefined;
         ctx.completedToolTitles = [];
@@ -1681,6 +1744,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             lastToolActivityAtMs: yield* Clock.currentTimeMillis,
             openToolCallIds: new Set(),
             openToolTitles: new Map(),
+            openToolKinds: new Map(),
             hasObservedToolCall: false,
             lastOpenToolTitle: undefined,
             completedToolTitles: [],
@@ -1930,6 +1994,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             activityCtx.lastToolActivityAtMs = activityNow;
             activityCtx.openToolCallIds = new Set();
             activityCtx.openToolTitles = new Map();
+            activityCtx.openToolKinds = new Map();
             activityCtx.hasObservedToolCall = false;
             activityCtx.lastOpenToolTitle = undefined;
             activityCtx.completedToolTitles = [];
@@ -1953,10 +2018,12 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               const silentMs = nowMs - live.lastTurnActivityAtMs;
               const openToolSilentMs = nowMs - live.lastToolActivityAtMs;
               const openToolCount = live.openToolCallIds.size;
+              const openToolKinds = [...live.openToolKinds.values()];
               const silentTurnKind = classifyGrokSilentTurn({
                 silentMs,
                 openToolSilentMs,
                 openToolCount,
+                openToolKinds,
                 hasObservedToolCall: live.hasObservedToolCall,
                 thresholds: silentTurnWatchdog,
               });
@@ -1976,6 +2043,11 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 silentMs,
                 openToolSilentMs,
                 openToolCount,
+                openToolKinds,
+                openToolWatchdogMs: resolveGrokOpenToolWatchdogMs({
+                  openToolKinds,
+                  thresholds: silentTurnWatchdog,
+                }),
                 hasObservedToolCall: live.hasObservedToolCall,
                 silentTurnKind,
                 lastOpenToolTitle: live.lastOpenToolTitle,
