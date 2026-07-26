@@ -185,6 +185,31 @@ function humanizeStructuredToolName(value: string): string {
   return name.charAt(0).toUpperCase() + name.slice(1);
 }
 
+/**
+ * Wire-form tool ids providers sometimes surface as titles
+ * (`toolport__toolport_call_tool`, `mcp__linear__list_issues`). Friendly labels
+ * with spaces (including `server · tool`) are left alone.
+ */
+export function looksLikeWireToolName(value: string): boolean {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    return false;
+  }
+  if (/\s/u.test(trimmed) && !/__/u.test(trimmed)) {
+    return false;
+  }
+  return /__/u.test(trimmed) || /^(?:mcp|toolport)[_-]/iu.test(trimmed);
+}
+
+/** Humanize a tool title when it looks like a machine/wire name; otherwise pass through. */
+export function humanizeToolDisplayName(value: string): string {
+  const trimmed = value.trim();
+  if (!looksLikeWireToolName(trimmed)) {
+    return trimmed;
+  }
+  return humanizeStructuredToolName(trimmed);
+}
+
 function extractStructuredToolName(data: Record<string, unknown> | undefined): string | undefined {
   if (!data) {
     return undefined;
@@ -358,10 +383,13 @@ export function deriveToolActivityPresentation(
   }
 
   if (title && !isGenericToolTitle(title)) {
+    // Providers often set the raw wire id as title (toolport__toolport_call_tool).
+    // Humanize those so Activity / timeline never show double-underscore names.
+    const summary = humanizeToolDisplayName(title);
     if (detail && !isEquivalent(detail, title) && !isEquivalent(detail, fallbackSummary)) {
-      return { summary: title, detail };
+      return { summary, detail };
     }
-    return { summary: title };
+    return { summary };
   }
 
   const itemTypeDefault = defaultSummaryForItemType(input.itemType ?? undefined);

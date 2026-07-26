@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { deriveToolActivityPresentation } from "./toolActivity.ts";
+import {
+  deriveToolActivityPresentation,
+  humanizeToolDisplayName,
+  looksLikeWireToolName,
+} from "./toolActivity.ts";
 
 describe("toolActivity", () => {
   it("normalizes command tools to a stable ran-command label", () => {
@@ -69,6 +73,25 @@ describe("toolActivity", () => {
       }),
     ).toEqual({
       summary: "Toolport run script",
+    });
+  });
+
+  it("humanizes wire-form titles that providers set as the display name", () => {
+    expect(looksLikeWireToolName("toolport__toolport_call_tool")).toBe(true);
+    expect(looksLikeWireToolName("mcp__linear__list_issues")).toBe(true);
+    expect(looksLikeWireToolName("t3-code · preview_status")).toBe(false);
+    expect(humanizeToolDisplayName("toolport__toolport_call_tool")).toBe("Toolport call tool");
+    expect(humanizeToolDisplayName("mcp__linear__list_issues")).toBe("Linear · list issues");
+    expect(humanizeToolDisplayName("t3-code · preview_status")).toBe("t3-code · preview_status");
+
+    expect(
+      deriveToolActivityPresentation({
+        itemType: "mcp_tool_call",
+        title: "toolport__toolport_search_tools",
+        fallbackSummary: "toolport__toolport_search_tools",
+      }),
+    ).toEqual({
+      summary: "Toolport search tools",
     });
   });
 

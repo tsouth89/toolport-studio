@@ -16,12 +16,14 @@ import {
   deriveWorkLogEntries,
   findLatestProposedPlan,
   findSidebarProposedPlan,
+  formatWorkLogToolLabel,
   hasActionableProposedPlan,
   isLatestTurnSettled,
   workEntryIndicatesToolFailure,
   workEntryIndicatesToolNeutralStatus,
   workEntryIndicatesToolSuccess,
   workLogEntryIsToolLike,
+  type WorkLogEntry,
 } from "./session-logic";
 
 let nextActivityId = 0;
@@ -1834,5 +1836,54 @@ describe("deriveActiveWorkStartedAt", () => {
         "2026-02-27T21:11:00.000Z",
       ),
     ).toBe("2026-02-27T21:11:00.000Z");
+  });
+});
+
+describe("formatWorkLogToolLabel", () => {
+  function entry(
+    partial: Partial<WorkLogEntry> & Pick<WorkLogEntry, "id" | "label">,
+  ): WorkLogEntry {
+    return {
+      createdAt: "2026-07-26T12:00:00.000Z",
+      tone: "tool",
+      ...partial,
+    };
+  }
+
+  it("humanizes wire-form MCP titles from Activity recent steps", () => {
+    expect(
+      formatWorkLogToolLabel(
+        entry({
+          id: "mcp-wire",
+          label: "toolport__toolport_call_tool",
+          toolTitle: "toolport__toolport_call_tool",
+          itemType: "mcp_tool_call",
+          toolLifecycleStatus: "completed",
+        }),
+      ),
+    ).toBe("Toolport call tool");
+    expect(
+      formatWorkLogToolLabel(
+        entry({
+          id: "mcp-search",
+          label: "toolport__toolport_search_tools",
+          toolTitle: "toolport__toolport_search_tools",
+          itemType: "mcp_tool_call",
+        }),
+      ),
+    ).toBe("Toolport search tools");
+  });
+
+  it("keeps already-friendly MCP server · tool titles", () => {
+    expect(
+      formatWorkLogToolLabel(
+        entry({
+          id: "mcp-friendly",
+          label: "t3-code · preview_status",
+          toolTitle: "t3-code · preview_status",
+          itemType: "mcp_tool_call",
+        }),
+      ),
+    ).toBe("t3-code · preview_status");
   });
 });

@@ -12,7 +12,10 @@ import {
   type ThreadId,
   type TurnId,
 } from "@t3tools/contracts";
-import { deriveToolActivityPresentation } from "@t3tools/shared/toolActivity";
+import {
+  deriveToolActivityPresentation,
+  humanizeToolDisplayName,
+} from "@t3tools/shared/toolActivity";
 
 import type {
   ChatMessage,
@@ -207,15 +210,17 @@ function truncateWorkLogContext(value: string, maxLength = 72): string {
 
 /**
  * Human tool name for Working row + Activity. Prefers provider title; rewrites
- * only generic "Tool" labels from real itemType/command/path metadata.
+ * generic "Tool" labels from real itemType/command/path metadata, and humanizes
+ * wire-form MCP names (`toolport__toolport_call_tool`).
  */
 export function formatWorkLogToolLabel(entry: WorkLogEntry): string {
   const raw = (entry.toolTitle ?? entry.label).trim();
   if (!workLogEntryIsToolLike(entry)) {
-    return raw || "Step";
+    return humanizeToolDisplayName(raw || "Step");
   }
   if (!isGenericWorkLogToolLabel(raw)) {
-    return raw.replace(/\s+(?:complete|completed)\s*$/i, "").trim() || raw;
+    const cleaned = raw.replace(/\s+(?:complete|completed)\s*$/i, "").trim() || raw;
+    return humanizeToolDisplayName(cleaned);
   }
 
   const presentation = deriveToolActivityPresentation({
@@ -233,7 +238,7 @@ export function formatWorkLogToolLabel(entry: WorkLogEntry): string {
   });
   const summary = presentation.summary.trim();
   if (!isGenericWorkLogToolLabel(summary)) {
-    return summary;
+    return humanizeToolDisplayName(summary);
   }
   return "Tool call";
 }
