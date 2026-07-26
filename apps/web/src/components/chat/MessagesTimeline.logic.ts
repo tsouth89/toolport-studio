@@ -1,7 +1,10 @@
 import * as Equal from "effect/Equal";
 import {
   formatDuration,
+  formatWorkLogToolContext,
+  formatWorkLogToolLabel,
   workEntryIndicatesToolNeutralStatus,
+  workEntryLooksLongRunning,
   workLogEntryIsToolLike,
   type TimelineEntry,
   type WorkLogEntry,
@@ -181,6 +184,10 @@ export type MessagesTimelineRow =
       createdAt: string | null;
       /** Best-effort title of the open or last tool on the active turn (SOU-363). */
       activeToolLabel: string | null;
+      /** Short command/path context for the active tool, when real. */
+      activeToolDetail: string | null;
+      /** Open execute/monitor tool — suppress early quiet notices. */
+      hasLongRunningOpenTool: boolean;
     };
 
 export interface StableMessagesTimelineRowsState {
@@ -211,19 +218,26 @@ export function normalizeCompactToolLabel(value: string): string {
   return value.replace(/\s+(?:complete|completed)\s*$/i, "").trim();
 }
 
+export type ActiveWorkingToolStatus = {
+  readonly label: string;
+  readonly detail: string | null;
+  readonly isOpenTool: boolean;
+  readonly isLongRunningOpenTool: boolean;
+};
+
 /**
- * Best-effort label for the Working row: prefer an open/in-progress tool on the
+ * Best-effort Working-row tool status: prefer an open/in-progress tool on the
  * unsettled turn, else the most recent tool on that turn (post-tool silence).
  * In-progress tools are filtered out of the work log list, so this is the only
  * place the user can see which tool is still hanging.
  */
-export function deriveActiveWorkingToolLabel(input: {
+export function deriveActiveWorkingToolStatus(input: {
   readonly timelineEntries: ReadonlyArray<TimelineEntry>;
   readonly unsettledTurnId?: TurnId | null;
-}): string | null {
+}): ActiveWorkingToolStatus | null {
   const unsettledTurnId = input.unsettledTurnId ?? null;
-  let openToolLabel: string | null = null;
-  let lastToolLabel: string | null = null;
+  let openTool: WorkLogEntry | null = null;
+  let lastTool: WorkLogEntry | null = null;
 
   for (const timelineEntry of input.timelineEntries) {
     if (timelineEntry.kind !== "work") {
@@ -236,23 +250,35 @@ export function deriveActiveWorkingToolLabel(input: {
     if (unsettledTurnId !== null && entry.turnId != null && entry.turnId !== unsettledTurnId) {
       continue;
     }
-    const raw = (entry.toolTitle ?? entry.label).trim();
-    if (raw.length === 0) {
-      continue;
-    }
-    const label = normalizeCompactToolLabel(raw);
-    if (label.length === 0) {
-      continue;
-    }
-    lastToolLabel = label;
-    // Only explicit in-progress is "open". Neutral (stopped / ambiguous) used
-    // to keep the Working row on a finished tool indefinitely.
+    lastTool = entry;
     if (entry.toolLifecycleStatus === "inProgress") {
-      openToolLabel = label;
+      openTool = entry;
     }
   }
 
-  return openToolLabel ?? lastToolLabel;
+  const active = openTool ?? lastTool;
+  if (!active) {
+    return null;
+  }
+  const label = formatWorkLogToolLabel(active);
+  if (label.length === 0) {
+    return null;
+  }
+  const detail = formatWorkLogToolContext(active) ?? null;
+  return {
+    label,
+    detail: detail && detail.toLowerCase() !== label.toLowerCase() ? detail : null,
+    isOpenTool: openTool !== null,
+    isLongRunningOpenTool: openTool !== null && workEntryLooksLongRunning(openTool),
+  };
+}
+
+/** @deprecated Prefer deriveActiveWorkingToolStatus — kept for call sites that only need a string. */
+export function deriveActiveWorkingToolLabel(input: {
+  readonly timelineEntries: ReadonlyArray<TimelineEntry>;
+  readonly unsettledTurnId?: TurnId | null;
+}): string | null {
+  return deriveActiveWorkingToolStatus(input)?.label ?? null;
 }
 
 /** Whether a thread error should offer one-tap resend of the last user message. */
@@ -641,14 +667,17 @@ export function deriveMessagesTimelineRows(input: {
   }
 
   if (input.isWorking) {
+    const activeTool = deriveActiveWorkingToolStatus({
+      timelineEntries: input.timelineEntries,
+      unsettledTurnId,
+    });
     nextRows.push({
       kind: "working",
       id: "working-indicator-row",
       createdAt: input.activeTurnStartedAt,
-      activeToolLabel: deriveActiveWorkingToolLabel({
-        timelineEntries: input.timelineEntries,
-        unsettledTurnId,
-      }),
+      activeToolLabel: activeTool?.label ?? null,
+      activeToolDetail: activeTool?.detail ?? null,
+      hasLongRunningOpenTool: activeTool?.isLongRunningOpenTool ?? false,
     });
   }
 
@@ -682,7 +711,12 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
   switch (a.kind) {
     case "working": {
       const bw = b as typeof a;
-      return a.createdAt === bw.createdAt && a.activeToolLabel === bw.activeToolLabel;
+      return (
+        a.createdAt === bw.createdAt &&
+        a.activeToolLabel === bw.activeToolLabel &&
+        a.activeToolDetail === bw.activeToolDetail &&
+        a.hasLongRunningOpenTool === bw.hasLongRunningOpenTool
+      );
     }
 
     case "turn-fold": {

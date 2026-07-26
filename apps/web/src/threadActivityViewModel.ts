@@ -3,10 +3,11 @@
  * Pure: no React, no store writes. SOU-386 PR2+ (mockup-shaped recent list).
  */
 import type { TurnId } from "@t3tools/contracts";
-import { deriveToolActivityPresentation } from "@t3tools/shared/toolActivity";
 
 import { summarizeTurnDiffStats } from "./lib/turnDiffTree";
 import {
+  formatWorkLogToolContext,
+  formatWorkLogToolLabel,
   workEntryIndicatesToolFailure,
   workEntryIndicatesToolNeutralStatus,
   workEntryIndicatesToolSuccess,
@@ -154,78 +155,17 @@ function isGenericActivityLabel(value: string | undefined): boolean {
     normalized === "tool call" ||
     normalized === "toolcall" ||
     normalized === "step" ||
-    normalized === "terminal"
+    normalized === "terminal" ||
+    normalized === "working" ||
+    normalized === "thinking"
   );
 }
 
-function looksLikeRawDump(value: string): boolean {
-  const trimmed = value.trim();
-  if (trimmed.includes("{") || trimmed.includes("\n") || /["']\s*:\s*["']/.test(trimmed)) {
-    return true;
-  }
-  if (trimmed.length > 96) {
-    return true;
-  }
-  // Long camelCase / jammed identifiers without path separators are dumps, not subtitles.
-  if (
-    trimmed.length > 36 &&
-    !trimmed.includes(" ") &&
-    !trimmed.includes("/") &&
-    !trimmed.includes("\\")
-  ) {
-    return true;
-  }
-  return false;
-}
-
-/** Best human tool name from real entry fields — never invent free text. */
 function stepLabel(entry: WorkLogEntry): string {
-  const raw = (entry.toolTitle ?? entry.label).trim();
   if (!workLogEntryIsToolLike(entry)) {
-    return raw || "Step";
+    return (entry.toolTitle ?? entry.label).trim() || "Step";
   }
-  // Keep specific provider titles (Linear · list issues, bash, grep).
-  if (!isGenericActivityLabel(raw)) {
-    return raw;
-  }
-
-  const presentation = deriveToolActivityPresentation({
-    itemType: entry.itemType,
-    title: entry.toolTitle ?? entry.label,
-    detail: entry.detail,
-    data: {
-      ...(entry.toolData && typeof entry.toolData === "object" ? { item: entry.toolData } : {}),
-      ...(entry.command ? { command: entry.command } : {}),
-      ...(entry.changedFiles && entry.changedFiles.length > 0
-        ? { locations: entry.changedFiles.map((path) => ({ path })) }
-        : {}),
-    },
-    fallbackSummary: entry.label,
-  });
-
-  const summary = presentation.summary.trim();
-  if (!isGenericActivityLabel(summary)) {
-    return summary;
-  }
-  return "Tool call";
-}
-
-/** Prefer a short command / path over raw tool dumps for Current subtitle. */
-function currentStepDetail(entry: WorkLogEntry): string | undefined {
-  const command = formatActivityDetail(entry.command);
-  if (command) {
-    return command;
-  }
-  if (entry.changedFiles?.[0]) {
-    const first = entry.changedFiles[0]!;
-    const extra = entry.changedFiles.length - 1;
-    return formatActivityDetail(extra > 0 ? `${first} +${extra} more` : first);
-  }
-  const detail = entry.detail?.trim();
-  if (!detail || looksLikeRawDump(detail) || isGenericActivityLabel(detail)) {
-    return undefined;
-  }
-  return formatActivityDetail(detail);
+  return formatWorkLogToolLabel(entry);
 }
 
 /**
@@ -239,19 +179,7 @@ function recentStepDetail(
   if (status === "failed" || status === "interrupted") {
     return formatActivityDetail(entry.detail ?? entry.command);
   }
-  if (entry.command) {
-    return formatActivityDetail(entry.command);
-  }
-  if (entry.changedFiles?.[0]) {
-    const first = entry.changedFiles[0]!;
-    const extra = entry.changedFiles.length - 1;
-    return formatActivityDetail(extra > 0 ? `${first} +${extra} more` : first);
-  }
-  const detail = entry.detail?.trim();
-  if (!detail || looksLikeRawDump(detail) || isGenericActivityLabel(detail)) {
-    return undefined;
-  }
-  return formatActivityDetail(detail);
+  return formatActivityDetail(formatWorkLogToolContext(entry));
 }
 
 function toActivityStep(entry: WorkLogEntry, options: { turnActive: boolean }): ThreadActivityStep {
@@ -483,9 +411,12 @@ export function deriveThreadActivityViewModel(input: {
     // Only an explicit in-progress tool is Current as a tool. Thinking may
     // label Current while tools are quiet; it is not a Recent milestone.
     if (runningTool) {
-      const detail = currentStepDetail(runningTool);
+      const label = stepLabel(runningTool);
+      const detail = formatActivityDetail(formatWorkLogToolContext(runningTool));
       current = {
-        label: stepLabel(runningTool),
+        // Prefer the real tool name as the hero (Grok-terminal style), not
+        // "Waiting on …" — elapsed already communicates that work is open.
+        label,
         ...(detail ? { detail } : {}),
         startedAt: runningTool.createdAt ?? input.activeTurnStartedAt,
         source: "tool",

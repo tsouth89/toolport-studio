@@ -1207,6 +1207,8 @@ describe("computeStableMessagesTimelineRows", () => {
     expect(working).toMatchObject({
       kind: "working",
       activeToolLabel: "linear_2 · list_issues",
+      activeToolDetail: null,
+      hasLongRunningOpenTool: false,
     });
     // Neutral in-progress tool is still hidden as a work row.
     expect(rows.some((row) => row.kind === "work")).toBe(false);
@@ -1280,6 +1282,46 @@ describe("computeStableMessagesTimelineRows", () => {
         unsettledTurnId: "turn-1" as never,
       }),
     ).toBe("bash");
+  });
+
+  it("surfaces command context and long-running open tools on the Working row", () => {
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "work-shell",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:05Z",
+          entry: {
+            id: "work-1",
+            createdAt: "2026-01-01T00:00:05Z",
+            turnId: "turn-1" as never,
+            label: "Terminal",
+            toolTitle: "Terminal",
+            tone: "tool",
+            itemType: "command_execution",
+            toolLifecycleStatus: "inProgress",
+            command: "gh pr checks 479 --watch",
+          },
+        },
+      ],
+      latestTurn: {
+        turnId: "turn-1" as never,
+        state: "running",
+        startedAt: "2026-01-01T00:00:00Z",
+        completedAt: null,
+      },
+      isWorking: true,
+      activeTurnStartedAt: "2026-01-01T00:00:00Z",
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    expect(rows.find((row) => row.kind === "working")).toMatchObject({
+      kind: "working",
+      activeToolLabel: "Ran command",
+      activeToolDetail: "gh pr checks 479 --watch",
+      hasLongRunningOpenTool: true,
+    });
   });
 });
 

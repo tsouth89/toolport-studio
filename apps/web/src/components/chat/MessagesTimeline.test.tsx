@@ -656,8 +656,8 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain('aria-label="Tool call failed"');
   });
 
-  it("announces stalled-turn status and exposes a keyboard-accessible Stop control", () => {
-    const lastStreamActivityAt = new Date(Date.now() - 45_000).toISOString();
+  it("shows a calm quiet notice only after the 2m threshold without amber Stop chrome", () => {
+    const lastStreamActivityAt = new Date(Date.now() - 130_000).toISOString();
     const markup = renderToStaticMarkup(
       <MessagesTimeline
         {...buildProps()}
@@ -670,31 +670,31 @@ describe("MessagesTimeline", () => {
 
     expect(markup).toContain('role="status"');
     expect(markup).toContain('aria-live="polite"');
-    expect(markup).toContain("No updates for");
-    expect(markup).toContain('aria-label="Stop generation"');
-    expect(markup).toContain("Stop now");
-    expect(markup).toContain("focus-visible:ring-2");
-    // Live region should wrap the stall copy, not the interactive Stop control.
-    expect(markup).toMatch(
-      /role="status"[^>]*>No updates for [^<]+<\/span>\s*<button[^>]*aria-label="Stop generation"/,
-    );
+    expect(markup).toContain("Quiet for");
+    expect(markup).not.toContain("No updates for");
+    expect(markup).not.toContain("No progress from the provider");
+    expect(markup).not.toContain("Stop now");
+    expect(markup).not.toContain("text-warning");
+    expect(markup).not.toContain("bg-warning");
   });
 
-  it("does not mislabel extended provider silence as a stuck tool", () => {
-    const lastStreamActivityAt = new Date(Date.now() - 95_000).toISOString();
+  it("does not flash quiet at 45s of silence", () => {
+    const lastStreamActivityAt = new Date(Date.now() - 45_000).toISOString();
     const markup = renderToStaticMarkup(
       <MessagesTimeline
         {...buildProps()}
         isWorking
+        activeTurnStartedAt={new Date(Date.now() - 60_000).toISOString()}
         lastStreamActivityAt={lastStreamActivityAt}
         onInterrupt={() => {}}
         timelineEntries={[]}
       />,
     );
 
-    expect(markup).toContain("No progress from the provider");
-    expect(markup).toContain("You can wait, or stop and Send again.");
-    expect(markup).not.toContain("stuck tool");
+    expect(markup).toMatch(/Working(\.\.\.| for)/);
+    expect(markup).not.toContain("Quiet for");
+    expect(markup).not.toContain("Stop now");
+    expect(markup).not.toContain("text-warning");
   });
 
   it("shows the open tool title on the Working row while a turn is running", () => {

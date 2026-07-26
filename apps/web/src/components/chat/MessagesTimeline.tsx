@@ -8,9 +8,9 @@ import {
 import { parseScopedThreadKey } from "@t3tools/client-runtime/environment";
 import { resolveChatListAnchoredEndSpace } from "@t3tools/shared/chatList";
 import {
-  STALLED_TURN_THRESHOLD_MS,
   deriveStalledTurnState,
-  formatStalledSilenceLabel,
+  formatQuietTurnNotice,
+  resolveStalledTurnThresholdMs,
 } from "@t3tools/shared/stalledTurn";
 import {
   createContext,
@@ -1116,39 +1116,20 @@ function ProposedPlanTimelineRow({
 
 function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "working" }> }) {
   const activity = use(TimelineRowActivityCtx);
-  const stalled = useStalledTurnIndicator(activity.lastStreamActivityAt);
-  const handleStop = activity.onInterrupt;
+  const quiet = useQuietTurnIndicator(activity.lastStreamActivityAt, row.hasLongRunningOpenTool);
   const toolLabel = row.activeToolLabel?.trim() || null;
+  const toolDetail = row.activeToolDetail?.trim() || null;
+  const toolTitle = [toolLabel, toolDetail].filter(Boolean).join(" — ") || undefined;
 
   return (
     <div className="py-0.5 pl-1.5">
-      <div
-        className={cn(
-          "flex flex-wrap items-center gap-x-2 gap-y-1 pt-1 text-[11px] tabular-nums",
-          stalled.isStalled ? "text-warning" : "text-muted-foreground/70",
-        )}
-      >
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 pt-1 text-[11px] tabular-nums text-muted-foreground/70">
         <span className="inline-flex items-center gap-[3px]" aria-hidden="true">
-          <span
-            className={cn(
-              "h-1 w-1 rounded-full animate-status-pulse",
-              stalled.isStalled ? "bg-warning/70" : "bg-muted-foreground/30",
-            )}
-          />
-          <span
-            className={cn(
-              "h-1 w-1 rounded-full animate-status-pulse [animation-delay:200ms]",
-              stalled.isStalled ? "bg-warning/70" : "bg-muted-foreground/30",
-            )}
-          />
-          <span
-            className={cn(
-              "h-1 w-1 rounded-full animate-status-pulse [animation-delay:400ms]",
-              stalled.isStalled ? "bg-warning/70" : "bg-muted-foreground/30",
-            )}
-          />
+          <span className="h-1 w-1 rounded-full animate-status-pulse bg-muted-foreground/30" />
+          <span className="h-1 w-1 rounded-full animate-status-pulse bg-muted-foreground/30 [animation-delay:200ms]" />
+          <span className="h-1 w-1 rounded-full animate-status-pulse bg-muted-foreground/30 [animation-delay:400ms]" />
         </span>
-        <span>
+        <span className="min-w-0">
           {row.createdAt ? (
             <>
               Working for <WorkingTimer createdAt={row.createdAt} />
@@ -1162,33 +1143,40 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
               <span className="text-muted-foreground/55" aria-hidden="true">
                 ·
               </span>{" "}
-              <span className="font-medium text-muted-foreground/85" title={toolLabel}>
+              <span className="font-medium text-muted-foreground/90" title={toolTitle}>
                 {toolLabel}
               </span>
+              {toolDetail ? (
+                <>
+                  {" "}
+                  <span className="text-muted-foreground/55" aria-hidden="true">
+                    ·
+                  </span>{" "}
+                  <span
+                    className="inline-block max-w-[min(28rem,55vw)] truncate align-bottom text-muted-foreground/75"
+                    title={toolDetail}
+                  >
+                    {toolDetail}
+                  </span>
+                </>
+              ) : null}
             </>
           ) : null}
         </span>
-        {stalled.isStalled && stalled.silentLabel ? (
+        {quiet.isQuiet && quiet.notice ? (
           <>
-            <span className="text-warning/50" aria-hidden="true">
+            <span className="text-muted-foreground/40" aria-hidden="true">
               ·
             </span>
-            {/* Live region on the stall copy only so interactive Stop is not inside status. */}
-            <span role="status" aria-live="polite" aria-atomic="true">
-              {stalled.silentForMs >= 90_000
-                ? `No progress from the provider for ${stalled.silentLabel}. You can wait, or stop and Send again.`
-                : `No updates for ${stalled.silentLabel}`}
+            {/* Calm quiet notice only — Stop lives on the composer. */}
+            <span
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
+              className="text-muted-foreground/65"
+            >
+              {quiet.notice}
             </span>
-            {handleStop ? (
-              <button
-                type="button"
-                className="rounded-full border border-warning/40 bg-warning/15 px-2.5 py-1 text-[12px] font-semibold text-warning shadow-sm transition-colors hover:bg-warning/25 hover:cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-warning/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background"
-                onClick={handleStop}
-                aria-label="Stop generation"
-              >
-                Stop now
-              </button>
-            ) : null}
           </>
         ) : null}
       </div>
@@ -1197,24 +1185,28 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
 }
 
 /**
- * Self-ticking stalled-turn signal. Re-renders only when stall state or the
- * second-bucket silence label changes, so quiet turns do not thrash the list.
+ * Self-ticking quiet-turn signal. Re-renders only when quiet state or the
+ * second-bucket silence label changes. No amber chrome; long-running open
+ * tools use a much higher threshold (or stay quiet-free for typical waits).
  */
-function useStalledTurnIndicator(lastStreamActivityAt: string | null): {
-  isStalled: boolean;
-  silentLabel: string | null;
+function useQuietTurnIndicator(
+  lastStreamActivityAt: string | null,
+  hasLongRunningOpenTool: boolean,
+): {
+  isQuiet: boolean;
+  notice: string | null;
   silentForMs: number;
 } {
   const [state, setState] = useState(() =>
-    readStalledTurnIndicator(lastStreamActivityAt, Date.now()),
+    readQuietTurnIndicator(lastStreamActivityAt, hasLongRunningOpenTool, Date.now()),
   );
 
   useEffect(() => {
     const update = () => {
-      const next = readStalledTurnIndicator(lastStreamActivityAt, Date.now());
+      const next = readQuietTurnIndicator(lastStreamActivityAt, hasLongRunningOpenTool, Date.now());
       setState((previous) =>
-        previous.isStalled === next.isStalled &&
-        previous.silentLabel === next.silentLabel &&
+        previous.isQuiet === next.isQuiet &&
+        previous.notice === next.notice &&
         previous.silentForMs === next.silentForMs
           ? previous
           : next,
@@ -1226,32 +1218,33 @@ function useStalledTurnIndicator(lastStreamActivityAt: string | null): {
     }
     const id = window.setInterval(update, 1_000);
     return () => window.clearInterval(id);
-  }, [lastStreamActivityAt]);
+  }, [hasLongRunningOpenTool, lastStreamActivityAt]);
 
   return state;
 }
 
-function readStalledTurnIndicator(
+function readQuietTurnIndicator(
   lastStreamActivityAt: string | null,
+  hasLongRunningOpenTool: boolean,
   nowMs: number,
-): { isStalled: boolean; silentLabel: string | null; silentForMs: number } {
-  // Only evaluate stall while ChatView has a stream clock (phase === "running").
-  // Send/connect busy states also show the working row but are not stalled turns.
+): { isQuiet: boolean; notice: string | null; silentForMs: number } {
+  // Only evaluate while ChatView has a stream clock (phase === "running").
   if (lastStreamActivityAt === null) {
-    return { isStalled: false, silentLabel: null, silentForMs: 0 };
+    return { isQuiet: false, notice: null, silentForMs: 0 };
   }
+  const thresholdMs = resolveStalledTurnThresholdMs({ hasLongRunningOpenTool });
   const stalled = deriveStalledTurnState({
     isRunning: true,
     lastActivityAt: lastStreamActivityAt,
     nowMs,
-    thresholdMs: STALLED_TURN_THRESHOLD_MS,
+    thresholdMs,
   });
   if (!stalled.isStalled) {
-    return { isStalled: false, silentLabel: null, silentForMs: stalled.silentForMs };
+    return { isQuiet: false, notice: null, silentForMs: stalled.silentForMs };
   }
   return {
-    isStalled: true,
-    silentLabel: formatStalledSilenceLabel(stalled.silentForMs),
+    isQuiet: true,
+    notice: formatQuietTurnNotice(stalled.silentForMs),
     silentForMs: stalled.silentForMs,
   };
 }

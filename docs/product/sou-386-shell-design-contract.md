@@ -72,6 +72,8 @@ behavior classes keep working.
 - [x] MCP section omitted until authoritative status exists
 - [x] Mockup-shaped recent list: tools/milestones only, cap 8, clocks, quiet rows
 - [x] Changed files block from checkpoints (+ work-log path fallback) + View diff
+- [x] Working-row quiet notice demoted (no amber/Stop-now; 2m default; 10m for long tools)
+- [x] Working + Activity tool labels from real title/command/path context
 - [ ] Timeline “View in Activity” deep-link (follow-up)
 - [ ] Artifacts block when real artifacts exist
 - [ ] MCP list when authoritative live status exists

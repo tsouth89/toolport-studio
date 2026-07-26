@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  STALLED_TURN_LONG_RUNNING_THRESHOLD_MS,
   STALLED_TURN_THRESHOLD_MS,
   deriveLastStreamActivityAt,
   deriveStalledTurnState,
+  formatQuietTurnNotice,
   formatStalledSilenceLabel,
+  resolveStalledTurnThresholdMs,
 } from "./stalledTurn.js";
 
 const T0 = "2026-07-25T12:00:00.000Z";
@@ -44,6 +47,18 @@ describe("deriveLastStreamActivityAt", () => {
   });
 });
 
+describe("resolveStalledTurnThresholdMs", () => {
+  it("uses the default quiet threshold unless a long-running tool is open", () => {
+    expect(resolveStalledTurnThresholdMs({})).toBe(STALLED_TURN_THRESHOLD_MS);
+    expect(resolveStalledTurnThresholdMs({ hasLongRunningOpenTool: false })).toBe(
+      STALLED_TURN_THRESHOLD_MS,
+    );
+    expect(resolveStalledTurnThresholdMs({ hasLongRunningOpenTool: true })).toBe(
+      STALLED_TURN_LONG_RUNNING_THRESHOLD_MS,
+    );
+  });
+});
+
 describe("deriveStalledTurnState", () => {
   it("is not stalled when the turn is not running", () => {
     expect(
@@ -78,7 +93,8 @@ describe("deriveStalledTurnState", () => {
     });
   });
 
-  it("becomes stalled exactly at the default 30s threshold", () => {
+  it("becomes quiet exactly at the default 2m threshold", () => {
+    expect(STALLED_TURN_THRESHOLD_MS).toBe(120_000);
     expect(
       deriveStalledTurnState({
         isRunning: true,
@@ -120,5 +136,12 @@ describe("formatStalledSilenceLabel", () => {
     expect(formatStalledSilenceLabel(125_000)).toBe("2m 5s");
     expect(formatStalledSilenceLabel(3_600_000)).toBe("1h");
     expect(formatStalledSilenceLabel(3_720_000)).toBe("1h 2m");
+  });
+});
+
+describe("formatQuietTurnNotice", () => {
+  it("uses calm quiet copy without panic language", () => {
+    expect(formatQuietTurnNotice(125_000)).toBe("Quiet for 2m 5s");
+    expect(formatQuietTurnNotice(45_000)).toBe("Quiet for 45s");
   });
 });

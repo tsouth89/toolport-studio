@@ -3,11 +3,24 @@
  * received stream/orchestration updates for a while.
  *
  * Shared across providers: any adapter that leaves a session "running" while
- * silent will surface the same stalled signal.
+ * silent will surface the same quiet signal.
+ *
+ * Product note (SOU-386 dogfood): this is a soft quiet notice, not a hang
+ * warning. Server-side watchdogs own reliability. The UI should not paint
+ * amber panic chrome on every long tool.
  */
 
-/** Default silence window before the UI treats a running turn as stalled. */
-export const STALLED_TURN_THRESHOLD_MS = 30_000;
+/**
+ * Default silence window before the Working row shows a calm quiet notice.
+ * Raised from 30s so long tools / monitors do not flash every half minute.
+ */
+export const STALLED_TURN_THRESHOLD_MS = 120_000;
+
+/**
+ * When an execute/monitor-style tool is open, suppress the quiet notice unless
+ * silence exceeds this ceiling. Server execute watchdogs remain the safety net.
+ */
+export const STALLED_TURN_LONG_RUNNING_THRESHOLD_MS = 10 * 60_000;
 
 export type StalledTurnState = {
   readonly isStalled: boolean;
@@ -35,6 +48,14 @@ export function deriveLastStreamActivityAt(input: {
   );
 }
 
+export function resolveStalledTurnThresholdMs(input: {
+  readonly hasLongRunningOpenTool?: boolean;
+}): number {
+  return input.hasLongRunningOpenTool
+    ? STALLED_TURN_LONG_RUNNING_THRESHOLD_MS
+    : STALLED_TURN_THRESHOLD_MS;
+}
+
 export function deriveStalledTurnState(input: {
   readonly isRunning: boolean;
   readonly lastActivityAt: string | null | undefined;
@@ -48,8 +69,8 @@ export function deriveStalledTurnState(input: {
   const thresholdMs = input.thresholdMs ?? STALLED_TURN_THRESHOLD_MS;
   const lastActivityMs = parseIsoToMs(input.lastActivityAt);
   if (lastActivityMs === null) {
-    // Running with no activity clock: treat as stalled immediately so the UI
-    // never shows endless "Working..." without a recovery affordance.
+    // Running with no activity clock: treat as quiet immediately so the UI
+    // can still show calm recovery copy if needed.
     return { isStalled: true, silentForMs: thresholdMs };
   }
 
@@ -60,7 +81,7 @@ export function deriveStalledTurnState(input: {
   };
 }
 
-/** Format a silence duration for stalled-turn copy (e.g. "45s", "3m 20s"). */
+/** Format a silence duration for quiet-turn copy (e.g. "45s", "3m 20s"). */
 export function formatStalledSilenceLabel(silentForMs: number): string {
   const elapsedSeconds = Math.max(0, Math.floor(silentForMs / 1000));
   if (elapsedSeconds < 60) {
@@ -73,6 +94,11 @@ export function formatStalledSilenceLabel(silentForMs: number): string {
     return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
   }
   return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
+}
+
+/** Calm Working-row copy — no panic language. */
+export function formatQuietTurnNotice(silentForMs: number): string {
+  return `Quiet for ${formatStalledSilenceLabel(silentForMs)}`;
 }
 
 function parseIsoToMs(value: string | null | undefined): number | null {

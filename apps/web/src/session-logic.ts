@@ -159,6 +159,128 @@ export function workLogEntryIsToolLike(entry: WorkLogEntry): boolean {
   return entry.itemType !== undefined && isToolLifecycleItemType(entry.itemType);
 }
 
+function isGenericWorkLogToolLabel(value: string | undefined): boolean {
+  if (!value) {
+    return true;
+  }
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/\s+(?:complete|completed|started|updated)\s*$/u, "")
+    .trim();
+  return (
+    normalized.length === 0 ||
+    normalized === "tool" ||
+    normalized === "tool call" ||
+    normalized === "toolcall" ||
+    normalized === "step" ||
+    normalized === "terminal"
+  );
+}
+
+function looksLikeWorkLogDump(value: string): boolean {
+  const trimmed = value.trim();
+  if (trimmed.includes("{") || trimmed.includes("\n") || /["']\s*:\s*["']/.test(trimmed)) {
+    return true;
+  }
+  if (trimmed.length > 96) {
+    return true;
+  }
+  if (
+    trimmed.length > 36 &&
+    !trimmed.includes(" ") &&
+    !trimmed.includes("/") &&
+    !trimmed.includes("\\")
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function truncateWorkLogContext(value: string, maxLength = 72): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+  return `${normalized.slice(0, maxLength - 1).trimEnd()}…`;
+}
+
+/**
+ * Human tool name for Working row + Activity. Prefers provider title; rewrites
+ * only generic "Tool" labels from real itemType/command/path metadata.
+ */
+export function formatWorkLogToolLabel(entry: WorkLogEntry): string {
+  const raw = (entry.toolTitle ?? entry.label).trim();
+  if (!workLogEntryIsToolLike(entry)) {
+    return raw || "Step";
+  }
+  if (!isGenericWorkLogToolLabel(raw)) {
+    return raw.replace(/\s+(?:complete|completed)\s*$/i, "").trim() || raw;
+  }
+
+  const presentation = deriveToolActivityPresentation({
+    itemType: entry.itemType,
+    title: entry.toolTitle ?? entry.label,
+    detail: entry.detail,
+    data: {
+      ...(entry.toolData && typeof entry.toolData === "object" ? { item: entry.toolData } : {}),
+      ...(entry.command ? { command: entry.command } : {}),
+      ...(entry.changedFiles && entry.changedFiles.length > 0
+        ? { locations: entry.changedFiles.map((path) => ({ path })) }
+        : {}),
+    },
+    fallbackSummary: entry.label,
+  });
+  const summary = presentation.summary.trim();
+  if (!isGenericWorkLogToolLabel(summary)) {
+    return summary;
+  }
+  return "Tool call";
+}
+
+/** Short real context (command / path) — never dumps. */
+export function formatWorkLogToolContext(entry: WorkLogEntry): string | undefined {
+  if (entry.command?.trim()) {
+    return truncateWorkLogContext(entry.command);
+  }
+  if (entry.changedFiles?.[0]) {
+    const first = entry.changedFiles[0]!;
+    const extra = entry.changedFiles.length - 1;
+    return truncateWorkLogContext(extra > 0 ? `${first} +${extra} more` : first);
+  }
+  const detail = entry.detail?.trim();
+  if (!detail || looksLikeWorkLogDump(detail) || isGenericWorkLogToolLabel(detail)) {
+    return undefined;
+  }
+  return truncateWorkLogContext(detail);
+}
+
+/**
+ * Tools that legitimately stay quiet for a long time (shell, monitors, CI wait).
+ * Used to suppress early "quiet" notices in the Working row.
+ */
+export function workEntryLooksLongRunning(entry: WorkLogEntry): boolean {
+  if (!workLogEntryIsToolLike(entry)) {
+    return false;
+  }
+  if (entry.itemType === "command_execution") {
+    return true;
+  }
+  if (entry.command?.trim()) {
+    return true;
+  }
+  const label = formatWorkLogToolLabel(entry).toLowerCase();
+  return (
+    /\bmonitor\b/.test(label) ||
+    /\bwatching\b/.test(label) ||
+    /\bwait(?:ing)?\b/.test(label) ||
+    /\bci\b/.test(label) ||
+    /\bpoll\b/.test(label) ||
+    label.startsWith("start monitor") ||
+    label.includes("ran command")
+  );
+}
+
 /** Heuristic: providers often emit successful lifecycle status while error text lives in `detail` / `command`. */
 function toolDetailTextLooksLikeFailure(text: string): boolean {
   const t = text.toLowerCase();
