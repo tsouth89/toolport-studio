@@ -79,7 +79,9 @@ Soft budgets after a week of multi-session use (adjust with evidence):
 - **Toolport MCP injection**: default **off** (Settings → “Toolport tools in sessions”)
 - **Assistant streaming**: default **off** (buffered); enable for token-by-token UI
 - **Grok silence policy**: never auto-kill open tools; post-tool/think ceiling 15m only when no tool is open
+- **Pending approvals / AskUserQuestion**: auto-cancel after **3 minutes** (approvals) / **5 minutes** (user input) on Grok, Claude, Cursor, Codex so multi-session dogfood cannot hang forever
 
 ## Changelog
 
 - 2026-07-26: Initial scorecard for SOU-401 / SOU-354 program rewrite.
+- 2026-07-26: Reliability batch on main — SQLite retention (SOU-400), Stop force-settle (Claude/Cursor/Codex), cold-start rehydration, Working first-token honesty (early turn.started for Claude/Cursor/Grok/Codex), pending approval + AskUserQuestion auto-cancel timeouts (3m/5m) for Grok/Claude/Cursor/Codex, Grok no longer silence-kills open tools by default.
