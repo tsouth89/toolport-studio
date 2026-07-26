@@ -40,6 +40,7 @@ import { buildCodexInitializeParams } from "./CodexProvider.ts";
 import { codexSessionAppServerArgs } from "./codexLaunchArgs.ts";
 import { expandHomePath } from "../../pathExpansion.ts";
 import { buildCodexDeveloperInstructions } from "../CodexDeveloperInstructions.ts";
+import { buildConversationRehydrationPrefix } from "../conversationRehydration.ts";
 const decodeV2TurnStartResponse = Schema.decodeUnknownEffect(EffectCodexSchema.V2TurnStartResponse);
 
 const PROVIDER = ProviderDriverKind.make("codex");
@@ -119,6 +120,12 @@ export interface CodexSessionRuntimeSendTurnInput {
   readonly serviceTier?: CodexServiceTier | undefined;
   readonly effort?: EffectCodexSchema.V2TurnStartParams__ReasoningEffort | undefined;
   readonly interactionMode?: ProviderInteractionMode;
+  /** Studio projected history for cold-start rehydration when thread resume missed. */
+  readonly conversationHistory?: ReadonlyArray<{
+    readonly role: "user" | "assistant";
+    readonly text: string;
+  }>;
+  readonly recentToolSummaries?: ReadonlyArray<string>;
 }
 
 export interface CodexThreadTurnSnapshot {
@@ -455,6 +462,12 @@ interface CodexThreadOpenClient {
   ) => Effect.Effect<CodexRpc.ClientRequestResponsesByMethod[M], CodexErrors.CodexAppServerError>;
 }
 
+export type OpenCodexThreadResult = {
+  readonly response: CodexThreadOpenResponse;
+  /** False when we started fresh (no resume, or resume soft-missed). */
+  readonly resumedExistingThread: boolean;
+};
+
 export const openCodexThread = (input: {
   readonly client: CodexThreadOpenClient;
   readonly threadId: ThreadId;
@@ -463,7 +476,7 @@ export const openCodexThread = (input: {
   readonly requestedModel: string | undefined;
   readonly serviceTier: CodexServiceTier | undefined;
   readonly resumeThreadId: string | undefined;
-}): Effect.Effect<CodexThreadOpenResponse, CodexErrors.CodexAppServerError> => {
+}): Effect.Effect<OpenCodexThreadResult, CodexErrors.CodexAppServerError> => {
   const resumeThreadId = input.resumeThreadId;
   const startParams = buildThreadStartParams({
     cwd: input.cwd,
@@ -473,7 +486,9 @@ export const openCodexThread = (input: {
   });
 
   if (resumeThreadId === undefined) {
-    return input.client.request("thread/start", startParams);
+    return input.client
+      .request("thread/start", startParams)
+      .pipe(Effect.map((response) => ({ response, resumedExistingThread: false })));
   }
 
   return input.client
@@ -482,6 +497,7 @@ export const openCodexThread = (input: {
       ...startParams,
     })
     .pipe(
+      Effect.map((response) => ({ response, resumedExistingThread: true as const })),
       Effect.catchIf(isRecoverableThreadResumeError, (error) =>
         Effect.logWarning("codex app-server thread resume fell back to fresh start", {
           threadId: input.threadId,
@@ -489,7 +505,13 @@ export const openCodexThread = (input: {
           resumeThreadId,
           recoverable: true,
           cause: error,
-        }).pipe(Effect.andThen(input.client.request("thread/start", startParams))),
+        }).pipe(
+          Effect.andThen(
+            input.client
+              .request("thread/start", startParams)
+              .pipe(Effect.map((response) => ({ response, resumedExistingThread: false }))),
+          ),
+        ),
       ),
     );
 };
@@ -726,6 +748,11 @@ export const makeCodexSessionRuntime = (
     const collabReceiverTurnsRef = yield* Ref.make(new Map<string, TurnId>());
     /** Turns force-settled by Stop so late turn/completed notifications do not double-fire. */
     const forceSettledTurnIdsRef = yield* Ref.make(new Set<string>());
+    /**
+     * When true, the next sendTurn may inject Studio conversationHistory
+     * (fresh thread start or recoverable resume miss).
+     */
+    const needsContextRehydrationRef = yield* Ref.make(false);
     const closedRef = yield* Ref.make(false);
 
     // `~` is not shell-expanded when env vars are set via
@@ -1242,12 +1269,24 @@ export const makeCodexSessionRuntime = (
         resumeThreadId: readResumeCursorThreadId(options.resumeCursor),
       });
 
-      const providerThreadId = opened.thread.id;
+      yield* Ref.set(needsContextRehydrationRef, !opened.resumedExistingThread);
+      if (!opened.resumedExistingThread) {
+        yield* Effect.logInfo(
+          "Codex thread started without native resume; Studio history rehydration armed",
+          {
+            threadId: options.threadId,
+            hadResumeCursor: readResumeCursorThreadId(options.resumeCursor) !== undefined,
+            providerThreadId: opened.response.thread.id,
+          },
+        );
+      }
+
+      const providerThreadId = opened.response.thread.id;
       const session = {
         ...(yield* Ref.get(sessionRef)),
         status: "ready",
-        cwd: opened.cwd,
-        model: opened.model,
+        cwd: opened.response.cwd,
+        model: opened.response.model,
         resumeCursor: { threadId: providerThreadId },
         updatedAt: yield* nowIso,
       } satisfies ProviderSession;
@@ -1305,10 +1344,35 @@ export const makeCodexSessionRuntime = (
           const normalizedModel = normalizeCodexModelSlug(
             input.model ?? (yield* Ref.get(sessionRef)).model,
           );
+
+          let promptText = input.input;
+          const needsRehydration = yield* Ref.get(needsContextRehydrationRef);
+          if (needsRehydration) {
+            const history = input.conversationHistory ?? [];
+            const toolSummaries = input.recentToolSummaries ?? [];
+            if (history.length > 0 || toolSummaries.length > 0) {
+              const prefix = buildConversationRehydrationPrefix(history, {
+                reason:
+                  "This Toolport Studio thread has prior conversation history that is not loaded in the current Codex thread (common after app restart, update, or resume miss).",
+                ...(toolSummaries.length > 0 ? { toolSummaries } : {}),
+              });
+              if (prefix) {
+                const latest = promptText?.trim() ?? "";
+                promptText = latest.length > 0 ? `${prefix}${latest}` : `${prefix}(continue)`;
+                yield* Effect.logInfo("Codex cold-start rehydration applied from Studio history", {
+                  threadId: options.threadId,
+                  historyTurns: history.length,
+                  toolSummaries: toolSummaries.length,
+                });
+              }
+            }
+            yield* Ref.set(needsContextRehydrationRef, false);
+          }
+
           const params = yield* buildTurnStartParams({
             threadId: providerThreadId,
             runtimeMode: options.runtimeMode,
-            ...(input.input ? { prompt: input.input } : {}),
+            ...(promptText ? { prompt: promptText } : {}),
             ...(input.attachments ? { attachments: input.attachments } : {}),
             ...(normalizedModel ? { model: normalizedModel } : {}),
             ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),

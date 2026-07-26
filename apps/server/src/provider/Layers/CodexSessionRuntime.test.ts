@@ -425,11 +425,47 @@ describe("openCodexThread", () => {
         resumeThreadId: "stale-thread",
       });
 
-      NodeAssert.equal(opened.thread.id, "fresh-thread");
+      NodeAssert.equal(opened.response.thread.id, "fresh-thread");
+      NodeAssert.equal(opened.resumedExistingThread, false);
       NodeAssert.deepStrictEqual(
         calls.map((call) => call.method),
         ["thread/resume", "thread/start"],
       );
+    }),
+  );
+
+  it.effect("marks successful resume so Studio rehydration stays disarmed", () =>
+    Effect.gen(function* () {
+      const resumed = makeThreadOpenResponse("resumed-thread");
+      const client = {
+        request: <M extends "thread/start" | "thread/resume">(
+          method: M,
+          _payload: CodexRpc.ClientRequestParamsByMethod[M],
+        ) => {
+          if (method === "thread/resume") {
+            return Effect.succeed(resumed as CodexRpc.ClientRequestResponsesByMethod[M]);
+          }
+          return Effect.fail(
+            new CodexErrors.CodexAppServerRequestError({
+              code: -32603,
+              errorMessage: "should not start fresh",
+            }),
+          );
+        },
+      };
+
+      const opened = yield* openCodexThread({
+        client,
+        threadId: ThreadId.make("thread-1"),
+        runtimeMode: "full-access",
+        cwd: "/tmp/project",
+        requestedModel: "gpt-5.3-codex",
+        serviceTier: undefined,
+        resumeThreadId: "resumed-thread",
+      });
+
+      NodeAssert.equal(opened.response.thread.id, "resumed-thread");
+      NodeAssert.equal(opened.resumedExistingThread, true);
     }),
   );
 
