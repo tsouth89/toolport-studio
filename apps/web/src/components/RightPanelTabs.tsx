@@ -407,36 +407,45 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
                   onAuxClick={(event) => handleTabAuxClick(event, surface)}
                   onContextMenu={(event) => void handleTabContextMenu(event, surface)}
                   className={cn(
-                    "group flex h-7 min-w-25 max-w-44 shrink-0 items-center gap-1.5 rounded-md px-2 text-sm",
+                    // Title + close share one pill. Title is the only flex grower
+                    // (min-w-0) so the X stays inside the rounded chip instead of
+                    // overflowing past the accent background.
+                    "group flex h-7 max-w-44 shrink-0 items-center rounded-md text-sm",
                     active
                       ? "bg-accent text-foreground"
                       : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
                   )}
                 >
-                  <Tooltip>
-                    <TooltipTrigger
-                      render={
-                        <button
-                          type="button"
-                          className="flex min-w-0 flex-1 items-center gap-1.5"
-                          onClick={() => props.onActivate(surface)}
-                        >
-                          <SurfaceIcon
-                            surface={surface}
-                            sessions={props.previewSessions}
-                            theme={resolvedTheme}
-                          />
-                          <span className="truncate">{title}</span>
-                        </button>
-                      }
-                    />
-                    <TooltipPopup>{title}</TooltipPopup>
-                  </Tooltip>
+                  <div className="min-w-0 flex-1">
+                    <Tooltip>
+                      <TooltipTrigger
+                        render={
+                          <button
+                            type="button"
+                            className="flex w-full min-w-0 items-center gap-1.5 py-1 pl-2 pr-1"
+                            onClick={() => props.onActivate(surface)}
+                          >
+                            <SurfaceIcon
+                              surface={surface}
+                              sessions={props.previewSessions}
+                              theme={resolvedTheme}
+                            />
+                            <span className="truncate">{title}</span>
+                          </button>
+                        }
+                      />
+                      <TooltipPopup>{title}</TooltipPopup>
+                    </Tooltip>
+                  </div>
                   <button
                     type="button"
                     className={cn(
-                      "relative flex size-4 shrink-0 items-center justify-center rounded hover:bg-muted focus:opacity-100",
-                      pending ? "opacity-100" : "opacity-0 group-hover:opacity-100",
+                      "mr-1 flex size-5 shrink-0 items-center justify-center rounded-sm hover:bg-muted/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                      // Active / dirty tabs always show close so it reads as
+                      // part of the chip, not a floating control beside it.
+                      active || pending
+                        ? "opacity-100"
+                        : "opacity-0 group-hover:opacity-100 focus-visible:opacity-100",
                     )}
                     aria-label={`Close ${title}`}
                     onClick={() => props.onCloseSurface(surface)}
