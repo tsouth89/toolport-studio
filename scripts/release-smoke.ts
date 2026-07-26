@@ -178,6 +178,24 @@ function assertMissing(path: string, message: string): void {
   }
 }
 
+function toBashPath(path: string): string {
+  if (process.platform === "win32") {
+    try {
+      const bashWorkingDirectory = NodeChildProcess.execFileSync("bash", ["-lc", "pwd"], {
+        encoding: "utf8",
+      }).trim();
+      const drivePath = /^([A-Za-z]):[\\/](.*)$/.exec(path);
+      if (bashWorkingDirectory.startsWith("/mnt/") && drivePath !== null) {
+        return `/mnt/${drivePath[1]!.toLowerCase()}/${drivePath[2]!.replaceAll("\\", "/")}`;
+      }
+    } catch {
+      // Git Bash accepts drive-letter paths after normalizing separators.
+    }
+  }
+
+  return path.replaceAll("\\", "/");
+}
+
 const tempRoot = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-release-smoke-"));
 
 try {
@@ -291,45 +309,45 @@ try {
   const mergedPreviewWindowsManifestPath = NodePath.resolve(tempRoot, "release-assets/preview.yml");
   const { arm64Path: winDebugArm64Path, x64Path: winDebugX64Path } =
     writeWindowsBuilderDebugFixtures(tempRoot);
-  NodeChildProcess.execFileSync(
-    "bash",
-    [
-      "-lc",
-      `
-        release_assets_dir=${JSON.stringify(NodePath.resolve(tempRoot, "release-assets"))}
-        shopt -s nullglob
-        found_windows_manifest=false
-        for x64_manifest in "$release_assets_dir"/*-win-x64.yml; do
-          if [[ "$(basename "$x64_manifest")" == builder-debug-* ]]; then
-            continue
-          fi
+  const windowsManifestSmokeScript = NodePath.resolve(tempRoot, "merge-windows-manifests.sh");
+  const bashNodePath = toBashPath(process.execPath);
+  const mergeManifestScriptPath = NodePath.resolve(repoRoot, "scripts/merge-update-manifests.ts");
+  const mergeManifestCommand = bashNodePath.startsWith("/mnt/")
+    ? `${JSON.stringify(bashNodePath)} ${JSON.stringify(mergeManifestScriptPath.replaceAll("\\", "/"))} --platform win "$(wslpath -w "$arm64_manifest")" "$(wslpath -w "$x64_manifest")" "$(wslpath -w "$output_manifest")"`
+    : `${JSON.stringify(bashNodePath)} ${JSON.stringify(toBashPath(mergeManifestScriptPath))} --platform win "$arm64_manifest" "$x64_manifest" "$output_manifest"`;
+  NodeFS.writeFileSync(
+    windowsManifestSmokeScript,
+    `
+release_assets_dir=${JSON.stringify(toBashPath(NodePath.resolve(tempRoot, "release-assets")))}
+shopt -s nullglob
+found_windows_manifest=false
+for x64_manifest in "$release_assets_dir"/*-win-x64.yml; do
+  if [[ "$(basename "$x64_manifest")" == builder-debug-* ]]; then
+    continue
+  fi
 
-          arm64_manifest="\${x64_manifest/-x64.yml/-arm64.yml}"
-          output_manifest="\${x64_manifest/-win-x64.yml/.yml}"
-          if [[ ! -f "$arm64_manifest" ]]; then
-            echo "Missing matching arm64 Windows manifest for $x64_manifest" >&2
-            exit 1
-          fi
+  arm64_manifest="\${x64_manifest/-x64.yml/-arm64.yml}"
+  output_manifest="\${x64_manifest/-win-x64.yml/.yml}"
+  if [[ ! -f "$arm64_manifest" ]]; then
+    echo "Missing matching arm64 Windows manifest for $x64_manifest" >&2
+    exit 1
+  fi
 
-          found_windows_manifest=true
-          ${JSON.stringify(process.execPath)} ${JSON.stringify(NodePath.resolve(repoRoot, "scripts/merge-update-manifests.ts"))} --platform win \
-            "$arm64_manifest" \
-            "$x64_manifest" \
-            "$output_manifest"
-          rm -f "$arm64_manifest" "$x64_manifest"
-        done
+  found_windows_manifest=true
+  ${mergeManifestCommand}
+  rm -f "$arm64_manifest" "$x64_manifest"
+done
 
-        if [[ "$found_windows_manifest" != true ]]; then
-          echo "No Windows updater manifests found to merge." >&2
-          exit 1
-        fi
-      `,
-    ],
-    {
-      cwd: repoRoot,
-      stdio: "inherit",
-    },
+if [[ "$found_windows_manifest" != true ]]; then
+  echo "No Windows updater manifests found to merge." >&2
+  exit 1
+fi
+`,
   );
+  NodeChildProcess.execFileSync("bash", [toBashPath(windowsManifestSmokeScript)], {
+    cwd: repoRoot,
+    stdio: "inherit",
+  });
 
   const mergedWindowsManifest = NodeFS.readFileSync(mergedWindowsManifestPath, "utf8");
   assertContains(

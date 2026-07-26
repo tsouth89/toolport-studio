@@ -6,12 +6,12 @@ on:
       version:
         description: Prerelease version without the v prefix
         required: true
-        default: 0.1.0-alpha.4
+        default: 0.1.0-alpha.6
         type: string
       release_notes:
         description: Short release summary
         required: true
-        default: Grok recovery, Stop reliability, and queued-turn hardening.
+        default: Grok reliability, projectless conversations, and smoother folder handoff.
         type: string
 
 permissions:
@@ -179,10 +179,10 @@ jobs:
 
           ### Highlights
 
-          - Grok post-Stop recovery and history rehydration
-          - Idempotent interruption of stopped or unknown provider sessions
-          - Queued messages preserve composer context and drain without overwriting drafts
-          - Temporary Grok state directories are reused and cleaned up
+          - Grok turns preserve native streaming and settle assistant output before completion
+          - Projectless conversations stay out of the project list and can attach to a folder later
+          - Messages and unsent drafts survive project attachment
+          - Provider startup, authentication, image preparation, and Stop handling fail cleanly
 
           ### Install
 
