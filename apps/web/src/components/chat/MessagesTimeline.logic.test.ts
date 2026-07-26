@@ -6,6 +6,7 @@ import {
   deriveMessagesTimelineRows,
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
+  sharedToolLabelForWorkEntries,
   shouldOfferLastUserMessageRetry,
 } from "./MessagesTimeline.logic";
 
@@ -990,33 +991,18 @@ describe("deriveMessagesTimelineRows", () => {
       turnDiffSummaryByAssistantMessageId: new Map(),
       revertTurnCountByUserMessageId: new Map(),
     };
-    const collapsedRows = deriveMessagesTimelineRows(baseInput);
-    const expandedRows = deriveMessagesTimelineRows({
-      ...baseInput,
-      expandedWorkGroupIds: new Set(["work-group:work-entry-1"]),
-    });
+    const rows = deriveMessagesTimelineRows(baseInput);
 
-    expect(collapsedRows.map((row) => row.id)).toEqual(["work-3", "work-toggle:work-entry-1"]);
-    expect(collapsedRows.find((row) => row.kind === "work-toggle")).toMatchObject({
-      groupId: "work-group:work-entry-1",
-      hiddenCount: 2,
-      expanded: false,
-      onlyToolEntries: true,
-      // Mixed tool labels in the hidden slice → generic copy.
-      sharedToolLabel: null,
-    });
-    expect(expandedRows.map((row) => row.id)).toEqual([
-      "work-1",
-      "work-2",
-      "work-3",
-      "work-toggle:work-entry-1",
-    ]);
-    expect(expandedRows.find((row) => row.kind === "work-toggle")).toMatchObject({
-      expanded: true,
+    // SOU-386 PR3: pure tool stacks stay one row so the UI can render a
+    // "Tool use · N steps" card (expand is local, not a work-toggle row).
+    expect(rows.map((row) => row.id)).toEqual(["work-entry-1"]);
+    expect(rows[0]).toMatchObject({
+      kind: "work",
+      groupedEntries: [{ id: "work-1" }, { id: "work-2" }, { id: "work-3" }],
     });
   });
 
-  it("labels the work-toggle with a shared tool name when hidden rows match", () => {
+  it("keeps a pure tool stack as one Tool use card row (no work-toggle split)", () => {
     const timelineEntries = Array.from({ length: 4 }, (_, index) => ({
       id: `work-entry-${index + 1}`,
       kind: "work" as const,
@@ -1041,13 +1027,20 @@ describe("deriveMessagesTimelineRows", () => {
       revertTurnCountByUserMessageId: new Map(),
     });
 
-    expect(rows.map((row) => row.id)).toEqual(["work-4", "work-toggle:work-entry-1"]);
-    expect(rows.find((row) => row.kind === "work-toggle")).toMatchObject({
-      hiddenCount: 3,
-      onlyToolEntries: true,
-      sharedToolLabel: "Read file",
-      expanded: false,
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      kind: "work",
+      id: "work-entry-1",
     });
+    expect(rows[0]?.kind === "work" ? rows[0].groupedEntries.map((e) => e.id) : []).toEqual([
+      "work-1",
+      "work-2",
+      "work-3",
+      "work-4",
+    ]);
+    expect(sharedToolLabelForWorkEntries(timelineEntries.map((entry) => entry.entry))).toBe(
+      "Read file",
+    );
   });
 });
 

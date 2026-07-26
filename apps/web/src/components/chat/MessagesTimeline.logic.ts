@@ -604,7 +604,13 @@ export function deriveMessagesTimelineRows(input: {
         (entry) => !workEntryIndicatesToolNeutralStatus(entry),
       );
       if (visibleGroupedEntries.length > 0) {
-        if (visibleGroupedEntries.length <= MAX_VISIBLE_WORK_LOG_ENTRIES) {
+        const onlyToolEntries = visibleGroupedEntries.every((entry) =>
+          workLogEntryIsToolLike(entry),
+        );
+        // SOU-386 PR3: pure tool runs stay one timeline row so the UI can
+        // render a mockup "Tool use · N steps" card (expand is local). Mixed
+        // work logs keep the overflow toggle for long non-tool spam.
+        if (onlyToolEntries || visibleGroupedEntries.length <= MAX_VISIBLE_WORK_LOG_ENTRIES) {
           nextRows.push({
             kind: "work",
             id: timelineEntry.id,
@@ -617,9 +623,6 @@ export function deriveMessagesTimelineRows(input: {
           const hiddenEntries = visibleGroupedEntries.slice(0, -MAX_VISIBLE_WORK_LOG_ENTRIES);
           const visibleEntries = visibleGroupedEntries.slice(-MAX_VISIBLE_WORK_LOG_ENTRIES);
           const renderedEntries = expanded ? [...hiddenEntries, ...visibleEntries] : visibleEntries;
-          const onlyToolEntries = visibleGroupedEntries.every((entry) =>
-            workLogEntryIsToolLike(entry),
-          );
           // Prefer the shared label of the *hidden* slice so the toggle
           // describes what is collapsed, not the still-visible latest row.
           const sharedToolLabel = onlyToolEntries

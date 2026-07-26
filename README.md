@@ -6,7 +6,7 @@ Toolport Studio turns subscription-backed AI coding CLIs into a cohesive desktop
 workspace. Start with a normal conversation, paste screenshots, switch providers
 and models, then attach a folder when the work becomes a project.
 
-The goal is not to create separate “chat” and “coding” products. A conversation
+The goal is not to create separate "chat" and "coding" products. A conversation
 starts with as little context as you want and grows into a coding workspace when
 you add a project, terminal, preview, source control, or Toolport tools.
 
@@ -19,11 +19,14 @@ you add a project, terminal, preview, source control, or Toolport tools.
 - Claude, Codex, Cursor, Grok, and OpenCode provider adapters
 - Subscription-backed authentication through installed provider CLIs
 - Screenshot and image pasting, including Grok Build conversations
+- Projectless chat (start without a folder; attach a project later)
 - A curated Recommended model list with the full catalog one click away
 - Projects, terminals, previews, source control, and provider switching
+- Right-hand **Activity** panel (current step, tools, MCP from Toolport, changed files)
 - Automatic discovery of the local Toolport gateway
 - Toolport-managed MCP servers injected into provider sessions
 - Independent Toolport Studio application identity and data directory
+  (`~/.toolport-studio`)
 
 ## The product model
 
@@ -37,11 +40,10 @@ Toolport Studio has one conversation surface with progressive context:
 4. **Move into build mode naturally** — Terminals, diffs, previews, approvals, and
    source control appear when the task needs them.
 
-This keeps casual questions lightweight without creating an artificial wall
-between asking about code and working on it.
-
-Read [the product foundation](./docs/product/vision.md) for the design principles
-and phased roadmap.
+Read [the product foundation](./docs/product/vision.md) for design principles and
+roadmap. Shell / Activity work is tracked under
+[SOU-386](https://linear.app/southforge-ai/issue/SOU-386) with the contract in
+[docs/product/sou-386-shell-design-contract.md](./docs/product/sou-386-shell-design-contract.md).
 
 ## Toolport ecosystem
 
@@ -56,12 +58,24 @@ and phased roadmap.
 
 Windows alpha builds are published on the
 [GitHub Releases page](https://github.com/tsouth89/toolport-studio/releases).
-The current builds are not code-signed, so Windows SmartScreen may require
-**More info → Run anyway**.
+
+Latest prerelease pattern: `0.1.0-alpha.N` (e.g. **0.1.0-alpha.7**). Installers are
+signed with Azure Artifact Signing when published through the `Release` workflow.
+SmartScreen may still warn on first run; prefer the SHA-256 listed in the release
+notes.
 
 Before opening Studio, install and sign in to the provider CLIs you want to use.
 Toolport Studio does not resell model access or convert API keys into subscription
 access.
+
+### State directories
+
+| Build                       | App data                                       |
+| --------------------------- | ---------------------------------------------- |
+| Installed alpha             | `~/.toolport-studio/userdata`                  |
+| Local `dev` / `dev:desktop` | `~/.toolport-studio/dev` (isolated from alpha) |
+
+Provider CLIs you already use (Claude, Codex, Grok, etc.) keep their own credentials.
 
 ## Development
 
@@ -71,7 +85,8 @@ identity is Toolport Studio.
 
 ```bash
 pnpm install
-pnpm dev
+pnpm dev          # contracts + server + web (watch)
+pnpm dev:desktop  # Electron shell against local backend
 ```
 
 Useful commands:
@@ -82,8 +97,14 @@ pnpm build:desktop
 pnpm dist:desktop:win:x64
 ```
 
+Publish a signed Windows alpha (maintainers):
+
+1. Push a clean commit to `main`.
+2. Run the GitHub Actions **Release** workflow with the next `0.1.0-alpha.N`
+   version and a short summary.
+
 See [the documentation index](./docs/README.md) for architecture, provider, and
-release details.
+release details. Release process: [docs/operations/release.md](./docs/operations/release.md).
 
 ## Heritage and license
 

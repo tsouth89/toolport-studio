@@ -53,6 +53,7 @@ import {
   EyeIcon,
   GlobeIcon,
   HammerIcon,
+  Loader2Icon,
   MessageCircleIcon,
   MousePointerClickIcon,
   PaintbrushIcon,
@@ -1316,22 +1317,83 @@ const WorkGroupSection = memo(function WorkGroupSection({
     () => groupedEntries.filter((entry) => !workEntryIndicatesToolNeutralStatus(entry)),
     [groupedEntries],
   );
-  const onlyToolEntries = nonEmptyEntries.every((entry) => workLogEntryIsToolLike(entry));
-  const groupLabel = onlyToolEntries
-    ? nonEmptyEntries.length === 1
-      ? "1 tool call"
-      : `${nonEmptyEntries.length} tool calls`
-    : "Work Log";
+  const onlyToolEntries =
+    nonEmptyEntries.length > 0 && nonEmptyEntries.every((entry) => workLogEntryIsToolLike(entry));
+  // SOU-386 PR3: pure tool stacks start expanded for small runs; long runs
+  // collapse under the card header so the center column stays scannable.
+  const [cardExpanded, setCardExpanded] = useState(() => nonEmptyEntries.length <= 6);
 
   if (nonEmptyEntries.length === 0) return null;
 
+  if (onlyToolEntries) {
+    const stepCount = nonEmptyEntries.length;
+    const groupLabel = `Tool use · ${stepCount} step${stepCount === 1 ? "" : "s"}`;
+    const inProgressCount = nonEmptyEntries.filter(
+      (entry) => entry.toolLifecycleStatus === "inProgress",
+    ).length;
+    const canCollapse = stepCount > 1;
+    const showBody = !canCollapse || cardExpanded;
+
+    return (
+      <section
+        className="rounded-xl border border-border/55 bg-[color-mix(in_srgb,var(--shell-surface-raised,var(--card))_88%,transparent)] px-2.5 py-2 shadow-sm"
+        aria-label={groupLabel}
+      >
+        <button
+          type="button"
+          className={cn(
+            "flex w-full items-center gap-2 rounded-md px-0.5 py-0.5 text-left transition-colors",
+            canCollapse &&
+              "cursor-pointer hover:bg-accent/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70",
+          )}
+          aria-expanded={canCollapse ? showBody : undefined}
+          disabled={!canCollapse}
+          onClick={() => {
+            if (canCollapse) setCardExpanded((value) => !value);
+          }}
+        >
+          <span className="flex size-5 shrink-0 items-center justify-center text-muted-foreground/70">
+            {inProgressCount > 0 ? (
+              <Loader2Icon className="size-3.5 animate-spin opacity-80" />
+            ) : (
+              <CheckIcon className="size-3.5 opacity-80" />
+            )}
+          </span>
+          <span className="min-w-0 flex-1 truncate font-medium text-[12px] text-foreground/88">
+            {groupLabel}
+          </span>
+          {inProgressCount > 0 ? (
+            <span className="shrink-0 text-[11px] text-muted-foreground/70">
+              {inProgressCount} running
+            </span>
+          ) : null}
+          {canCollapse ? (
+            <ChevronDownIcon
+              className={cn(
+                "size-3.5 shrink-0 text-muted-foreground/65 transition-transform duration-200",
+                showBody && "rotate-180",
+              )}
+            />
+          ) : null}
+        </button>
+        {showBody ? (
+          <div className="mt-1 space-y-px border-t border-border/40 pt-1">
+            {nonEmptyEntries.map((workEntry) => (
+              <SimpleWorkEntryRow
+                key={workEntry.id}
+                workEntry={workEntry}
+                workspaceRoot={workspaceRoot}
+              />
+            ))}
+          </div>
+        ) : null}
+      </section>
+    );
+  }
+
   return (
-    <section className="-mx-1 space-y-0.5 px-1 py-0.5" aria-label={groupLabel}>
-      {!onlyToolEntries && (
-        <p className="px-0.5 pb-0.5 font-medium text-[11px] text-muted-foreground/65">
-          {groupLabel}
-        </p>
-      )}
+    <section className="-mx-1 space-y-0.5 px-1 py-0.5" aria-label="Work Log">
+      <p className="px-0.5 pb-0.5 font-medium text-[11px] text-muted-foreground/65">Work Log</p>
       <div className="space-y-px">
         {nonEmptyEntries.map((workEntry) => (
           <SimpleWorkEntryRow

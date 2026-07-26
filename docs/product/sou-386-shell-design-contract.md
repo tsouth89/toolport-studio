@@ -80,15 +80,16 @@ behavior classes keep working.
 - [x] MCP list from Toolport registry (enabled/disabled + gateway; View all → Toolport)
 - [ ] Current-step progress bar only when provider supplies a total
 
-## PR 3 slice (timeline hierarchy) — in progress
+## PR 3 slice (timeline hierarchy) — done
 
 - [x] Working-row quiet + View in Activity + real tool/context labels
 - [x] Timeline tool rows use the same `formatWorkLogToolLabel` as Activity
 - [x] Further collapse / hierarchy for long tool spam
   - Activity: consecutive same-label tools densify (`Read file × 8`) before the cap
   - Timeline work-toggle: `+N previous Read file` when the hidden slice shares a label
-- [ ] Mockup-shaped center “Tool use · N steps” card (grouped expandable stack)
-- [ ] Keep Thinking / progress outside the tool group (never swallow commentary)
+- [x] Mockup-shaped center “Tool use · N steps” card (grouped expandable stack)
+- [x] Keep Thinking / progress outside the tool group (never swallow commentary)
+  - Pure tool runs stay one timeline row → raised card; commentary stays message rows
 
 ## PR 4 slice (shell refinement) — not started
 
