@@ -626,8 +626,18 @@ export function hasServerAcknowledgedLocalDispatch(input: {
     if (latestUserMessageChanged) {
       return true;
     }
-    // Steering can leave turn timestamps unchanged while activeTurnId matches.
+    // Steering / bootstrap can leave turn timestamps unchanged. Session just
+    // becoming starting/running is still a handoff (ack Sending). If a newer
+    // turn projected, fall through to activeTurnId matching below.
     if (!latestTurnChanged) {
+      const liveSessionStatus = session?.status ?? null;
+      if (
+        (liveSessionStatus === "starting" || liveSessionStatus === "running") &&
+        (input.localDispatch.sessionStatus !== liveSessionStatus ||
+          input.localDispatch.sessionUpdatedAt !== (session?.updatedAt ?? null))
+      ) {
+        return true;
+      }
       return false;
     }
     if (latestTurn?.startedAt === null || latestTurn === null) {
@@ -647,12 +657,24 @@ export function hasServerAcknowledgedLocalDispatch(input: {
   // still ready. That gap is the multi-minute blank Working hole: message lands,
   // "Sending" ends, session is not running yet, timeline looks idle until the
   // first token. Keep isSendBusy until turn activity, live phase, or stale.
+  //
+  // Also: session start often goes starting → ready before turn.started lands
+  // (Claude/Grok session bootstrap). Treating any session update as ack cleared
+  // busy while phase was still ready and left a blank hole until first token.
 
-  if (
-    latestTurnChanged ||
-    input.localDispatch.sessionStatus !== (session?.status ?? null) ||
-    input.localDispatch.sessionUpdatedAt !== (session?.updatedAt ?? null)
-  ) {
+  if (latestTurnChanged) {
+    return true;
+  }
+
+  // Only session transitions into a live provider state count as handoff.
+  // ready → ready (updatedAt churn) or starting → ready without a turn must
+  // not clear Sending/Working chrome.
+  const sessionStatus = session?.status ?? null;
+  const sessionBecameLive =
+    (sessionStatus === "starting" || sessionStatus === "running") &&
+    (input.localDispatch.sessionStatus !== sessionStatus ||
+      input.localDispatch.sessionUpdatedAt !== (session?.updatedAt ?? null));
+  if (sessionBecameLive) {
     return true;
   }
 

@@ -759,6 +759,70 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
     ).toBe(false);
   });
 
+  it("keeps local busy across session start→ready without turn activity (Claude blank hole)", () => {
+    // ensureSessionForThread sets starting, then startSession returns ready,
+    // before turn.started. Clearing busy here left Working blank until first token.
+    const localDispatch = createLocalDispatchSnapshot(
+      makeThread({ latestTurn: null, session: readySession }),
+    );
+    const afterStartReady = {
+      ...readySession,
+      status: "ready" as const,
+      updatedAt: "2099-01-01T00:00:05.000Z",
+    };
+
+    expect(
+      hasServerAcknowledgedLocalDispatch({
+        localDispatch: {
+          ...localDispatch,
+          startedAt: "2099-01-01T00:00:00.000Z",
+          sessionStatus: "starting",
+          sessionUpdatedAt: "2099-01-01T00:00:01.000Z",
+          latestTurnTurnId: null,
+          latestTurnRequestedAt: null,
+          latestTurnStartedAt: null,
+          latestTurnCompletedAt: null,
+        },
+        phase: "ready",
+        latestTurn: null,
+        latestUserMessageId: MessageId.make("message-after-send"),
+        session: afterStartReady,
+        hasPendingApproval: false,
+        hasPendingUserInput: false,
+        threadError: null,
+        nowMs: Date.parse("2099-01-01T00:00:10.000Z"),
+      }),
+    ).toBe(false);
+  });
+
+  it("acknowledges session becoming starting even without a turn yet", () => {
+    const localDispatch = createLocalDispatchSnapshot(
+      makeThread({ latestTurn: null, session: readySession }),
+    );
+
+    expect(
+      hasServerAcknowledgedLocalDispatch({
+        localDispatch: {
+          ...localDispatch,
+          startedAt: "2099-01-01T00:00:00.000Z",
+          sessionStatus: null,
+          sessionUpdatedAt: null,
+          latestTurnTurnId: null,
+          latestTurnRequestedAt: null,
+          latestTurnStartedAt: null,
+          latestTurnCompletedAt: null,
+        },
+        phase: "connecting",
+        latestTurn: null,
+        latestUserMessageId: localDispatch.latestUserMessageId,
+        session: { ...readySession, status: "starting", updatedAt: "2099-01-01T00:00:01.000Z" },
+        hasPendingApproval: false,
+        hasPendingUserInput: false,
+        threadError: null,
+      }),
+    ).toBe(true);
+  });
+
   it("acknowledges a projected user message once the session is connecting or running", () => {
     const localDispatch = createLocalDispatchSnapshot(
       makeThread({ latestTurn: completedTurn, session: readySession }),
