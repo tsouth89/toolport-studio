@@ -779,12 +779,25 @@ export const make = (
       start: () => start,
       getEvents: () => Stream.fromQueue(eventQueue),
       drainEvents: Effect.gen(function* () {
-        const acknowledge = yield* Deferred.make<void>();
-        yield* Queue.offer(eventQueue, {
-          _tag: "EventStreamBarrier",
-          acknowledge,
+        const drainThroughBarrier = Effect.gen(function* () {
+          const acknowledge = yield* Deferred.make<void>();
+          yield* Queue.offer(eventQueue, {
+            _tag: "EventStreamBarrier",
+            acknowledge,
+          });
+          yield* Deferred.await(acknowledge);
         });
-        yield* Deferred.await(acknowledge);
+
+        // A provider may resolve session/prompt before the consumer has
+        // projected its final message notifications. First drain those
+        // notifications, then close the segment they opened, and drain the
+        // resulting completion before the adapter emits turn.completed.
+        yield* drainThroughBarrier;
+        yield* closeActiveAssistantSegment({
+          queue: eventQueue,
+          assistantSegmentRef,
+        });
+        yield* drainThroughBarrier;
       }),
       getModeState: Ref.get(modeStateRef),
       getConfigOptions: Ref.get(configOptionsRef),

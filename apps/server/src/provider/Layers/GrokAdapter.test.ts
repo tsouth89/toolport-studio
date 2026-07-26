@@ -491,6 +491,13 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
       const terminalIndex = runtimeEvents.findIndex(
         (event) => event.type === "turn.completed" && String(event.threadId) === String(threadId),
       );
+      const assistantCompletionIndex = runtimeEvents.findIndex(
+        (event) =>
+          event.type === "item.completed" &&
+          event.payload.itemType === "assistant_message" &&
+          String(event.threadId) === String(threadId) &&
+          event.turnId === turnCompletedEvent?.turnId,
+      );
       const turnOutputTypes = new Set([
         "content.delta",
         "item.started",
@@ -511,6 +518,8 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
       assert.include(eventTypes, "turn.completed");
       assert.equal(content, "hello from mock");
       assert.isAtLeast(terminalIndex, 0);
+      assert.isAtLeast(assistantCompletionIndex, 0);
+      assert.isBelow(assistantCompletionIndex, terminalIndex);
       assert.deepEqual(outputAfterTerminal, []);
       assert.notInclude(toolTitles, "Child-only tool");
       assert.equal(turnCompletedEvent?.payload.stopReason, "end_turn");
