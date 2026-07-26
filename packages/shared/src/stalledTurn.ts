@@ -6,9 +6,9 @@
  * silent will surface the same quiet signal.
  *
  * Product note (SOU-386 / SOU-399): this is a **soft quiet notice only**, not a
- * hang kill. Server post-tool silence uses the long (15m) ceiling so multi-tool
- * planning gaps are not false-killed — do not add a second client-side interrupt
- * here. Hard recovery stays server-side (stuck open tools / process death).
+ * hang kill. Server never silence-kills open tools; post-tool/think use a long
+ * (15m) ceiling only when no tool is open. Do not add a second client-side
+ * interrupt here. Hard recovery is user Stop + ACP process death settlement.
  */
 
 /**
@@ -19,7 +19,8 @@ export const STALLED_TURN_THRESHOLD_MS = 120_000;
 
 /**
  * When an execute/monitor-style tool is open, suppress the quiet notice unless
- * silence exceeds this ceiling. Server execute watchdogs remain the safety net.
+ * silence exceeds this ceiling. Long tools are expected to be quiet; user Stop
+ * is the recovery path (server does not auto-kill open tools).
  */
 export const STALLED_TURN_LONG_RUNNING_THRESHOLD_MS = 10 * 60_000;
 

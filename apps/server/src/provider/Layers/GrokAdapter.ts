@@ -81,15 +81,12 @@ const GROK_RESUME_VERSION = 1 as const;
 /** Cap rehydrated transcript so a long thread cannot blow the next prompt. */
 const GROK_CONTEXT_REHYDRATION_MAX_CHARS = 60_000;
 /**
- * Auto-stop only when a tool is still open and nothing streams (option C).
- * Applies to non-execute tools (MCP, search, etc.) that should not sit silent.
+ * Opt-in only: thresholds used when `killOpenToolsOnSilence` is true (tests or
+ * future settings). Product default never auto-stops a turn while a tool is
+ * still open — quiet tools are valid work (long MCP, shell, search).
  */
 const GROK_SILENT_OPEN_TOOL_WATCHDOG_MS = 90_000;
-/**
- * Shell/execute tools often run for minutes with no intermediate ACP updates
- * (compile, install, long scripts). Allow much longer before treating them as
- * stuck — still shorter than pure-think so a wedged bash cannot hang forever.
- */
+/** Opt-in only when killOpenToolsOnSilence is enabled. */
 const GROK_SILENT_OPEN_EXECUTE_TOOL_WATCHDOG_MS = 15 * 60_000;
 /**
  * After tools have run, Grok often plans the next wave with no ACP stream tokens.
@@ -97,8 +94,10 @@ const GROK_SILENT_OPEN_EXECUTE_TOOL_WATCHDOG_MS = 15 * 60_000;
  *
  * SOU-399: post-tool silence must use the long ceiling (same as pure-think), not a
  * short wall-clock kill. Dogfood 2026-07-26 false-stopped a live research turn at
- * ~122s when this was 2 minutes. Stuck open tools still use open-tool thresholds;
- * dead ACP children still compromise via notification-stream end.
+ * ~122s when this was 2 minutes.
+ *
+ * Open tools are never silence-killed by default (user Stop or ACP process death
+ * settles instead). Dead ACP children still compromise via notification-stream end.
  */
 const GROK_SILENT_POST_TOOL_WATCHDOG_MS = 15 * 60_000;
 /** Absolute ceiling so a pure-think wedge cannot run forever. */
@@ -116,9 +115,14 @@ const GROK_PENDING_APPROVAL_TIMEOUT_MS = 3 * 60_000;
 const GROK_PENDING_USER_INPUT_TIMEOUT_MS = 5 * 60_000;
 
 export type GrokSilentTurnWatchdogConfig = {
-  /** Non-execute open tools (MCP, etc.): short stuck threshold. */
+  /**
+   * When true, silence can auto-stop while tools are still open (historical
+   * kill path). Product default is false: open tools are never timeout-killed.
+   */
+  readonly killOpenToolsOnSilence: boolean;
+  /** Non-execute open tools (MCP, etc.): only used if killOpenToolsOnSilence. */
   readonly openToolMs: number;
-  /** Execute/shell open tools: long threshold for real long-running commands. */
+  /** Execute/shell open tools: only used if killOpenToolsOnSilence. */
   readonly openExecuteToolMs: number;
   readonly postToolMs: number;
   readonly thinkMs: number;
@@ -126,6 +130,7 @@ export type GrokSilentTurnWatchdogConfig = {
 };
 
 const DEFAULT_GROK_SILENT_TURN_WATCHDOG: GrokSilentTurnWatchdogConfig = {
+  killOpenToolsOnSilence: false,
   openToolMs: GROK_SILENT_OPEN_TOOL_WATCHDOG_MS,
   openExecuteToolMs: GROK_SILENT_OPEN_EXECUTE_TOOL_WATCHDOG_MS,
   postToolMs: GROK_SILENT_POST_TOOL_WATCHDOG_MS,
@@ -162,14 +167,17 @@ export function resolveGrokOpenToolWatchdogMs(input: {
 /**
  * Classify a silent Grok turn for auto-stop.
  *
- * Open-tool silence uses **tool activity only** (`openToolSilentMs`). Thought /
- * assistant stream deltas must not reset that clock — otherwise a stuck tool
- * can sit inProgress forever while CoT still trickles (or after total silence
- * if we only looked at the wrong clock).
+ * **Open tools are never silence-killed by default.** Quiet tools (long shell,
+ * MCP, search) are valid work. User Stop, ACP process death, or hard errors
+ * settle the turn; `forceCloseOpenTools` cleans ghost inProgress rows. Opt-in
+ * `killOpenToolsOnSilence` keeps the old kill path for tests only.
+ *
+ * When open-tool kill is enabled, silence uses **tool activity only**
+ * (`openToolSilentMs`) so thought/text stream cannot mask a truly stuck tool.
  *
  * Post-tool and pure-think share the long default ceiling (SOU-399): multi-tool
  * planning gaps must not hard-stop after ~2m of token silence while the prompt
- * is still open. Short kills remain for open tools only.
+ * is still open (and no tool is open).
  */
 export function classifyGrokSilentTurn(input: {
   /** Silence since any stream activity (thoughts, text, tools). */
@@ -182,7 +190,7 @@ export function classifyGrokSilentTurn(input: {
   readonly openToolCount: number;
   /**
    * Kinds of currently open tools (one entry per open toolCallId). Used to
-   * choose short vs execute open-tool thresholds.
+   * choose short vs execute open-tool thresholds when kill is enabled.
    */
   readonly openToolKinds?: ReadonlyArray<string | undefined>;
   readonly hasObservedToolCall: boolean;
@@ -191,10 +199,18 @@ export function classifyGrokSilentTurn(input: {
   const postToolMs = input.thresholds?.postToolMs ?? GROK_SILENT_POST_TOOL_WATCHDOG_MS;
   const thinkMs = input.thresholds?.thinkMs ?? GROK_SILENT_THINK_WATCHDOG_MS;
   const openToolSilentMs = input.openToolSilentMs ?? input.silentMs;
+  const killOpenToolsOnSilence =
+    input.thresholds?.killOpenToolsOnSilence ??
+    DEFAULT_GROK_SILENT_TURN_WATCHDOG.killOpenToolsOnSilence;
+
   if (input.openToolCount > 0) {
+    // Product default: never auto-stop while a tool is still open.
+    if (!killOpenToolsOnSilence) {
+      return null;
+    }
     const kinds =
       input.openToolKinds ??
-      // Unknown kinds → short threshold (safer for stuck MCP).
+      // Unknown kinds → short threshold (safer for stuck MCP when kill is on).
       Array.from({ length: input.openToolCount }, () => undefined);
     const openToolMs = resolveGrokOpenToolWatchdogMs({
       openToolKinds: kinds,
@@ -203,11 +219,12 @@ export function classifyGrokSilentTurn(input: {
     if (openToolSilentMs >= openToolMs) {
       return "open-tool";
     }
+    return null;
   }
-  if (input.openToolCount === 0 && input.hasObservedToolCall && input.silentMs >= postToolMs) {
+  if (input.hasObservedToolCall && input.silentMs >= postToolMs) {
     return "post-tool";
   }
-  if (input.openToolCount === 0 && !input.hasObservedToolCall && input.silentMs >= thinkMs) {
+  if (!input.hasObservedToolCall && input.silentMs >= thinkMs) {
     return "thinking";
   }
   return null;
@@ -659,6 +676,9 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
   return Effect.gen(function* () {
     const boundInstanceId = options?.instanceId ?? ProviderInstanceId.make("grok");
     const silentTurnWatchdog: GrokSilentTurnWatchdogConfig = {
+      killOpenToolsOnSilence:
+        options?.silentTurnWatchdog?.killOpenToolsOnSilence ??
+        DEFAULT_GROK_SILENT_TURN_WATCHDOG.killOpenToolsOnSilence,
       openToolMs:
         options?.silentTurnWatchdog?.openToolMs ?? DEFAULT_GROK_SILENT_TURN_WATCHDOG.openToolMs,
       openExecuteToolMs:

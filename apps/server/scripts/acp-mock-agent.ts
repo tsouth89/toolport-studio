@@ -33,7 +33,8 @@ const hangFirstPromptForever = process.env.T3_ACP_HANG_FIRST_PROMPT_FOREVER === 
 const emitToolThenHang = process.env.T3_ACP_EMIT_TOOL_THEN_HANG === "1";
 /**
  * Emit tool pending/in_progress then hang without ever completing the tool.
- * Exercises open-tool stuck auto-stop + force-close on settle.
+ * Exercises open-tool policy: default product never silence-kills; Stop and
+ * opt-in killOpenToolsOnSilence still force-close + settle.
  */
 const emitToolStartThenHang = process.env.T3_ACP_EMIT_TOOL_START_THEN_HANG === "1";
 /**

@@ -78,7 +78,7 @@ Soft budgets after a week of multi-session use (adjust with evidence):
 
 - **Toolport MCP injection**: default **off** (Settings → “Toolport tools in sessions”)
 - **Assistant streaming**: default **off** (buffered); enable for token-by-token UI
-- **Post-tool silence auto-stop (Grok)**: long ceiling (15m) so multi-tool work is not false-killed
+- **Grok silence policy**: never auto-kill open tools; post-tool/think ceiling 15m only when no tool is open
 
 ## Changelog
 
