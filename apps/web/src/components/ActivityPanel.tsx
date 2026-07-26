@@ -9,7 +9,7 @@ import {
   Loader2,
   XCircle,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
 import { formatDuration } from "../session-logic";
 import type {
@@ -47,6 +47,14 @@ function formatStepClock(iso: string): string {
   });
 }
 
+function SectionLabel({ children }: { children: ReactNode }) {
+  return (
+    <h3 className="px-0.5 text-[10px] font-semibold tracking-[0.14em] text-muted-foreground/80 uppercase">
+      {children}
+    </h3>
+  );
+}
+
 function StepStatusIcon({ status }: { status: ThreadActivityStepStatus }) {
   switch (status) {
     case "running":
@@ -54,40 +62,42 @@ function StepStatusIcon({ status }: { status: ThreadActivityStepStatus }) {
     case "completed":
       return <CheckCircle2 className="size-3.5 shrink-0 text-success" aria-hidden />;
     case "info":
-      return <CheckCircle2 className="size-3.5 shrink-0 text-muted-foreground/65" aria-hidden />;
+      return <CheckCircle2 className="size-3.5 shrink-0 text-muted-foreground/60" aria-hidden />;
     case "failed":
     case "interrupted":
       return <XCircle className="size-3.5 shrink-0 text-destructive" aria-hidden />;
     case "pending":
-      return <Circle className="size-3.5 shrink-0 text-muted-foreground/50" aria-hidden />;
+      return <Circle className="size-3.5 shrink-0 text-muted-foreground/45" aria-hidden />;
     default:
-      return <CheckCircle2 className="size-3.5 shrink-0 text-muted-foreground/65" aria-hidden />;
+      return <CheckCircle2 className="size-3.5 shrink-0 text-muted-foreground/60" aria-hidden />;
   }
 }
 
 function RecentStepRow({ step }: { step: ThreadActivityStep }) {
   const clock = formatStepClock(step.createdAt);
   return (
-    <li className="flex min-w-0 items-center gap-2 overflow-hidden px-1 py-1.5 text-[12px]">
+    <li className="flex min-w-0 items-center gap-2 overflow-hidden px-2 py-1.5 text-[12px]">
       <span className="shrink-0">
         <StepStatusIcon status={step.status} />
       </span>
       <div className="min-w-0 flex-1 overflow-hidden">
         <p
           className={cn(
-            "truncate font-medium",
-            step.status === "running" ? "text-foreground" : "text-foreground/90",
+            "truncate leading-snug",
+            step.status === "running"
+              ? "font-semibold text-foreground"
+              : "font-medium text-foreground/88",
           )}
         >
           {step.label}
         </p>
         {step.detail ? (
-          <p className="mt-0.5 line-clamp-1 break-all text-[11px] text-muted-foreground">
+          <p className="mt-0.5 line-clamp-1 break-all text-[11px] leading-snug text-muted-foreground/85">
             {step.detail}
           </p>
         ) : null}
       </div>
-      <span className="shrink-0 tabular-nums text-[11px] text-muted-foreground/80">
+      <span className="shrink-0 tabular-nums text-[10.5px] text-muted-foreground/70">
         {clock || "—"}
       </span>
     </li>
@@ -104,22 +114,24 @@ function ArtifactsSection({
   return (
     <section className="min-w-0 space-y-1.5">
       <div className="flex min-w-0 items-center justify-between gap-2">
-        <h3 className="flex min-w-0 items-center gap-1.5 text-[10px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
-          <span>Artifacts</span>
-          <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-muted-foreground normal-case tracking-normal">
-            {artifacts.length}
+        <SectionLabel>
+          <span className="inline-flex items-center gap-1.5">
+            Artifacts
+            <span className="rounded-full bg-muted/80 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-muted-foreground normal-case tracking-normal">
+              {artifacts.length}
+            </span>
           </span>
-        </h3>
+        </SectionLabel>
       </div>
-      <ul className="min-w-0 divide-y divide-border/40 overflow-hidden rounded-lg border border-border/60 bg-card/30 px-1.5 py-0.5">
+      <ul className="min-w-0 divide-y divide-border/35 overflow-hidden rounded-xl border border-border/55 bg-[color-mix(in_srgb,var(--shell-surface-raised,var(--card))_88%,transparent)] px-0.5 py-0.5 shadow-sm">
         {artifacts.map((artifact) => (
           <li key={artifact.id}>
             <button
               type="button"
               className={cn(
-                "flex w-full min-w-0 items-center gap-2 px-1 py-1.5 text-left text-[12px]",
+                "flex w-full min-w-0 items-center gap-2 px-2 py-1.5 text-left text-[12px]",
                 onOpenPlan
-                  ? "cursor-pointer rounded-md hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  ? "cursor-pointer rounded-lg hover:bg-accent/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   : "cursor-default",
               )}
               disabled={!onOpenPlan}
@@ -165,12 +177,14 @@ function ChangedFilesSection({
   return (
     <section className="min-w-0 space-y-1.5">
       <div className="flex min-w-0 items-center justify-between gap-2">
-        <h3 className="flex min-w-0 items-center gap-1.5 text-[10px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
-          <span>Changed files</span>
-          <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-muted-foreground normal-case tracking-normal">
-            {model.fileCount}
+        <SectionLabel>
+          <span className="inline-flex items-center gap-1.5">
+            Changed files
+            <span className="rounded-full bg-muted/80 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-muted-foreground normal-case tracking-normal">
+              {model.fileCount}
+            </span>
           </span>
-        </h3>
+        </SectionLabel>
         {hasNonZeroStat({ additions: model.additions, deletions: model.deletions }) ? (
           <DiffStatLabel
             additions={model.additions}
@@ -181,15 +195,15 @@ function ChangedFilesSection({
         ) : null}
       </div>
 
-      <ul className="min-w-0 divide-y divide-border/40 overflow-hidden rounded-lg border border-border/60 bg-card/30 px-1.5 py-0.5">
+      <ul className="min-w-0 divide-y divide-border/35 overflow-hidden rounded-xl border border-border/55 bg-[color-mix(in_srgb,var(--shell-surface-raised,var(--card))_88%,transparent)] px-0.5 py-0.5 shadow-sm">
         {model.files.map((file) => (
           <li key={file.path}>
             <button
               type="button"
               className={cn(
-                "flex w-full min-w-0 items-center gap-2 px-1 py-1.5 text-left text-[12px]",
+                "flex w-full min-w-0 items-center gap-2 px-2 py-1.5 text-left text-[12px]",
                 onOpenTurnDiff
-                  ? "cursor-pointer rounded-md hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  ? "cursor-pointer rounded-lg hover:bg-accent/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   : "cursor-default",
               )}
               disabled={!onOpenTurnDiff}
@@ -245,32 +259,31 @@ export function ActivityPanel({
 }) {
   const elapsed = useElapsedLabel(model.elapsedStartedAt, model.isWorking);
   const currentElapsed = useElapsedLabel(model.current?.startedAt ?? null, model.isWorking);
-  // Newest first, matching mockup top-of-list recency while still showing plan order
-  // as reverse chrono of milestones.
+  // Newest first for instrument readout.
   const recent = [...model.recentSteps].reverse();
 
   return (
-    <div className="flex h-full min-h-0 flex-col overflow-hidden bg-background text-foreground">
-      <header className="flex shrink-0 items-center justify-between gap-2 border-b border-border/70 px-3 py-2.5">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden bg-[var(--shell-surface,var(--background))] text-foreground">
+      <header className="flex shrink-0 items-center justify-between gap-2 border-b border-border/60 px-3 py-2">
         <div className="flex min-w-0 items-center gap-1.5">
           <Activity className="size-3.5 shrink-0 text-primary" aria-hidden />
           <h2 className="truncate text-[13px] font-semibold tracking-tight">Activity</h2>
         </div>
         {elapsed ? (
-          <span className="shrink-0 tabular-nums text-[11px] text-muted-foreground">
+          <span className="shrink-0 rounded-md bg-muted/50 px-1.5 py-0.5 tabular-nums text-[11px] text-muted-foreground">
             Elapsed {elapsed}
           </span>
         ) : (
-          <span className="shrink-0 text-[11px] text-muted-foreground/70">Idle</span>
+          <span className="shrink-0 text-[11px] text-muted-foreground/65">Idle</span>
         )}
       </header>
 
       <ScrollArea className="min-h-0 min-w-0 flex-1">
-        <div className="flex min-w-0 flex-col gap-4 overflow-x-hidden p-3">
+        <div className="flex min-w-0 flex-col gap-3.5 overflow-x-hidden p-2.5">
           {model.attention ? (
             <section
               className={cn(
-                "min-w-0 overflow-hidden rounded-lg border px-2.5 py-2 text-[12px]",
+                "min-w-0 overflow-hidden rounded-xl border px-2.5 py-2 text-[12px] shadow-sm",
                 model.attention.kind === "error"
                   ? "border-destructive/40 bg-destructive/10 text-destructive"
                   : "border-warning/40 bg-warning/10 text-warning",
@@ -284,11 +297,9 @@ export function ActivityPanel({
           ) : null}
 
           <section className="min-w-0 space-y-1.5">
-            <h3 className="text-[10px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
-              Current step
-            </h3>
+            <SectionLabel>Current step</SectionLabel>
             {model.current ? (
-              <div className="min-w-0 overflow-hidden rounded-lg border border-primary/30 bg-primary/8 px-2.5 py-2.5 shadow-sm">
+              <div className="min-w-0 overflow-hidden rounded-xl border border-primary/35 bg-primary/10 px-2.5 py-2.5 shadow-sm ring-1 ring-primary/10">
                 <div className="flex min-w-0 items-start gap-2">
                   {model.isWorking ? (
                     <Loader2 className="mt-0.5 size-3.5 shrink-0 animate-spin text-primary" />
@@ -297,7 +308,7 @@ export function ActivityPanel({
                   )}
                   <div className="min-w-0 flex-1 overflow-hidden">
                     <div className="flex min-w-0 items-baseline justify-between gap-2">
-                      <p className="truncate text-[12.5px] font-semibold text-foreground">
+                      <p className="truncate text-[12.5px] font-semibold tracking-tight text-foreground">
                         {model.current.label}
                       </p>
                       {currentElapsed ? (
@@ -307,7 +318,7 @@ export function ActivityPanel({
                       ) : null}
                     </div>
                     {model.current.detail ? (
-                      <p className="mt-0.5 line-clamp-2 break-all text-[11px] text-muted-foreground">
+                      <p className="mt-0.5 line-clamp-2 break-all text-[11px] leading-snug text-muted-foreground">
                         {model.current.detail}
                       </p>
                     ) : null}
@@ -315,24 +326,24 @@ export function ActivityPanel({
                 </div>
               </div>
             ) : (
-              <p className="rounded-lg border border-border/60 bg-card/40 px-2.5 py-3 text-[12px] text-muted-foreground">
+              <p className="rounded-xl border border-border/55 bg-card/35 px-2.5 py-3 text-[12px] text-muted-foreground">
                 No active step. Start a turn to see live work here.
               </p>
             )}
           </section>
 
           <section className="min-w-0 space-y-1.5">
-            <h3 className="text-[10px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
-              Recent steps
-            </h3>
+            <SectionLabel>Recent steps</SectionLabel>
             {recent.length > 0 ? (
-              <ul className="min-w-0 divide-y divide-border/40 overflow-hidden rounded-lg border border-border/60 bg-card/30 px-1.5 py-0.5">
+              <ul className="min-w-0 divide-y divide-border/35 overflow-hidden rounded-xl border border-border/55 bg-[color-mix(in_srgb,var(--shell-surface-raised,var(--card))_88%,transparent)] py-0.5 shadow-sm">
                 {recent.map((step) => (
                   <RecentStepRow key={step.id} step={step} />
                 ))}
               </ul>
             ) : (
-              <p className="text-[12px] text-muted-foreground">No steps yet for this turn.</p>
+              <p className="px-0.5 text-[12px] text-muted-foreground">
+                No steps yet for this turn.
+              </p>
             )}
           </section>
 

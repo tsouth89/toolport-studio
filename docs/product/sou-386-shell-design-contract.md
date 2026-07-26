@@ -76,5 +76,12 @@ behavior classes keep working.
 - [x] Working + Activity tool labels from real title/command/path context
 - [x] Timeline Working-row “View in Activity” deep-link
 - [x] Artifacts block for proposed plans (other artifact types when they exist)
+- [x] Activity instrument-panel density (raised cards, tighter sections, shared tool labels)
 - [ ] MCP list when authoritative live status exists
 - [ ] Current-step progress bar only when provider supplies a total
+
+## PR 3 slice (timeline hierarchy) — in progress
+
+- [x] Working-row quiet + View in Activity + real tool/context labels
+- [x] Timeline tool rows use the same `formatWorkLogToolLabel` as Activity
+- [ ] Further collapse / hierarchy for long tool spam (follow-up)
