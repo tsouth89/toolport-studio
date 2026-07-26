@@ -28,14 +28,20 @@ function StepStatusIcon({ status }: { status: ThreadActivityStepStatus }) {
     case "running":
       return <Loader2 className="size-3.5 shrink-0 animate-spin text-primary" aria-hidden />;
     case "completed":
+      // Tool / work success — clear green check.
       return <CheckCircle2 className="size-3.5 shrink-0 text-success" aria-hidden />;
+    case "info":
+      // Thinking, plan notes, system events: already happened, not unfinished.
+      // Soft check (not a hollow circle) so the list doesn't look broken.
+      return <CheckCircle2 className="size-3.5 shrink-0 text-muted-foreground/65" aria-hidden />;
     case "failed":
     case "interrupted":
       return <XCircle className="size-3.5 shrink-0 text-destructive" aria-hidden />;
     case "pending":
+      // Reserved for true not-yet-started work only.
       return <Circle className="size-3.5 shrink-0 text-muted-foreground/50" aria-hidden />;
     default:
-      return <Circle className="size-3.5 shrink-0 text-muted-foreground/60" aria-hidden />;
+      return <CheckCircle2 className="size-3.5 shrink-0 text-muted-foreground/65" aria-hidden />;
   }
 }
 

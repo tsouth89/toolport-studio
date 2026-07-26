@@ -88,7 +88,13 @@ function stepStatusFromWorkEntry(
   if (entry.toolLifecycleStatus === "completed" || workEntryIndicatesToolSuccess(entry)) {
     return "completed";
   }
-  if (entry.tone === "thinking" || workEntryIndicatesToolNeutralStatus(entry)) {
+  // Thinking / plan / system notes already happened. Use "info" (soft check in
+  // the panel), never hollow pending circles that read as unfinished.
+  if (
+    entry.tone === "thinking" ||
+    entry.tone === "info" ||
+    workEntryIndicatesToolNeutralStatus(entry)
+  ) {
     return "info";
   }
   return "info";

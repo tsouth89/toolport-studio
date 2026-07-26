@@ -105,14 +105,23 @@ describe("deriveThreadActivityViewModel", () => {
           tone: "thinking",
           createdAt: "2026-07-26T12:00:08.000Z",
         }),
+        workEntry({
+          id: "plan",
+          label: "Plan updated",
+          tone: "info",
+          createdAt: "2026-07-26T12:00:09.000Z",
+        }),
       ]),
     });
 
+    // Thinking / info events are "info" (soft check in UI), not hollow pending.
     expect(model.recentSteps.map((step) => step.status)).toEqual([
       "completed",
       "interrupted",
       "info",
+      "info",
     ]);
+    expect(model.recentSteps.every((step) => step.status !== "pending")).toBe(true);
   });
 
   it("only treats explicit inProgress tools as the current step", () => {
