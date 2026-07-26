@@ -58,13 +58,19 @@ function stepStatusFromWorkEntry(entry: WorkLogEntry): ThreadActivityStepStatus 
   if (entry.tone === "error" || workEntryIndicatesToolFailure(entry)) {
     return "failed";
   }
-  if (entry.toolLifecycleStatus === "inProgress" || workEntryIndicatesToolNeutralStatus(entry)) {
+  // Only explicit in-progress lifecycle may spin. Neutral (stopped, ambiguous,
+  // thinking-shaped tools) used to map to "running" and left finished Recent
+  // steps with permanent loaders.
+  if (entry.toolLifecycleStatus === "inProgress") {
     return "running";
+  }
+  if (entry.toolLifecycleStatus === "stopped") {
+    return "interrupted";
   }
   if (entry.toolLifecycleStatus === "completed" || workEntryIndicatesToolSuccess(entry)) {
     return "completed";
   }
-  if (entry.tone === "thinking") {
+  if (entry.tone === "thinking" || workEntryIndicatesToolNeutralStatus(entry)) {
     return "info";
   }
   return "info";
@@ -117,12 +123,7 @@ export function deriveThreadActivityViewModel(input: {
   if (input.isWorking) {
     const runningTool = [...workEntries]
       .reverse()
-      .find(
-        (entry) =>
-          workLogEntryIsToolLike(entry) &&
-          (entry.toolLifecycleStatus === "inProgress" ||
-            workEntryIndicatesToolNeutralStatus(entry)),
-      );
+      .find((entry) => workLogEntryIsToolLike(entry) && entry.toolLifecycleStatus === "inProgress");
     const thinking = [...workEntries]
       .reverse()
       .find((entry) => entry.tone === "thinking" || entry.sourceActivityKind === "task.progress");

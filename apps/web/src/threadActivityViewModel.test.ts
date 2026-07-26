@@ -82,6 +82,70 @@ describe("deriveThreadActivityViewModel", () => {
     expect(model.recentSteps.map((step) => step.status)).toEqual(["completed", "failed"]);
   });
 
+  it("does not spin finished, stopped, or neutral tool steps", () => {
+    const model = deriveThreadActivityViewModel({
+      isWorking: false,
+      activeTurnStartedAt: null,
+      timelineEntries: workTimeline([
+        workEntry({
+          id: "done-implicit",
+          label: "grep",
+          // Tool-like with no lifecycle still resolves to success, not running.
+          createdAt: "2026-07-26T12:00:00.000Z",
+        }),
+        workEntry({
+          id: "stopped",
+          label: "shell",
+          toolLifecycleStatus: "stopped",
+          createdAt: "2026-07-26T12:00:05.000Z",
+        }),
+        workEntry({
+          id: "think",
+          label: "Planning",
+          tone: "thinking",
+          createdAt: "2026-07-26T12:00:08.000Z",
+        }),
+      ]),
+    });
+
+    expect(model.recentSteps.map((step) => step.status)).toEqual([
+      "completed",
+      "interrupted",
+      "info",
+    ]);
+  });
+
+  it("only treats explicit inProgress tools as the current step", () => {
+    const turnId = TurnId.make("turn-2");
+    const model = deriveThreadActivityViewModel({
+      isWorking: true,
+      activeTurnStartedAt: "2026-07-26T12:00:00.000Z",
+      unsettledTurnId: turnId,
+      timelineEntries: workTimeline([
+        workEntry({
+          id: "prior",
+          label: "list issues",
+          toolTitle: "Linear · list issues",
+          turnId,
+          toolLifecycleStatus: "stopped",
+          createdAt: "2026-07-26T12:00:01.000Z",
+        }),
+        workEntry({
+          id: "think",
+          label: "Still thinking",
+          tone: "thinking",
+          turnId,
+          sourceActivityKind: "task.progress",
+          createdAt: "2026-07-26T12:00:02.000Z",
+        }),
+      ]),
+    });
+
+    expect(model.recentSteps[0]?.status).toBe("interrupted");
+    expect(model.current?.source).toBe("thinking");
+    expect(model.current?.label).toBe("Still thinking");
+  });
+
   it("surfaces approval attention without inventing a tool", () => {
     const model = deriveThreadActivityViewModel({
       isWorking: true,
