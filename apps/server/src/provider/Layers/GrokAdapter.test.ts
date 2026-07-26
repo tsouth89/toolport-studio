@@ -30,6 +30,7 @@ import {
   appendGrokConversationText,
   buildGrokContextRehydrationPrefix,
   buildGrokImagePromptPart,
+  buildGrokSilentTurnStopMessage,
   canSteerGrokSendTurn,
   classifyGrokSilentTurn,
   grokPromptSettlementBelongsToContext,
@@ -77,6 +78,22 @@ it("classifies Grok silence by active tool, completed tool loop, or pure thinkin
       hasObservedToolCall: false,
     }),
     "thinking",
+  );
+  assert.equal(
+    classifyGrokSilentTurn({
+      silentMs: 250,
+      openToolCount: 0,
+      hasObservedToolCall: true,
+      thresholds: { postToolMs: 200 },
+    }),
+    "post-tool",
+  );
+  assert.match(
+    buildGrokSilentTurnStopMessage({
+      silentTurnKind: "post-tool",
+      silentMs: 125_000,
+    }),
+    /stopped responding after its last tool completed/i,
   );
 });
 
@@ -793,6 +810,106 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
       yield* Fiber.interrupt(runtimeEventsFiber);
       yield* adapter.stopSession(threadId);
     }).pipe(TestClock.withLive),
+  );
+
+  it.effect(
+    "auto-stops after post-tool silence and settles turn.completed without manual Stop",
+    () =>
+      Effect.gen(function* () {
+        // Repro: tool completes, Grok goes silent, cancel wins the prompt RPC
+        // as success — Studio must still emit failed turn.completed (not zombie Working).
+        const threadId = ThreadId.make("grok-post-tool-silence-watchdog");
+        const adapter = yield* makeMockTestAdapter(
+          {
+            T3_ACP_EMIT_TOOL_THEN_HANG: "1",
+          },
+          {
+            silentTurnWatchdog: {
+              openToolMs: 5_000,
+              postToolMs: 400,
+              thinkMs: 30_000,
+              pollMs: 50,
+            },
+          },
+        );
+
+        const runtimeEvents: ProviderRuntimeEvent[] = [];
+        const toolCompleted = yield* Deferred.make<void>();
+        const turnFailed =
+          yield* Deferred.make<Extract<ProviderRuntimeEvent, { type: "turn.completed" }>>();
+        const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+          Effect.sync(() => {
+            runtimeEvents.push(event);
+          }).pipe(
+            Effect.andThen(
+              event.type === "item.completed" &&
+                event.payload.itemType !== "assistant_message" &&
+                String(event.threadId) === String(threadId)
+                ? Deferred.succeed(toolCompleted, undefined).pipe(Effect.ignore, Effect.asVoid)
+                : Effect.void,
+            ),
+            Effect.andThen(
+              event.type === "turn.completed" &&
+                event.payload.state === "failed" &&
+                String(event.threadId) === String(threadId)
+                ? Deferred.succeed(turnFailed, event).pipe(Effect.ignore, Effect.asVoid)
+                : Effect.void,
+            ),
+          ),
+        ).pipe(Effect.forkChild);
+
+        yield* adapter.startSession({
+          threadId,
+          provider: ProviderDriverKind.make("grok"),
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+        });
+
+        const hangFiber = yield* adapter
+          .sendTurn({
+            threadId,
+            input: "run a tool then go silent",
+            attachments: [],
+          })
+          .pipe(Effect.forkChild);
+
+        yield* Deferred.await(toolCompleted).pipe(Effect.timeout("5 seconds"));
+        const failedEvent = yield* Deferred.await(turnFailed).pipe(Effect.timeout("8 seconds"));
+        assert.match(
+          String(failedEvent.payload.errorMessage ?? ""),
+          /stopped responding after its last tool completed/i,
+        );
+
+        // sendTurn should complete (settle) without the parent needing Stop.
+        yield* Fiber.join(hangFiber).pipe(Effect.timeout("5 seconds"));
+
+        const sessions = yield* adapter.listSessions();
+        const session = sessions.find((entry) => entry.threadId === threadId);
+        assert.equal(session?.status, "ready");
+        assert.isUndefined(session?.activeTurnId);
+
+        // Follow-up must work without the user having pressed Stop.
+        const followUpBefore = runtimeEvents.length;
+        yield* adapter
+          .sendTurn({
+            threadId,
+            input: "continue after auto-stop",
+            attachments: [],
+          })
+          .pipe(Effect.timeout("10 seconds"));
+        const followUpCompleted = runtimeEvents
+          .slice(followUpBefore)
+          .filter(
+            (event): event is Extract<ProviderRuntimeEvent, { type: "turn.completed" }> =>
+              event.type === "turn.completed" &&
+              String(event.threadId) === String(threadId) &&
+              event.payload.state === "completed",
+          );
+        assert.lengthOf(followUpCompleted, 1);
+
+        yield* Fiber.interrupt(runtimeEventsFiber);
+        yield* adapter.stopSession(threadId);
+      }).pipe(TestClock.withLive),
   );
 
   it.effect(

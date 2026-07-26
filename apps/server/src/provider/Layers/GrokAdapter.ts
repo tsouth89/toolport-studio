@@ -96,31 +96,56 @@ const GROK_SILENT_POST_TOOL_WATCHDOG_MS = 2 * 60_000;
 const GROK_SILENT_THINK_WATCHDOG_MS = 15 * 60_000;
 const GROK_SILENT_TURN_WATCHDOG_POLL_MS = 10_000;
 
+export type GrokSilentTurnWatchdogConfig = {
+  readonly openToolMs: number;
+  readonly postToolMs: number;
+  readonly thinkMs: number;
+  readonly pollMs: number;
+};
+
+const DEFAULT_GROK_SILENT_TURN_WATCHDOG: GrokSilentTurnWatchdogConfig = {
+  openToolMs: GROK_SILENT_OPEN_TOOL_WATCHDOG_MS,
+  postToolMs: GROK_SILENT_POST_TOOL_WATCHDOG_MS,
+  thinkMs: GROK_SILENT_THINK_WATCHDOG_MS,
+  pollMs: GROK_SILENT_TURN_WATCHDOG_POLL_MS,
+};
+
 export type GrokSilentTurnKind = "open-tool" | "post-tool" | "thinking" | null;
 
 export function classifyGrokSilentTurn(input: {
   readonly silentMs: number;
   readonly openToolCount: number;
   readonly hasObservedToolCall: boolean;
+  readonly thresholds?: Partial<GrokSilentTurnWatchdogConfig>;
 }): GrokSilentTurnKind {
-  if (input.openToolCount > 0 && input.silentMs >= GROK_SILENT_OPEN_TOOL_WATCHDOG_MS) {
+  const openToolMs = input.thresholds?.openToolMs ?? GROK_SILENT_OPEN_TOOL_WATCHDOG_MS;
+  const postToolMs = input.thresholds?.postToolMs ?? GROK_SILENT_POST_TOOL_WATCHDOG_MS;
+  const thinkMs = input.thresholds?.thinkMs ?? GROK_SILENT_THINK_WATCHDOG_MS;
+  if (input.openToolCount > 0 && input.silentMs >= openToolMs) {
     return "open-tool";
   }
-  if (
-    input.openToolCount === 0 &&
-    input.hasObservedToolCall &&
-    input.silentMs >= GROK_SILENT_POST_TOOL_WATCHDOG_MS
-  ) {
+  if (input.openToolCount === 0 && input.hasObservedToolCall && input.silentMs >= postToolMs) {
     return "post-tool";
   }
-  if (
-    input.openToolCount === 0 &&
-    !input.hasObservedToolCall &&
-    input.silentMs >= GROK_SILENT_THINK_WATCHDOG_MS
-  ) {
+  if (input.openToolCount === 0 && !input.hasObservedToolCall && input.silentMs >= thinkMs) {
     return "thinking";
   }
   return null;
+}
+
+export function buildGrokSilentTurnStopMessage(input: {
+  readonly silentTurnKind: Exclude<GrokSilentTurnKind, null>;
+  readonly silentMs: number;
+  readonly toolLabel?: string;
+}): string {
+  const toolLabel = input.toolLabel?.trim() || "a tool";
+  if (input.silentTurnKind === "open-tool") {
+    return `Grok went silent for ${Math.round(input.silentMs / 1000)}s while ${toolLabel} was still running. Turn was stopped automatically — try a smaller task or Send again.`;
+  }
+  if (input.silentTurnKind === "post-tool") {
+    return `Grok stopped responding after its last tool completed. The turn was stopped automatically after ${Math.round(input.silentMs / 1000)}s with no progress — Send again to continue.`;
+  }
+  return `Grok went silent for ${Math.round(input.silentMs / 60000)}+ minutes with no tools or stream updates. Turn was stopped automatically — try again.`;
 }
 
 function encodeJsonStringForDiagnostics(input: unknown): string | undefined {
@@ -133,6 +158,8 @@ export interface GrokAdapterLiveOptions {
   readonly nativeEventLogPath?: string;
   readonly nativeEventLogger?: EventNdjsonLogger;
   readonly instanceId?: ProviderInstanceId;
+  /** Test-only overrides for silence auto-stop timings. */
+  readonly silentTurnWatchdog?: Partial<GrokSilentTurnWatchdogConfig>;
 }
 
 interface PendingApproval {
@@ -189,6 +216,12 @@ interface GrokSessionContext {
   hasObservedToolCall: boolean;
   /** Best-effort title of the most recent open tool (for logs / errors). */
   lastOpenToolTitle: string | undefined;
+  /**
+   * User-facing reason when the silence watchdog (or equivalent) auto-stops a
+   * turn. Must be settled into turn.completed even if cancel makes the prompt
+   * RPC return success first — otherwise the UI stays on Working forever.
+   */
+  silentTurnStopMessage: string | undefined;
   /**
    * Bumped whenever the ACP process or notification consumer is replaced so
    * late finalizers from a disposed consumer cannot clear the live fiber.
@@ -426,6 +459,14 @@ export function canSteerGrokSendTurn(input: {
 export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapterLiveOptions) {
   return Effect.gen(function* () {
     const boundInstanceId = options?.instanceId ?? ProviderInstanceId.make("grok");
+    const silentTurnWatchdog: GrokSilentTurnWatchdogConfig = {
+      openToolMs:
+        options?.silentTurnWatchdog?.openToolMs ?? DEFAULT_GROK_SILENT_TURN_WATCHDOG.openToolMs,
+      postToolMs:
+        options?.silentTurnWatchdog?.postToolMs ?? DEFAULT_GROK_SILENT_TURN_WATCHDOG.postToolMs,
+      thinkMs: options?.silentTurnWatchdog?.thinkMs ?? DEFAULT_GROK_SILENT_TURN_WATCHDOG.thinkMs,
+      pollMs: options?.silentTurnWatchdog?.pollMs ?? DEFAULT_GROK_SILENT_TURN_WATCHDOG.pollMs,
+    };
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -635,6 +676,44 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             },
           });
         }
+      });
+
+    /**
+     * Finish an interrupted turn. Silence-watchdog auto-stops must always emit
+     * turn.completed (failed) even when cancel makes the prompt RPC return
+     * success first — otherwise the UI stays on Working forever.
+     * User Stop already settles via interruptTurn; this is then a safe no-op.
+     */
+    const settleInterruptedPrompt = (
+      threadId: ThreadId,
+      turnId: TurnId,
+      expectedAcpSessionId: string,
+      ctx: GrokSessionContext,
+    ) =>
+      Effect.gen(function* () {
+        const silenceMessage = ctx.silentTurnStopMessage;
+        if (silenceMessage) {
+          yield* settlePromptInFlight(threadId, turnId, expectedAcpSessionId, {
+            errorMessage: silenceMessage,
+            settleAllPrompts: true,
+          });
+          ctx.silentTurnStopMessage = undefined;
+          return { _tag: "silence" as const, message: silenceMessage };
+        }
+        // User Stop / external interrupt: interruptTurn should already have
+        // settled. Re-settle only if the turn is still active.
+        if (
+          ctx.activeTurnId === turnId ||
+          ctx.session.activeTurnId === turnId ||
+          ctx.session.status === "running" ||
+          ctx.session.status === "connecting"
+        ) {
+          yield* settlePromptInFlight(threadId, turnId, expectedAcpSessionId, {
+            completedStopReason: "cancelled",
+            settleAllPrompts: true,
+          });
+        }
+        return { _tag: "cancelled" as const };
       });
 
     const logNative = (threadId: ThreadId, method: string, payload: unknown) =>
@@ -1222,6 +1301,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         ctx.openToolCallIds = new Set();
         ctx.hasObservedToolCall = false;
         ctx.lastOpenToolTitle = undefined;
+        ctx.silentTurnStopMessage = undefined;
         // Only a successful session/load proves Grok restored history. A
         // fallback session/new may legally reuse the same opaque id, so id
         // equality alone cannot distinguish a blank replacement session.
@@ -1402,6 +1482,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             openToolCallIds: new Set(),
             hasObservedToolCall: false,
             lastOpenToolTitle: undefined,
+            silentTurnStopMessage: undefined,
             notificationGeneration: 0,
             acpDisposed: false,
             conversationLog: [],
@@ -1646,11 +1727,12 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             activityCtx.openToolCallIds = new Set();
             activityCtx.hasObservedToolCall = false;
             activityCtx.lastOpenToolTitle = undefined;
+            activityCtx.silentTurnStopMessage = undefined;
           }
 
           const silenceWatchdog = Effect.gen(function* () {
             while (true) {
-              yield* Effect.sleep(`${GROK_SILENT_TURN_WATCHDOG_POLL_MS} millis`);
+              yield* Effect.sleep(`${silentTurnWatchdog.pollMs} millis`);
               const live = sessions.get(input.threadId);
               if (
                 !live ||
@@ -1667,11 +1749,16 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 silentMs,
                 openToolCount,
                 hasObservedToolCall: live.hasObservedToolCall,
+                thresholds: silentTurnWatchdog,
               });
               if (silentTurnKind === null) {
                 continue;
               }
-              const toolLabel = live.lastOpenToolTitle?.trim() || "a tool";
+              const detail = buildGrokSilentTurnStopMessage({
+                silentTurnKind,
+                silentMs,
+                toolLabel: live.lastOpenToolTitle,
+              });
               yield* Effect.logWarning("Grok silent-turn watchdog fired", {
                 threadId: input.threadId,
                 turnId: prepared.turnId,
@@ -1681,22 +1768,25 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 silentTurnKind,
                 lastOpenToolTitle: live.lastOpenToolTitle,
               });
+              // Persist before cancel: cancel often completes the prompt RPC
+              // successfully first, so the success path must still settle with
+              // this message (zombie Working bug).
+              live.silentTurnStopMessage = detail;
               live.acpCompromised = true;
               live.interruptedTurnIds.add(prepared.turnId);
               yield* live.acp.cancel.pipe(Effect.timeout("2 seconds"), Effect.ignore);
               return yield* new ProviderAdapterRequestError({
                 provider: PROVIDER,
                 method: "session/prompt",
-                detail:
-                  silentTurnKind === "open-tool"
-                    ? `Grok went silent for ${Math.round(silentMs / 1000)}s while ${toolLabel} was still running. Turn was stopped automatically — try a smaller task or Send again.`
-                    : silentTurnKind === "post-tool"
-                      ? `Grok stopped responding after its last tool completed. The turn was stopped automatically after ${Math.round(silentMs / 1000)}s with no progress — Send again to continue.`
-                      : `Grok went silent for ${Math.round(silentMs / 60000)}+ minutes with no tools or stream updates. Turn was stopped automatically — try again.`,
+                detail,
               });
             }
           });
 
+          // When the silence watchdog wins, prefer a controlled settle over
+          // failing the whole sendTurn: the UI keys off turn.completed failed.
+          // Cancel often completes the prompt RPC successfully first; the
+          // success path settles via interruptedTurnIds + silentTurnStopMessage.
           const result = yield* Effect.raceFirst(
             prepared.acp
               .prompt({
@@ -1727,8 +1817,18 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               Effect.tapError((error) =>
                 Ref.set(
                   promptFailureMessageRef,
-                  error instanceof Error ? error.message : String(error),
+                  error instanceof Error
+                    ? // Prefer detail for tagged adapter errors (user-facing copy).
+                      "detail" in error && typeof error.detail === "string"
+                      ? error.detail
+                      : error.message
+                    : String(error),
                 ),
+              ),
+              // Convert watchdog failure into a cancelled prompt result so the
+              // success settle path emits turn.completed and sendTurn returns.
+              Effect.catch(() =>
+                Effect.succeed({ stopReason: "cancelled" } as EffectAcpSchema.PromptResponse),
               ),
             ),
           );
@@ -1766,10 +1866,19 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               for (let yieldAttempt = 0; yieldAttempt < 8; yieldAttempt += 1) {
                 yield* Effect.yieldNow;
               }
-              // If Stop already settled this turn, skip drain entirely. drainEvents
-              // can hang on a wedged notification consumer even with a timeout when
-              // finalizers are uninterruptible.
+              // Interrupted (Stop or silence watchdog): always settle. Cancel
+              // often completes the prompt RPC successfully first; returning
+              // here without settle left the UI on Working for minutes.
               if (ctx.interruptedTurnIds.has(prepared.turnId)) {
+                // Emit turn.completed (failed for silence, cancelled for Stop)
+                // then return success so sendTurn does not double-report via the
+                // reactor recovery path. Events drive UI readiness.
+                yield* settleInterruptedPrompt(
+                  input.threadId,
+                  prepared.turnId,
+                  prepared.acpSessionId,
+                  ctx,
+                );
                 yield* Ref.set(promptSettled, true);
                 return {
                   threadId: input.threadId,
@@ -1781,6 +1890,12 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               // thread lock and block Stop / follow-up turns forever.
               yield* prepared.acp.drainEvents.pipe(Effect.timeout("2 seconds"), Effect.ignore);
               if (ctx.interruptedTurnIds.has(prepared.turnId)) {
+                yield* settleInterruptedPrompt(
+                  input.threadId,
+                  prepared.turnId,
+                  prepared.acpSessionId,
+                  ctx,
+                );
                 yield* Ref.set(promptSettled, true);
                 return {
                   threadId: input.threadId,
@@ -1822,6 +1937,12 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 ctx.session.activeTurnId === prepared.turnId
               ) {
                 if (ctx.interruptedTurnIds.has(prepared.turnId)) {
+                  yield* settleInterruptedPrompt(
+                    input.threadId,
+                    prepared.turnId,
+                    prepared.acpSessionId,
+                    ctx,
+                  );
                   yield* Ref.set(promptSettled, true);
                   return {
                     threadId: input.threadId,
@@ -1913,6 +2034,14 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                       return;
                     }
                     if (ctx.interruptedTurnIds.has(prepared.turnId)) {
+                      // Silence watchdog often loses the race to a successful
+                      // cancelled prompt RPC; still emit turn.completed failed.
+                      yield* settleInterruptedPrompt(
+                        input.threadId,
+                        prepared.turnId,
+                        prepared.acpSessionId,
+                        ctx,
+                      );
                       return;
                     }
                     if (
@@ -1964,12 +2093,25 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   if (ctx && !ctx.stopped) {
                     yield* markAcpCompromised(ctx, "prompt request failed");
                   }
+                  // Prefer the silence-watchdog copy when present so ensuring
+                  // still surfaces a clear auto-stop reason if the race failed.
+                  const silenceMessage = ctx?.silentTurnStopMessage;
+                  if (ctx && silenceMessage) {
+                    yield* settleInterruptedPrompt(
+                      input.threadId,
+                      prepared.turnId,
+                      prepared.acpSessionId,
+                      ctx,
+                    );
+                    return;
+                  }
                   yield* settlePromptInFlight(
                     input.threadId,
                     prepared.turnId,
                     prepared.acpSessionId,
                     {
                       errorMessage: errorMessage ?? "Grok prompt request failed.",
+                      settleAllPrompts: true,
                     },
                   );
                 }),

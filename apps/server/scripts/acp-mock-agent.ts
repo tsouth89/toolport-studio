@@ -27,6 +27,11 @@ const emitForeignSessionUpdates = process.env.T3_ACP_EMIT_FOREIGN_SESSION_UPDATE
 const hangPromptForever = process.env.T3_ACP_HANG_PROMPT_FOREVER === "1";
 const hangFirstPromptForever = process.env.T3_ACP_HANG_FIRST_PROMPT_FOREVER === "1";
 /**
+ * Emit one completed tool call then hang the prompt RPC until cancel.
+ * Exercises post-tool silence auto-stop (zombie Working recovery).
+ */
+const emitToolThenHang = process.env.T3_ACP_EMIT_TOOL_THEN_HANG === "1";
+/**
  * When set, hang any prompt whose text includes this substring until cancel.
  * Preferred over HANG_FIRST_PROMPT_FOREVER when the adapter recycles the ACP
  * process after Stop (a new process would otherwise re-hang its first prompt).
@@ -565,6 +570,53 @@ const program = Effect.gen(function* () {
         // still force-cancels via local latch for fully silent agents.
         // Prefer T3_ACP_HANG_PROMPT_TEXT when Stop recycles the process: a fresh
         // process resets promptCount and would otherwise re-hang follow-ups.
+        while (!cancelledSessions.has(requestedSessionId)) {
+          yield* Effect.sleep("25 millis");
+        }
+        cancelledSessions.delete(requestedSessionId);
+        return { stopReason: "cancelled" as const };
+      }
+
+      // Hang only when the user text asks for it so follow-ups after recycle
+      // (fresh process, promptCount reset) can complete normally.
+      if (emitToolThenHang && promptText.includes("go silent")) {
+        const toolCallId = "tool-then-hang-1";
+        yield* agent.client.sessionUpdate({
+          sessionId: requestedSessionId,
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId,
+            title: "Terminal",
+            kind: "execute",
+            status: "pending",
+            rawInput: {
+              command: ["echo", "before hang"],
+            },
+          },
+        });
+        yield* agent.client.sessionUpdate({
+          sessionId: requestedSessionId,
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId,
+            status: "in_progress",
+          },
+        });
+        yield* agent.client.sessionUpdate({
+          sessionId: requestedSessionId,
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId,
+            status: "completed",
+            rawOutput: {
+              exitCode: 0,
+              stdout: "before hang",
+              stderr: "",
+            },
+          },
+        });
+        // Prompt stays open with no further stream updates until cancel —
+        // mirrors real Grok post-tool silence that left Studio on Working.
         while (!cancelledSessions.has(requestedSessionId)) {
           yield* Effect.sleep("25 millis");
         }
