@@ -238,8 +238,8 @@ command = "echo"
 
     const studioAuthPath = NodePath.join(refreshedEnv.GROK_HOME as string, "auth.json");
     NodeFS.writeFileSync(studioAuthPath, '{"token":"studio-refreshed"}', "utf8");
-    const future = new Date(Date.now() + 5_000);
-    NodeFS.utimesSync(studioAuthPath, future, future);
+    const futureSeconds = NodeFS.statSync(studioAuthPath).mtimeMs / 1_000 + 5;
+    NodeFS.utimesSync(studioAuthPath, futureSeconds, futureSeconds);
     McpProviderSession.environmentSuppressingGrokConfigToolportGateway(
       { PATH: "/usr/bin", HOME: homeDirectory },
       homeDirectory,
