@@ -919,6 +919,33 @@ export function makeCursorAdapter(
             input.modelSelection?.instanceId === boundInstanceId ? input.modelSelection : undefined;
           const model = turnModelSelection?.model ?? ctx.session.model;
           const resolvedModel = resolveCursorAcpBaseModelId(model);
+
+          // Mark running + emit turn.started before session config (set_model /
+          // mode). Config can take seconds; delaying chrome left a blank hole
+          // matching the pre-fix Claude path (Claude Desktop always shows live).
+          ctx.activeTurnId = turnId;
+          if (steeringTurnId === undefined) {
+            ctx.lastPlanFingerprint = undefined;
+          }
+          ctx.session = {
+            ...ctx.session,
+            status: "running",
+            activeTurnId: turnId,
+            updatedAt: yield* nowIso,
+            ...(resolvedModel ? { model: resolvedModel } : {}),
+          };
+
+          if (steeringTurnId === undefined) {
+            yield* offerRuntimeEvent({
+              type: "turn.started",
+              ...(yield* makeEventStamp()),
+              provider: PROVIDER,
+              threadId: input.threadId,
+              turnId,
+              payload: { model: resolvedModel },
+            });
+          }
+
           yield* applyRequestedSessionConfiguration({
             runtime: ctx.acp,
             runtimeMode: ctx.session.runtimeMode,
@@ -933,26 +960,6 @@ export function makeCursorAdapter(
             mapError: ({ cause, method }) =>
               mapAcpToAdapterError(PROVIDER, input.threadId, method, cause),
           });
-          ctx.activeTurnId = turnId;
-          if (steeringTurnId === undefined) {
-            ctx.lastPlanFingerprint = undefined;
-          }
-          ctx.session = {
-            ...ctx.session,
-            activeTurnId: turnId,
-            updatedAt: yield* nowIso,
-          };
-
-          if (steeringTurnId === undefined) {
-            yield* offerRuntimeEvent({
-              type: "turn.started",
-              ...(yield* makeEventStamp()),
-              provider: PROVIDER,
-              threadId: input.threadId,
-              turnId,
-              payload: { model: resolvedModel },
-            });
-          }
 
           const promptParts: Array<EffectAcpSchema.ContentBlock> = [];
           if (input.input?.trim()) {

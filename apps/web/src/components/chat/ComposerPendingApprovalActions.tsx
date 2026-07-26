@@ -11,6 +11,10 @@ interface ComposerPendingApprovalActionsProps {
   ) => Promise<unknown>;
 }
 
+/**
+ * Desktop-style approval actions: primary approve first, deny secondary,
+ * session-wide allow, then cancel the whole turn last (least common).
+ */
 export const ComposerPendingApprovalActions = memo(function ComposerPendingApprovalActions({
   requestId,
   isResponding,
@@ -20,19 +24,11 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
     <>
       <Button
         size="sm"
-        variant="ghost"
+        variant="default"
         disabled={isResponding}
-        onClick={() => void onRespondToApproval(requestId, "cancel")}
+        onClick={() => void onRespondToApproval(requestId, "accept")}
       >
-        Cancel turn
-      </Button>
-      <Button
-        size="sm"
-        variant="destructive-outline"
-        disabled={isResponding}
-        onClick={() => void onRespondToApproval(requestId, "decline")}
-      >
-        Decline
+        Approve
       </Button>
       <Button
         size="sm"
@@ -44,11 +40,19 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
       </Button>
       <Button
         size="sm"
-        variant="default"
+        variant="destructive-outline"
         disabled={isResponding}
-        onClick={() => void onRespondToApproval(requestId, "accept")}
+        onClick={() => void onRespondToApproval(requestId, "decline")}
       >
-        Approve once
+        Deny
+      </Button>
+      <Button
+        size="sm"
+        variant="ghost"
+        disabled={isResponding}
+        onClick={() => void onRespondToApproval(requestId, "cancel")}
+      >
+        Stop turn
       </Button>
     </>
   );
