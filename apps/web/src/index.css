@@ -292,28 +292,28 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   }
 
   .stage-blueprint {
-    --stage-bp-top: var(--shell-blueprint-top, #67c2ff);
-    --stage-bp-mid: var(--shell-blueprint-mid, #347ff8);
-    --stage-bp-bottom: var(--shell-blueprint-bottom, #1538d0);
+    --stage-bp-top: var(--shell-blueprint-top, #4a8fd4);
+    --stage-bp-mid: var(--shell-blueprint-mid, #1f4fb0);
+    --stage-bp-bottom: var(--shell-blueprint-bottom, #0d1f6a);
   }
 
   .dark .stage-blueprint {
-    --stage-bp-top: var(--shell-blueprint-top, #3a7ad1);
-    --stage-bp-mid: var(--shell-blueprint-mid, #2050ae);
-    --stage-bp-bottom: var(--shell-blueprint-bottom, #101f6e);
+    --stage-bp-top: var(--shell-blueprint-top, #2d5fad);
+    --stage-bp-mid: var(--shell-blueprint-mid, #163a88);
+    --stage-bp-bottom: var(--shell-blueprint-bottom, #081438);
   }
 
-  /* Permanent Toolport identity: slightly calmer than loud dev-stage art */
+  /* Permanent Toolport identity: deeper navy instrument panel (not sky blue) */
   .stage-blueprint-brand {
-    --stage-bp-top: var(--shell-blueprint-brand-top, #5aaef0);
-    --stage-bp-mid: var(--shell-blueprint-brand-mid, #2b6ad4);
-    --stage-bp-bottom: var(--shell-blueprint-brand-bottom, #142a8a);
+    --stage-bp-top: var(--shell-blueprint-brand-top, #3d72c4);
+    --stage-bp-mid: var(--shell-blueprint-brand-mid, #1a3f96);
+    --stage-bp-bottom: var(--shell-blueprint-brand-bottom, #0a1748);
   }
 
   .dark .stage-blueprint-brand {
-    --stage-bp-top: var(--shell-blueprint-brand-top, #2f6fbf);
-    --stage-bp-mid: var(--shell-blueprint-brand-mid, #1a4598);
-    --stage-bp-bottom: var(--shell-blueprint-brand-bottom, #0c1a52);
+    --stage-bp-top: var(--shell-blueprint-brand-top, #2a5aa8);
+    --stage-bp-mid: var(--shell-blueprint-brand-mid, #143580);
+    --stage-bp-bottom: var(--shell-blueprint-brand-bottom, #070f32);
   }
 
   .workspace-topbar {
@@ -833,12 +833,12 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   --shell-border: var(--color-zinc-200);
   --shell-accent: oklch(0.488 0.217 264);
   --shell-brand: oklch(0.68 0.17 48);
-  --shell-blueprint-top: #67c2ff;
-  --shell-blueprint-mid: #347ff8;
-  --shell-blueprint-bottom: #1538d0;
-  --shell-blueprint-brand-top: #5aaef0;
-  --shell-blueprint-brand-mid: #2b6ad4;
-  --shell-blueprint-brand-bottom: #142a8a;
+  --shell-blueprint-top: #4a8fd4;
+  --shell-blueprint-mid: #1f4fb0;
+  --shell-blueprint-bottom: #0d1f6a;
+  --shell-blueprint-brand-top: #3d72c4;
+  --shell-blueprint-brand-mid: #1a3f96;
+  --shell-blueprint-brand-bottom: #0a1748;
   --background: var(--shell-canvas);
   --app-chrome-background: var(--background);
   --surface-raised: color-mix(in srgb, var(--card) 20%, transparent);
@@ -890,12 +890,12 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
     --shell-border: rgb(148 163 184 / 12%);
     --shell-accent: oklch(0.62 0.17 255);
     --shell-brand: oklch(0.72 0.16 52);
-    --shell-blueprint-top: #3a7ad1;
-    --shell-blueprint-mid: #2050ae;
-    --shell-blueprint-bottom: #101f6e;
-    --shell-blueprint-brand-top: #2f6fbf;
-    --shell-blueprint-brand-mid: #1a4598;
-    --shell-blueprint-brand-bottom: #0c1a52;
+    --shell-blueprint-top: #2d5fad;
+    --shell-blueprint-mid: #163a88;
+    --shell-blueprint-bottom: #081438;
+    --shell-blueprint-brand-top: #2a5aa8;
+    --shell-blueprint-brand-mid: #143580;
+    --shell-blueprint-brand-bottom: #070f32;
     --background: var(--shell-canvas);
     --app-chrome-background: var(--background);
     --surface-raised: var(--shell-surface-raised);

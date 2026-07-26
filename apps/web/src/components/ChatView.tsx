@@ -3544,36 +3544,6 @@ function ChatViewContent(props: ChatViewProps) {
     },
     [composerOverlayHeight],
   );
-  const timelineRealContentOverflowsViewport = useCallback(
-    (list?: LegendListRef | null) => {
-      const resolvedList = list ?? legendListRef.current;
-      const state = resolvedList?.getState();
-      if (!resolvedList || !state || state.data.length === 0) {
-        return false;
-      }
-
-      const lastRowIndex = state.data.length - 1;
-      const lastRowTop = state.positionAtIndex(lastRowIndex);
-      const lastRowHeight = state.sizeAtIndex(lastRowIndex);
-      if (
-        typeof lastRowTop !== "number" ||
-        typeof lastRowHeight !== "number" ||
-        !Number.isFinite(lastRowTop) ||
-        !Number.isFinite(lastRowHeight)
-      ) {
-        return false;
-      }
-
-      const realContentBottom = lastRowTop + Math.max(1, lastRowHeight);
-      const visibleScrollLength = Math.max(
-        0,
-        (state.scrollLength ?? 0) - composerOverlayHeight - CHAT_LIST_ANCHOR_OFFSET,
-      );
-      return realContentBottom > visibleScrollLength;
-    },
-    [composerOverlayHeight],
-  );
-
   // Live-follow stays active after send/thread-open until an actual list scroll
   // gesture opts out.
   const scrollToEnd = useCallback((animated = false) => {
@@ -3593,6 +3563,9 @@ function ChatViewContent(props: ChatViewProps) {
       if (!scrollNode) {
         return;
       }
+      // Only intentional scroll gestures leave live-follow. pointerdown used to
+      // cancel on any click in the list (including residual hit-testing) and
+      // left the next response growth stuck at the top of history.
       const handleManualNavigation = () => {
         cancelTimelineLiveFollowForUserNavigationRef.current();
       };
@@ -3602,13 +3575,9 @@ function ChatViewContent(props: ChatViewProps) {
       scrollNode.addEventListener("touchmove", handleManualNavigation, {
         passive: true,
       });
-      scrollNode.addEventListener("pointerdown", handleManualNavigation, {
-        passive: true,
-      });
       removeListeners = () => {
         scrollNode.removeEventListener("wheel", handleManualNavigation);
         scrollNode.removeEventListener("touchmove", handleManualNavigation);
-        scrollNode.removeEventListener("pointerdown", handleManualNavigation);
       };
     });
 
@@ -3778,10 +3747,8 @@ function ChatViewContent(props: ChatViewProps) {
         if (timelineScrollModeRef.current !== "following-end") {
           return;
         }
-        if (!timelineRealContentOverflowsViewport(list)) {
-          return;
-        }
-
+        // Always pin to end while following. Skipping when overflow metrics are
+        // not ready left scroll at 0 while rows grew (jump to oldest messages).
         void list.scrollToEnd?.({ animated: false });
       });
     });
@@ -3792,12 +3759,7 @@ function ChatViewContent(props: ChatViewProps) {
         cancelAnimationFrame(secondFrame);
       }
     };
-  }, [
-    activeThread?.id,
-    timelineEntries,
-    getActiveTimelineTurnMetrics,
-    timelineRealContentOverflowsViewport,
-  ]);
+  }, [activeThread?.id, timelineEntries, getActiveTimelineTurnMetrics]);
 
   useEffect(() => {
     setPullRequestDialogState(null);

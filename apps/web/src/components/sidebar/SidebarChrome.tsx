@@ -57,10 +57,10 @@ function SidebarBrand({ onBackdrop }: { onBackdrop: boolean }) {
       )}
       to="/"
     >
-      <ToolportStudioMark />
+      <ToolportStudioMark onBlueprint={onBackdrop} />
       <span
         className={cn(
-          "truncate text-sm font-medium tracking-tight",
+          "truncate text-sm font-medium tracking-tight drop-shadow-sm",
           onBackdrop ? "text-white" : "text-foreground",
         )}
       >
@@ -80,8 +80,16 @@ function useSidebarStageLabel() {
   });
 }
 
-/** Inline product mark from assets/studio/toolport-studio-mark.svg */
-function ToolportStudioMark() {
+/**
+ * Studio product mark (gear-ring + orange). On the blueprint header the navy
+ * fills used to match Toolport's default mark vanish into the blue field —
+ * only the orange ring remained. Use a high-contrast on-blueprint palette
+ * (light metal + orange) instead of a full invert / plain Toolport wordmark.
+ */
+function ToolportStudioMark({ onBlueprint = false }: { onBlueprint?: boolean }) {
+  const metal = onBlueprint ? "#F4F8FF" : "#1E3A66";
+  const hole = onBlueprint ? "#0B1B3A" : "#FFFFFF";
+  const ring = "#F97316";
   return (
     <svg
       aria-hidden
@@ -99,20 +107,23 @@ function ToolportStudioMark() {
           points="0,-10 -8.66,-5 -8.66,5 0,10 8.66,5 8.66,-5"
         />
       </defs>
-      <circle cx="256" cy="256" r="195" fill="none" stroke="#F97316" strokeWidth="90" />
-      <g fill="#1E3A66">
+      {/* Soft plate so the mark reads as a badge on loud blueprint gradients */}
+      {onBlueprint ? <circle cx="256" cy="256" r="230" fill="rgb(8 16 40 / 0.42)" /> : null}
+      <circle cx="256" cy="256" r="195" fill="none" stroke={ring} strokeWidth="90" />
+      <g fill={metal}>
         <use href="#toolport-studio-sidebar-nut" x="256" y="61" />
         <use href="#toolport-studio-sidebar-nut" x="451" y="256" />
         <use href="#toolport-studio-sidebar-nut" x="256" y="451" />
         <use href="#toolport-studio-sidebar-nut" x="61" y="256" />
       </g>
-      <g fill="#FFFFFF">
+      <g fill={hole}>
         <use href="#toolport-studio-sidebar-nut-hole" x="256" y="61" />
         <use href="#toolport-studio-sidebar-nut-hole" x="451" y="256" />
         <use href="#toolport-studio-sidebar-nut-hole" x="256" y="451" />
         <use href="#toolport-studio-sidebar-nut-hole" x="61" y="256" />
       </g>
-      <circle cx="256" cy="256" r="58" fill="#1E3A66" />
+      <circle cx="256" cy="256" r="58" fill={metal} />
+      {onBlueprint ? <circle cx="256" cy="256" r="28" fill={hole} /> : null}
     </svg>
   );
 }
