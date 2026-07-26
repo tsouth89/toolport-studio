@@ -1,6 +1,6 @@
 /**
  * Shared Activity projection for timeline Working row + right-panel Activity.
- * Pure: no React, no store writes. SOU-386 PR2.
+ * Pure: no React, no store writes. SOU-386 PR2+ (mockup-shaped recent list).
  */
 import type { TurnId } from "@t3tools/contracts";
 
@@ -24,6 +24,7 @@ export type ThreadActivityStepStatus =
 export interface ThreadActivityStep {
   readonly id: string;
   readonly label: string;
+  /** Short subtitle only when useful (failures). Prefer empty for quiet mockup rows. */
   readonly detail?: string;
   readonly status: ThreadActivityStepStatus;
   readonly createdAt: string;
@@ -52,11 +53,12 @@ export interface ThreadActivityViewModel {
   readonly hasAuthoritativeMcpStatus: false;
 }
 
-const MAX_RECENT_STEPS = 24;
-const MAX_ACTIVITY_DETAIL_CHARS = 140;
+/** Mockup-scale: short instrument list, not a transcript. */
+const MAX_RECENT_STEPS = 8;
+const MAX_ACTIVITY_DETAIL_CHARS = 96;
 
-/** Compact detail for the Activity panel: single line, hard-capped, no wall of text. */
-function formatActivityDetail(detail: string | undefined): string | undefined {
+/** Compact detail: single line, hard-capped. */
+export function formatActivityDetail(detail: string | undefined): string | undefined {
   if (!detail) {
     return undefined;
   }
@@ -70,6 +72,25 @@ function formatActivityDetail(detail: string | undefined): string | undefined {
   return `${normalized.slice(0, MAX_ACTIVITY_DETAIL_CHARS - 1).trimEnd()}…`;
 }
 
+/**
+ * Recent steps keep tools + hard milestones only.
+ * Thinking spam, plan thrash, and "Changed files" noise belong elsewhere
+ * (or only as Current while live).
+ */
+export function isActivityRecentMilestone(entry: WorkLogEntry): boolean {
+  if (entry.tone === "error") {
+    return true;
+  }
+  if (workLogEntryIsToolLike(entry)) {
+    return true;
+  }
+  const label = entry.label.trim();
+  if (/^session started$/i.test(label)) {
+    return true;
+  }
+  return false;
+}
+
 function stepStatusFromWorkEntry(
   entry: WorkLogEntry,
   options: { turnActive: boolean },
@@ -77,8 +98,6 @@ function stepStatusFromWorkEntry(
   if (entry.tone === "error" || workEntryIndicatesToolFailure(entry)) {
     return "failed";
   }
-  // Only explicit in-progress lifecycle may spin — and only while the turn is
-  // still active. Settled turns must never leave zombie loaders.
   if (entry.toolLifecycleStatus === "inProgress") {
     return options.turnActive ? "running" : "completed";
   }
@@ -88,8 +107,6 @@ function stepStatusFromWorkEntry(
   if (entry.toolLifecycleStatus === "completed" || workEntryIndicatesToolSuccess(entry)) {
     return "completed";
   }
-  // Thinking / plan / system notes already happened. Use "info" (soft check in
-  // the panel), never hollow pending circles that read as unfinished.
   if (
     entry.tone === "thinking" ||
     entry.tone === "info" ||
@@ -100,13 +117,41 @@ function stepStatusFromWorkEntry(
   return "info";
 }
 
+function stepLabel(entry: WorkLogEntry): string {
+  return (entry.toolTitle ?? entry.label).trim() || "Step";
+}
+
+/** Prefer a short command line over raw tool dumps for Current subtitle. */
+function currentStepDetail(entry: WorkLogEntry): string | undefined {
+  const command = formatActivityDetail(entry.command);
+  if (command) {
+    return command;
+  }
+  return formatActivityDetail(entry.detail);
+}
+
+/**
+ * Mockup recent rows are label + status + time. Body text only on real failures
+ * so the list stays quiet.
+ */
+function recentStepDetail(
+  entry: WorkLogEntry,
+  status: ThreadActivityStepStatus,
+): string | undefined {
+  if (status !== "failed" && status !== "interrupted") {
+    return undefined;
+  }
+  return formatActivityDetail(entry.detail ?? entry.command);
+}
+
 function toActivityStep(entry: WorkLogEntry, options: { turnActive: boolean }): ThreadActivityStep {
-  const detail = formatActivityDetail(entry.detail);
+  const status = stepStatusFromWorkEntry(entry, options);
+  const detail = recentStepDetail(entry, status);
   return {
     id: entry.id,
-    label: (entry.toolTitle ?? entry.label).trim() || "Step",
+    label: stepLabel(entry),
     ...(detail ? { detail } : {}),
-    status: stepStatusFromWorkEntry(entry, options),
+    status,
     createdAt: entry.createdAt,
     turnId: entry.turnId,
     tone: entry.tone,
@@ -130,6 +175,14 @@ function collectWorkEntries(
   return entries;
 }
 
+function selectRecentMilestones(workEntries: ReadonlyArray<WorkLogEntry>): WorkLogEntry[] {
+  const milestones = workEntries.filter(isActivityRecentMilestone);
+  if (milestones.length <= MAX_RECENT_STEPS) {
+    return milestones;
+  }
+  return milestones.slice(-MAX_RECENT_STEPS);
+}
+
 export function deriveThreadActivityViewModel(input: {
   readonly timelineEntries: ReadonlyArray<TimelineEntry>;
   readonly isWorking: boolean;
@@ -143,9 +196,9 @@ export function deriveThreadActivityViewModel(input: {
   const unsettledTurnId = input.unsettledTurnId ?? null;
   const turnActive = input.isWorking;
   const workEntries = collectWorkEntries(input.timelineEntries, unsettledTurnId);
-  const recentSteps = workEntries
-    .slice(-MAX_RECENT_STEPS)
-    .map((entry) => toActivityStep(entry, { turnActive }));
+  const recentSteps = selectRecentMilestones(workEntries).map((entry) =>
+    toActivityStep(entry, { turnActive }),
+  );
 
   let current: ThreadActivityCurrentStep | null = null;
   if (input.isWorking) {
@@ -156,22 +209,20 @@ export function deriveThreadActivityViewModel(input: {
       .reverse()
       .find((entry) => entry.tone === "thinking" || entry.sourceActivityKind === "task.progress");
 
-    // Only an explicit in-progress tool is Current. Do not promote the last
-    // finished tool (activeToolLabel fallback) — that left Searched/Read rows
-    // spinning in Current after they had already completed.
+    // Only an explicit in-progress tool is Current as a tool. Thinking may
+    // label Current while tools are quiet; it is not a Recent milestone.
     if (runningTool) {
-      const detail = formatActivityDetail(runningTool.detail);
+      const detail = currentStepDetail(runningTool);
       current = {
-        label: (runningTool.toolTitle ?? runningTool.label ?? "Working").trim(),
+        label: stepLabel(runningTool),
         ...(detail ? { detail } : {}),
         startedAt: runningTool.createdAt ?? input.activeTurnStartedAt,
         source: "tool",
       };
     } else if (thinking) {
-      const detail = formatActivityDetail(thinking.detail);
+      // Current only: short label, no dump of private chain-of-thought.
       current = {
-        label: thinking.label.trim() || "Thinking",
-        ...(detail ? { detail } : {}),
+        label: "Thinking",
         startedAt: thinking.createdAt,
         source: "thinking",
       };

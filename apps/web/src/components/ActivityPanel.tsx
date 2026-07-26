@@ -23,22 +23,29 @@ function useElapsedLabel(startedAt: string | null, active: boolean): string | nu
   return formatDuration(Math.max(0, now - startedMs));
 }
 
+/** Clock for recent-step rows (mockup: 10:21:02 AM). */
+function formatStepClock(iso: string): string {
+  const ms = Date.parse(iso);
+  if (Number.isNaN(ms)) return "";
+  return new Date(ms).toLocaleTimeString(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
 function StepStatusIcon({ status }: { status: ThreadActivityStepStatus }) {
   switch (status) {
     case "running":
       return <Loader2 className="size-3.5 shrink-0 animate-spin text-primary" aria-hidden />;
     case "completed":
-      // Tool / work success — clear green check.
       return <CheckCircle2 className="size-3.5 shrink-0 text-success" aria-hidden />;
     case "info":
-      // Thinking, plan notes, system events: already happened, not unfinished.
-      // Soft check (not a hollow circle) so the list doesn't look broken.
       return <CheckCircle2 className="size-3.5 shrink-0 text-muted-foreground/65" aria-hidden />;
     case "failed":
     case "interrupted":
       return <XCircle className="size-3.5 shrink-0 text-destructive" aria-hidden />;
     case "pending":
-      // Reserved for true not-yet-started work only.
       return <Circle className="size-3.5 shrink-0 text-muted-foreground/50" aria-hidden />;
     default:
       return <CheckCircle2 className="size-3.5 shrink-0 text-muted-foreground/65" aria-hidden />;
@@ -46,25 +53,39 @@ function StepStatusIcon({ status }: { status: ThreadActivityStepStatus }) {
 }
 
 function RecentStepRow({ step }: { step: ThreadActivityStep }) {
+  const clock = formatStepClock(step.createdAt);
   return (
-    <li className="flex min-w-0 items-start gap-2 overflow-hidden rounded-md px-1 py-1.5 text-[12px]">
-      <span className="mt-0.5 shrink-0">
+    <li className="flex min-w-0 items-center gap-2 overflow-hidden px-1 py-1.5 text-[12px]">
+      <span className="shrink-0">
         <StepStatusIcon status={step.status} />
       </span>
       <div className="min-w-0 flex-1 overflow-hidden">
-        <p className="truncate font-medium text-foreground/90">{step.label}</p>
+        <p
+          className={cn(
+            "truncate font-medium",
+            step.status === "running" ? "text-foreground" : "text-foreground/90",
+          )}
+        >
+          {step.label}
+        </p>
         {step.detail ? (
-          <p className="mt-0.5 line-clamp-2 break-all text-[11px] text-muted-foreground">
+          <p className="mt-0.5 line-clamp-1 break-all text-[11px] text-muted-foreground">
             {step.detail}
           </p>
         ) : null}
       </div>
+      <span className="shrink-0 tabular-nums text-[11px] text-muted-foreground/80">
+        {clock || "—"}
+      </span>
     </li>
   );
 }
 
 export function ActivityPanel({ model }: { model: ThreadActivityViewModel }) {
   const elapsed = useElapsedLabel(model.elapsedStartedAt, model.isWorking);
+  const currentElapsed = useElapsedLabel(model.current?.startedAt ?? null, model.isWorking);
+  // Newest first, matching mockup top-of-list recency while still showing plan order
+  // as reverse chrono of milestones.
   const recent = [...model.recentSteps].reverse();
 
   return (
@@ -83,7 +104,7 @@ export function ActivityPanel({ model }: { model: ThreadActivityViewModel }) {
         )}
       </header>
 
-      <ScrollArea className="min-w-0 min-h-0 flex-1">
+      <ScrollArea className="min-h-0 min-w-0 flex-1">
         <div className="flex min-w-0 flex-col gap-4 overflow-x-hidden p-3">
           {model.attention ? (
             <section
@@ -114,9 +135,16 @@ export function ActivityPanel({ model }: { model: ThreadActivityViewModel }) {
                     <CheckCircle2 className="mt-0.5 size-3.5 shrink-0 text-success" />
                   )}
                   <div className="min-w-0 flex-1 overflow-hidden">
-                    <p className="truncate text-[12.5px] font-semibold text-foreground">
-                      {model.current.label}
-                    </p>
+                    <div className="flex min-w-0 items-baseline justify-between gap-2">
+                      <p className="truncate text-[12.5px] font-semibold text-foreground">
+                        {model.current.label}
+                      </p>
+                      {currentElapsed ? (
+                        <span className="shrink-0 tabular-nums text-[11px] text-muted-foreground">
+                          {currentElapsed}
+                        </span>
+                      ) : null}
+                    </div>
                     {model.current.detail ? (
                       <p className="mt-0.5 line-clamp-2 break-all text-[11px] text-muted-foreground">
                         {model.current.detail}
@@ -137,7 +165,7 @@ export function ActivityPanel({ model }: { model: ThreadActivityViewModel }) {
               Recent steps
             </h3>
             {recent.length > 0 ? (
-              <ul className="min-w-0 divide-y divide-border/50 overflow-hidden rounded-lg border border-border/60 bg-card/30 px-1.5 py-0.5">
+              <ul className="min-w-0 divide-y divide-border/40 overflow-hidden rounded-lg border border-border/60 bg-card/30 px-1.5 py-0.5">
                 {recent.map((step) => (
                   <RecentStepRow key={step.id} step={step} />
                 ))}
@@ -147,7 +175,7 @@ export function ActivityPanel({ model }: { model: ThreadActivityViewModel }) {
             )}
           </section>
 
-          {/* MCP health only when authoritative — design contract. */}
+          {/* MCP / changed files / artifacts: later slices when data is authoritative. */}
           {!model.hasAuthoritativeMcpStatus ? null : null}
         </div>
       </ScrollArea>

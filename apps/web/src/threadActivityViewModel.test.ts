@@ -2,7 +2,10 @@ import { TurnId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import type { TimelineEntry, WorkLogEntry } from "./session-logic";
-import { deriveThreadActivityViewModel } from "./threadActivityViewModel";
+import {
+  deriveThreadActivityViewModel,
+  isActivityRecentMilestone,
+} from "./threadActivityViewModel";
 
 function workEntry(
   partial: Partial<WorkLogEntry> & Pick<WorkLogEntry, "id" | "label">,
@@ -22,6 +25,30 @@ function workTimeline(entries: WorkLogEntry[]): TimelineEntry[] {
     entry,
   }));
 }
+
+describe("isActivityRecentMilestone", () => {
+  it("keeps tools and session start, drops thinking and plan noise", () => {
+    expect(
+      isActivityRecentMilestone(
+        workEntry({ id: "t", label: "Read files", toolLifecycleStatus: "completed" }),
+      ),
+    ).toBe(true);
+    expect(
+      isActivityRecentMilestone(workEntry({ id: "s", label: "Session started", tone: "info" })),
+    ).toBe(true);
+    expect(
+      isActivityRecentMilestone(
+        workEntry({ id: "th", label: "Planning next steps", tone: "thinking" }),
+      ),
+    ).toBe(false);
+    expect(
+      isActivityRecentMilestone(workEntry({ id: "p", label: "Plan updated", tone: "info" })),
+    ).toBe(false);
+    expect(
+      isActivityRecentMilestone(workEntry({ id: "c", label: "Changed files", tone: "info" })),
+    ).toBe(false);
+  });
+});
 
 describe("deriveThreadActivityViewModel", () => {
   it("surfaces the running tool as current step while working", () => {
@@ -73,6 +100,7 @@ describe("deriveThreadActivityViewModel", () => {
           label: "Run tests",
           tone: "error",
           toolLifecycleStatus: "failed",
+          detail: "exit code 1",
           createdAt: "2026-07-26T12:00:10.000Z",
         }),
       ]),
@@ -80,9 +108,11 @@ describe("deriveThreadActivityViewModel", () => {
 
     expect(model.current).toBeNull();
     expect(model.recentSteps.map((step) => step.status)).toEqual(["completed", "failed"]);
+    expect(model.recentSteps[0]?.detail).toBeUndefined();
+    expect(model.recentSteps[1]?.detail).toBe("exit code 1");
   });
 
-  it("does not spin finished, stopped, or neutral tool steps", () => {
+  it("filters thinking and plan noise out of recent steps", () => {
     const model = deriveThreadActivityViewModel({
       isWorking: false,
       activeTurnStartedAt: null,
@@ -90,13 +120,13 @@ describe("deriveThreadActivityViewModel", () => {
         workEntry({
           id: "done-implicit",
           label: "grep",
-          // Tool-like with no lifecycle still resolves to success, not running.
           createdAt: "2026-07-26T12:00:00.000Z",
         }),
         workEntry({
           id: "stopped",
           label: "shell",
           toolLifecycleStatus: "stopped",
+          detail: "interrupted by user",
           createdAt: "2026-07-26T12:00:05.000Z",
         }),
         workEntry({
@@ -111,17 +141,38 @@ describe("deriveThreadActivityViewModel", () => {
           tone: "info",
           createdAt: "2026-07-26T12:00:09.000Z",
         }),
+        workEntry({
+          id: "files",
+          label: "Changed files",
+          tone: "info",
+          createdAt: "2026-07-26T12:00:10.000Z",
+        }),
       ]),
     });
 
-    // Thinking / info events are "info" (soft check in UI), not hollow pending.
-    expect(model.recentSteps.map((step) => step.status)).toEqual([
-      "completed",
-      "interrupted",
-      "info",
-      "info",
-    ]);
-    expect(model.recentSteps.every((step) => step.status !== "pending")).toBe(true);
+    expect(model.recentSteps.map((step) => step.label)).toEqual(["grep", "shell"]);
+    expect(model.recentSteps.map((step) => step.status)).toEqual(["completed", "interrupted"]);
+    expect(model.recentSteps[1]?.detail).toBe("interrupted by user");
+  });
+
+  it("caps recent steps at mockup-scale length", () => {
+    const entries = Array.from({ length: 12 }, (_, index) =>
+      workEntry({
+        id: `tool-${index}`,
+        label: `Tool ${index}`,
+        toolLifecycleStatus: "completed",
+        createdAt: `2026-07-26T12:00:${String(index).padStart(2, "0")}.000Z`,
+      }),
+    );
+    const model = deriveThreadActivityViewModel({
+      isWorking: false,
+      activeTurnStartedAt: null,
+      timelineEntries: workTimeline(entries),
+    });
+
+    expect(model.recentSteps).toHaveLength(8);
+    expect(model.recentSteps[0]?.label).toBe("Tool 4");
+    expect(model.recentSteps[7]?.label).toBe("Tool 11");
   });
 
   it("only treats explicit inProgress tools as the current step", () => {
@@ -141,7 +192,7 @@ describe("deriveThreadActivityViewModel", () => {
         }),
         workEntry({
           id: "think",
-          label: "Still thinking",
+          label: "Still thinking about a long chain of private thoughts",
           tone: "thinking",
           turnId,
           sourceActivityKind: "task.progress",
@@ -150,9 +201,12 @@ describe("deriveThreadActivityViewModel", () => {
       ]),
     });
 
+    expect(model.recentSteps.map((step) => step.label)).toEqual(["Linear · list issues"]);
     expect(model.recentSteps[0]?.status).toBe("interrupted");
     expect(model.current?.source).toBe("thinking");
-    expect(model.current?.label).toBe("Still thinking");
+    // Quiet current: no thought dump in the panel.
+    expect(model.current?.label).toBe("Thinking");
+    expect(model.current?.detail).toBeUndefined();
   });
 
   it("surfaces approval attention without inventing a tool", () => {
@@ -184,7 +238,8 @@ describe("deriveThreadActivityViewModel", () => {
     });
 
     expect(model.current?.source).toBe("thinking");
-    expect(model.current?.label).toBe("Planning next steps");
+    expect(model.current?.label).toBe("Thinking");
+    expect(model.recentSteps).toHaveLength(0);
   });
 
   it("does not promote a finished tool into Current via activeToolLabel", () => {
@@ -210,7 +265,8 @@ describe("deriveThreadActivityViewModel", () => {
     expect(model.current?.source).toBe("working");
     expect(model.current?.label).toBe("Working");
     expect(model.recentSteps[0]?.status).toBe("completed");
-    expect(model.recentSteps[0]?.detail?.length).toBeLessThanOrEqual(140);
+    // Quiet completed rows: no dump under the label.
+    expect(model.recentSteps[0]?.detail).toBeUndefined();
   });
 
   it("clears leftover inProgress spinners once the turn is idle", () => {
@@ -230,5 +286,30 @@ describe("deriveThreadActivityViewModel", () => {
 
     expect(model.current).toBeNull();
     expect(model.recentSteps[0]?.status).toBe("completed");
+  });
+
+  it("prefers command over raw detail for current tool subtitle", () => {
+    const turnId = TurnId.make("turn-4");
+    const model = deriveThreadActivityViewModel({
+      isWorking: true,
+      activeTurnStartedAt: "2026-07-26T12:00:00.000Z",
+      unsettledTurnId: turnId,
+      timelineEntries: workTimeline([
+        workEntry({
+          id: "cmd",
+          label: "Terminal",
+          toolTitle: "Terminal",
+          turnId,
+          toolLifecycleStatus: "inProgress",
+          command: "vp test run apps/web/src/threadActivityViewModel.test.ts",
+          detail: '{"stdout":"very long raw blob"}',
+          createdAt: "2026-07-26T12:00:01.000Z",
+        }),
+      ]),
+    });
+
+    expect(model.current?.label).toBe("Terminal");
+    expect(model.current?.detail).toContain("vp test run");
+    expect(model.current?.detail).not.toContain("stdout");
   });
 });

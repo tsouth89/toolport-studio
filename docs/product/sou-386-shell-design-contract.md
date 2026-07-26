@@ -70,5 +70,8 @@ behavior classes keep working.
 - [x] Right-panel singleton surface `activity` (store v8)
 - [x] `ActivityPanel` UI: current step, elapsed, recent steps, attention
 - [x] MCP section omitted until authoritative status exists
+- [x] Mockup-shaped recent list: tools/milestones only, cap 8, clocks, quiet rows
 - [ ] Timeline “View in Activity” deep-link (follow-up)
 - [ ] Changed files / artifacts blocks (follow-up; reuse existing surfaces)
+- [ ] MCP list when authoritative live status exists
+- [ ] Current-step progress bar only when provider supplies a total
