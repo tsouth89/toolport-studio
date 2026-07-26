@@ -38,26 +38,47 @@ class CursorAdapter extends Context.Service<CursorAdapter, CursorAdapterShape>()
 
 const __dirname = NodePath.dirname(NodeURL.fileURLToPath(import.meta.url));
 const mockAgentPath = NodePath.join(__dirname, "../../../scripts/acp-mock-agent.ts");
-const mockAgentCommand = "node";
-const mockAgentArgs = [mockAgentPath] as const;
 
+/**
+ * Build a Node mock binary + env (Grok-style). Cursor spawn detects `.ts`/`.js`
+ * binaries and launches them via process.execPath, so no shell wrapper is needed.
+ * When `initialDelaySeconds` is set we still emit a tiny delay wrapper script.
+ */
 async function makeMockAgentWrapper(
   extraEnv?: Record<string, string>,
   options?: { initialDelaySeconds?: number },
-) {
-  const dir = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "cursor-acp-mock-"));
-  const wrapperPath = NodePath.join(dir, "fake-agent.sh");
-  const envExports = Object.entries(extraEnv ?? {})
-    .map(([key, value]) => `export ${key}=${JSON.stringify(value)}`)
-    .join("\n");
-  const script = `#!/bin/sh
-${envExports}
-${options?.initialDelaySeconds ? `sleep ${JSON.stringify(String(options.initialDelaySeconds))}` : ""}
-exec ${JSON.stringify(mockAgentCommand)} ${mockAgentArgs.map((arg) => JSON.stringify(arg)).join(" ")} "$@"
+): Promise<string> {
+  if (options?.initialDelaySeconds === undefined) {
+    // Stash env on process for the adapter session via ServerSettings binaryPath
+    // alone — callers must also set env through the mock wrapper path below.
+    // We write a tiny launcher that sets env then loads the mock agent so each
+    // test can isolate T3_ACP_* without mutating the parent process.
+    const dir = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "cursor-acp-mock-"));
+    const launcherPath = NodePath.join(dir, "fake-agent.mjs");
+    const envEntries = Object.entries(extraEnv ?? {})
+      .map(([key, value]) => `process.env[${JSON.stringify(key)}] = ${JSON.stringify(value)};`)
+      .join("\n");
+    const script = `${envEntries}
+process.argv.splice(1, 1, ${JSON.stringify(mockAgentPath)});
+await import(${JSON.stringify(NodeURL.pathToFileURL(mockAgentPath).href)});
 `;
-  await NodeFSP.writeFile(wrapperPath, script, "utf8");
-  await NodeFSP.chmod(wrapperPath, 0o755);
-  return wrapperPath;
+    await NodeFSP.writeFile(launcherPath, script, "utf8");
+    return launcherPath;
+  }
+
+  const dir = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "cursor-acp-mock-"));
+  const launcherPath = NodePath.join(dir, "fake-agent.mjs");
+  const envEntries = Object.entries(extraEnv ?? {})
+    .map(([key, value]) => `process.env[${JSON.stringify(key)}] = ${JSON.stringify(value)};`)
+    .join("\n");
+  const delayMs = Math.max(0, Math.round(options.initialDelaySeconds * 1000));
+  const script = `${envEntries}
+await new Promise((resolve) => setTimeout(resolve, ${delayMs}));
+process.argv.splice(1, 1, ${JSON.stringify(mockAgentPath)});
+await import(${JSON.stringify(NodeURL.pathToFileURL(mockAgentPath).href)});
+`;
+  await NodeFSP.writeFile(launcherPath, script, "utf8");
+  return launcherPath;
 }
 
 async function makeProbeWrapper(
@@ -66,20 +87,21 @@ async function makeProbeWrapper(
   extraEnv?: Record<string, string>,
 ) {
   const dir = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "cursor-acp-probe-"));
-  const wrapperPath = NodePath.join(dir, "fake-agent.sh");
-  const envExports = Object.entries(extraEnv ?? {})
-    .map(([key, value]) => `export ${key}=${JSON.stringify(value)}`)
+  const launcherPath = NodePath.join(dir, "fake-agent.mjs");
+  const envEntries = Object.entries({
+    T3_ACP_REQUEST_LOG_PATH: requestLogPath,
+    ...(extraEnv ?? {}),
+  })
+    .map(([key, value]) => `process.env[${JSON.stringify(key)}] = ${JSON.stringify(value)};`)
     .join("\n");
-  const script = `#!/bin/sh
-printf '%s\t' "$@" >> ${JSON.stringify(argvLogPath)}
-printf '\n' >> ${JSON.stringify(argvLogPath)}
-export T3_ACP_REQUEST_LOG_PATH=${JSON.stringify(requestLogPath)}
-${envExports}
-exec ${JSON.stringify(mockAgentCommand)} ${mockAgentArgs.map((arg) => JSON.stringify(arg)).join(" ")} "$@"
+  const script = `${envEntries}
+import * as NodeFS from "node:fs";
+NodeFS.appendFileSync(${JSON.stringify(argvLogPath)}, process.argv.slice(2).join("\\t") + "\\n", "utf8");
+process.argv.splice(1, 1, ${JSON.stringify(mockAgentPath)});
+await import(${JSON.stringify(NodeURL.pathToFileURL(mockAgentPath).href)});
 `;
-  await NodeFSP.writeFile(wrapperPath, script, "utf8");
-  await NodeFSP.chmod(wrapperPath, 0o755);
-  return wrapperPath;
+  await NodeFSP.writeFile(launcherPath, script, "utf8");
+  return launcherPath;
 }
 
 async function readArgvLog(filePath: string) {
@@ -353,8 +375,14 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
 
       yield* adapter.stopSession(threadId);
 
-      const exitLog = yield* Effect.promise(() => waitForFileContent(exitLogPath));
-      assert.include(exitLog, "SIGTERM");
+      // Windows process kill often terminates without delivering SIGTERM handlers,
+      // so only assert the exit log on Unix where the mock can record SIGTERM.
+      if (process.platform !== "win32") {
+        const exitLog = yield* Effect.promise(() => waitForFileContent(exitLogPath));
+        assert.include(exitLog, "SIGTERM");
+      }
+      const sessions = yield* adapter.listSessions();
+      assert.isUndefined(sessions.find((session) => session.threadId === threadId));
     }),
   );
 
@@ -405,8 +433,12 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
 
         yield* adapter.stopSession(threadId);
 
-        const exitLog = yield* Effect.promise(() => waitForFileContent(exitLogPath));
-        assert.equal(exitLog.match(/SIGTERM/g)?.length ?? 0, 2);
+        if (process.platform !== "win32") {
+          const exitLog = yield* Effect.promise(() => waitForFileContent(exitLogPath));
+          assert.equal(exitLog.match(/SIGTERM/g)?.length ?? 0, 2);
+        }
+        const sessions = yield* adapter.listSessions();
+        assert.isUndefined(sessions.find((session) => session.threadId === threadId));
       }),
   );
 
@@ -1237,6 +1269,114 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
       yield* Fiber.interrupt(runtimeEventsFiber);
       yield* adapter.stopSession(threadId);
     }).pipe(TestClock.withLive),
+  );
+
+  it.effect("auto-cancels a permission request that sits unanswered", () =>
+    Effect.gen(function* () {
+      const previousEmitToolCalls = process.env.T3_ACP_EMIT_TOOL_CALLS;
+      process.env.T3_ACP_EMIT_TOOL_CALLS = "1";
+
+      const adapter = yield* CursorAdapter;
+      const serverSettings = yield* ServerSettingsService;
+      const threadId = ThreadId.make("cursor-approval-timeout");
+      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+      const requestOpened = yield* Deferred.make<void>();
+      const requestResolved =
+        yield* Deferred.make<Extract<ProviderRuntimeEvent, { type: "request.resolved" }>>();
+      const turnCompleted = yield* Deferred.make<void>();
+
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockAgentWrapper({ T3_ACP_EMIT_TOOL_CALLS: "1" }),
+      );
+      yield* serverSettings.updateSettings({
+        providers: { cursor: { binaryPath: wrapperPath } },
+      });
+
+      const eventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          runtimeEvents.push(event);
+        }).pipe(
+          Effect.andThen(
+            event.type === "request.opened" && String(event.threadId) === String(threadId)
+              ? Deferred.succeed(requestOpened, undefined).pipe(Effect.ignore, Effect.asVoid)
+              : Effect.void,
+          ),
+          Effect.andThen(
+            event.type === "request.resolved" && String(event.threadId) === String(threadId)
+              ? Deferred.succeed(requestResolved, event).pipe(Effect.ignore, Effect.asVoid)
+              : Effect.void,
+          ),
+          Effect.andThen(
+            event.type === "turn.completed" && String(event.threadId) === String(threadId)
+              ? Deferred.succeed(turnCompleted, undefined).pipe(Effect.ignore, Effect.asVoid)
+              : Effect.void,
+          ),
+        ),
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("cursor"),
+        cwd: process.cwd(),
+        runtimeMode: "approval-required",
+        modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+      });
+
+      // Do not call respondToRequest — timeout must clear the hang.
+      const sendFiber = yield* adapter
+        .sendTurn({ threadId, input: "needs approval then continue", attachments: [] })
+        .pipe(Effect.forkChild);
+
+      yield* Deferred.await(requestOpened).pipe(Effect.timeout("8 seconds"));
+      const resolved = yield* Deferred.await(requestResolved).pipe(Effect.timeout("8 seconds"));
+      assert.equal(resolved.payload.decision, "cancel");
+      yield* Deferred.await(turnCompleted).pipe(Effect.timeout("10 seconds"));
+      yield* Fiber.join(sendFiber).pipe(Effect.timeout("8 seconds"), Effect.ignore);
+
+      const warnings = runtimeEvents.filter(
+        (event) =>
+          event.type === "runtime.warning" &&
+          String(event.payload.message ?? "").includes("Permission request timed out"),
+      );
+      assert.isAtLeast(warnings.length, 1);
+
+      const readySessions = yield* adapter.listSessions();
+      const readySession = readySessions.find((session) => session.threadId === threadId);
+      assert.equal(readySession?.status, "ready");
+
+      yield* Fiber.interrupt(eventsFiber);
+      yield* adapter.stopSession(threadId);
+
+      if (previousEmitToolCalls === undefined) {
+        delete process.env.T3_ACP_EMIT_TOOL_CALLS;
+      } else {
+        process.env.T3_ACP_EMIT_TOOL_CALLS = previousEmitToolCalls;
+      }
+    }).pipe(
+      Effect.provide(
+        Layer.effect(
+          CursorAdapter,
+          Effect.gen(function* () {
+            const cursorConfig = decodeCursorSettings({});
+            const resolveSettings = yield* makeResolveCursorSettings;
+            return yield* makeCursorAdapter(cursorConfig, {
+              resolveSettings,
+              // Short timeout so the test does not wait minutes.
+              pendingApprovalTimeoutMs: 250,
+            });
+          }),
+        ).pipe(
+          Layer.provideMerge(ServerSettingsService.layerTest()),
+          Layer.provideMerge(
+            ServerConfig.layerTest(process.cwd(), {
+              prefix: "t3code-cursor-adapter-timeout-test-",
+            }),
+          ),
+          Layer.provideMerge(NodeServices.layer),
+        ),
+      ),
+      TestClock.withLive,
+    ),
   );
 
   it.effect("broadcasts runtime events to multiple stream consumers", () =>

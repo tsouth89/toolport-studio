@@ -85,6 +85,11 @@ const ACP_PLAN_MODE_ALIASES = ["plan", "architect"];
 const ACP_IMPLEMENT_MODE_ALIASES = ["code", "agent", "default", "chat", "implement"];
 const ACP_APPROVAL_MODE_ALIASES = ["ask"];
 
+/** Auto-cancel unanswered permission prompts so multi-session dogfood cannot hang forever. */
+const CURSOR_PENDING_APPROVAL_TIMEOUT_MS = 3 * 60_000;
+/** Slightly longer for multi-question forms. */
+const CURSOR_PENDING_USER_INPUT_TIMEOUT_MS = 5 * 60_000;
+
 function encodeJsonStringForDiagnostics(input: unknown): string | undefined {
   const result = encodeUnknownJsonStringExit(input);
   return Exit.isSuccess(result) ? result.value : undefined;
@@ -111,6 +116,10 @@ export interface CursorAdapterLiveOptions {
    * the latest snapshot so the closure isn't stale.
    */
   readonly resolveSettings?: Effect.Effect<CursorSettings>;
+  /** Override pending permission auto-cancel (default 3 minutes). */
+  readonly pendingApprovalTimeoutMs?: number;
+  /** Override pending user-input auto-cancel (default 5 minutes). */
+  readonly pendingUserInputTimeoutMs?: number;
 }
 
 interface PendingApproval {
@@ -321,6 +330,10 @@ export function makeCursorAdapter(
 ) {
   return Effect.gen(function* () {
     const boundInstanceId = options?.instanceId ?? ProviderInstanceId.make("cursor");
+    const pendingApprovalTimeoutMs =
+      options?.pendingApprovalTimeoutMs ?? CURSOR_PENDING_APPROVAL_TIMEOUT_MS;
+    const pendingUserInputTimeoutMs =
+      options?.pendingUserInputTimeoutMs ?? CURSOR_PENDING_USER_INPUT_TIMEOUT_MS;
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -592,7 +605,37 @@ export function makeCursorAdapter(
                       payload: params,
                     },
                   });
-                  const resolved = yield* Deferred.await(answers);
+                  const raceResult = yield* Effect.raceFirst(
+                    Deferred.await(answers).pipe(
+                      Effect.map((value) => ({ _tag: "answered" as const, value })),
+                    ),
+                    Effect.sleep(`${pendingUserInputTimeoutMs} millis`).pipe(
+                      Effect.as({ _tag: "timeout" as const }),
+                    ),
+                  );
+                  const resolved: ProviderUserInputAnswers =
+                    raceResult._tag === "timeout" ? {} : raceResult.value;
+                  if (raceResult._tag === "timeout") {
+                    yield* Deferred.succeed(answers, {}).pipe(Effect.ignore);
+                    yield* Effect.logWarning(
+                      "Cursor user-input request timed out; auto-cancelled",
+                      {
+                        threadId: input.threadId,
+                        requestId,
+                        timeoutMs: pendingUserInputTimeoutMs,
+                      },
+                    );
+                    yield* offerRuntimeEvent({
+                      type: "runtime.warning",
+                      ...(yield* makeEventStamp()),
+                      provider: PROVIDER,
+                      threadId: input.threadId,
+                      turnId: ctx?.activeTurnId,
+                      payload: {
+                        message: `User input timed out after ${Math.round(pendingUserInputTimeoutMs / 1000)}s with no answer. Request was cancelled automatically.`,
+                      },
+                    });
+                  }
                   pendingUserInputs.delete(requestId);
                   yield* offerRuntimeEvent({
                     type: "user-input.resolved",
@@ -703,7 +746,34 @@ export function makeCursorAdapter(
                       rawPayload: params,
                     }),
                   );
-                  const resolved = yield* Deferred.await(decision);
+                  const raceResult = yield* Effect.raceFirst(
+                    Deferred.await(decision).pipe(
+                      Effect.map((value) => ({ _tag: "decided" as const, value })),
+                    ),
+                    Effect.sleep(`${pendingApprovalTimeoutMs} millis`).pipe(
+                      Effect.as({ _tag: "timeout" as const }),
+                    ),
+                  );
+                  const resolved: ProviderApprovalDecision =
+                    raceResult._tag === "timeout" ? "cancel" : raceResult.value;
+                  if (raceResult._tag === "timeout") {
+                    yield* Deferred.succeed(decision, "cancel").pipe(Effect.ignore);
+                    yield* Effect.logWarning("Cursor approval request timed out; auto-cancelled", {
+                      threadId: input.threadId,
+                      requestId,
+                      timeoutMs: pendingApprovalTimeoutMs,
+                    });
+                    yield* offerRuntimeEvent({
+                      type: "runtime.warning",
+                      ...(yield* makeEventStamp()),
+                      provider: PROVIDER,
+                      threadId: input.threadId,
+                      turnId: ctx?.activeTurnId,
+                      payload: {
+                        message: `Permission request timed out after ${Math.round(pendingApprovalTimeoutMs / 1000)}s with no decision. Request was cancelled automatically.`,
+                      },
+                    });
+                  }
                   pendingApprovals.delete(requestId);
                   yield* offerRuntimeEvent(
                     makeAcpRequestResolvedEvent({

@@ -74,6 +74,22 @@ describe("buildCursorAcpSpawnInput", () => {
       cwd: "/tmp/project",
     });
   });
+
+  it("launches Node script binaries via process.execPath", () => {
+    expect(
+      buildCursorAcpSpawnInput(
+        {
+          binaryPath: "/tmp/fake-agent.mjs",
+          apiEndpoint: "http://localhost:3000",
+        },
+        "/tmp/project",
+      ),
+    ).toEqual({
+      command: process.execPath,
+      args: ["/tmp/fake-agent.mjs", "-e", "http://localhost:3000", "acp"],
+      cwd: "/tmp/project",
+    });
+  });
 });
 
 describe("applyCursorAcpModelSelection", () => {

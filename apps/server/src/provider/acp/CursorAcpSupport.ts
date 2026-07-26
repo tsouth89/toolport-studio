@@ -35,12 +35,15 @@ export function buildCursorAcpSpawnInput(
   cwd: string,
   environment?: NodeJS.ProcessEnv,
 ): AcpSessionRuntime.AcpSpawnInput {
+  const binaryPath = cursorSettings?.binaryPath?.trim() || "cursor-agent";
+  // Test mocks (and any script binary) are launched via the Node runtime, same as Grok.
+  const isNodeScript = /\.(c|m)?(js|ts)$/i.test(binaryPath);
+  const endpointArgs = cursorSettings?.apiEndpoint
+    ? (["-e", cursorSettings.apiEndpoint] as const)
+    : [];
   return {
-    command: cursorSettings?.binaryPath || "cursor-agent",
-    args: [
-      ...(cursorSettings?.apiEndpoint ? (["-e", cursorSettings.apiEndpoint] as const) : []),
-      "acp",
-    ],
+    command: isNodeScript ? process.execPath : binaryPath,
+    args: isNodeScript ? [binaryPath, ...endpointArgs, "acp"] : [...endpointArgs, "acp"],
     cwd,
     ...(environment ? { env: environment } : {}),
   };
