@@ -7,7 +7,9 @@ import {
 
 describe("streamingMarkdownRenderDelay", () => {
   it("coalesces updates inside the render interval", () => {
-    expect(streamingMarkdownRenderDelay({ lastRenderedAt: 1_000, now: 1_020 })).toBe(30);
+    expect(streamingMarkdownRenderDelay({ lastRenderedAt: 1_000, now: 1_020 })).toBe(
+      STREAMING_MARKDOWN_RENDER_INTERVAL_MS - 20,
+    );
   });
 
   it("allows an immediate refresh once the interval elapsed", () => {

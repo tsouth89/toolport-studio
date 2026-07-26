@@ -1031,7 +1031,61 @@ describe("ProviderRuntimeIngestion", () => {
     expect(payload?.detail).toBeUndefined();
     expect(data?.toolCallId).toBe("tool-read-1");
     expect(data?.kind).toBe("read");
+    // Small tool outputs stay intact; huge blobs are truncated for SQLite health.
     expect(rawOutput?.content).toBe('import * as Effect from "effect/Effect"\n');
+  });
+
+  it("truncates huge tool rawOutput blobs on projected activities", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const hugeContent = "x".repeat(50_000);
+
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-tool-completed-huge"),
+      provider: ProviderDriverKind.make("cursor"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-tool-huge"),
+      itemId: asItemId("item-tool-huge"),
+      payload: {
+        itemType: "dynamic_tool_call",
+        status: "completed",
+        title: "Read file",
+        data: {
+          toolCallId: "tool-read-huge",
+          kind: "read",
+          rawOutput: { content: hugeContent },
+        },
+      },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.id === "evt-tool-completed-huge",
+      ),
+    );
+    const activity = thread.activities.find(
+      (entry: ProviderRuntimeTestActivity) => entry.id === "evt-tool-completed-huge",
+    );
+    const payload =
+      activity?.payload && typeof activity.payload === "object"
+        ? (activity.payload as Record<string, unknown>)
+        : undefined;
+    const data =
+      payload?.data && typeof payload.data === "object"
+        ? (payload.data as Record<string, unknown>)
+        : undefined;
+    const rawOutput =
+      data?.rawOutput && typeof data.rawOutput === "object"
+        ? (data.rawOutput as Record<string, unknown>)
+        : undefined;
+
+    expect(data?.toolCallId).toBe("tool-read-huge");
+    expect(rawOutput?._truncated).toBe(true);
+    expect(typeof rawOutput?.approxChars).toBe("number");
+    expect(Number(rawOutput?.approxChars)).toBeGreaterThan(40_000);
+    expect(JSON.stringify(data).length).toBeLessThan(2_000);
   });
 
   it("normalizes command execution activities to ran-command summaries", async () => {

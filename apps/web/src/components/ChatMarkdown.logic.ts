@@ -1,4 +1,5 @@
-export const STREAMING_MARKDOWN_RENDER_INTERVAL_MS = 50;
+/** Coalesce markdown re-parses while tokens arrive (was 50ms; felt drip-like under load). */
+export const STREAMING_MARKDOWN_RENDER_INTERVAL_MS = 100;
 
 export function streamingMarkdownRenderDelay(input: {
   lastRenderedAt: number;

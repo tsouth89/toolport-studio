@@ -119,7 +119,43 @@ const REASONING_PREVIEW_LIMIT = 160;
 /** Coalesce thought tokens into activity upserts (native terminal updates live). */
 const REASONING_FLUSH_MIN_INTERVAL_MS = 250;
 const REASONING_FLUSH_MIN_NEW_CHARS = 48;
+/**
+ * When assistant streaming is enabled, batch token deltas before dispatching
+ * orchestration events. Token-by-token SQL + WS under multi-session load is what
+ * makes output look throttled.
+ */
+const ASSISTANT_STREAM_FLUSH_MIN_INTERVAL_MS = 80;
+/** Batch tiny token deltas; flush once a short phrase has accumulated. */
+const ASSISTANT_STREAM_FLUSH_MIN_CHARS = 8;
+const STREAMING_ASSISTANT_COALESCE_CACHE_CAPACITY = 20_000;
+const STREAMING_ASSISTANT_COALESCE_TTL = Duration.minutes(120);
 const STRICT_PROVIDER_LIFECYCLE_GUARD = process.env.T3CODE_STRICT_PROVIDER_LIFECYCLE_GUARD !== "0";
+
+type StreamingAssistantCoalesceState = {
+  readonly pending: string;
+  readonly firstPendingAtMs: number;
+};
+
+export function shouldFlushStreamingAssistantCoalesce(input: {
+  readonly pending: string;
+  readonly firstPendingAtMs: number;
+  readonly nowMs: number;
+  readonly force: boolean;
+}): boolean {
+  if (input.pending.length === 0) {
+    return false;
+  }
+  if (input.force) {
+    return true;
+  }
+  if (input.pending.length >= ASSISTANT_STREAM_FLUSH_MIN_CHARS) {
+    return true;
+  }
+  if (input.firstPendingAtMs <= 0) {
+    return false;
+  }
+  return input.nowMs - input.firstPendingAtMs >= ASSISTANT_STREAM_FLUSH_MIN_INTERVAL_MS;
+}
 
 function reasoningActivityId(threadId: ThreadId, turnId: TurnId, segmentIndex: number): EventId {
   return EventId.make(`reasoning:${threadId}:${turnId}:${segmentIndex}`);
@@ -270,9 +306,64 @@ function truncateDetail(value: string, limit = 180): string {
 }
 
 /**
+ * Tool activity rows used to persist full ACP `rawOutput` / `content` blobs
+ * (often 20–400KB per update). That ballooned `state.sqlite` (orchestration
+ * events + activities) and made multi-session streaming feel token-throttled
+ * under SQLite/WS write pressure. Keep presentation fields; truncate heavies.
+ */
+const TOOL_ACTIVITY_HEAVY_DATA_KEYS = new Set([
+  "rawOutput",
+  "rawInput",
+  "content",
+  "output",
+  "result",
+  "stdout",
+  "stderr",
+  "diff",
+  "patch",
+  "fileContent",
+  "body",
+]);
+/** Soft cap for free-form strings kept on the activity row. */
+const TOOL_ACTIVITY_MAX_STRING_CHARS = 400;
+/** Soft cap for JSON-encoded heavy objects kept for dogfood previews. */
+const TOOL_ACTIVITY_MAX_JSON_CHARS = 800;
+
+export function sanitizeToolActivityDataValue(key: string, value: unknown): unknown {
+  if (value === null || value === undefined) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const limit = TOOL_ACTIVITY_HEAVY_DATA_KEYS.has(key)
+      ? TOOL_ACTIVITY_MAX_STRING_CHARS
+      : TOOL_ACTIVITY_MAX_STRING_CHARS * 2;
+    return truncateDetail(value, limit);
+  }
+  if (!TOOL_ACTIVITY_HEAVY_DATA_KEYS.has(key)) {
+    return value;
+  }
+  try {
+    const encoded = JSON.stringify(value);
+    if (encoded === undefined) {
+      return { _truncated: true };
+    }
+    if (encoded.length <= TOOL_ACTIVITY_MAX_JSON_CHARS) {
+      return value;
+    }
+    return {
+      _truncated: true,
+      approxChars: encoded.length,
+      preview: `${encoded.slice(0, TOOL_ACTIVITY_MAX_STRING_CHARS - 3)}...`,
+    };
+  } catch {
+    return { _truncated: true };
+  }
+}
+
+/**
  * Tool activity `data` bag for the work log. Ensures `toolCallId` is present so
  * concurrent tools can collapse even when the provider data omitted it (ACP
- * stamps itemId = toolCallId).
+ * stamps itemId = toolCallId). Heavy ACP blobs are truncated for persistence.
  */
 function toolActivityDataPayload(
   event: Extract<ProviderRuntimeEvent, { type: "item.updated" | "item.completed" }>,
@@ -293,12 +384,14 @@ function toolActivityDataPayload(
   if (!toolCallId && Object.keys(existing).length === 0) {
     return {};
   }
-  return {
-    data: {
-      ...existing,
-      ...(toolCallId && !existingToolCallId ? { toolCallId } : {}),
-    },
-  };
+  const sanitized: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(existing)) {
+    sanitized[key] = sanitizeToolActivityDataValue(key, value);
+  }
+  if (toolCallId && !existingToolCallId) {
+    sanitized.toolCallId = toolCallId;
+  }
+  return { data: sanitized };
 }
 
 function normalizeProposedPlanMarkdown(planMarkdown: string | undefined): string | undefined {
@@ -809,6 +902,15 @@ const make = Effect.gen(function* () {
     lookup: () => Effect.succeed(""),
   });
 
+  const streamingAssistantCoalesceByMessageId = yield* Cache.make<
+    MessageId,
+    StreamingAssistantCoalesceState
+  >({
+    capacity: STREAMING_ASSISTANT_COALESCE_CACHE_CAPACITY,
+    timeToLive: STREAMING_ASSISTANT_COALESCE_TTL,
+    lookup: () => Effect.succeed({ pending: "", firstPendingAtMs: 0 }),
+  });
+
   const assistantSegmentStateByTurnKey = yield* Cache.make<string, AssistantSegmentState>({
     capacity: TURN_MESSAGE_IDS_BY_TURN_CACHE_CAPACITY,
     timeToLive: TURN_MESSAGE_IDS_BY_TURN_TTL,
@@ -1186,6 +1288,54 @@ const make = Effect.gen(function* () {
   const clearBufferedAssistantText = (messageId: MessageId) =>
     Cache.invalidate(bufferedAssistantTextByMessageId, messageId);
 
+  const takeStreamingAssistantPending = (messageId: MessageId) =>
+    Cache.getOption(streamingAssistantCoalesceByMessageId, messageId).pipe(
+      Effect.flatMap((existing) =>
+        Cache.invalidate(streamingAssistantCoalesceByMessageId, messageId).pipe(
+          Effect.as(Option.match(existing, { onNone: () => "", onSome: (state) => state.pending })),
+        ),
+      ),
+    );
+
+  const clearStreamingAssistantPending = (messageId: MessageId) =>
+    Cache.invalidate(streamingAssistantCoalesceByMessageId, messageId);
+
+  /**
+   * Append a streaming token; return a non-empty string when the coalesce
+   * window should flush to orchestration (caller dispatches that chunk).
+   */
+  const appendStreamingAssistantDelta = (messageId: MessageId, delta: string) =>
+    Effect.gen(function* () {
+      if (delta.length === 0) {
+        return "";
+      }
+      const nowMs = yield* Clock.currentTimeMillis;
+      const existing = yield* Cache.getOption(streamingAssistantCoalesceByMessageId, messageId);
+      const previous = Option.getOrElse(existing, () => ({
+        pending: "",
+        firstPendingAtMs: 0,
+      }));
+      const pending = `${previous.pending}${delta}`;
+      const firstPendingAtMs =
+        previous.pending.length === 0 ? nowMs : previous.firstPendingAtMs || nowMs;
+      if (
+        shouldFlushStreamingAssistantCoalesce({
+          pending,
+          firstPendingAtMs,
+          nowMs,
+          force: false,
+        })
+      ) {
+        yield* Cache.invalidate(streamingAssistantCoalesceByMessageId, messageId);
+        return pending;
+      }
+      yield* Cache.set(streamingAssistantCoalesceByMessageId, messageId, {
+        pending,
+        firstPendingAtMs,
+      });
+      return "";
+    });
+
   const appendBufferedProposedPlan = (planId: string, delta: string, createdAt: string) =>
     Cache.getOption(bufferedProposedPlanById, planId).pipe(
       Effect.flatMap((existingEntry) => {
@@ -1211,7 +1361,10 @@ const make = Effect.gen(function* () {
     Cache.invalidate(bufferedProposedPlanById, planId);
 
   const clearAssistantMessageState = (messageId: MessageId) =>
-    clearBufferedAssistantText(messageId);
+    Effect.gen(function* () {
+      yield* clearBufferedAssistantText(messageId);
+      yield* clearStreamingAssistantPending(messageId);
+    });
 
   const flushBufferedAssistantMessage = (input: {
     event: ProviderRuntimeEvent;
@@ -1223,7 +1376,9 @@ const make = Effect.gen(function* () {
   }) =>
     Effect.gen(function* () {
       const bufferedText = yield* takeBufferedAssistantText(input.messageId);
-      if (!hasRenderableAssistantText(bufferedText)) {
+      const streamingPending = yield* takeStreamingAssistantPending(input.messageId);
+      const text = `${bufferedText}${streamingPending}`;
+      if (!hasRenderableAssistantText(text)) {
         return false;
       }
 
@@ -1232,7 +1387,7 @@ const make = Effect.gen(function* () {
         commandId: yield* providerCommandId(input.event, input.commandTag),
         threadId: input.threadId,
         messageId: input.messageId,
-        delta: bufferedText,
+        delta: text,
         ...(input.turnId ? { turnId: input.turnId } : {}),
         createdAt: input.createdAt,
       });
@@ -1285,9 +1440,11 @@ const make = Effect.gen(function* () {
   }) =>
     Effect.gen(function* () {
       const bufferedText = yield* takeBufferedAssistantText(input.messageId);
+      const streamingPending = yield* takeStreamingAssistantPending(input.messageId);
+      const coalesced = `${bufferedText}${streamingPending}`;
       const text =
-        bufferedText.length > 0
-          ? bufferedText
+        coalesced.length > 0
+          ? coalesced
           : (input.fallbackText?.trim().length ?? 0) > 0
             ? input.fallbackText!
             : "";
@@ -1813,15 +1970,23 @@ const make = Effect.gen(function* () {
             });
           }
         } else {
-          yield* orchestrationEngine.dispatch({
-            type: "thread.message.assistant.delta",
-            commandId: yield* providerCommandId(event, "assistant-delta"),
-            threadId: thread.id,
-            messageId: assistantMessageId,
-            delta: assistantDelta,
-            ...(turnId ? { turnId } : {}),
-            createdAt: now,
-          });
+          // Coalesce token deltas so multi-session streaming does not write one
+          // orchestration event + SQLite transaction per character/word.
+          const flushChunk = yield* appendStreamingAssistantDelta(
+            assistantMessageId,
+            assistantDelta,
+          );
+          if (flushChunk.length > 0) {
+            yield* orchestrationEngine.dispatch({
+              type: "thread.message.assistant.delta",
+              commandId: yield* providerCommandId(event, "assistant-delta"),
+              threadId: thread.id,
+              messageId: assistantMessageId,
+              delta: flushChunk,
+              ...(turnId ? { turnId } : {}),
+              createdAt: now,
+            });
+          }
         }
       }
 

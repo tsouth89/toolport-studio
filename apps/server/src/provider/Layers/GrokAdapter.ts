@@ -1303,17 +1303,12 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             ) {
               ctx.lastTurnActivityAtMs = yield* Clock.currentTimeMillis;
             }
-            // High-frequency text/thought deltas: log a short text preview only.
-            // Full raw payloads + every chunk balloon provider logs and starve
-            // the UI stream under disk IO (SOU-399 companion perf).
+            // High-frequency text/thought deltas are not written to the native
+            // event log at all. Even slim previews still serialize + fsync on
+            // every token and starve multi-session UI under disk IO. Keep
+            // tool/plan updates only (lower rate, high debug value).
             if (event._tag === "PlanUpdated" || event._tag === "ToolCallUpdated") {
               yield* logNative(ctx.threadId, "session/update", event.rawPayload);
-            } else if (event._tag === "ContentDelta" || event._tag === "ThoughtDelta") {
-              yield* logNative(
-                ctx.threadId,
-                "session/update",
-                slimGrokStreamDeltaNativeLog(event._tag, event.rawPayload),
-              );
             }
 
             if (event._tag === "ModeChanged") {
