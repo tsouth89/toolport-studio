@@ -5,19 +5,28 @@ import { APP_STAGE_LABEL } from "../branding";
 import { resolveServerBackedAppStageLabel } from "../branding.logic";
 import { primaryServerConfigAtom } from "../state/server";
 
-export type SidebarStageBackdropVariant = "nightly" | "dev";
+/**
+ * Shell header atmosphere (SOU-386).
+ * - `brand`: permanent Toolport blueprint for alpha/release/latest
+ * - `dev` / `nightly`: stage-channel palettes (same art family, distinct hues)
+ */
+export type SidebarStageBackdropVariant = "brand" | "nightly" | "dev";
 
 // A wide viewBox keeps the 96-unit art height at a fixed scale while sidebar resizing reveals
 // more horizontal canvas instead of zooming the scene.
 const STAGE_BACKDROP_VIEW_BOX = "0 0 8192 96";
 
+/**
+ * Always returns a backdrop variant so Toolport identity is not gated to
+ * dev/nightly only (SOU-386 permanent brand atmosphere).
+ */
 export function resolveSidebarStageBackdropVariant(
   stageLabel: string,
-): SidebarStageBackdropVariant | null {
+): SidebarStageBackdropVariant {
   const normalized = stageLabel.trim().toLowerCase();
   if (normalized === "nightly") return "nightly";
   if (normalized === "dev") return "dev";
-  return null;
+  return "brand";
 }
 
 export function useSidebarStageBackdropVariant(): SidebarStageBackdropVariant | null {
@@ -45,11 +54,14 @@ export function SidebarStageBackdrop({ variant }: { variant: SidebarStageBackdro
 }
 
 export function StageBackdropArt({ variant }: { variant: SidebarStageBackdropVariant }) {
-  return variant === "nightly" ? <NightlySkyArt /> : <DevBlueprintArt />;
+  if (variant === "nightly") return <NightlySkyArt />;
+  // brand + dev share blueprint geometry; CSS class selects palette intensity.
+  return <DevBlueprintArt tone={variant === "brand" ? "brand" : "dev"} />;
 }
 
 export function StageBackdropButtonArt({ variant }: { variant: SidebarStageBackdropVariant }) {
-  return variant === "nightly" ? <NightlySkyArt compact /> : <DevBlueprintArt compact />;
+  if (variant === "nightly") return <NightlySkyArt compact />;
+  return <DevBlueprintArt compact tone={variant === "brand" ? "brand" : "dev"} />;
 }
 
 const NIGHTLY_STARS: ReadonlyArray<{
@@ -181,7 +193,14 @@ function NightlySkyArt({ compact = false }: { compact?: boolean }) {
   );
 }
 
-function DevBlueprintArt({ compact = false }: { compact?: boolean }) {
+function DevBlueprintArt({
+  compact = false,
+  tone = "dev",
+}: {
+  compact?: boolean;
+  /** brand = permanent alpha/release identity; dev = louder stage-channel art */
+  tone?: "brand" | "dev";
+}) {
   const idPrefix = useId().replaceAll(":", "");
   const paperId = `${idPrefix}-stage-bp-paper`;
   const glowId = `${idPrefix}-stage-bp-glow`;
@@ -195,7 +214,11 @@ function DevBlueprintArt({ compact = false }: { compact?: boolean }) {
 
   return (
     <svg
-      className="stage-blueprint h-full w-full"
+      className={
+        tone === "brand"
+          ? "stage-blueprint stage-blueprint-brand h-full w-full"
+          : "stage-blueprint h-full w-full"
+      }
       fill="none"
       preserveAspectRatio="xMinYMin slice"
       viewBox={compact ? "64 0 8192 96" : STAGE_BACKDROP_VIEW_BOX}

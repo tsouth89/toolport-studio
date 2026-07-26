@@ -292,15 +292,28 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   }
 
   .stage-blueprint {
-    --stage-bp-top: #67c2ff;
-    --stage-bp-mid: #347ff8;
-    --stage-bp-bottom: #1538d0;
+    --stage-bp-top: var(--shell-blueprint-top, #67c2ff);
+    --stage-bp-mid: var(--shell-blueprint-mid, #347ff8);
+    --stage-bp-bottom: var(--shell-blueprint-bottom, #1538d0);
   }
 
   .dark .stage-blueprint {
-    --stage-bp-top: #3a7ad1;
-    --stage-bp-mid: #2050ae;
-    --stage-bp-bottom: #101f6e;
+    --stage-bp-top: var(--shell-blueprint-top, #3a7ad1);
+    --stage-bp-mid: var(--shell-blueprint-mid, #2050ae);
+    --stage-bp-bottom: var(--shell-blueprint-bottom, #101f6e);
+  }
+
+  /* Permanent Toolport identity: slightly calmer than loud dev-stage art */
+  .stage-blueprint-brand {
+    --stage-bp-top: var(--shell-blueprint-brand-top, #5aaef0);
+    --stage-bp-mid: var(--shell-blueprint-brand-mid, #2b6ad4);
+    --stage-bp-bottom: var(--shell-blueprint-brand-bottom, #142a8a);
+  }
+
+  .dark .stage-blueprint-brand {
+    --stage-bp-top: var(--shell-blueprint-brand-top, #2f6fbf);
+    --stage-bp-mid: var(--shell-blueprint-brand-mid, #1a4598);
+    --stage-bp-bottom: var(--shell-blueprint-brand-bottom, #0c1a52);
   }
 
   .workspace-topbar {
@@ -813,15 +826,28 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
 :root {
   color-scheme: light;
   --radius: 0.625rem;
-  --background: var(--color-zinc-25);
+  /* SOU-386 shell semantics (map onto existing primitives below). */
+  --shell-canvas: var(--color-zinc-25);
+  --shell-surface: var(--color-zinc-50);
+  --shell-surface-raised: var(--color-white);
+  --shell-border: var(--color-zinc-200);
+  --shell-accent: oklch(0.488 0.217 264);
+  --shell-brand: oklch(0.68 0.17 48);
+  --shell-blueprint-top: #67c2ff;
+  --shell-blueprint-mid: #347ff8;
+  --shell-blueprint-bottom: #1538d0;
+  --shell-blueprint-brand-top: #5aaef0;
+  --shell-blueprint-brand-mid: #2b6ad4;
+  --shell-blueprint-brand-bottom: #142a8a;
+  --background: var(--shell-canvas);
   --app-chrome-background: var(--background);
   --surface-raised: color-mix(in srgb, var(--card) 20%, transparent);
   --foreground: var(--color-zinc-800);
-  --card: var(--color-white);
+  --card: var(--shell-surface-raised);
   --card-foreground: var(--color-zinc-800);
   --popover: var(--color-white);
   --popover-foreground: var(--color-zinc-800);
-  --primary: oklch(0.488 0.217 264);
+  --primary: var(--shell-accent);
   --primary-foreground: var(--color-white);
   --secondary: var(--color-zinc-50);
   --secondary-foreground: var(--color-zinc-800);
@@ -830,9 +856,9 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   --accent: var(--color-zinc-100);
   --accent-foreground: var(--color-zinc-900);
   --destructive: var(--color-red-500);
-  --border: var(--color-zinc-200);
+  --border: var(--shell-border);
   --input: var(--color-zinc-300);
-  --ring: oklch(0.488 0.217 264);
+  --ring: var(--shell-accent);
   --destructive-foreground: var(--color-red-700);
   --info: var(--color-blue-500);
   --info-foreground: var(--color-blue-700);
@@ -842,7 +868,7 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   --warning-foreground: var(--color-amber-700);
   /* Keep every sidebar primitive on the same light surface hierarchy, including
      portaled mobile sheets and settings navigation outside the app sidebar. */
-  --sidebar: var(--color-zinc-50);
+  --sidebar: var(--shell-surface);
   --sidebar-foreground: var(--foreground);
   --sidebar-muted-foreground: var(--muted-foreground);
   --sidebar-control-surface: var(--color-zinc-100);
@@ -854,28 +880,42 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
 
   @variant dark {
     color-scheme: dark;
-    /* Keep the workspace in the same neutral-black family as the sidebar.
-       Surfaces lift from this base instead of starting from a milky gray. */
-    --background: var(--color-neutral-950);
+    /*
+      SOU-386: instrument-grade graphite/navy canvas — not pure black islands.
+      Surfaces lift slightly so hierarchy matches the mockup without milky gray.
+    */
+    --shell-canvas: #0b0e14;
+    --shell-surface: #0f131a;
+    --shell-surface-raised: #151a24;
+    --shell-border: rgb(148 163 184 / 12%);
+    --shell-accent: oklch(0.62 0.17 255);
+    --shell-brand: oklch(0.72 0.16 52);
+    --shell-blueprint-top: #3a7ad1;
+    --shell-blueprint-mid: #2050ae;
+    --shell-blueprint-bottom: #101f6e;
+    --shell-blueprint-brand-top: #2f6fbf;
+    --shell-blueprint-brand-mid: #1a4598;
+    --shell-blueprint-brand-bottom: #0c1a52;
+    --background: var(--shell-canvas);
     --app-chrome-background: var(--background);
-    --surface-raised: var(--secondary);
-    --foreground: var(--color-neutral-100);
-    --card: color-mix(in srgb, var(--background) 97%, var(--color-white));
-    --card-foreground: var(--color-neutral-100);
-    --popover: color-mix(in srgb, var(--background) 94%, var(--color-white));
-    --popover-foreground: var(--color-neutral-100);
-    --primary: oklch(0.588 0.217 264);
+    --surface-raised: var(--shell-surface-raised);
+    --foreground: #e8edf7;
+    --card: var(--shell-surface);
+    --card-foreground: var(--foreground);
+    --popover: color-mix(in srgb, var(--shell-surface-raised) 92%, var(--color-white));
+    --popover-foreground: var(--foreground);
+    --primary: var(--shell-accent);
     --primary-foreground: var(--color-white);
-    --secondary: --alpha(var(--color-white) / 4%);
-    --secondary-foreground: var(--color-neutral-100);
-    --muted: --alpha(var(--color-white) / 4%);
-    --muted-foreground: color-mix(in srgb, var(--color-neutral-500) 90%, var(--color-white));
-    --accent: --alpha(var(--color-white) / 4%);
-    --accent-foreground: var(--color-neutral-100);
+    --secondary: --alpha(var(--color-white) / 4.5%);
+    --secondary-foreground: var(--foreground);
+    --muted: --alpha(var(--color-white) / 4.5%);
+    --muted-foreground: color-mix(in srgb, #94a3b8 88%, var(--color-white));
+    --accent: --alpha(var(--color-white) / 5%);
+    --accent-foreground: var(--foreground);
     --destructive: color-mix(in srgb, var(--color-red-500) 90%, var(--color-white));
-    --border: --alpha(var(--color-white) / 6%);
-    --input: --alpha(var(--color-white) / 8%);
-    --ring: oklch(0.588 0.217 264);
+    --border: var(--shell-border);
+    --input: --alpha(var(--color-white) / 9%);
+    --ring: var(--shell-accent);
     --destructive-foreground: var(--color-red-400);
     --info: var(--color-blue-500);
     --info-foreground: var(--color-blue-400);
@@ -883,15 +923,15 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
     --success-foreground: var(--color-emerald-400);
     --warning: var(--color-amber-500);
     --warning-foreground: var(--color-amber-400);
-    --sidebar: var(--card);
+    --sidebar: var(--shell-surface);
     --sidebar-foreground: var(--foreground);
     --sidebar-muted-foreground: var(--muted-foreground);
     --sidebar-control-surface: var(--muted);
-    --sidebar-row-hover: var(--accent);
-    --sidebar-row-active: var(--accent);
-    --sidebar-row-selected: var(--muted);
+    --sidebar-row-hover: color-mix(in srgb, var(--foreground) 7%, transparent);
+    --sidebar-row-active: color-mix(in srgb, var(--shell-accent) 18%, transparent);
+    --sidebar-row-selected: color-mix(in srgb, var(--shell-accent) 22%, transparent);
     --sidebar-border: var(--border);
-    --sidebar-stage-fade: var(--card);
+    --sidebar-stage-fade: var(--shell-surface);
   }
 }
 
@@ -921,28 +961,29 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
 }
 
 .dark [data-app-sidebar] {
-  --background: #000;
-  --foreground: #f1f3f7;
-  --card: #000;
+  /* SOU-386: match shell canvas/surface tokens — no pure #000 sidebar. */
+  --background: var(--shell-canvas);
+  --foreground: var(--foreground);
+  --card: var(--shell-surface);
   --card-foreground: var(--foreground);
-  --accent: #191a1d;
-  --accent-foreground: #f7f9ff;
-  --muted: #0a0a0a;
-  --muted-foreground: #a3a3a3;
-  --border: rgb(255 255 255 / 8%);
-  --input: rgb(255 255 255 / 18%);
-  --sidebar: var(--card);
+  --accent: var(--shell-surface-raised);
+  --accent-foreground: var(--foreground);
+  --muted: color-mix(in srgb, var(--shell-surface) 88%, black);
+  --muted-foreground: var(--muted-foreground);
+  --border: var(--shell-border);
+  --input: rgb(255 255 255 / 14%);
+  --sidebar: var(--shell-surface);
   --sidebar-foreground: var(--foreground);
   --sidebar-muted-foreground: var(--muted-foreground);
   --sidebar-control-surface: var(--muted);
   --sidebar-row-hover: color-mix(in srgb, var(--foreground) 8%, transparent);
-  --sidebar-row-active: color-mix(in srgb, var(--foreground) 11%, transparent);
-  --sidebar-row-selected: color-mix(in srgb, var(--foreground) 7%, transparent);
+  --sidebar-row-active: color-mix(in srgb, var(--shell-accent) 16%, transparent);
+  --sidebar-row-selected: color-mix(in srgb, var(--shell-accent) 22%, transparent);
   --sidebar-border: var(--border);
   /* The stage-channel header art must ramp to THIS panel's surface, not the
      global chrome background, or the fade shows a seam (same rule as the
      light palette above). */
-  --sidebar-stage-fade: var(--card);
+  --sidebar-stage-fade: var(--shell-surface);
 }
 
 body {
