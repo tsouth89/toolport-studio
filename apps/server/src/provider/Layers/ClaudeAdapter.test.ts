@@ -24,6 +24,7 @@ import {
 import { createModelSelection } from "@t3tools/shared/model";
 import { assert, describe, it } from "@effect/vitest";
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -1439,6 +1440,80 @@ describe("ClaudeAdapterLive", () => {
         assert.equal(turnCompleted.payload.errorMessage, "Error: Request was aborted.");
         assert.equal(turnCompleted.payload.stopReason, "tool_use");
       }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("force-settles the turn on interrupt even when the SDK stream stays open", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+      const turnCompleted =
+        yield* Deferred.make<Extract<ProviderRuntimeEvent, { type: "turn.completed" }>>();
+
+      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          runtimeEvents.push(event);
+        }).pipe(
+          Effect.andThen(
+            event.type === "turn.completed"
+              ? Deferred.succeed(turnCompleted, event).pipe(Effect.ignore, Effect.asVoid)
+              : Effect.void,
+          ),
+        ),
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      const turn = yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "hello",
+        attachments: [],
+      });
+
+      // Interrupt without finishing the stream — product must still settle.
+      yield* adapter.interruptTurn(THREAD_ID, turn.turnId);
+      assert.equal(harness.query.interruptCalls.length, 1);
+
+      const completed = yield* Deferred.await(turnCompleted).pipe(Effect.timeout("3 seconds"));
+      assert.equal(String(completed.turnId), String(turn.turnId));
+      assert.equal(completed.payload.state, "interrupted");
+      assert.equal(completed.payload.errorMessage, "Turn interrupted.");
+
+      const sessions = yield* adapter.listSessions();
+      const session = sessions.find((entry) => entry.threadId === THREAD_ID);
+      assert.equal(session?.status, "ready");
+      assert.isUndefined(session?.activeTurnId);
+
+      // Late SDK result after Stop must not re-fire turn.completed.
+      const completedCountBeforeLateResult = runtimeEvents.filter(
+        (event) => event.type === "turn.completed",
+      ).length;
+      harness.query.emit({
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: false,
+        errors: ["Error: Request was aborted."],
+        stop_reason: "tool_use",
+        session_id: "sdk-session-late-abort",
+        uuid: "result-late-abort",
+      } as unknown as SDKMessage);
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+      const completedCountAfterLateResult = runtimeEvents.filter(
+        (event) => event.type === "turn.completed",
+      ).length;
+      assert.equal(completedCountAfterLateResult, completedCountBeforeLateResult);
+
+      yield* Fiber.interrupt(runtimeEventsFiber);
+      yield* adapter.stopSession(THREAD_ID);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -3898,10 +3973,27 @@ describe("ClaudeAdapterLive", () => {
         (event) => event.type === "turn.completed",
       ).pipe(Stream.runHead, Effect.forkChild);
 
+      // Lifecycle stream events stay in the native log; high-frequency
+      // content_block_delta text/json/thinking rows are intentionally skipped (SOU-400).
       harness.query.emit({
         type: "stream_event",
         session_id: "sdk-session-native-log",
         uuid: "stream-native-log",
+        parent_tool_use_id: null,
+        event: {
+          type: "content_block_start",
+          index: 0,
+          content_block: {
+            type: "text",
+            text: "",
+          },
+        },
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-native-log",
+        uuid: "stream-native-delta-skip",
         parent_tool_use_id: null,
         event: {
           type: "content_block_delta",
@@ -3946,9 +4038,15 @@ describe("ClaudeAdapterLive", () => {
       );
       assert.equal(
         nativeEvents.some(
-          (record) => record.event?.method === "claude/stream_event/content_block_delta/text_delta",
+          (record) => record.event?.method === "claude/stream_event/content_block_start",
         ),
         true,
+      );
+      assert.equal(
+        nativeEvents.some(
+          (record) => record.event?.method === "claude/stream_event/content_block_delta/text_delta",
+        ),
+        false,
       );
       assert.equal(
         nativeThreadIds.every((threadId) => threadId === String(THREAD_ID)),

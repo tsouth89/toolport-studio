@@ -678,6 +678,46 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain("Stop now");
   });
 
+  it("names the open tool on the quiet notice when a long tool is still running", () => {
+    const lastStreamActivityAt = new Date(Date.now() - 11 * 60_000).toISOString();
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        isWorking
+        lastStreamActivityAt={lastStreamActivityAt}
+        onInterrupt={() => {}}
+        latestTurn={{
+          turnId: "turn-quiet-tool" as never,
+          state: "running",
+          startedAt: "2026-01-01T00:00:00Z",
+          completedAt: null,
+        }}
+        runningTurnId={"turn-quiet-tool" as never}
+        timelineEntries={[
+          {
+            id: "work-open-quiet",
+            kind: "work",
+            createdAt: "2026-01-01T00:00:05Z",
+            entry: {
+              id: "work-quiet-1",
+              createdAt: "2026-01-01T00:00:05Z",
+              turnId: "turn-quiet-tool" as never,
+              label: "npm install",
+              toolTitle: "Terminal",
+              tone: "tool",
+              toolLifecycleStatus: "inProgress",
+              itemType: "command_execution",
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Quiet for");
+    expect(markup).toContain("still running Ran command");
+    expect(markup).toContain('aria-label="Stop generation"');
+  });
+
   it("does not flash quiet at 45s of silence", () => {
     const lastStreamActivityAt = new Date(Date.now() - 45_000).toISOString();
     const markup = renderToStaticMarkup(

@@ -1125,9 +1125,13 @@ function ProposedPlanTimelineRow({
 
 function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "working" }> }) {
   const activity = use(TimelineRowActivityCtx);
-  const quiet = useQuietTurnIndicator(activity.lastStreamActivityAt, row.hasLongRunningOpenTool);
   const toolLabel = row.activeToolLabel?.trim() || null;
   const toolDetail = row.activeToolDetail?.trim() || null;
+  const quiet = useQuietTurnIndicator(
+    activity.lastStreamActivityAt,
+    row.hasLongRunningOpenTool,
+    toolLabel,
+  );
   const toolTitle = [toolLabel, toolDetail].filter(Boolean).join(" — ") || undefined;
   const onOpenActivity = activity.onOpenActivity;
   const onInterrupt = activity.onInterrupt;
@@ -1258,18 +1262,29 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
 function useQuietTurnIndicator(
   lastStreamActivityAt: string | null,
   hasLongRunningOpenTool: boolean,
+  activeToolLabel: string | null,
 ): {
   isQuiet: boolean;
   notice: string | null;
   silentForMs: number;
 } {
   const [state, setState] = useState(() =>
-    readQuietTurnIndicator(lastStreamActivityAt, hasLongRunningOpenTool, Date.now()),
+    readQuietTurnIndicator(
+      lastStreamActivityAt,
+      hasLongRunningOpenTool,
+      activeToolLabel,
+      Date.now(),
+    ),
   );
 
   useEffect(() => {
     const update = () => {
-      const next = readQuietTurnIndicator(lastStreamActivityAt, hasLongRunningOpenTool, Date.now());
+      const next = readQuietTurnIndicator(
+        lastStreamActivityAt,
+        hasLongRunningOpenTool,
+        activeToolLabel,
+        Date.now(),
+      );
       setState((previous) =>
         previous.isQuiet === next.isQuiet &&
         previous.notice === next.notice &&
@@ -1284,7 +1299,7 @@ function useQuietTurnIndicator(
     }
     const id = window.setInterval(update, 1_000);
     return () => window.clearInterval(id);
-  }, [hasLongRunningOpenTool, lastStreamActivityAt]);
+  }, [activeToolLabel, hasLongRunningOpenTool, lastStreamActivityAt]);
 
   return state;
 }
@@ -1292,6 +1307,7 @@ function useQuietTurnIndicator(
 function readQuietTurnIndicator(
   lastStreamActivityAt: string | null,
   hasLongRunningOpenTool: boolean,
+  activeToolLabel: string | null,
   nowMs: number,
 ): { isQuiet: boolean; notice: string | null; silentForMs: number } {
   // Only evaluate while ChatView has a stream clock (phase === "running").
@@ -1310,7 +1326,7 @@ function readQuietTurnIndicator(
   }
   return {
     isQuiet: true,
-    notice: formatQuietTurnNotice(stalled.silentForMs),
+    notice: formatQuietTurnNotice(stalled.silentForMs, { activeToolLabel }),
     silentForMs: stalled.silentForMs,
   };
 }

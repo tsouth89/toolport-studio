@@ -2001,6 +2001,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
     const turnState = context.turnState;
     if (!turnState) {
+      // Late result after Stop/interrupt already settled — do not double-fire
+      // turn.completed (that re-opens zombie Working / confuses the timeline).
+      if (context.session.status !== "running" && context.session.status !== "connecting") {
+        return;
+      }
       yield* emitThreadTokenUsage(context, usageSnapshot, {
         rawMethod: "claude/result",
         rawPayload: result ?? { status },
@@ -3865,6 +3870,20 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         try: () => context.query.interrupt(),
         catch: (cause) => toRequestError(threadId, "turn/interrupt", cause),
       });
+      // Force-settle immediately. The SDK interrupt is best-effort; if the stream
+      // never delivers a result, Working stays forever and Stop looks dead.
+      // completeTurn is idempotent once turnState is cleared; late results no-op.
+      if (context.turnState) {
+        yield* completeTurn(context, "interrupted", "Turn interrupted.");
+      } else if (context.session.status === "running" || context.session.status === "connecting") {
+        const updatedAt = yield* nowIso;
+        context.session = {
+          ...context.session,
+          status: "ready",
+          activeTurnId: undefined,
+          updatedAt,
+        };
+      }
     },
   );
 

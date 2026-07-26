@@ -98,9 +98,23 @@ export function formatStalledSilenceLabel(silentForMs: number): string {
   return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
 }
 
-/** Calm Working-row copy — no panic language. */
-export function formatQuietTurnNotice(silentForMs: number): string {
-  return `Quiet for ${formatStalledSilenceLabel(silentForMs)}`;
+/**
+ * Calm Working-row copy — no panic language, no auto-kill.
+ * When an open/last tool title is known, name it so the user can tell quiet
+ * long work from a blank hang.
+ */
+export function formatQuietTurnNotice(
+  silentForMs: number,
+  options?: {
+    readonly activeToolLabel?: string | null;
+  },
+): string {
+  const base = `Quiet for ${formatStalledSilenceLabel(silentForMs)}`;
+  const toolLabel = options?.activeToolLabel?.trim();
+  if (!toolLabel) {
+    return base;
+  }
+  return `${base} · still running ${toolLabel}`;
 }
 
 function parseIsoToMs(value: string | null | undefined): number | null {

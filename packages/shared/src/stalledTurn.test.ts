@@ -144,4 +144,11 @@ describe("formatQuietTurnNotice", () => {
     expect(formatQuietTurnNotice(125_000)).toBe("Quiet for 2m 5s");
     expect(formatQuietTurnNotice(45_000)).toBe("Quiet for 45s");
   });
+
+  it("names the open tool when known", () => {
+    expect(formatQuietTurnNotice(125_000, { activeToolLabel: "Search" })).toBe(
+      "Quiet for 2m 5s · still running Search",
+    );
+    expect(formatQuietTurnNotice(45_000, { activeToolLabel: "  " })).toBe("Quiet for 45s");
+  });
 });
