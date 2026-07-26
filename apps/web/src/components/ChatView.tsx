@@ -222,6 +222,7 @@ import { DraftHeroHeadline } from "./chat/DraftHeroHeadline";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { MessagesTimeline } from "./chat/MessagesTimeline";
+import { shouldOfferLastUserMessageRetry } from "./chat/MessagesTimeline.logic";
 import { ChatHeader } from "./chat/ChatHeader";
 import { PanelLayoutControls, RightPanelMaximizeControl } from "./chat/PanelLayoutControls";
 import { type ExpandedImagePreview } from "./chat/ExpandedImagePreview";
@@ -4986,6 +4987,44 @@ function ChatViewContent(props: ChatViewProps) {
   const onSendRef = useRef(onSend);
   onSendRef.current = onSend;
 
+  const lastUserMessageText =
+    activeThread?.messages.findLast((message) => message.role === "user")?.text?.trim() ?? "";
+  const canRetryLastUserMessage =
+    shouldOfferLastUserMessageRetry(threadError) &&
+    lastUserMessageText.length > 0 &&
+    phase !== "running" &&
+    !isSendBusy &&
+    !isConnecting &&
+    !activeEnvironmentUnavailable;
+
+  const onRetryLastUserMessage = useCallback(() => {
+    if (!activeThread || lastUserMessageText.length === 0) {
+      return;
+    }
+    setThreadError(activeThread.id, null);
+    clearComposerDraftContent(composerDraftTarget);
+    setComposerDraftPrompt(composerDraftTarget, lastUserMessageText);
+    promptRef.current = lastUserMessageText;
+    composerImagesRef.current = [];
+    composerTerminalContextsRef.current = [];
+    composerElementContextsRef.current = [];
+    composerPreviewAnnotationsRef.current = [];
+    composerReviewCommentsRef.current = [];
+    composerRef.current?.resetCursorState({
+      prompt: lastUserMessageText,
+      cursor: lastUserMessageText.length,
+      detectTrigger: false,
+    });
+    void onSendRef.current(undefined, { intent: "force" });
+  }, [
+    activeThread,
+    clearComposerDraftContent,
+    composerDraftTarget,
+    lastUserMessageText,
+    setComposerDraftPrompt,
+    setThreadError,
+  ]);
+
   /** Pull a queued item into the composer and send it now (steer if live). */
   const sendQueuedItemNow = useCallback(
     (itemId: string) => {
@@ -5930,6 +5969,7 @@ function ChatViewContent(props: ChatViewProps) {
         <ThreadErrorBanner
           error={threadError}
           onDismiss={() => setThreadError(activeThread.id, null)}
+          {...(canRetryLastUserMessage ? { onRetry: onRetryLastUserMessage } : {})}
         />
         {/* Main content area with optional plan sidebar */}
         <div className="flex min-h-0 min-w-0 flex-1">

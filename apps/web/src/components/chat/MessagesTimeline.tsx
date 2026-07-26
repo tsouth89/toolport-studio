@@ -1118,6 +1118,7 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
   const activity = use(TimelineRowActivityCtx);
   const stalled = useStalledTurnIndicator(activity.lastStreamActivityAt);
   const handleStop = activity.onInterrupt;
+  const toolLabel = row.activeToolLabel?.trim() || null;
 
   return (
     <div className="py-0.5 pl-1.5">
@@ -1155,6 +1156,17 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
           ) : (
             "Working..."
           )}
+          {toolLabel ? (
+            <>
+              {" "}
+              <span className="text-muted-foreground/55" aria-hidden="true">
+                ·
+              </span>{" "}
+              <span className="font-medium text-muted-foreground/85" title={toolLabel}>
+                {toolLabel}
+              </span>
+            </>
+          ) : null}
         </span>
         {stalled.isStalled && stalled.silentLabel ? (
           <>

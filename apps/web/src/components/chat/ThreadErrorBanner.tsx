@@ -8,9 +8,12 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 export const ThreadErrorBanner = memo(function ThreadErrorBanner({
   error,
   onDismiss,
+  onRetry,
 }: {
   error: string | null;
   onDismiss?: () => void;
+  /** One-tap resend of the last user message (SOU-363 auto-stop recovery). */
+  onRetry?: () => void;
 }) {
   if (!error) return null;
   // Errors persisted before the server started unwrapping provider payloads
@@ -30,11 +33,31 @@ export const ThreadErrorBanner = memo(function ThreadErrorBanner({
             </TooltipPopup>
           </Tooltip>
         </AlertDescription>
-        {onDismiss && (
+        {(onRetry || onDismiss) && (
           <AlertAction>
-            <Button variant="ghost" size="icon-xs" aria-label="Dismiss error" onClick={onDismiss}>
-              <XIcon className="text-destructive" />
-            </Button>
+            <div className="flex items-center gap-1">
+              {onRetry ? (
+                <Button
+                  variant="outline"
+                  size="xs"
+                  className="border-destructive/30 bg-background/60 text-destructive hover:bg-destructive/10"
+                  onClick={onRetry}
+                  aria-label="Retry last message"
+                >
+                  Retry
+                </Button>
+              ) : null}
+              {onDismiss ? (
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  aria-label="Dismiss error"
+                  onClick={onDismiss}
+                >
+                  <XIcon className="text-destructive" />
+                </Button>
+              ) : null}
+            </div>
           </AlertAction>
         )}
       </Alert>

@@ -696,4 +696,40 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("You can wait, or stop and Send again.");
     expect(markup).not.toContain("stuck tool");
   });
+
+  it("shows the open tool title on the Working row while a turn is running", () => {
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        isWorking
+        activeTurnStartedAt="2026-01-01T00:00:00Z"
+        latestTurn={{
+          turnId: "turn-1" as never,
+          state: "running",
+          startedAt: "2026-01-01T00:00:00Z",
+          completedAt: null,
+        }}
+        runningTurnId={"turn-1" as never}
+        timelineEntries={[
+          {
+            id: "work-open",
+            kind: "work",
+            createdAt: "2026-01-01T00:00:05Z",
+            entry: {
+              id: "work-1",
+              createdAt: "2026-01-01T00:00:05Z",
+              turnId: "turn-1" as never,
+              label: "list_issues",
+              toolTitle: "linear_2 · list_issues",
+              tone: "tool",
+              toolLifecycleStatus: "inProgress",
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Working for");
+    expect(markup).toContain("linear_2 · list_issues");
+  });
 });

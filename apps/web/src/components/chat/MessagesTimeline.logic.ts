@@ -175,7 +175,13 @@ export type MessagesTimelineRow =
       createdAt: string;
       proposedPlan: ProposedPlan;
     }
-  | { kind: "working"; id: string; createdAt: string | null };
+  | {
+      kind: "working";
+      id: string;
+      createdAt: string | null;
+      /** Best-effort title of the open or last tool on the active turn (SOU-363). */
+      activeToolLabel: string | null;
+    };
 
 export interface StableMessagesTimelineRowsState {
   byId: Map<string, MessagesTimelineRow>;
@@ -203,6 +209,70 @@ export function computeMessageDurationStart(
 
 export function normalizeCompactToolLabel(value: string): string {
   return value.replace(/\s+(?:complete|completed)\s*$/i, "").trim();
+}
+
+/**
+ * Best-effort label for the Working row: prefer an open/in-progress tool on the
+ * unsettled turn, else the most recent tool on that turn (post-tool silence).
+ * In-progress tools are filtered out of the work log list, so this is the only
+ * place the user can see which tool is still hanging.
+ */
+export function deriveActiveWorkingToolLabel(input: {
+  readonly timelineEntries: ReadonlyArray<TimelineEntry>;
+  readonly unsettledTurnId?: TurnId | null;
+}): string | null {
+  const unsettledTurnId = input.unsettledTurnId ?? null;
+  let openToolLabel: string | null = null;
+  let lastToolLabel: string | null = null;
+
+  for (const timelineEntry of input.timelineEntries) {
+    if (timelineEntry.kind !== "work") {
+      continue;
+    }
+    const entry = timelineEntry.entry;
+    if (!workLogEntryIsToolLike(entry)) {
+      continue;
+    }
+    if (unsettledTurnId !== null && entry.turnId != null && entry.turnId !== unsettledTurnId) {
+      continue;
+    }
+    const raw = (entry.toolTitle ?? entry.label).trim();
+    if (raw.length === 0) {
+      continue;
+    }
+    const label = normalizeCompactToolLabel(raw);
+    if (label.length === 0) {
+      continue;
+    }
+    lastToolLabel = label;
+    if (workEntryIndicatesToolNeutralStatus(entry) || entry.toolLifecycleStatus === "inProgress") {
+      openToolLabel = label;
+    }
+  }
+
+  return openToolLabel ?? lastToolLabel;
+}
+
+/** Whether a thread error should offer one-tap resend of the last user message. */
+export function shouldOfferLastUserMessageRetry(error: string | null | undefined): boolean {
+  if (error == null) {
+    return false;
+  }
+  const message = error.trim();
+  if (message.length === 0) {
+    return false;
+  }
+  // Prefer auto-stop / provider-failure copy. Skip pure validation / UX errors.
+  if (
+    /select a (?:base )?branch|choose a project|pairing|auth|credential|worktree/i.test(message)
+  ) {
+    return false;
+  }
+  return (
+    /send again|stopped automatically|went silent|turn failed|turn was stopped|no progress|provider/i.test(
+      message,
+    ) || message.length > 40
+  );
 }
 
 export function resolveAssistantMessageCopyState({
@@ -568,6 +638,10 @@ export function deriveMessagesTimelineRows(input: {
       kind: "working",
       id: "working-indicator-row",
       createdAt: input.activeTurnStartedAt,
+      activeToolLabel: deriveActiveWorkingToolLabel({
+        timelineEntries: input.timelineEntries,
+        unsettledTurnId,
+      }),
     });
   }
 
@@ -599,8 +673,10 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
   if (a.kind !== b.kind || a.id !== b.id) return false;
 
   switch (a.kind) {
-    case "working":
-      return a.createdAt === (b as typeof a).createdAt;
+    case "working": {
+      const bw = b as typeof a;
+      return a.createdAt === bw.createdAt && a.activeToolLabel === bw.activeToolLabel;
+    }
 
     case "turn-fold": {
       const bf = b as typeof a;

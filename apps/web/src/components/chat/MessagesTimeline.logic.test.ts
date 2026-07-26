@@ -2,9 +2,11 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   computeStableMessagesTimelineRows,
   computeMessageDurationStart,
+  deriveActiveWorkingToolLabel,
   deriveMessagesTimelineRows,
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
+  shouldOfferLastUserMessageRetry,
 } from "./MessagesTimeline.logic";
 
 describe("computeMessageDurationStart", () => {
@@ -1169,5 +1171,92 @@ describe("computeStableMessagesTimelineRows", () => {
 
     expect(reordered).not.toBe(initial);
     expect(reordered.result).toEqual([initial.result[1], initial.result[0]]);
+  });
+
+  it("surfaces the open tool title on the Working row (in-progress tools are hidden from work log)", () => {
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "work-open",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:05Z",
+          entry: {
+            id: "work-1",
+            createdAt: "2026-01-01T00:00:05Z",
+            turnId: "turn-1" as never,
+            label: "list_issues",
+            toolTitle: "linear_2 · list_issues",
+            tone: "tool",
+            toolLifecycleStatus: "inProgress",
+          },
+        },
+      ],
+      latestTurn: {
+        turnId: "turn-1" as never,
+        state: "running",
+        startedAt: "2026-01-01T00:00:00Z",
+        completedAt: null,
+      },
+      isWorking: true,
+      activeTurnStartedAt: "2026-01-01T00:00:00Z",
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    const working = rows.find((row) => row.kind === "working");
+    expect(working).toMatchObject({
+      kind: "working",
+      activeToolLabel: "linear_2 · list_issues",
+    });
+    // Neutral in-progress tool is still hidden as a work row.
+    expect(rows.some((row) => row.kind === "work")).toBe(false);
+  });
+
+  it("falls back to the last completed tool when nothing is open (post-tool silence)", () => {
+    expect(
+      deriveActiveWorkingToolLabel({
+        timelineEntries: [
+          {
+            id: "work-done",
+            kind: "work",
+            createdAt: "2026-01-01T00:00:05Z",
+            entry: {
+              id: "work-1",
+              createdAt: "2026-01-01T00:00:05Z",
+              turnId: "turn-1" as never,
+              label: "Ran command",
+              toolTitle: "bash completed",
+              tone: "tool",
+              toolLifecycleStatus: "completed",
+            },
+          },
+        ],
+        unsettledTurnId: "turn-1" as never,
+      }),
+    ).toBe("bash");
+  });
+});
+
+describe("shouldOfferLastUserMessageRetry", () => {
+  it("offers retry for auto-stop / silent-turn errors", () => {
+    expect(
+      shouldOfferLastUserMessageRetry(
+        "Grok went silent for 90s while list_issues was still running. Turn was stopped automatically — try a smaller task or Send again.",
+      ),
+    ).toBe(true);
+    expect(
+      shouldOfferLastUserMessageRetry(
+        "Grok stopped responding after its last tool completed. The turn was stopped automatically after 120s with no progress — Send again to continue.",
+      ),
+    ).toBe(true);
+  });
+
+  it("does not offer retry for validation / setup errors", () => {
+    expect(
+      shouldOfferLastUserMessageRetry("Select a base branch before sending in New worktree mode."),
+    ).toBe(false);
+    expect(shouldOfferLastUserMessageRetry("Choose a project first")).toBe(false);
+    expect(shouldOfferLastUserMessageRetry(null)).toBe(false);
+    expect(shouldOfferLastUserMessageRetry("")).toBe(false);
   });
 });
