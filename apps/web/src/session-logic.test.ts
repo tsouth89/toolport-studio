@@ -21,6 +21,7 @@ import {
   workEntryIndicatesToolFailure,
   workEntryIndicatesToolNeutralStatus,
   workEntryIndicatesToolSuccess,
+  workLogEntryIsToolLike,
 } from "./session-logic";
 
 let nextActivityId = 0;
@@ -709,6 +710,38 @@ describe("deriveWorkLogEntries", () => {
 
     const entries = deriveWorkLogEntries(activities);
     expect(entries.map((entry) => entry.id)).toEqual(["tool-complete"]);
+  });
+
+  it("projects reasoning.updated into a collapsible Thinking work row", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "reasoning:thread-1:turn-1:0",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "reasoning.updated",
+        summary: "Thinking",
+        tone: "info",
+        turnId: "turn-1",
+        payload: {
+          title: "Thinking",
+          summary: "I should inspect GrokAdapter next.",
+          detail: "The user wants an audit of reliability gaps. I should inspect GrokAdapter next.",
+          status: "inProgress",
+          streamKind: "reasoning_text",
+        },
+      }),
+    ];
+
+    const entries = deriveWorkLogEntries(activities);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      tone: "thinking",
+      toolTitle: "Thinking",
+      label: "I should inspect GrokAdapter next.",
+      detail: "The user wants an audit of reliability gaps. I should inspect GrokAdapter next.",
+      sourceActivityKind: "reasoning.updated",
+    });
+    expect(workLogEntryIsToolLike(entries[0]!)).toBe(false);
+    expect(workEntryIndicatesToolNeutralStatus(entries[0]!)).toBe(false);
   });
 
   it("omits task.started but shows task.progress and task.completed", () => {

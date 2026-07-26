@@ -2,6 +2,7 @@ import {
   ApprovalRequestId,
   type AssistantDeliveryMode,
   CommandId,
+  EventId,
   MessageId,
   type OrchestrationEvent,
   type OrchestrationMessage,
@@ -19,6 +20,7 @@ import {
 } from "@t3tools/contracts";
 import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -83,6 +85,22 @@ interface AssistantSegmentState {
   activeMessageId: MessageId | null;
 }
 
+/**
+ * Coalesced provider thinking/progress stream (content.delta reasoning_text /
+ * reasoning_summary_text). Upserted into a single collapsible activity per
+ * segment so token-by-token thought chunks do not flood the work log.
+ */
+interface ReasoningStreamState {
+  turnId: TurnId;
+  segmentIndex: number;
+  text: string;
+  firstCreatedAt: string;
+  lastEmittedText: string;
+  lastEmitAtMs: number;
+  /** When true, the next reasoning delta starts a new collapsible segment. */
+  closeSegmentBeforeNextDelta: boolean;
+}
+
 const TURN_MESSAGE_IDS_BY_TURN_CACHE_CAPACITY = 10_000;
 const TURN_MESSAGE_IDS_BY_TURN_TTL = Duration.minutes(120);
 const BUFFERED_MESSAGE_TEXT_BY_MESSAGE_ID_CACHE_CAPACITY = 20_000;
@@ -91,8 +109,54 @@ const BUFFERED_PROPOSED_PLAN_BY_ID_CACHE_CAPACITY = 10_000;
 const BUFFERED_PROPOSED_PLAN_BY_ID_TTL = Duration.minutes(120);
 const TASK_DESCRIPTION_BY_TASK_CACHE_CAPACITY = 10_000;
 const TASK_DESCRIPTION_BY_TASK_TTL = Duration.minutes(120);
+const REASONING_STREAM_BY_TURN_CACHE_CAPACITY = 10_000;
+const REASONING_STREAM_BY_TURN_TTL = Duration.minutes(120);
 const MAX_BUFFERED_ASSISTANT_CHARS = 24_000;
+/** Cap persisted thinking detail so activities stay restart-safe but readable. */
+const REASONING_DETAIL_LIMIT = 8_000;
+const REASONING_PREVIEW_LIMIT = 160;
+/** Coalesce thought tokens into activity upserts (native terminal updates live). */
+const REASONING_FLUSH_MIN_INTERVAL_MS = 250;
+const REASONING_FLUSH_MIN_NEW_CHARS = 48;
 const STRICT_PROVIDER_LIFECYCLE_GUARD = process.env.T3CODE_STRICT_PROVIDER_LIFECYCLE_GUARD !== "0";
+
+function reasoningActivityId(threadId: ThreadId, turnId: TurnId, segmentIndex: number): EventId {
+  return EventId.make(`reasoning:${threadId}:${turnId}:${segmentIndex}`);
+}
+
+function reasoningPreviewFromText(text: string): string {
+  const compact = text.replace(/\s+/g, " ").trim();
+  if (compact.length === 0) {
+    return "Thinking";
+  }
+  // Prefer the last sentence-ish fragment so the row tracks latest progress.
+  const parts = compact.split(/(?<=[.!?])\s+/).filter((part) => part.trim().length > 0);
+  const latest = (parts.at(-1) ?? compact).trim();
+  return latest.length > REASONING_PREVIEW_LIMIT
+    ? `${latest.slice(0, REASONING_PREVIEW_LIMIT - 3)}...`
+    : latest;
+}
+
+function shouldFlushReasoningStream(input: {
+  readonly state: ReasoningStreamState;
+  readonly nowMs: number;
+  readonly force: boolean;
+}): boolean {
+  if (input.force) {
+    return input.state.text !== input.state.lastEmittedText && input.state.text.trim().length > 0;
+  }
+  if (input.state.text.trim().length === 0) {
+    return false;
+  }
+  if (input.state.text === input.state.lastEmittedText) {
+    return false;
+  }
+  const newChars = input.state.text.length - input.state.lastEmittedText.length;
+  if (newChars >= REASONING_FLUSH_MIN_NEW_CHARS) {
+    return true;
+  }
+  return input.nowMs - input.state.lastEmitAtMs >= REASONING_FLUSH_MIN_INTERVAL_MS;
+}
 
 type TurnStartRequestedDomainEvent = Extract<
   OrchestrationEvent,
@@ -733,8 +797,180 @@ const make = Effect.gen(function* () {
     lookup: () => Effect.succeed(""),
   });
 
+  const reasoningStreamByTurnKey = yield* Cache.make<string, ReasoningStreamState>({
+    capacity: REASONING_STREAM_BY_TURN_CACHE_CAPACITY,
+    timeToLive: REASONING_STREAM_BY_TURN_TTL,
+    lookup: () =>
+      Effect.die(
+        new Error("reasoning stream state should be read through getOption before initialization"),
+      ),
+  });
+
   const rememberTaskDescription = (threadId: ThreadId, taskId: string, description: string) =>
     Cache.set(taskDescriptionByTaskKey, providerTaskKey(threadId, taskId), description);
+
+  const getReasoningStreamState = (threadId: ThreadId, turnId: TurnId) =>
+    Cache.getOption(reasoningStreamByTurnKey, providerTurnKey(threadId, turnId));
+
+  const setReasoningStreamState = (
+    threadId: ThreadId,
+    turnId: TurnId,
+    state: ReasoningStreamState,
+  ) => Cache.set(reasoningStreamByTurnKey, providerTurnKey(threadId, turnId), state);
+
+  const invalidateReasoningStreamState = (threadId: ThreadId, turnId: TurnId) =>
+    Cache.invalidate(reasoningStreamByTurnKey, providerTurnKey(threadId, turnId));
+
+  const emitReasoningActivity = (input: {
+    readonly event: ProviderRuntimeEvent;
+    readonly threadId: ThreadId;
+    readonly state: ReasoningStreamState;
+    readonly createdAt: string;
+  }) =>
+    Effect.gen(function* () {
+      const detail = truncateDetail(input.state.text, REASONING_DETAIL_LIMIT);
+      if (detail.trim().length === 0) {
+        return;
+      }
+      const preview = reasoningPreviewFromText(detail);
+      yield* orchestrationEngine.dispatch({
+        type: "thread.activity.append",
+        commandId: yield* providerCommandId(input.event, "reasoning-activity"),
+        threadId: input.threadId,
+        activity: {
+          id: reasoningActivityId(input.threadId, input.state.turnId, input.state.segmentIndex),
+          createdAt: input.state.firstCreatedAt,
+          tone: "info",
+          kind: "reasoning.updated",
+          summary: "Thinking",
+          payload: {
+            title: "Thinking",
+            detail,
+            summary: preview,
+            status: "inProgress",
+            streamKind: "reasoning_text",
+          },
+          turnId: input.state.turnId,
+        },
+        createdAt: input.createdAt,
+      });
+    });
+
+  const flushReasoningStream = (input: {
+    readonly event: ProviderRuntimeEvent;
+    readonly threadId: ThreadId;
+    readonly turnId: TurnId;
+    readonly createdAt: string;
+    readonly force: boolean;
+    readonly closeSegment: boolean;
+  }) =>
+    Effect.gen(function* () {
+      const existing = yield* getReasoningStreamState(input.threadId, input.turnId);
+      if (Option.isNone(existing)) {
+        return;
+      }
+      const state = existing.value;
+      const nowMs = yield* Clock.currentTimeMillis;
+      if (
+        !shouldFlushReasoningStream({
+          state,
+          nowMs,
+          force: input.force,
+        })
+      ) {
+        if (input.closeSegment && state.text.trim().length > 0) {
+          yield* setReasoningStreamState(input.threadId, input.turnId, {
+            ...state,
+            closeSegmentBeforeNextDelta: true,
+          });
+        }
+        return;
+      }
+      yield* emitReasoningActivity({
+        event: input.event,
+        threadId: input.threadId,
+        state,
+        createdAt: input.createdAt,
+      });
+      yield* setReasoningStreamState(input.threadId, input.turnId, {
+        ...state,
+        lastEmittedText: state.text,
+        lastEmitAtMs: nowMs,
+        closeSegmentBeforeNextDelta: input.closeSegment || state.closeSegmentBeforeNextDelta,
+      });
+    });
+
+  const appendReasoningDelta = (input: {
+    readonly event: ProviderRuntimeEvent;
+    readonly threadId: ThreadId;
+    readonly turnId: TurnId;
+    readonly delta: string;
+    readonly createdAt: string;
+  }) =>
+    Effect.gen(function* () {
+      if (input.delta.length === 0) {
+        return;
+      }
+      const existing = yield* getReasoningStreamState(input.threadId, input.turnId);
+      const nowMs = yield* Clock.currentTimeMillis;
+      let state: ReasoningStreamState;
+      if (Option.isNone(existing)) {
+        state = {
+          turnId: input.turnId,
+          segmentIndex: 0,
+          text: input.delta,
+          firstCreatedAt: input.createdAt,
+          lastEmittedText: "",
+          lastEmitAtMs: 0,
+          closeSegmentBeforeNextDelta: false,
+        };
+      } else if (existing.value.closeSegmentBeforeNextDelta) {
+        // New thinking block after tools/assistant text (native terminal parity).
+        state = {
+          turnId: input.turnId,
+          segmentIndex: existing.value.segmentIndex + 1,
+          text: input.delta,
+          firstCreatedAt: input.createdAt,
+          lastEmittedText: "",
+          lastEmitAtMs: 0,
+          closeSegmentBeforeNextDelta: false,
+        };
+      } else {
+        state = {
+          ...existing.value,
+          text: existing.value.text + input.delta,
+        };
+      }
+      yield* setReasoningStreamState(input.threadId, input.turnId, state);
+      yield* flushReasoningStream({
+        event: input.event,
+        threadId: input.threadId,
+        turnId: input.turnId,
+        createdAt: input.createdAt,
+        force: false,
+        closeSegment: false,
+      });
+    });
+
+  const closeReasoningSegment = (input: {
+    readonly event: ProviderRuntimeEvent;
+    readonly threadId: ThreadId;
+    readonly turnId: TurnId | undefined;
+    readonly createdAt: string;
+  }) =>
+    Effect.gen(function* () {
+      if (!input.turnId) {
+        return;
+      }
+      yield* flushReasoningStream({
+        event: input.event,
+        threadId: input.threadId,
+        turnId: input.turnId,
+        createdAt: input.createdAt,
+        force: true,
+        closeSegment: true,
+      });
+    });
 
   // Entries are left in place after completion so replayed or duplicate
   // terminal events stay titled; TTL, capacity, and the session-exit sweep
@@ -1169,6 +1405,7 @@ const make = Effect.gen(function* () {
       const proposedPlanPrefix = `plan:${threadId}:`;
       const turnKeys = Array.from(yield* Cache.keys(turnMessageIdsByTurnKey));
       const assistantSegmentKeys = Array.from(yield* Cache.keys(assistantSegmentStateByTurnKey));
+      const reasoningStreamKeys = Array.from(yield* Cache.keys(reasoningStreamByTurnKey));
       const proposedPlanKeys = Array.from(yield* Cache.keys(bufferedProposedPlanById));
       const taskDescriptionKeys = Array.from(yield* Cache.keys(taskDescriptionByTaskKey));
       yield* Effect.forEach(
@@ -1196,6 +1433,12 @@ const make = Effect.gen(function* () {
           key.startsWith(prefix)
             ? Cache.invalidate(assistantSegmentStateByTurnKey, key)
             : Effect.void,
+        { concurrency: 1 },
+      ).pipe(Effect.asVoid);
+      yield* Effect.forEach(
+        reasoningStreamKeys,
+        (key) =>
+          key.startsWith(prefix) ? Cache.invalidate(reasoningStreamByTurnKey, key) : Effect.void,
         { concurrency: 1 },
       ).pipe(Effect.asVoid);
       yield* Effect.forEach(
@@ -1457,11 +1700,53 @@ const make = Effect.gen(function* () {
         event.type === "content.delta" && event.payload.streamKind === "assistant_text"
           ? event.payload.delta
           : undefined;
+      const reasoningDelta =
+        event.type === "content.delta" &&
+        (event.payload.streamKind === "reasoning_text" ||
+          event.payload.streamKind === "reasoning_summary_text")
+          ? event.payload.delta
+          : undefined;
       const proposedPlanDelta =
         event.type === "turn.proposed.delta" ? event.payload.delta : undefined;
 
+      // Thinking/progress is collapsible work-log activity, not assistant prose.
+      if (reasoningDelta && reasoningDelta.length > 0) {
+        const reasoningTurnId = toTurnId(event.turnId);
+        if (reasoningTurnId) {
+          yield* appendReasoningDelta({
+            event,
+            threadId: thread.id,
+            turnId: reasoningTurnId,
+            delta: reasoningDelta,
+            createdAt: now,
+          });
+        }
+      }
+
+      // Tool lifecycle and assistant reply close the current thinking segment so
+      // the next thought block stays ordered around tools like the native TUI.
+      if (
+        (event.type === "item.started" ||
+          event.type === "item.updated" ||
+          event.type === "item.completed") &&
+        isToolLifecycleItemType(event.payload.itemType)
+      ) {
+        yield* closeReasoningSegment({
+          event,
+          threadId: thread.id,
+          turnId: toTurnId(event.turnId),
+          createdAt: now,
+        });
+      }
+
       if (assistantDelta && assistantDelta.length > 0) {
         const turnId = toTurnId(event.turnId);
+        yield* closeReasoningSegment({
+          event,
+          threadId: thread.id,
+          turnId,
+          createdAt: now,
+        });
         const assistantMessageId = yield* getOrCreateAssistantMessageId({
           threadId: thread.id,
           event,
@@ -1632,6 +1917,19 @@ const make = Effect.gen(function* () {
           fallbackMarkdown: proposedPlanCompletion.planMarkdown,
           updatedAt: now,
         });
+      }
+
+      if (event.type === "turn.completed" || event.type === "turn.aborted") {
+        const turnId = toTurnId(event.turnId);
+        if (turnId) {
+          yield* closeReasoningSegment({
+            event,
+            threadId: thread.id,
+            turnId,
+            createdAt: now,
+          });
+          yield* invalidateReasoningStreamState(thread.id, turnId);
+        }
       }
 
       if (event.type === "turn.completed") {

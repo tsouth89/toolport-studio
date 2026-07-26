@@ -3477,4 +3477,173 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread.session?.status).toBe("error");
     expect(thread.session?.lastError).toBe("runtime still processed");
   });
+
+  it("projects reasoning_text deltas into upserted Thinking activities without assistant messages", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const threadId = asThreadId("thread-1");
+    const turnId = asTurnId("turn-reasoning-1");
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-reasoning-turn-started"),
+      provider: ProviderDriverKind.make("grok"),
+      createdAt: now,
+      threadId,
+      turnId,
+      payload: { model: "grok-4.5" },
+    });
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-reasoning-delta-1"),
+      provider: ProviderDriverKind.make("grok"),
+      createdAt: now,
+      threadId,
+      turnId,
+      payload: {
+        streamKind: "reasoning_text",
+        delta: "The user wants an audit of reliability gaps. ",
+      },
+    });
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-reasoning-delta-2"),
+      provider: ProviderDriverKind.make("grok"),
+      createdAt: now,
+      threadId,
+      turnId,
+      payload: {
+        streamKind: "reasoning_text",
+        delta: "I should inspect GrokAdapter next.",
+      },
+    });
+
+    // Force a segment boundary (tool) so buffered thinking is flushed even if
+    // throttle would otherwise wait for more time/chars in some environments.
+    harness.emit({
+      type: "item.updated",
+      eventId: asEventId("evt-reasoning-tool"),
+      provider: ProviderDriverKind.make("grok"),
+      createdAt: now,
+      threadId,
+      turnId,
+      itemId: asItemId("tool-reasoning-1"),
+      payload: {
+        itemType: "dynamic_tool_call",
+        status: "inProgress",
+        title: "grep",
+      },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.kind === "reasoning.updated",
+      ),
+    );
+
+    const reasoningActivities = thread.activities.filter(
+      (activity: ProviderRuntimeTestActivity) => activity.kind === "reasoning.updated",
+    );
+    expect(reasoningActivities.length).toBe(1);
+    const activity = reasoningActivities[0];
+    expect(activity?.summary).toBe("Thinking");
+    expect(activity?.id).toBe(`reasoning:${threadId}:${turnId}:0`);
+    const payload =
+      activity?.payload && typeof activity.payload === "object"
+        ? (activity.payload as Record<string, unknown>)
+        : undefined;
+    expect(String(payload?.detail ?? "")).toContain("The user wants an audit");
+    expect(String(payload?.detail ?? "")).toContain("inspect GrokAdapter");
+    expect(String(payload?.summary ?? "").length).toBeGreaterThan(0);
+
+    // Reasoning must not become assistant chat prose.
+    expect(thread.messages.filter((message) => message.role === "assistant")).toHaveLength(0);
+  });
+
+  it("starts a new Thinking segment after tools when more reasoning arrives", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const threadId = asThreadId("thread-1");
+    const turnId = asTurnId("turn-reasoning-2");
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-reasoning2-turn-started"),
+      provider: ProviderDriverKind.make("grok"),
+      createdAt: now,
+      threadId,
+      turnId,
+      payload: { model: "grok-4.5" },
+    });
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-reasoning2-delta-a"),
+      provider: ProviderDriverKind.make("grok"),
+      createdAt: now,
+      threadId,
+      turnId,
+      payload: {
+        streamKind: "reasoning_text",
+        delta: "First thinking block before tools.",
+      },
+    });
+
+    harness.emit({
+      type: "item.updated",
+      eventId: asEventId("evt-reasoning2-tool"),
+      provider: ProviderDriverKind.make("grok"),
+      createdAt: now,
+      threadId,
+      turnId,
+      itemId: asItemId("tool-reasoning-2"),
+      payload: {
+        itemType: "command_execution",
+        status: "inProgress",
+        title: "run_terminal_command",
+      },
+    });
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-reasoning2-delta-b"),
+      provider: ProviderDriverKind.make("grok"),
+      createdAt: now,
+      threadId,
+      turnId,
+      payload: {
+        streamKind: "reasoning_text",
+        delta: "Second thinking block after the tool.",
+      },
+    });
+
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-reasoning2-turn-completed"),
+      provider: ProviderDriverKind.make("grok"),
+      createdAt: now,
+      threadId,
+      turnId,
+      payload: { state: "completed", stopReason: "end_turn" },
+    });
+
+    const thread = await waitForThread(
+      harness.readModel,
+      (entry) =>
+        entry.activities.filter(
+          (activity: ProviderRuntimeTestActivity) => activity.kind === "reasoning.updated",
+        ).length >= 2,
+    );
+
+    const reasoningIds = thread.activities
+      .filter((activity: ProviderRuntimeTestActivity) => activity.kind === "reasoning.updated")
+      .map((activity: ProviderRuntimeTestActivity) => activity.id)
+      .toSorted();
+    expect(reasoningIds).toEqual([
+      `reasoning:${threadId}:${turnId}:0`,
+      `reasoning:${threadId}:${turnId}:1`,
+    ]);
+  });
 });

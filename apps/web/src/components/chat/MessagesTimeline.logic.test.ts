@@ -1212,6 +1212,52 @@ describe("computeStableMessagesTimelineRows", () => {
     expect(rows.some((row) => row.kind === "work")).toBe(false);
   });
 
+  it("keeps Thinking progress rows visible mid-turn (not treated as neutral tools)", () => {
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "work-thinking",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:05Z",
+          entry: {
+            id: "reasoning:thread-1:turn-1:0",
+            createdAt: "2026-01-01T00:00:05Z",
+            turnId: "turn-1" as never,
+            label: "I should inspect GrokAdapter next.",
+            toolTitle: "Thinking",
+            detail:
+              "The user wants an audit of reliability gaps. I should inspect GrokAdapter next.",
+            tone: "thinking",
+            sourceActivityKind: "reasoning.updated",
+          },
+        },
+      ],
+      latestTurn: {
+        turnId: "turn-1" as never,
+        state: "running",
+        startedAt: "2026-01-01T00:00:00Z",
+        completedAt: null,
+      },
+      isWorking: true,
+      activeTurnStartedAt: "2026-01-01T00:00:00Z",
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    const work = rows.filter((row) => row.kind === "work");
+    expect(work).toHaveLength(1);
+    expect(work[0]).toMatchObject({
+      kind: "work",
+      groupedEntries: [
+        expect.objectContaining({
+          tone: "thinking",
+          toolTitle: "Thinking",
+        }),
+      ],
+    });
+    expect(rows.some((row) => row.kind === "working")).toBe(true);
+  });
+
   it("falls back to the last completed tool when nothing is open (post-tool silence)", () => {
     expect(
       deriveActiveWorkingToolLabel({

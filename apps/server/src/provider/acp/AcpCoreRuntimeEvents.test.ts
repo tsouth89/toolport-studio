@@ -130,7 +130,29 @@ describe("AcpCoreRuntimeEvents", () => {
       type: "content.delta",
       itemId: "assistant:session-1:segment:0",
       payload: {
+        streamKind: "assistant_text",
         delta: "hello",
+      },
+    });
+
+    expect(
+      makeAcpContentDeltaEvent({
+        stamp,
+        provider: ProviderDriverKind.make("grok"),
+        threadId: "thread-1" as never,
+        turnId,
+        text: "Considering next tool",
+        streamKind: "reasoning_text",
+        rawPayload: {
+          sessionUpdate: "agent_thought_chunk",
+          content: { type: "text", text: "Considering next tool" },
+        },
+      }),
+    ).toMatchObject({
+      type: "content.delta",
+      payload: {
+        streamKind: "reasoning_text",
+        delta: "Considering next tool",
       },
     });
 

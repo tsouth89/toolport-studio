@@ -140,7 +140,13 @@ export type TimelineEntry =
     };
 
 export function workLogEntryIsToolLike(entry: WorkLogEntry): boolean {
-  if (entry.tone === "tool" || entry.tone === "thinking" || entry.tone === "error") {
+  // Thinking/progress rows are collapsible narration, not tool calls. Keep them
+  // out of tool-count grouping and neutral-tool hiding so they stay visible
+  // mid-turn (native Grok terminal parity).
+  if (entry.tone === "thinking") {
+    return false;
+  }
+  if (entry.tone === "tool" || entry.tone === "error") {
     return true;
   }
   if (entry.command !== undefined && entry.command.trim().length > 0) {
@@ -679,6 +685,37 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
     activity.payload && typeof activity.payload === "object"
       ? (activity.payload as Record<string, unknown>)
       : null;
+
+  // Provider-authored thinking/progress (Grok agent_thought_chunk, Claude/Codex
+  // reasoning streams). Collapsible Thinking row — not assistant chat text.
+  if (activity.kind === "reasoning.updated") {
+    const detail =
+      typeof payload?.detail === "string" && payload.detail.trim().length > 0
+        ? payload.detail
+        : typeof payload?.summary === "string" && payload.summary.trim().length > 0
+          ? payload.summary
+          : null;
+    const preview =
+      typeof payload?.summary === "string" && payload.summary.trim().length > 0
+        ? payload.summary.trim()
+        : detail
+          ? detail.replace(/\s+/g, " ").trim().slice(0, 160)
+          : null;
+    const entry: DerivedWorkLogEntry = {
+      id: activity.id,
+      createdAt: activity.createdAt,
+      turnId: activity.turnId,
+      label: preview && preview.length > 0 ? preview : "Thinking",
+      tone: "thinking",
+      activityKind: activity.kind,
+      toolTitle: "Thinking",
+    };
+    if (detail && detail.trim().length > 0) {
+      entry.detail = detail;
+    }
+    return entry;
+  }
+
   const commandPreview = extractToolCommand(payload);
   const changedFiles = extractChangedFiles(payload);
   const title = extractToolTitle(payload);

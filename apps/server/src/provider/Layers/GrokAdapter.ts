@@ -1004,26 +1004,22 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 );
                 return;
               case "ThoughtDelta":
-                // Do not dump reasoning into the chat transcript, but count it
-                // as visible activity so stalled-turn UI and recycle logic know
-                // Grok is still working (quiet multi-minute thinks).
+                // Provider-authored thinking/progress (ACP agent_thought_chunk).
+                // Native Grok terminal shows these as collapsible Thinking blocks.
+                // Emit as reasoning_text so ingestion can surface a collapsible
+                // progress row without merging into the assistant reply body.
                 ctx.turnVisibleUpdateCount += 1;
-                yield* offerRuntimeEvent({
-                  type: "session.state.changed",
-                  ...stamp,
-                  provider: PROVIDER,
-                  threadId: ctx.threadId,
-                  turnId: notificationTurnId,
-                  payload: {
-                    state: "running",
-                    reason: "Grok is thinking",
-                  },
-                  raw: {
-                    source: "acp.jsonrpc",
-                    method: "session/update",
-                    payload: event.rawPayload,
-                  },
-                });
+                yield* offerRuntimeEvent(
+                  makeAcpContentDeltaEvent({
+                    stamp,
+                    provider: PROVIDER,
+                    threadId: ctx.threadId,
+                    turnId: notificationTurnId,
+                    text: event.text,
+                    streamKind: "reasoning_text",
+                    rawPayload: event.rawPayload,
+                  }),
+                );
                 return;
             }
           }).pipe(
