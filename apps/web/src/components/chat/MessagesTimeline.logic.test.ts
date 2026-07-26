@@ -1228,7 +1228,7 @@ describe("computeStableMessagesTimelineRows", () => {
             detail:
               "The user wants an audit of reliability gaps. I should inspect GrokAdapter next.",
             tone: "thinking",
-            sourceActivityKind: "reasoning.updated",
+            sourceActivityKind: "task.progress",
           },
         },
       ],

@@ -87,7 +87,8 @@ interface AssistantSegmentState {
 
 /**
  * Coalesced provider thinking/progress stream (content.delta reasoning_text /
- * reasoning_summary_text). Upserted into a single collapsible activity per
+ * reasoning_summary_text). Reuses the existing task.progress → thinking work-log
+ * path (see historical docs/pi-reasoning-plan.md). One upserted activity per
  * segment so token-by-token thought chunks do not flood the work log.
  */
 interface ReasoningStreamState {
@@ -833,22 +834,26 @@ const make = Effect.gen(function* () {
         return;
       }
       const preview = reasoningPreviewFromText(detail);
+      const taskId = `reasoning:${input.state.turnId}:${input.state.segmentIndex}`;
+      // Reuse task.progress so session-logic maps tone:"thinking" without a
+      // parallel activity kind. Stable id upserts one live Thinking row/segment.
       yield* orchestrationEngine.dispatch({
         type: "thread.activity.append",
-        commandId: yield* providerCommandId(input.event, "reasoning-activity"),
+        commandId: yield* providerCommandId(input.event, "reasoning-progress"),
         threadId: input.threadId,
         activity: {
           id: reasoningActivityId(input.threadId, input.state.turnId, input.state.segmentIndex),
           createdAt: input.state.firstCreatedAt,
           tone: "info",
-          kind: "reasoning.updated",
+          kind: "task.progress",
           summary: "Thinking",
           payload: {
+            taskId,
             title: "Thinking",
-            detail,
-            summary: preview,
-            status: "inProgress",
+            source: "provider.reasoning",
             streamKind: "reasoning_text",
+            summary: preview,
+            detail,
           },
           turnId: input.state.turnId,
         },

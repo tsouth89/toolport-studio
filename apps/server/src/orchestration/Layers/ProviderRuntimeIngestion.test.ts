@@ -3478,7 +3478,7 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread.session?.lastError).toBe("runtime still processed");
   });
 
-  it("projects reasoning_text deltas into upserted Thinking activities without assistant messages", async () => {
+  it("projects reasoning_text deltas into upserted task.progress Thinking activities without assistant messages", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
     const threadId = asThreadId("thread-1");
@@ -3539,12 +3539,20 @@ describe("ProviderRuntimeIngestion", () => {
 
     const thread = await waitForThread(harness.readModel, (entry) =>
       entry.activities.some(
-        (activity: ProviderRuntimeTestActivity) => activity.kind === "reasoning.updated",
+        (activity: ProviderRuntimeTestActivity) =>
+          activity.kind === "task.progress" &&
+          typeof activity.payload === "object" &&
+          activity.payload !== null &&
+          (activity.payload as { source?: unknown }).source === "provider.reasoning",
       ),
     );
 
     const reasoningActivities = thread.activities.filter(
-      (activity: ProviderRuntimeTestActivity) => activity.kind === "reasoning.updated",
+      (activity: ProviderRuntimeTestActivity) =>
+        activity.kind === "task.progress" &&
+        typeof activity.payload === "object" &&
+        activity.payload !== null &&
+        (activity.payload as { source?: unknown }).source === "provider.reasoning",
     );
     expect(reasoningActivities.length).toBe(1);
     const activity = reasoningActivities[0];
@@ -3554,6 +3562,7 @@ describe("ProviderRuntimeIngestion", () => {
       activity?.payload && typeof activity.payload === "object"
         ? (activity.payload as Record<string, unknown>)
         : undefined;
+    expect(payload?.source).toBe("provider.reasoning");
     expect(String(payload?.detail ?? "")).toContain("The user wants an audit");
     expect(String(payload?.detail ?? "")).toContain("inspect GrokAdapter");
     expect(String(payload?.summary ?? "").length).toBeGreaterThan(0);
@@ -3629,16 +3638,19 @@ describe("ProviderRuntimeIngestion", () => {
       payload: { state: "completed", stopReason: "end_turn" },
     });
 
+    const isProviderReasoning = (activity: ProviderRuntimeTestActivity) =>
+      activity.kind === "task.progress" &&
+      typeof activity.payload === "object" &&
+      activity.payload !== null &&
+      (activity.payload as { source?: unknown }).source === "provider.reasoning";
+
     const thread = await waitForThread(
       harness.readModel,
-      (entry) =>
-        entry.activities.filter(
-          (activity: ProviderRuntimeTestActivity) => activity.kind === "reasoning.updated",
-        ).length >= 2,
+      (entry) => entry.activities.filter(isProviderReasoning).length >= 2,
     );
 
     const reasoningIds = thread.activities
-      .filter((activity: ProviderRuntimeTestActivity) => activity.kind === "reasoning.updated")
+      .filter(isProviderReasoning)
       .map((activity: ProviderRuntimeTestActivity) => activity.id)
       .toSorted();
     expect(reasoningIds).toEqual([

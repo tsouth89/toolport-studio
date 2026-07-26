@@ -712,21 +712,22 @@ describe("deriveWorkLogEntries", () => {
     expect(entries.map((entry) => entry.id)).toEqual(["tool-complete"]);
   });
 
-  it("projects reasoning.updated into a collapsible Thinking work row", () => {
+  it("projects provider.reasoning task.progress into a collapsible Thinking work row", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({
         id: "reasoning:thread-1:turn-1:0",
         createdAt: "2026-02-23T00:00:02.000Z",
-        kind: "reasoning.updated",
+        kind: "task.progress",
         summary: "Thinking",
         tone: "info",
         turnId: "turn-1",
         payload: {
+          taskId: "reasoning:turn-1:0",
           title: "Thinking",
+          source: "provider.reasoning",
+          streamKind: "reasoning_text",
           summary: "I should inspect GrokAdapter next.",
           detail: "The user wants an audit of reliability gaps. I should inspect GrokAdapter next.",
-          status: "inProgress",
-          streamKind: "reasoning_text",
         },
       }),
     ];
@@ -738,7 +739,7 @@ describe("deriveWorkLogEntries", () => {
       toolTitle: "Thinking",
       label: "I should inspect GrokAdapter next.",
       detail: "The user wants an audit of reliability gaps. I should inspect GrokAdapter next.",
-      sourceActivityKind: "reasoning.updated",
+      sourceActivityKind: "task.progress",
     });
     expect(workLogEntryIsToolLike(entries[0]!)).toBe(false);
     expect(workEntryIndicatesToolNeutralStatus(entries[0]!)).toBe(false);
