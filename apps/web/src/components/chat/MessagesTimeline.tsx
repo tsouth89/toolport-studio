@@ -1130,16 +1130,51 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
   const toolDetail = row.activeToolDetail?.trim() || null;
   const toolTitle = [toolLabel, toolDetail].filter(Boolean).join(" — ") || undefined;
   const onOpenActivity = activity.onOpenActivity;
+  const onInterrupt = activity.onInterrupt;
+  const showRecoveryStop = quiet.isQuiet && onInterrupt !== null;
 
   return (
-    <div className="py-0.5 pl-1.5">
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 pt-1 text-[11px] tabular-nums text-muted-foreground/70">
+    <div
+      className={
+        quiet.isQuiet
+          ? "rounded-md border border-border/60 bg-muted/40 px-2 py-1.5"
+          : "py-0.5 pl-1.5"
+      }
+      role="status"
+      aria-live="polite"
+      aria-atomic="true"
+    >
+      <div
+        className={
+          quiet.isQuiet
+            ? "flex flex-wrap items-center gap-x-2 gap-y-1 text-xs tabular-nums text-foreground/90"
+            : "flex flex-wrap items-center gap-x-2 gap-y-1 pt-1 text-xs tabular-nums text-muted-foreground"
+        }
+      >
         <span className="inline-flex items-center gap-[3px]" aria-hidden="true">
-          <span className="h-1 w-1 rounded-full animate-status-pulse bg-muted-foreground/30" />
-          <span className="h-1 w-1 rounded-full animate-status-pulse bg-muted-foreground/30 [animation-delay:200ms]" />
-          <span className="h-1 w-1 rounded-full animate-status-pulse bg-muted-foreground/30 [animation-delay:400ms]" />
+          <span
+            className={
+              quiet.isQuiet
+                ? "h-1.5 w-1.5 rounded-full animate-status-pulse bg-primary/70"
+                : "h-1.5 w-1.5 rounded-full animate-status-pulse bg-primary/50"
+            }
+          />
+          <span
+            className={
+              quiet.isQuiet
+                ? "h-1.5 w-1.5 rounded-full animate-status-pulse bg-primary/70 [animation-delay:200ms]"
+                : "h-1.5 w-1.5 rounded-full animate-status-pulse bg-primary/50 [animation-delay:200ms]"
+            }
+          />
+          <span
+            className={
+              quiet.isQuiet
+                ? "h-1.5 w-1.5 rounded-full animate-status-pulse bg-primary/70 [animation-delay:400ms]"
+                : "h-1.5 w-1.5 rounded-full animate-status-pulse bg-primary/50 [animation-delay:400ms]"
+            }
+          />
         </span>
-        <span className="min-w-0">
+        <span className="min-w-0 font-medium">
           {row.createdAt ? (
             <>
               Working for <WorkingTimer createdAt={row.createdAt} />
@@ -1150,20 +1185,20 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
           {toolLabel ? (
             <>
               {" "}
-              <span className="text-muted-foreground/55" aria-hidden="true">
+              <span className="font-normal text-muted-foreground" aria-hidden="true">
                 ·
               </span>{" "}
-              <span className="font-medium text-muted-foreground/90" title={toolTitle}>
+              <span className="font-medium text-foreground/85" title={toolTitle}>
                 {toolLabel}
               </span>
               {toolDetail ? (
                 <>
                   {" "}
-                  <span className="text-muted-foreground/55" aria-hidden="true">
+                  <span className="font-normal text-muted-foreground" aria-hidden="true">
                     ·
                   </span>{" "}
                   <span
-                    className="inline-block max-w-[min(28rem,55vw)] truncate align-bottom text-muted-foreground/75"
+                    className="inline-block max-w-[min(28rem,55vw)] truncate align-bottom font-normal text-muted-foreground"
                     title={toolDetail}
                   >
                     {toolDetail}
@@ -1175,28 +1210,35 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
         </span>
         {quiet.isQuiet && quiet.notice ? (
           <>
-            <span className="text-muted-foreground/40" aria-hidden="true">
+            <span className="text-muted-foreground/50" aria-hidden="true">
               ·
             </span>
-            {/* Calm quiet notice only — Stop lives on the composer. */}
-            <span
-              role="status"
-              aria-live="polite"
-              aria-atomic="true"
-              className="text-muted-foreground/65"
-            >
-              {quiet.notice}
-            </span>
+            <span className="font-normal text-muted-foreground">{quiet.notice}</span>
           </>
         ) : null}
-        {onOpenActivity ? (
+        {showRecoveryStop ? (
           <>
-            <span className="text-muted-foreground/40" aria-hidden="true">
+            <span className="text-muted-foreground/50" aria-hidden="true">
               ·
             </span>
             <button
               type="button"
-              className="font-medium text-primary/90 hover:text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="rounded-md bg-destructive/90 px-2 py-0.5 text-[11px] font-semibold text-white hover:bg-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              onClick={onInterrupt}
+              aria-label="Stop generation"
+            >
+              Stop
+            </button>
+          </>
+        ) : null}
+        {onOpenActivity ? (
+          <>
+            <span className="text-muted-foreground/50" aria-hidden="true">
+              ·
+            </span>
+            <button
+              type="button"
+              className="font-medium text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               onClick={onOpenActivity}
             >
               View in Activity

@@ -703,6 +703,56 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
     ).toBe(true);
   });
 
+  it("keeps local busy when only the user message projects while phase is still ready", () => {
+    const localDispatch = createLocalDispatchSnapshot(
+      makeThread({ latestTurn: completedTurn, session: readySession }),
+    );
+
+    expect(
+      hasServerAcknowledgedLocalDispatch({
+        localDispatch,
+        phase: "ready",
+        latestTurn: completedTurn,
+        latestUserMessageId: MessageId.make("message-after-send"),
+        session: readySession,
+        hasPendingApproval: false,
+        hasPendingUserInput: false,
+        threadError: null,
+      }),
+    ).toBe(false);
+  });
+
+  it("acknowledges a projected user message once the session is connecting or running", () => {
+    const localDispatch = createLocalDispatchSnapshot(
+      makeThread({ latestTurn: completedTurn, session: readySession }),
+    );
+
+    expect(
+      hasServerAcknowledgedLocalDispatch({
+        localDispatch,
+        phase: "connecting",
+        latestTurn: completedTurn,
+        latestUserMessageId: MessageId.make("message-after-send"),
+        session: { ...readySession, status: "starting" },
+        hasPendingApproval: false,
+        hasPendingUserInput: false,
+        threadError: null,
+      }),
+    ).toBe(true);
+    expect(
+      hasServerAcknowledgedLocalDispatch({
+        localDispatch,
+        phase: "running",
+        latestTurn: completedTurn,
+        latestUserMessageId: MessageId.make("message-after-send"),
+        session: { ...readySession, status: "running", activeTurnId: completedTurn.turnId },
+        hasPendingApproval: false,
+        hasPendingUserInput: false,
+        threadError: null,
+      }),
+    ).toBe(true);
+  });
+
   it("acknowledges a stale local dispatch after the safety timeout", () => {
     const localDispatch = createLocalDispatchSnapshot(makeThread({ session: readySession }));
     const startedAt = "2026-03-29T00:00:00.000Z";

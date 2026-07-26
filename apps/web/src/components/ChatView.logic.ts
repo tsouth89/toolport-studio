@@ -594,23 +594,25 @@ export function hasServerAcknowledgedLocalDispatch(input: {
     input.localDispatch.latestTurnStartedAt !== (latestTurn?.startedAt ?? null) ||
     input.localDispatch.latestTurnCompletedAt !== (latestTurn?.completedAt ?? null);
 
-  // Any turn requested/started/completed after we pressed Send is a handoff,
-  // even if projection briefly desyncs phase vs session status.
+  // Turn requested/started/completed after Send is a real handoff, even when
+  // phase briefly lags behind the turn projection.
   const turnActivityAfterDispatch =
     latestTurn !== null &&
     ((latestTurn.requestedAt !== null && latestTurn.requestedAt >= dispatchStartedAt) ||
       (latestTurn.startedAt !== null && latestTurn.startedAt >= dispatchStartedAt) ||
       (latestTurn.completedAt !== null && latestTurn.completedAt >= dispatchStartedAt));
 
-  if (latestUserMessageChanged || turnActivityAfterDispatch) {
+  if (turnActivityAfterDispatch) {
     return true;
   }
 
-  if (input.phase === "running") {
-    // Steering adds a user message to the current running turn without
-    // necessarily changing any of the turn timestamps. Treat that projected
-    // message as the server acknowledgment so the composer does not remain
-    // stuck in its local "Sending" state until the turn settles.
+  // Live session: message projection alone is enough (steer / running start).
+  // phase "connecting" covers Grok recycle + session start before running.
+  if (input.phase === "running" || input.phase === "connecting") {
+    if (latestUserMessageChanged) {
+      return true;
+    }
+    // Steering can leave turn timestamps unchanged while activeTurnId matches.
     if (!latestTurnChanged) {
       return false;
     }
@@ -626,6 +628,11 @@ export function hasServerAcknowledgedLocalDispatch(input: {
     }
     return true;
   }
+
+  // Do NOT clear local busy when only the user message projects while phase is
+  // still ready. That gap is the multi-minute blank Working hole: message lands,
+  // "Sending" ends, session is not running yet, timeline looks idle until the
+  // first token. Keep isSendBusy until turn activity, live phase, or stale.
 
   if (
     latestTurnChanged ||

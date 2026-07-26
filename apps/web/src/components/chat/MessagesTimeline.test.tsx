@@ -656,7 +656,7 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain('aria-label="Tool call failed"');
   });
 
-  it("shows a calm quiet notice only after the 2m threshold without amber Stop chrome", () => {
+  it("shows a quiet notice and recovery Stop after the 2m silence threshold", () => {
     const lastStreamActivityAt = new Date(Date.now() - 130_000).toISOString();
     const markup = renderToStaticMarkup(
       <MessagesTimeline
@@ -671,11 +671,11 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain('role="status"');
     expect(markup).toContain('aria-live="polite"');
     expect(markup).toContain("Quiet for");
+    expect(markup).toContain('aria-label="Stop generation"');
+    expect(markup).toContain("Stop");
     expect(markup).not.toContain("No updates for");
     expect(markup).not.toContain("No progress from the provider");
     expect(markup).not.toContain("Stop now");
-    expect(markup).not.toContain("text-warning");
-    expect(markup).not.toContain("bg-warning");
   });
 
   it("does not flash quiet at 45s of silence", () => {
@@ -693,8 +693,7 @@ describe("MessagesTimeline", () => {
 
     expect(markup).toMatch(/Working(\.\.\.| for)/);
     expect(markup).not.toContain("Quiet for");
-    expect(markup).not.toContain("Stop now");
-    expect(markup).not.toContain("text-warning");
+    expect(markup).not.toContain('aria-label="Stop generation"');
   });
 
   it("links the Working row to Activity when onOpenActivity is provided", () => {

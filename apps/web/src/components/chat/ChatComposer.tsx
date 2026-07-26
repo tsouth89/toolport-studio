@@ -1143,7 +1143,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     if (activePendingProgress) {
       return `pending:${activePendingProgress.questionIndex}:${activePendingProgress.isLastQuestion}:${activePendingIsResponding}`;
     }
-    if (phase === "running") {
+    if (phase === "running" || phase === "connecting") {
       return "running";
     }
     if (showPlanFollowUpPrompt) {
@@ -1229,6 +1229,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   );
   const collapsedComposerPrimaryActionDisabled =
     phase === "running" ||
+    phase === "connecting" ||
     isSendBusy ||
     isConnecting ||
     noProviderAvailable ||
@@ -1785,7 +1786,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       isConnecting ||
       noProviderAvailable ||
       environmentUnavailable !== null ||
-      phase === "running"
+      phase === "running" ||
+      phase === "connecting"
     ) {
       return false;
     }
@@ -2761,7 +2763,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   activeContextWindow={activeContextWindow}
                   activeThreadProviderDisplayName={activeThreadProviderDisplayName}
                   pendingAction={pendingPrimaryAction}
-                  isRunning={phase === "running"}
+                  isRunning={phase === "running" || phase === "connecting"}
                   showPlanFollowUpPrompt={pendingUserInputs.length === 0 && showPlanFollowUpPrompt}
                   promptHasText={prompt.trim().length > 0}
                   isSendBusy={isSendBusy}
