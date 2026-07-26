@@ -507,8 +507,8 @@ const SidebarRow = memo(function SidebarRow(props: {
   });
   const prStatus = prStatusIndicator(pr, gitStatus.data?.sourceControlProvider);
   const settledPrHoverClass = pr ? settledPrHoverColorClass(pr.state) : undefined;
-  // Report the PR state up: the parent partitions rows with effectiveSettled,
-  // and a merged/closed PR auto-settles a thread — data only rows have.
+  // Report the PR state up (badges / future features). Merge/close no longer
+  // auto-settles; parent still accepts the signal for consistency.
   const prState = pr?.state ?? null;
   useEffect(() => {
     onChangeRequestState(threadKey, prState);
@@ -1155,8 +1155,8 @@ export default function Sidebar() {
   // fresh clock whenever it recomputes.
   const [snoozeWakeTick, bumpSnoozeWakeTick] = useState(0);
 
-  // PR states stream in per-row (rows own the VCS subscriptions); a merged or
-  // closed PR auto-settles its thread on the next partition.
+  // PR states stream in per-row (rows own the VCS subscriptions). Kept for
+  // partition input compatibility; merge/close does not auto-settle.
   const [changeRequestStateByKey, setChangeRequestStateByKey] = useState<
     ReadonlyMap<string, "open" | "closed" | "merged">
   >(() => new Map());
