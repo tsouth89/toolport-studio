@@ -272,6 +272,66 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
     }),
   );
 
+  it.effect(
+    "fails the turn when Cursor dumps resource_exhausted as assistant text with end_turn",
+    () =>
+      Effect.gen(function* () {
+        const adapter = yield* CursorAdapter;
+        const settings = yield* ServerSettingsService;
+        const threadId = ThreadId.make("cursor-resource-exhausted");
+
+        // Matches live dogfood: Cursor returns end_turn with only this text.
+        const wrapperPath = yield* Effect.promise(() =>
+          makeMockAgentWrapper({
+            T3_ACP_PROMPT_RESPONSE_TEXT: "\n\nError: RetriableError: [resource_exhausted] Error",
+          }),
+        );
+        yield* settings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+
+        const runtimeEventsFiber = yield* adapter.streamEvents.pipe(
+          Stream.filter((event) => event.threadId === threadId),
+          // runtime.error is emitted immediately before turn.completed.
+          Stream.takeUntil((event) => event.type === "turn.completed"),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+
+        yield* adapter.startSession({
+          threadId,
+          provider: ProviderDriverKind.make("cursor"),
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+          modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+        });
+
+        yield* adapter.sendTurn({
+          threadId,
+          input: "hello",
+          attachments: [],
+          modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+        });
+
+        const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+        const runtimeError = runtimeEvents.find((event) => event.type === "runtime.error");
+        assert.isDefined(runtimeError);
+        if (runtimeError?.type === "runtime.error") {
+          assert.equal(runtimeError.payload.class, "provider_error");
+          assert.match(runtimeError.payload.message, /resource_exhausted/i);
+          assert.match(runtimeError.payload.message, /Cursor/i);
+          assert.match(runtimeError.payload.message, /default/);
+        }
+
+        const turnCompleted = runtimeEvents.find((event) => event.type === "turn.completed");
+        assert.isDefined(turnCompleted);
+        if (turnCompleted?.type === "turn.completed") {
+          assert.equal(turnCompleted.payload.state, "failed");
+          assert.match(String(turnCompleted.payload.errorMessage ?? ""), /resource_exhausted/i);
+        }
+
+        yield* adapter.stopSession(threadId);
+      }),
+  );
+
   it.effect("steers a running turn instead of opening a new one on mid-turn sendTurn", () =>
     Effect.gen(function* () {
       const adapter = yield* CursorAdapter;

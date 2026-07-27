@@ -41,6 +41,11 @@ import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawne
 import * as EffectAcpErrors from "effect-acp/errors";
 import type * as EffectAcpSchema from "effect-acp/schema";
 
+import {
+  classifyProviderEmittedFailure,
+  formatProviderEmittedFailureMessage,
+} from "@t3tools/shared/providerError";
+
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
@@ -160,6 +165,12 @@ interface CursorSessionContext {
   lastVisibleActivityAtMs: number;
   /** Turn id we already warned about for silent prompt (one warning per turn). */
   silentPromptWarningTurnId: string | undefined;
+  /**
+   * Concatenated assistant_text for the live turn. Used to classify pure
+   * provider-emitted failures (e.g. Cursor resource_exhausted dumps) that
+   * arrive as agent_message_chunk + end_turn instead of a failed prompt RPC.
+   */
+  turnAssistantText: string;
   /** Number of sendTurn prompts currently in flight or being prepared.
    * >0 means a turn is actively running, so a new sendTurn is a steer that
    * continues it, and only the last remaining prompt settles the turn. */
@@ -833,6 +844,9 @@ export function makeCursorAdapter(
               case "ContentDelta":
                 // Skip native log for high-frequency text deltas (SOU-400 host tax).
                 yield* noteVisibleActivity(ctx);
+                if (event.text.length > 0) {
+                  ctx.turnAssistantText = `${ctx.turnAssistantText}${event.text}`;
+                }
                 yield* offerRuntimeEvent(
                   makeAcpContentDeltaEvent({
                     stamp: yield* makeEventStamp(),
@@ -1143,6 +1157,7 @@ export function makeCursorAdapter(
             lastNotificationTurnId: undefined,
             lastVisibleActivityAtMs: yield* Clock.currentTimeMillis,
             silentPromptWarningTurnId: undefined,
+            turnAssistantText: "",
             promptsInFlight: 0,
             forceSettledTurnIds: new Set(),
             injectsToolportMcp,
@@ -1218,6 +1233,7 @@ export function makeCursorAdapter(
           if (steeringTurnId === undefined) {
             ctx.lastPlanFingerprint = undefined;
             ctx.silentPromptWarningTurnId = undefined;
+            ctx.turnAssistantText = "";
           }
           ctx.session = {
             ...ctx.session,
@@ -1421,17 +1437,61 @@ export function makeCursorAdapter(
               updatedAt,
               model: resolvedModel,
             };
-            yield* offerRuntimeEvent({
-              type: "turn.completed",
-              ...(yield* makeEventStamp()),
-              provider: PROVIDER,
-              threadId: input.threadId,
-              turnId,
-              payload: {
-                state: result.stopReason === "cancelled" ? "cancelled" : "completed",
-                stopReason: result.stopReason ?? null,
-              },
-            });
+
+            // Cursor (and some other ACP agents) can dump capacity/quota errors
+            // as ordinary agent_message_chunk text and still return end_turn.
+            // Treat those as failed turns, not successful replies.
+            const emittedFailure =
+              result.stopReason === "cancelled"
+                ? undefined
+                : classifyProviderEmittedFailure(ctx.turnAssistantText);
+            if (emittedFailure) {
+              const message = formatProviderEmittedFailureMessage(emittedFailure, {
+                providerLabel: "Cursor",
+                model: resolvedModel,
+              });
+              yield* Effect.logWarning("Cursor turn completed with provider-emitted failure", {
+                threadId: input.threadId,
+                turnId,
+                code: emittedFailure.code,
+                model: resolvedModel,
+              });
+              yield* offerRuntimeEvent({
+                type: "runtime.error",
+                ...(yield* makeEventStamp()),
+                provider: PROVIDER,
+                threadId: input.threadId,
+                turnId,
+                payload: {
+                  message,
+                  class: emittedFailure.class,
+                },
+              });
+              yield* offerRuntimeEvent({
+                type: "turn.completed",
+                ...(yield* makeEventStamp()),
+                provider: PROVIDER,
+                threadId: input.threadId,
+                turnId,
+                payload: {
+                  state: "failed",
+                  stopReason: result.stopReason ?? null,
+                  errorMessage: message,
+                },
+              });
+            } else {
+              yield* offerRuntimeEvent({
+                type: "turn.completed",
+                ...(yield* makeEventStamp()),
+                provider: PROVIDER,
+                threadId: input.threadId,
+                turnId,
+                payload: {
+                  state: result.stopReason === "cancelled" ? "cancelled" : "completed",
+                  stopReason: result.stopReason ?? null,
+                },
+              });
+            }
           }
 
           return {

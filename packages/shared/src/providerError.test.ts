@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { extractProviderErrorMessage } from "./providerError.ts";
+import {
+  classifyProviderEmittedFailure,
+  extractProviderErrorMessage,
+  formatProviderEmittedFailureMessage,
+} from "./providerError.ts";
 
 describe("extractProviderErrorMessage", () => {
   it("returns plain messages unchanged", () => {
@@ -46,3 +50,67 @@ describe("extractProviderErrorMessage", () => {
     expect(extractProviderErrorMessage("[1,2,3]")).toBe("[1,2,3]");
   });
 });
+
+describe("classifyProviderEmittedFailure", () => {
+  it("classifies Cursor resource_exhausted assistant dumps as failed turns", () => {
+    const failure = classifyProviderEmittedFailure(
+      "\n\nError: RetriableError: [resource_exhausted] Error",
+    );
+    expect(failure).toMatchObject({
+      kind: "resource_exhausted",
+      retriable: true,
+      code: "resource_exhausted",
+      class: "provider_error",
+    });
+    expect(failure?.message).toMatch(/resource_exhausted/i);
+  });
+
+  it("classifies short rate-limit dumps", () => {
+    expect(classifyProviderEmittedFailure("Error: rate limit exceeded")).toMatchObject({
+      kind: "rate_limited",
+      retriable: true,
+    });
+    expect(classifyProviderEmittedFailure("quota exceeded")).toMatchObject({
+      kind: "rate_limited",
+    });
+  });
+
+  it("classifies auth failures", () => {
+    expect(classifyProviderEmittedFailure("Error: unauthorized")).toMatchObject({
+      kind: "auth_failed",
+      retriable: false,
+    });
+  });
+
+  it("does not treat normal assistant prose as a provider failure", () => {
+    expect(
+      classifyProviderEmittedFailure(
+        "I hit a resource_exhausted error earlier while testing. Here is the fix for the adapter.",
+      ),
+    ).toBeUndefined();
+    expect(
+      classifyProviderEmittedFailure(
+        "Looking at the logs, Cursor returned resource_exhausted for grok-4.5. We should use the Grok provider instead because that path uses xAI capacity directly and stays reliable under load.",
+      ),
+    ).toBeUndefined();
+    expect(classifyProviderEmittedFailure("hello from mock")).toBeUndefined();
+  });
+
+  it("formats provider/model guidance without losing the base message", () => {
+    const failure = classifyProviderEmittedFailure(
+      "Error: RetriableError: [resource_exhausted] Error",
+    );
+    assertDefined(failure);
+    const formatted = formatProviderEmittedFailureMessage(failure, {
+      providerLabel: "Cursor",
+      model: "grok-4.5",
+    });
+    expect(formatted).toMatch(/resource_exhausted/i);
+    expect(formatted).toMatch(/Cursor/);
+    expect(formatted).toMatch(/grok-4\.5/);
+  });
+});
+
+function assertDefined<T>(value: T | undefined): asserts value is T {
+  expect(value).toBeDefined();
+}

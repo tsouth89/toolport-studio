@@ -85,6 +85,11 @@ import {
   type ConversationHistoryTurn,
 } from "../conversationRehydration.ts";
 import {
+  classifyProviderEmittedFailure,
+  formatProviderEmittedFailureMessage,
+} from "@t3tools/shared/providerError";
+
+import {
   beginTurn,
   canSteerSendTurn,
   disposeSendWhileRunning,
@@ -2612,17 +2617,67 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                     },
                   });
                 } else {
-                  yield* offerRuntimeEvent({
-                    type: "turn.completed",
-                    ...(yield* makeEventStamp()),
-                    provider: PROVIDER,
-                    threadId: input.threadId,
-                    turnId: prepared.turnId,
-                    payload: {
-                      state: cancelled ? "cancelled" : "completed",
-                      stopReason: completedStopReason,
-                    },
-                  });
+                  // Same contract as Cursor: pure capacity/quota dumps as assistant
+                  // text + end_turn must not settle as successful replies.
+                  const lastAssistantText = (() => {
+                    for (let index = ctx.conversationLog.length - 1; index >= 0; index -= 1) {
+                      const entry = ctx.conversationLog[index];
+                      if (entry?.role === "assistant") {
+                        return entry.text;
+                      }
+                    }
+                    return "";
+                  })();
+                  const emittedFailure = cancelled
+                    ? undefined
+                    : classifyProviderEmittedFailure(lastAssistantText);
+                  if (emittedFailure) {
+                    const message = formatProviderEmittedFailureMessage(emittedFailure, {
+                      providerLabel: "Grok",
+                      model: prepared.displayModel,
+                    });
+                    yield* Effect.logWarning("Grok turn completed with provider-emitted failure", {
+                      threadId: input.threadId,
+                      turnId: prepared.turnId,
+                      code: emittedFailure.code,
+                      model: prepared.displayModel,
+                    });
+                    yield* offerRuntimeEvent({
+                      type: "runtime.error",
+                      ...(yield* makeEventStamp()),
+                      provider: PROVIDER,
+                      threadId: input.threadId,
+                      turnId: prepared.turnId,
+                      payload: {
+                        message,
+                        class: emittedFailure.class,
+                      },
+                    });
+                    yield* offerRuntimeEvent({
+                      type: "turn.completed",
+                      ...(yield* makeEventStamp()),
+                      provider: PROVIDER,
+                      threadId: input.threadId,
+                      turnId: prepared.turnId,
+                      payload: {
+                        state: "failed",
+                        stopReason: completedStopReason,
+                        errorMessage: message,
+                      },
+                    });
+                  } else {
+                    yield* offerRuntimeEvent({
+                      type: "turn.completed",
+                      ...(yield* makeEventStamp()),
+                      provider: PROVIDER,
+                      threadId: input.threadId,
+                      turnId: prepared.turnId,
+                      payload: {
+                        state: cancelled ? "cancelled" : "completed",
+                        stopReason: completedStopReason,
+                      },
+                    });
+                  }
                 }
                 ctx.interruptedTurnIds.delete(prepared.turnId);
                 yield* Ref.set(promptSettled, true);
