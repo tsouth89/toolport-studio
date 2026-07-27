@@ -28,13 +28,15 @@ model, capability matrix, stop settle rules).
 
 ## Wiring status
 
-- **Grok:** interjection + steer + force-close/chrome policy flags + `resolveGrokSendDisposition` (TurnQueue)
+- **Grok:** interjection + steer + force-close/chrome policy flags + `resolveGrokSendDisposition` (TurnQueue) + provider-emitted failure classification
 - **Cursor:** `canSteerSendTurn` + open-tool force-close on Stop + post-Stop ACP recycle + silence warning (no open tools) + provider-emitted failure classification
-- **Claude:** `canSteerSendTurn` + open-tool force-close on Stop/interrupt (via `completeTurn`)
-- **OpenCode:** `canSteerSendTurn` + force-settle session on Stop + open-tool force-close on Stop/idle/error
-- **Codex:** `canSteerCodexSendTurn` → shared `canSteerSendTurn`
+- **Claude:** `canSteerSendTurn` + open-tool force-close on settle + provider-emitted failure classification
+- **OpenCode:** `canSteerSendTurn` + force-settle session on Stop + open-tool force-close on Stop/idle/error + provider-emitted failure classification on idle
+- **Codex:** `canSteerCodexSendTurn` → shared `canSteerSendTurn` + provider-emitted failure classification on completed turns
 - **Settle policy:** remaining open tools are force-closed on any settle (including
-  successful end_turn), not only Stop — Claude/OpenCode now match Grok/Cursor
+  successful end_turn), not only Stop — Claude/OpenCode match Grok/Cursor
+- **Provider-emitted failures:** pure capacity/auth dumps as assistant text must
+  settle as failed turns via `classifyProviderEmittedFailure` (all five adapters)
 - Conformance (all five providers): first-progress, assistant-text, interrupt, stop-mid-tool,
   send-while-running, post-stop-follow-up, pending-approval, process-death, resume-preserves-history
 - Queue drain (hold + auto-start next after settle) is not transport-wired yet; capability matrix

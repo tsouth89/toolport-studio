@@ -1616,6 +1616,113 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect(
+    "fails the turn when Claude dumps resource_exhausted as assistant text with success",
+    () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+        const turnCompleted =
+          yield* Deferred.make<Extract<ProviderRuntimeEvent, { type: "turn.completed" }>>();
+
+        const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+          Effect.gen(function* () {
+            runtimeEvents.push(event);
+            if (event.type === "turn.completed") {
+              yield* Deferred.succeed(turnCompleted, event).pipe(Effect.ignore);
+            }
+          }),
+        ).pipe(Effect.forkChild);
+
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+        });
+
+        yield* adapter.sendTurn({
+          threadId: THREAD_ID,
+          input: "hello",
+          attachments: [],
+        });
+
+        harness.query.emit({
+          type: "stream_event",
+          session_id: "sdk-session-resource-exhausted",
+          uuid: "stream-failure-text",
+          parent_tool_use_id: null,
+          event: {
+            type: "content_block_start",
+            index: 0,
+            content_block: {
+              type: "text",
+              text: "",
+            },
+          },
+        } as unknown as SDKMessage);
+        harness.query.emit({
+          type: "stream_event",
+          session_id: "sdk-session-resource-exhausted",
+          uuid: "stream-failure-delta",
+          parent_tool_use_id: null,
+          event: {
+            type: "content_block_delta",
+            index: 0,
+            delta: {
+              type: "text_delta",
+              text: "Error: RetriableError: [resource_exhausted] Error",
+            },
+          },
+        } as unknown as SDKMessage);
+        harness.query.emit({
+          type: "stream_event",
+          session_id: "sdk-session-resource-exhausted",
+          uuid: "stream-failure-stop",
+          parent_tool_use_id: null,
+          event: {
+            type: "content_block_stop",
+            index: 0,
+          },
+        } as unknown as SDKMessage);
+        harness.query.emit({
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          duration_ms: 10,
+          duration_api_ms: 10,
+          num_turns: 1,
+          result: "Error: RetriableError: [resource_exhausted] Error",
+          stop_reason: "end_turn",
+          session_id: "sdk-session-resource-exhausted",
+          uuid: "result-resource-exhausted",
+          usage: {
+            input_tokens: 1,
+            output_tokens: 1,
+          },
+        } as unknown as SDKMessage);
+
+        const completed = yield* Deferred.await(turnCompleted).pipe(Effect.timeout("3 seconds"));
+        assert.equal(completed.payload.state, "failed");
+        assert.match(String(completed.payload.errorMessage ?? ""), /resource_exhausted/i);
+
+        const runtimeError = runtimeEvents.find((event) => event.type === "runtime.error");
+        assert.isDefined(runtimeError);
+        if (runtimeError?.type === "runtime.error") {
+          assert.equal(runtimeError.payload.class, "provider_error");
+          assert.match(runtimeError.payload.message, /resource_exhausted/i);
+        }
+
+        yield* Fiber.interrupt(runtimeEventsFiber);
+        yield* adapter.stopSession(THREAD_ID).pipe(Effect.ignore);
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+        TestClock.withLive,
+      );
+    },
+  );
+
   it.effect("force-closes leftover open tools when the turn completes successfully", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

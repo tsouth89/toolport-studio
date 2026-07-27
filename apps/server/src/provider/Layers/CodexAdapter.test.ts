@@ -45,7 +45,11 @@ import {
   type CodexSessionRuntimeShape,
   type CodexThreadSnapshot,
 } from "./CodexSessionRuntime.ts";
-import { makeCodexAdapter, shouldLogCodexNativeEvent } from "./CodexAdapter.ts";
+import {
+  collectCodexAssistantText,
+  makeCodexAdapter,
+  shouldLogCodexNativeEvent,
+} from "./CodexAdapter.ts";
 const decodeCodexSettings = Schema.decodeSync(CodexSettings);
 
 // Test-local service tag so the rest of the file can keep using `yield* CodexAdapter`.
@@ -57,6 +61,17 @@ const asThreadId = (value: string): ThreadId => ThreadId.make(value);
 const asTurnId = (value: string): TurnId => TurnId.make(value);
 const asEventId = (value: string): EventId => EventId.make(value);
 const asItemId = (value: string): ProviderItemId => ProviderItemId.make(value);
+
+it("collects Codex agentMessage text for failure classification", () => {
+  NodeAssert.equal(
+    collectCodexAssistantText([
+      { type: "agentMessage", id: "m1", text: "Error: RetriableError: [resource_exhausted] Error" },
+      { type: "commandExecution", id: "c1" },
+    ]),
+    "Error: RetriableError: [resource_exhausted] Error",
+  );
+  NodeAssert.equal(collectCodexAssistantText([]), "");
+});
 
 it("skips high-frequency Codex deltas in the native event log", () => {
   NodeAssert.equal(
@@ -654,6 +669,55 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
       NodeAssert.equal(firstEvent.value.turnId, "turn-force-settle");
       NodeAssert.equal(firstEvent.value.payload.state, "interrupted");
     }),
+  );
+
+  it.effect(
+    "fails the turn when Codex dumps resource_exhausted as agentMessage with completed",
+    () =>
+      Effect.gen(function* () {
+        const { adapter, runtime } = yield* startLifecycleRuntime();
+        const eventsFiber = yield* adapter.streamEvents.pipe(
+          Stream.take(2),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+
+        yield* runtime.emit({
+          id: asEventId("evt-turn-resource-exhausted"),
+          kind: "notification",
+          provider: ProviderDriverKind.make("codex"),
+          createdAt: "2026-01-01T00:00:00.000Z",
+          method: "turn/completed",
+          threadId: asThreadId("thread-1"),
+          turnId: asTurnId("turn-exhausted"),
+          payload: {
+            threadId: "provider-thread-1",
+            turn: {
+              id: "turn-exhausted",
+              status: "completed",
+              items: [
+                {
+                  type: "agentMessage",
+                  id: "msg-exhausted",
+                  text: "Error: RetriableError: [resource_exhausted] Error",
+                },
+              ],
+            },
+          },
+        });
+
+        const events = Array.from(yield* Fiber.join(eventsFiber));
+        NodeAssert.equal(events[0]?.type, "runtime.error");
+        if (events[0]?.type === "runtime.error") {
+          NodeAssert.equal(events[0].payload.class, "provider_error");
+          NodeAssert.match(events[0].payload.message, /resource_exhausted/i);
+        }
+        NodeAssert.equal(events[1]?.type, "turn.completed");
+        if (events[1]?.type === "turn.completed") {
+          NodeAssert.equal(events[1].payload.state, "failed");
+          NodeAssert.match(String(events[1].payload.errorMessage ?? ""), /resource_exhausted/i);
+        }
+      }),
   );
 
   it.effect("maps completed agent message items to canonical item.completed events", () =>

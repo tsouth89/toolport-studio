@@ -25,6 +25,10 @@ import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import type { OpencodeClient, Part, PermissionRequest, QuestionRequest } from "@opencode-ai/sdk/v2";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
+import {
+  classifyProviderEmittedFailure,
+  formatProviderEmittedFailureMessage,
+} from "@t3tools/shared/providerError";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
@@ -554,6 +558,25 @@ export function trackOpenCodeOpenTool(
     title,
     itemType: toToolLifecycleItemType(part.tool),
   });
+}
+
+/** Concatenate assistant text parts for settle-time failure classification. */
+export function collectOpenCodeAssistantText(context: {
+  readonly partById: ReadonlyMap<string, Part>;
+  readonly emittedTextByPartId: ReadonlyMap<string, string>;
+}): string {
+  const chunks: string[] = [];
+  for (const part of context.partById.values()) {
+    if (part.type !== "text") continue;
+    const text =
+      context.emittedTextByPartId.get(part.id) ??
+      (typeof part.text === "string" ? part.text : undefined) ??
+      "";
+    if (text.trim().length > 0) {
+      chunks.push(text);
+    }
+  }
+  return chunks.join("\n");
 }
 
 function toolStateCreatedAt(part: Extract<Part, { type: "tool" }>): string | undefined {
@@ -1171,7 +1194,45 @@ export function makeOpenCodeAdapter(
           if (event.properties.status.type === "idle" && turnId) {
             yield* forceCloseOpenTools(context, turnId);
             context.activeTurnId = undefined;
-            yield* updateProviderSession(context, { status: "ready" }, { clearActiveTurnId: true });
+            // Pure provider failure dumps as assistant text + idle must not
+            // settle as successful replies (Cursor/Grok/Claude parity).
+            const emittedFailure = classifyProviderEmittedFailure(
+              collectOpenCodeAssistantText(context),
+            );
+            const failureMessage = emittedFailure
+              ? formatProviderEmittedFailureMessage(emittedFailure, {
+                  providerLabel: "OpenCode",
+                  ...(context.session.model ? { model: context.session.model } : {}),
+                })
+              : undefined;
+            if (emittedFailure && failureMessage) {
+              yield* Effect.logWarning("OpenCode turn completed with provider-emitted failure", {
+                threadId: context.session.threadId,
+                turnId,
+                code: emittedFailure.code,
+                model: context.session.model,
+              });
+              yield* emit({
+                ...(yield* buildEventBase({
+                  threadId: context.session.threadId,
+                  turnId,
+                  raw: event,
+                })),
+                type: "runtime.error",
+                payload: {
+                  message: failureMessage,
+                  class: emittedFailure.class,
+                },
+              });
+            }
+            yield* updateProviderSession(
+              context,
+              {
+                status: "ready",
+                ...(failureMessage ? { lastError: failureMessage } : {}),
+              },
+              { clearActiveTurnId: true },
+            );
             yield* emit({
               ...(yield* buildEventBase({
                 threadId: context.session.threadId,
@@ -1179,9 +1240,14 @@ export function makeOpenCodeAdapter(
                 raw: event,
               })),
               type: "turn.completed",
-              payload: {
-                state: "completed",
-              },
+              payload: failureMessage
+                ? {
+                    state: "failed",
+                    errorMessage: failureMessage,
+                  }
+                : {
+                    state: "completed",
+                  },
             });
           }
           break;

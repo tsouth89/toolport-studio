@@ -41,7 +41,11 @@ import * as CodexErrors from "effect-codex-app-server/errors";
 import * as EffectCodexSchema from "effect-codex-app-server/schema";
 
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
-import { extractProviderErrorMessage } from "@t3tools/shared/providerError";
+import {
+  classifyProviderEmittedFailure,
+  extractProviderErrorMessage,
+  formatProviderEmittedFailureMessage,
+} from "@t3tools/shared/providerError";
 import { getCodexServiceTierOptionValue } from "../../codexModelOptions.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 
@@ -202,6 +206,22 @@ function readPayload<A>(
 function trimText(value: string | undefined | null): string | undefined {
   const trimmed = value?.trim();
   return trimmed && trimmed.length > 0 ? trimmed : undefined;
+}
+
+/** Join agentMessage item text for settle-time failure classification. */
+export function collectCodexAssistantText(items: unknown): string {
+  if (!Array.isArray(items)) {
+    return "";
+  }
+  const chunks: string[] = [];
+  for (const item of items) {
+    if (item === null || typeof item !== "object") continue;
+    const record = item as Record<string, unknown>;
+    if (record.type !== "agentMessage") continue;
+    if (typeof record.text !== "string" || record.text.trim().length === 0) continue;
+    chunks.push(record.text);
+  }
+  return chunks.join("\n");
 }
 
 const FATAL_CODEX_STDERR_SNIPPETS = ["failed to connect to websocket"];
@@ -849,12 +869,43 @@ function mapToRuntimeEvents(
     }
     const rawErrorMessage = trimText(payload.turn.error?.message);
     const errorMessage = rawErrorMessage ? extractProviderErrorMessage(rawErrorMessage) : undefined;
+    const status = toTurnStatus(payload.turn.status);
+    // When Codex marks the turn completed but the only assistant text is a
+    // pure capacity/auth dump, settle as failed (Cursor/Grok/Claude parity).
+    const emittedFailure =
+      status === "completed" && !errorMessage
+        ? classifyProviderEmittedFailure(collectCodexAssistantText(payload.turn.items))
+        : undefined;
+    const failureMessage = emittedFailure
+      ? formatProviderEmittedFailureMessage(emittedFailure, { providerLabel: "Codex" })
+      : undefined;
+    const base = runtimeEventBase(event, canonicalThreadId);
+    if (failureMessage && emittedFailure) {
+      return [
+        {
+          ...base,
+          type: "runtime.error" as const,
+          payload: {
+            message: failureMessage,
+            class: emittedFailure.class,
+          },
+        },
+        {
+          ...base,
+          type: "turn.completed" as const,
+          payload: {
+            state: "failed" as const,
+            errorMessage: failureMessage,
+          },
+        },
+      ];
+    }
     return [
       {
-        ...runtimeEventBase(event, canonicalThreadId),
+        ...base,
         type: "turn.completed",
         payload: {
-          state: toTurnStatus(payload.turn.status),
+          state: status,
           ...(errorMessage ? { errorMessage } : {}),
         },
       },

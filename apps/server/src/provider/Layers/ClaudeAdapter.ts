@@ -53,6 +53,10 @@ import {
   getProviderOptionDescriptors,
   resolvePromptInjectedEffort,
 } from "@t3tools/shared/model";
+import {
+  classifyProviderEmittedFailure,
+  formatProviderEmittedFailureMessage,
+} from "@t3tools/shared/providerError";
 import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
@@ -164,6 +168,8 @@ interface ClaudeTurnState {
   readonly items: Array<unknown>;
   readonly assistantTextBlocks: Map<number, AssistantTextBlockState>;
   readonly assistantTextBlockOrder: Array<AssistantTextBlockState>;
+  /** Concatenated assistant text deltas for settle-time failure classification. */
+  assistantTextAccumulator: string;
   readonly capturedProposedPlanKeys: Set<string>;
   nextSyntheticAssistantBlockIndex: number;
 }
@@ -1883,6 +1889,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       if (entry.block.fallbackText.length === 0) {
         entry.block.fallbackText = text;
       }
+      if (turnState.assistantTextAccumulator.length === 0 && text.length > 0) {
+        turnState.assistantTextAccumulator = text;
+      }
 
       if (entry.block.streamClosed && !entry.block.completionEmitted) {
         yield* completeAssistantTextBlock(context, entry.block, {
@@ -2289,6 +2298,39 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       });
     }
 
+    // Pure capacity/auth dumps as assistant text + success result must not
+    // settle as successful replies (Cursor/Grok parity).
+    let settleStatus = status;
+    let settleErrorMessage = errorMessage;
+    if (status === "completed") {
+      const resultText =
+        result && "result" in result && typeof result.result === "string" ? result.result : "";
+      const blockText = turnState.assistantTextBlockOrder
+        .map((block) => block.fallbackText)
+        .join("");
+      const assistantText =
+        turnState.assistantTextAccumulator.trim().length > 0
+          ? turnState.assistantTextAccumulator
+          : blockText.trim().length > 0
+            ? blockText
+            : resultText;
+      const emittedFailure = classifyProviderEmittedFailure(assistantText);
+      if (emittedFailure) {
+        settleStatus = "failed";
+        settleErrorMessage = formatProviderEmittedFailureMessage(emittedFailure, {
+          providerLabel: "Claude",
+          ...(context.session.model ? { model: context.session.model } : {}),
+        });
+        yield* Effect.logWarning("Claude turn completed with provider-emitted failure", {
+          threadId: context.session.threadId,
+          turnId: turnState.turnId,
+          code: emittedFailure.code,
+          model: context.session.model,
+        });
+        yield* emitRuntimeError(context, settleErrorMessage);
+      }
+    }
+
     context.turns.push({
       id: turnState.turnId,
       items: [...turnState.items],
@@ -2308,14 +2350,14 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       threadId: context.session.threadId,
       turnId: turnState.turnId,
       payload: {
-        state: status,
+        state: settleStatus,
         ...(result?.stop_reason !== undefined ? { stopReason: result.stop_reason } : {}),
         ...(result?.usage ? { usage: result.usage } : {}),
         ...(result?.modelUsage ? { modelUsage: result.modelUsage } : {}),
         ...(typeof result?.total_cost_usd === "number"
           ? { totalCostUsd: result.total_cost_usd }
           : {}),
-        ...(errorMessage ? { errorMessage } : {}),
+        ...(settleErrorMessage ? { errorMessage: settleErrorMessage } : {}),
       },
       providerRefs: nativeProviderRefs(context),
     });
@@ -2327,7 +2369,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       status: "ready",
       activeTurnId: undefined,
       updatedAt,
-      ...(status === "failed" && errorMessage ? { lastError: errorMessage } : {}),
+      ...(settleStatus === "failed" && settleErrorMessage ? { lastError: settleErrorMessage } : {}),
     };
     yield* updateResumeCursor(context);
   });
@@ -2387,6 +2429,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
               : undefined;
         if (assistantBlockEntry?.block && event.delta.type === "text_delta") {
           assistantBlockEntry.block.emittedTextDelta = true;
+          assistantBlockEntry.block.fallbackText += deltaText;
+          context.turnState.assistantTextAccumulator += deltaText;
         }
         const stamp = yield* makeEventStamp();
         yield* offerRuntimeEvent({
@@ -2741,6 +2785,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         items: [],
         assistantTextBlocks: new Map(),
         assistantTextBlockOrder: [],
+        assistantTextAccumulator: "",
         capturedProposedPlanKeys: new Set(),
         nextSyntheticAssistantBlockIndex: -1,
       };
@@ -4116,6 +4161,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         items: [],
         assistantTextBlocks: new Map(),
         assistantTextBlockOrder: [],
+        assistantTextAccumulator: "",
         capturedProposedPlanKeys: new Set(),
         nextSyntheticAssistantBlockIndex: -1,
       };

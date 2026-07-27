@@ -33,6 +33,7 @@ import {
 } from "../opencodeRuntime.ts";
 import {
   appendOpenCodeAssistantTextDelta,
+  collectOpenCodeAssistantText,
   isOpenCodeNotFound,
   isSameOpenCodeDirectory,
   makeOpenCodeAdapter,
@@ -1498,5 +1499,40 @@ describe("trackOpenCodeOpenTool", () => {
       },
     } as never);
     expect(openTools.has("call-1")).toBe(false);
+  });
+});
+
+describe("collectOpenCodeAssistantText", () => {
+  plainIt("joins assistant text parts and ignores tools", () => {
+    const partById = new Map([
+      [
+        "text-1",
+        {
+          id: "text-1",
+          sessionID: "s",
+          messageID: "m",
+          type: "text",
+          text: "Error: RetriableError: [resource_exhausted] Error",
+        } as never,
+      ],
+      [
+        "tool-1",
+        {
+          id: "tool-1",
+          sessionID: "s",
+          messageID: "m",
+          type: "tool",
+          callID: "c1",
+          tool: "bash",
+          state: { status: "completed", input: {}, output: "ok", time: { start: 1, end: 2 } },
+        } as never,
+      ],
+    ]);
+    expect(
+      collectOpenCodeAssistantText({
+        partById,
+        emittedTextByPartId: new Map(),
+      }),
+    ).toBe("Error: RetriableError: [resource_exhausted] Error");
   });
 });
