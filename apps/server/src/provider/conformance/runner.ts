@@ -239,9 +239,12 @@ export function runCoreLoopConformance(binding: ConformanceBinding): void {
             return;
           }
 
-          assert.isTrue(
+          // Queue = hold until the live turn settles, then auto-start (TurnQueue
+          // drain). While the first turn is still hung, a second turn must not
+          // appear; drain is covered by TurnQueue + Grok adapter unit tests.
+          assert.isFalse(
             secondTurnAppeared,
-            "declared queue, but the second send never produced a distinct turn",
+            "declared queue, but the second send started a turn before the first settled",
           );
         }),
     );

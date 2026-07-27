@@ -41,6 +41,7 @@ import {
   resolveGrokOpenToolWatchdogMs,
   slimGrokStreamDeltaNativeLog,
 } from "./GrokAdapter.ts";
+import { emptyTurnQueue, pendingCount } from "../turnEngine/index.ts";
 const decodeGrokSettings = Schema.decodeSync(GrokSettings);
 
 it("classifies Grok silence by active tool, completed tool loop, or pure thinking", () => {
@@ -256,38 +257,44 @@ it("refuses to steer into a cancelled/interrupted turn after Stop", () => {
   );
 });
 
-it("resolveGrokSendDisposition steers a live turn and starts new when idle/interrupted", () => {
+it("resolveGrokSendDisposition queues a live turn and starts new when idle/interrupted", () => {
   const liveTurn = TurnId.make("turn-live");
   const cancelledTurn = TurnId.make("turn-cancelled");
   const nextTurn = { id: "queued-1", text: "also do X", enqueuedAtMs: 1 };
 
-  assert.deepStrictEqual(
-    resolveGrokSendDisposition({
-      promptsInFlight: 1,
-      activeTurnId: liveTurn,
-      interruptedTurnIds: new Set(),
-      nextTurn,
-    }),
-    { _tag: "steer", turnId: String(liveTurn) },
-  );
+  const queued = resolveGrokSendDisposition({
+    turnQueue: emptyTurnQueue(),
+    promptsInFlight: 1,
+    activeTurnId: liveTurn,
+    interruptedTurnIds: new Set(),
+    nextTurn,
+  });
+  assert.equal(queued.disposition._tag, "queued");
+  if (queued.disposition._tag === "queued") {
+    assert.equal(queued.disposition.queueId, "queued-1");
+    assert.equal(queued.disposition.position, 1);
+  }
+  assert.equal(pendingCount(queued.state), 1);
 
   assert.deepStrictEqual(
     resolveGrokSendDisposition({
+      turnQueue: emptyTurnQueue(),
       promptsInFlight: 1,
       activeTurnId: cancelledTurn,
       interruptedTurnIds: new Set([cancelledTurn]),
       nextTurn,
-    }),
+    }).disposition,
     { _tag: "start-new" },
   );
 
   assert.deepStrictEqual(
     resolveGrokSendDisposition({
+      turnQueue: emptyTurnQueue(),
       promptsInFlight: 0,
       activeTurnId: undefined,
       interruptedTurnIds: new Set(),
       nextTurn,
-    }),
+    }).disposition,
     { _tag: "start-new" },
   );
 });

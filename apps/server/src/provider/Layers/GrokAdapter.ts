@@ -7,7 +7,9 @@ import {
   EventId,
   type ProviderApprovalDecision,
   type ProviderRuntimeEvent,
+  type ProviderSendTurnInput,
   type ProviderSession,
+  type ProviderTurnStartResult,
   type ProviderUserInputAnswers,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -90,17 +92,21 @@ import {
 } from "@t3tools/shared/providerError";
 
 import {
-  beginTurn,
+  abandonTurnQueue,
   canSteerSendTurn,
   disposeSendWhileRunning,
   emptyTurnQueue,
   formatInterjectionText,
   markTurnRunning,
+  beginTurn,
   PROVIDER_TURN_CAPABILITIES,
+  settleTurn,
   shouldEmitSyntheticFollowUpChrome,
   shouldForceCloseOpenToolsOnSteer,
+  trackLiveTurn,
   type QueuedTurnInput,
   type SendDisposition,
+  type TurnQueueState,
 } from "../turnEngine/index.ts";
 
 const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.UnknownFromJsonString);
@@ -493,7 +499,26 @@ interface GrokSessionContext {
   conversationLog: Array<GrokConversationTurn>;
   /** After recycle landed on a different session id, rehydrate once. */
   needsContextRehydration: boolean;
+  /**
+   * In-memory TurnQueue bookkeeping (SOU-428). When capability is `queue`,
+   * mid-turn sends land in pending and drain after settle.
+   */
+  turnQueue: TurnQueueState;
+  /**
+   * Full sendTurn waiters for queued ids (engine pending only stores text).
+   * Stop abandons these; settle drains the head.
+   */
+  pendingSends: Map<string, PendingGrokQueuedSend>;
 }
+
+type PendingGrokQueuedSend = {
+  readonly turnId: TurnId;
+  readonly input: ProviderSendTurnInput;
+  readonly result: Deferred.Deferred<
+    ProviderTurnStartResult,
+    ProviderAdapterRequestError | ProviderAdapterValidationError
+  >;
+};
 
 export type GrokConversationTurn = ConversationHistoryTurn;
 
@@ -676,32 +701,42 @@ export function canSteerGrokSendTurn(input: {
 /**
  * Engine-owned disposition for a Grok send that may land while a turn is live.
  *
- * Composes local steer eligibility (prompt slots + interrupted ids) with the
- * shared TurnQueue + capability matrix. Grok currently declares
- * `sendWhileRunning: "steer"`, so the live path is steer; `queued` is refused
- * until drain is wired.
+ * Uses persistent TurnQueue state + the capability matrix. When
+ * `sendWhileRunning: "queue"`, concurrent sends are held and drained after
+ * settle. When `"steer"`, eligible live turns fold the send into the same turn.
  */
 export function resolveGrokSendDisposition(input: {
+  readonly turnQueue: TurnQueueState;
   readonly promptsInFlight: number;
   readonly activeTurnId: TurnId | undefined;
   readonly interruptedTurnIds: ReadonlySet<TurnId>;
   readonly nextTurn: QueuedTurnInput;
-}): SendDisposition {
+}): { readonly state: TurnQueueState; readonly disposition: SendDisposition } {
   const canSteer = canSteerGrokSendTurn({
     promptsInFlight: input.promptsInFlight,
     activeTurnId: input.activeTurnId,
     interruptedTurnIds: input.interruptedTurnIds,
   });
+  const behavior = PROVIDER_TURN_CAPABILITIES.grok.sendWhileRunning;
+
+  // No steerable live turn → open a new one (caller begins tracking).
   if (!canSteer || input.activeTurnId === undefined) {
-    return { _tag: "start-new" };
+    return { state: input.turnQueue, disposition: { _tag: "start-new" } };
   }
 
-  let queue = beginTurn(emptyTurnQueue(), String(input.activeTurnId));
-  queue = markTurnRunning(queue);
-  return disposeSendWhileRunning(queue, {
-    sendWhileRunning: PROVIDER_TURN_CAPABILITIES.grok.sendWhileRunning,
+  // Track the live turn in queue bookkeeping, then apply capability policy.
+  const tracked = trackLiveTurn(input.turnQueue, String(input.activeTurnId));
+  if (behavior === "steer") {
+    return {
+      state: tracked,
+      disposition: { _tag: "steer", turnId: String(input.activeTurnId) },
+    };
+  }
+
+  return disposeSendWhileRunning(tracked, {
+    sendWhileRunning: "queue",
     nextTurn: input.nextTurn,
-  }).disposition;
+  });
 }
 
 export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapterLiveOptions) {
@@ -791,6 +826,79 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
 
     const withThreadLock = <A, E, R>(threadId: string, effect: Effect.Effect<A, E, R>) =>
       Effect.flatMap(getThreadSemaphore(threadId), (semaphore) => semaphore.withPermit(effect));
+
+    const queuedTurnCancelledError = () =>
+      new ProviderAdapterRequestError({
+        provider: PROVIDER,
+        method: "session/prompt",
+        detail: "Grok queued turn was cancelled.",
+      });
+
+    /**
+     * Dequeue the next held send after a terminal settle. Returns undefined when
+     * the queue is empty or the waiter was already abandoned (Stop).
+     */
+    const takeNextQueuedSend = (
+      ctx: GrokSessionContext,
+      reason: "completed" | "cancelled" | "error",
+    ): PendingGrokQueuedSend | undefined => {
+      const settled = settleTurn(ctx.turnQueue, reason);
+      ctx.turnQueue = settled.state;
+      if (settled.next === undefined) {
+        return undefined;
+      }
+      const pending = ctx.pendingSends.get(settled.next.id);
+      if (!pending) {
+        return undefined;
+      }
+      ctx.pendingSends.delete(settled.next.id);
+      return pending;
+    };
+
+    /** Cancel every held send (Stop / session death). Does not start them. */
+    const abandonQueuedSends = (ctx: GrokSessionContext) =>
+      Effect.gen(function* () {
+        const abandoned = abandonTurnQueue(ctx.turnQueue);
+        ctx.turnQueue = abandoned.state;
+        const error = queuedTurnCancelledError();
+        for (const item of abandoned.abandoned) {
+          const pending = ctx.pendingSends.get(item.id);
+          if (!pending) continue;
+          ctx.pendingSends.delete(item.id);
+          yield* Deferred.fail(pending.result, error).pipe(Effect.ignore);
+        }
+        // Defensive: clear any orphan waiters not in engine pending.
+        for (const [id, pending] of [...ctx.pendingSends.entries()]) {
+          ctx.pendingSends.delete(id);
+          yield* Deferred.fail(pending.result, error).pipe(Effect.ignore);
+        }
+      });
+
+    // Assigned after sendTurn is defined; settle uses this to drain without
+    // nested withThreadLock (fork runs after the current lock is released).
+    let sendTurnImpl: GrokAdapterShape["sendTurn"] | undefined;
+
+    const forkDrainQueuedSend = (ctx: GrokSessionContext, pending: PendingGrokQueuedSend) =>
+      Effect.forkIn(ctx.scope)(
+        Effect.suspend(() => {
+          const run = sendTurnImpl;
+          if (!run) {
+            return Deferred.fail(pending.result, queuedTurnCancelledError());
+          }
+          return run(pending.input).pipe(
+            Effect.flatMap((result) => Deferred.succeed(pending.result, result)),
+            Effect.catch((error) =>
+              Deferred.fail(
+                pending.result,
+                error instanceof ProviderAdapterRequestError ||
+                  error instanceof ProviderAdapterValidationError
+                  ? error
+                  : queuedTurnCancelledError(),
+              ),
+            ),
+          );
+        }),
+      ).pipe(Effect.asVoid);
 
     /**
      * When a turn ends (Stop, silence watchdog, failure, or completion) any
@@ -1040,6 +1148,17 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               stopReason: options.completedStopReason ?? null,
             },
           });
+        }
+        // Auto-start the next held send (TurnQueue drain). Stop abandons the
+        // queue first, so this is a no-op after interrupt.
+        const settleReason: "completed" | "cancelled" | "error" = shouldEmitFailedTurn
+          ? "error"
+          : options?.completedStopReason === "cancelled"
+            ? "cancelled"
+            : "completed";
+        const nextPending = takeNextQueuedSend(liveCtx, settleReason);
+        if (nextPending) {
+          yield* forkDrainQueuedSend(liveCtx, nextPending);
         }
       });
 
@@ -1930,6 +2049,8 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             activeTurnId: undefined,
             interruptedTurnIds: new Set(),
             promptsInFlight: 0,
+            turnQueue: emptyTurnQueue(),
+            pendingSends: new Map(),
             currentModelId: boundModelId,
             currentReasoningEffort: startReasoningEffort,
             stopped: false,
@@ -2048,7 +2169,8 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             // Disposition is engine-owned (SOU-428 TurnQueue + capabilities).
             const liveActiveTurnId = ctx.activeTurnId ?? ctx.session.activeTurnId;
             const nextTurnId = TurnId.make(yield* randomUUIDv4);
-            const disposition = resolveGrokSendDisposition({
+            const disposed = resolveGrokSendDisposition({
+              turnQueue: ctx.turnQueue,
               promptsInFlight: ctx.promptsInFlight,
               activeTurnId: liveActiveTurnId,
               interruptedTurnIds: ctx.interruptedTurnIds,
@@ -2058,15 +2180,26 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 enqueuedAtMs: yield* Clock.currentTimeMillis,
               },
             });
-            if (disposition._tag === "queued") {
-              // Capability matrix must not declare queue until drain is wired.
-              return yield* new ProviderAdapterValidationError({
-                provider: PROVIDER,
-                operation: "sendTurn",
-                issue:
-                  "Grok turn queue drain is not implemented; sendWhileRunning must not be queue.",
+            ctx.turnQueue = disposed.state;
+            if (disposed.disposition._tag === "queued") {
+              // Hold this send until the live turn settles, then auto-start.
+              // sendTurnBlocksUntilSettled: await the deferred so the client
+              // still gets a completed turn result for this message.
+              const result = yield* Deferred.make<
+                ProviderTurnStartResult,
+                ProviderAdapterRequestError | ProviderAdapterValidationError
+              >();
+              ctx.pendingSends.set(disposed.disposition.queueId, {
+                turnId: nextTurnId,
+                input,
+                result,
               });
+              return {
+                _tag: "queued" as const,
+                result,
+              };
             }
+            const disposition = disposed.disposition;
             const steeringTurnId = disposition._tag === "steer" ? liveActiveTurnId : undefined;
             if (steeringTurnId === undefined && (ctx.promptsInFlight > 0 || liveActiveTurnId)) {
               // Drop residual slots/ids from a cancelled or half-settled turn so
@@ -2075,6 +2208,10 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               ctx.activeTurnId = undefined;
             }
             const turnId = steeringTurnId ?? nextTurnId;
+            // Track the new (or steered) turn in queue bookkeeping for drain.
+            if (steeringTurnId === undefined) {
+              ctx.turnQueue = trackLiveTurn(ctx.turnQueue, String(turnId));
+            }
             // Count this prompt immediately so a superseded in-flight prompt
             // resolving from here on does not settle the turn; decremented on
             // preparation failure here, and after the prompt below otherwise.
@@ -2250,6 +2387,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               };
 
               return {
+                _tag: "ready" as const,
                 acp: ctx.acp,
                 acpSessionId: ctx.acpSessionId,
                 displayModel,
@@ -2259,15 +2397,21 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 isSteering: steeringTurnId !== undefined,
               };
             }).pipe(
-              Effect.tapCause(() =>
+              Effect.tapCause((cause) =>
                 Effect.gen(function* () {
                   const liveCtx = sessions.get(input.threadId);
                   if (!liveCtx) {
                     return;
                   }
+                  // Only settle when prep bound a turn id (ready path / after turnId set).
+                  const failedTurnId = liveCtx.activeTurnId ?? liveCtx.session.activeTurnId;
+                  if (!failedTurnId) {
+                    return;
+                  }
+                  void cause;
                   // turn.started already fired above — always emit terminal
                   // completion so Working cannot stick after prep failure.
-                  yield* settlePromptInFlight(input.threadId, turnId, liveCtx.acpSessionId, {
+                  yield* settlePromptInFlight(input.threadId, failedTurnId, liveCtx.acpSessionId, {
                     errorMessage: "Grok prompt preparation failed.",
                     emitTurnCompletion: true,
                     settleAllPrompts: true,
@@ -2277,6 +2421,9 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             );
           }),
         );
+        if (prepared._tag === "queued") {
+          return yield* Deferred.await(prepared.result);
+        }
         const promptSettled = yield* Ref.make(false);
         const promptRpcSucceeded = yield* Ref.make(false);
         const promptResultRef = yield* Ref.make<EffectAcpSchema.PromptResponse | undefined>(
@@ -2596,6 +2743,9 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 const completedStopReason = completedStopReasonFromPromptResponse(result);
                 const cancelled = result.stopReason === "cancelled";
                 const silentEmptyCompletion = !cancelled && ctx.turnVisibleUpdateCount === 0;
+                let drainReason: "completed" | "cancelled" | "error" = cancelled
+                  ? "cancelled"
+                  : "completed";
                 // Agent end_turn without tool completion still leaves open tools
                 // in the work log unless we force-close them here.
                 yield* forceCloseOpenTools(ctx, input.threadId, prepared.turnId);
@@ -2603,6 +2753,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   // Real Grok sessions after Stop/recycle can return end_turn with
                   // zero stream updates. Treat that as failure + compromise so the
                   // next message recycles instead of silently "working" forever.
+                  drainReason = "error";
                   yield* markAcpCompromised(ctx, "silent empty end_turn");
                   yield* offerRuntimeEvent({
                     type: "turn.completed",
@@ -2632,6 +2783,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                     ? undefined
                     : classifyProviderEmittedFailure(lastAssistantText);
                   if (emittedFailure) {
+                    drainReason = "error";
                     const message = formatProviderEmittedFailureMessage(emittedFailure, {
                       providerLabel: "Grok",
                       model: prepared.displayModel,
@@ -2680,6 +2832,10 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   }
                 }
                 ctx.interruptedTurnIds.delete(prepared.turnId);
+                const nextPending = takeNextQueuedSend(ctx, drainReason);
+                if (nextPending) {
+                  yield* forkDrainQueuedSend(ctx, nextPending);
+                }
                 yield* Ref.set(promptSettled, true);
               } else if (remainingPrompts > 0) {
                 yield* Ref.set(promptSettled, true);
@@ -2807,6 +2963,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           ),
         );
       });
+    sendTurnImpl = sendTurn;
 
     const interruptTurn: GrokAdapterShape["interruptTurn"] = (threadId, turnId) =>
       Effect.gen(function* () {
@@ -2855,6 +3012,8 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               observed.interruptedTurnId ?? turnId ?? activeTurnId ?? ctx.session.activeTurnId;
             yield* settlePendingApprovalsAsCancelled(ctx.pendingApprovals);
             yield* settlePendingUserInputsAsCancelled(ctx.pendingUserInputs);
+            // Drop held sends on Stop — do not auto-start them after cancel.
+            yield* abandonQueuedSends(ctx);
             // Settle local turn state before talking to the agent process. Cancel
             // can hang when Grok is wedged; the UI must still leave the running
             // state and accept follow-up messages.

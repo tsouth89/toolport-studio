@@ -18,8 +18,10 @@ describe("PROVIDER_TURN_CAPABILITIES", () => {
     expect(Object.keys(PROVIDER_TURN_CAPABILITIES).sort()).toEqual([...PROVIDERS].sort());
   });
 
-  it("currently declares sendWhileRunning as steer for every provider", () => {
+  it("declares queue drain for Grok; other providers still steer", () => {
+    expect(PROVIDER_TURN_CAPABILITIES.grok.sendWhileRunning).toBe("queue");
     for (const provider of PROVIDERS) {
+      if (provider === "grok") continue;
       expect(PROVIDER_TURN_CAPABILITIES[provider].sendWhileRunning).toBe("steer");
     }
   });
@@ -45,6 +47,7 @@ describe("PROVIDER_TURN_CAPABILITIES", () => {
     });
     expect(PROVIDER_TURN_CAPABILITIES.grok).toMatchObject({
       sendTurnBlocksUntilSettled: true,
+      sendWhileRunning: "queue",
       nativeInterject: "acp-preempt",
       interruptCanHang: true,
       subprocessLivenessObservable: true,
@@ -52,7 +55,16 @@ describe("PROVIDER_TURN_CAPABILITIES", () => {
       requiresModelSelectionPerTurn: false,
       turnTerminalSignal: "acp-stop-reason",
     });
-    expect(PROVIDER_TURN_CAPABILITIES.cursor).toEqual(PROVIDER_TURN_CAPABILITIES.grok);
+    expect(PROVIDER_TURN_CAPABILITIES.cursor).toMatchObject({
+      sendTurnBlocksUntilSettled: true,
+      sendWhileRunning: "steer",
+      nativeInterject: "acp-preempt",
+      interruptCanHang: true,
+      subprocessLivenessObservable: true,
+      requiresCwdAtSessionStart: true,
+      requiresModelSelectionPerTurn: false,
+      turnTerminalSignal: "acp-stop-reason",
+    });
     expect(PROVIDER_TURN_CAPABILITIES.opencode).toMatchObject({
       sendTurnBlocksUntilSettled: false,
       nativeInterject: "turn-reuse",

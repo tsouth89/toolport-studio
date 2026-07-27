@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  abandonTurnQueue,
   beginTurn,
   disposeSendWhileRunning,
   emptyTurnQueue,
@@ -8,6 +9,7 @@ import {
   markTurnStopping,
   pendingCount,
   settleTurn,
+  trackLiveTurn,
 } from "./TurnQueue.ts";
 
 const turn = (id: string, text = "hi") => ({
@@ -97,5 +99,25 @@ describe("TurnQueue", () => {
     expect(settled.next).toBeUndefined();
     expect(settled.state.activeTurnId).toBeUndefined();
     expect(settled.state.phase).toBe("idle");
+  });
+
+  it("abandons pending inputs on Stop without returning a next turn", () => {
+    let state = beginTurn(emptyTurnQueue(), "turn-1");
+    state = markTurnRunning(state);
+    state = disposeSendWhileRunning(state, {
+      sendWhileRunning: "queue",
+      nextTurn: turn("b", "second"),
+    }).state;
+    const abandoned = abandonTurnQueue(state);
+    expect(abandoned.abandoned.map((entry) => entry.id)).toEqual(["b"]);
+    expect(pendingCount(abandoned.state)).toBe(0);
+    expect(abandoned.state.activeTurnId).toBeUndefined();
+  });
+
+  it("trackLiveTurn marks a running turn for queue bookkeeping", () => {
+    const state = trackLiveTurn(emptyTurnQueue(), "turn-1");
+    expect(state.activeTurnId).toBe("turn-1");
+    expect(state.phase).toBe("running");
+    expect(trackLiveTurn(state, "turn-1").phase).toBe("running");
   });
 });

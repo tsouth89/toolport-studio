@@ -28,7 +28,9 @@ model, capability matrix, stop settle rules).
 
 ## Wiring status
 
-- **Grok:** interjection + steer + force-close/chrome policy flags + `resolveGrokSendDisposition` (TurnQueue) + provider-emitted failure classification
+- **Grok:** TurnQueue drain (`sendWhileRunning: "queue"`) + force-close/chrome policy +
+  provider-emitted failure classification. Mid-turn sends are held and auto-started after settle;
+  Stop abandons the queue. Steer remains available if capability is flipped back.
 - **Cursor:** `canSteerSendTurn` + open-tool force-close on Stop + post-Stop ACP recycle + silence warning (no open tools) + provider-emitted failure classification
 - **Claude:** `canSteerSendTurn` + open-tool force-close on settle + provider-emitted failure classification
 - **OpenCode:** `canSteerSendTurn` + force-settle session on Stop + open-tool force-close on Stop/idle/error + provider-emitted failure classification on idle
@@ -39,8 +41,7 @@ model, capability matrix, stop settle rules).
   settle as failed turns via `classifyProviderEmittedFailure` (all five adapters)
 - Conformance (all five providers): first-progress, assistant-text, interrupt, stop-mid-tool,
   send-while-running, post-stop-follow-up, pending-approval, process-death, resume-preserves-history
-- Queue drain (hold + auto-start next after settle) is not transport-wired yet; capability matrix
-  still declares `sendWhileRunning: "steer"` for every provider. `queued` disposition is refused.
+- Queue drain is transport-wired on **Grok** only; other providers still declare `steer`.
 
 ## Tests
 

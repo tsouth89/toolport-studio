@@ -144,3 +144,45 @@ export function settleTurn(
 export function pendingCount(state: TurnQueueState): number {
   return state.pending.length;
 }
+
+/**
+ * Drop the live turn and every held send (Stop / session teardown). Callers
+ * must cancel any adapter-side waiters for the returned abandoned inputs.
+ */
+export function abandonTurnQueue(state: TurnQueueState): {
+  readonly state: TurnQueueState;
+  readonly abandoned: ReadonlyArray<QueuedTurnInput>;
+} {
+  return {
+    state: emptyTurnQueue(),
+    abandoned: state.pending,
+  };
+}
+
+/**
+ * Sync queue bookkeeping with a live provider turn id. No-op when already
+ * tracking the same id in a live phase.
+ */
+export function trackLiveTurn(state: TurnQueueState, turnId: string): TurnQueueState {
+  if (state.activeTurnId === turnId && isLivePhase(state.phase) && state.phase !== "stopping") {
+    if (state.phase === "preparing") {
+      return markTurnRunning(state);
+    }
+    return state;
+  }
+  let next = state;
+  if (
+    state.activeTurnId !== undefined &&
+    state.activeTurnId !== turnId &&
+    isLivePhase(state.phase)
+  ) {
+    // Replace stale live id without draining pending (caller settles first).
+    next = {
+      ...state,
+      activeTurnId: undefined,
+      phase: resetTurnPhase(),
+    };
+  }
+  next = beginTurn(next, turnId);
+  return markTurnRunning(next);
+}
