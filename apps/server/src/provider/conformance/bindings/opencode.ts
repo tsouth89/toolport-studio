@@ -288,6 +288,12 @@ function makeRuntimeDouble(events: PushableEvents): OpenCodeRuntimeShape {
 
 export const openCodeConformanceBinding: ConformanceBinding = {
   provider: "opencode",
+  waivers: {
+    "follow-up-reaches-the-provider":
+      "binding exposes no promptsReceived hook yet; delivery is unasserted for this provider",
+    "tool-name-survives-untitled-updates":
+      "fake cannot emit an untitled update for an already-named tool",
+  },
   sendWhileRunning: "steer",
   openSession: (script, options?: ConformanceOpenSessionOptions) =>
     Effect.gen(function* () {

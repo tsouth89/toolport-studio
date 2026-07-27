@@ -59,6 +59,10 @@ class CursorConformanceAdapter extends Context.Service<
 
 export const cursorConformanceBinding: ConformanceBinding = {
   provider: "cursor",
+  waivers: {
+    "follow-up-reaches-the-provider":
+      "binding exposes no promptsReceived hook yet; delivery is unasserted for this provider",
+  },
   sendWhileRunning: "steer",
   openSession: (script, options?: ConformanceOpenSessionOptions) =>
     Effect.gen(function* () {

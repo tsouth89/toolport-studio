@@ -8,9 +8,12 @@
  */
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import * as Schedule from "effect/Schedule";
 import type * as Scope from "effect/Scope";
 
-import type { ProviderRuntimeEvent } from "@t3tools/contracts";
+import { TurnId, type ProviderRuntimeEvent } from "@t3tools/contracts";
+import { isGenericToolActivityTitle } from "@t3tools/shared/toolActivity";
 
 import type { ProviderAdapterError } from "../Errors.ts";
 import {
@@ -21,11 +24,13 @@ import {
 } from "../turnEngine/index.ts";
 import {
   CONFORMANCE_CASE_IDS,
+  ConformanceHarnessError as ConformanceHarnessErrorClass,
   FIRST_EVENT_BUDGET_MS,
   STOP_SETTLE_BUDGET_MS,
   type ConformanceBinding,
   type ConformanceCaseId,
   type ConformanceHarnessError,
+  type ConformanceSession,
 } from "./contract.ts";
 
 /** Everything a conformance case may fail with. Assertions surface as defects. */
@@ -39,6 +44,13 @@ type CaseFailure = ConformanceHarnessError | ProviderAdapterError;
 const SECOND_TURN_OBSERVATION_MS = 2_000;
 
 /**
+ * How long a mid-turn follow-up may take to reach the provider. Generous: a
+ * steering adapter has to preempt the live prompt first, and a queueing one
+ * only delivers after the current turn settles.
+ */
+const FOLLOW_UP_DELIVERY_BUDGET_MS = 20_000;
+
+/**
  * Cases the runner does not yet implement. Listed explicitly so the gap is
  * visible in the suite instead of being inferred from absence — the same
  * failure mode this contract exists to prevent. Removing an entry here is how
@@ -49,6 +61,41 @@ const NOT_YET_IMPLEMENTED: ReadonlyArray<ConformanceCaseId> = [];
 
 const isTurnTerminal = isTurnTerminalRuntimeEvent;
 const isStopSettled = isStopSettledRuntimeEvent;
+
+/**
+ * Wait for a matching event that arrives *after* `fromIndex`.
+ *
+ * `session.awaitEvent` scans the whole accumulated buffer, so a Stop assertion
+ * written on top of it passes whenever the turn had already terminalized on its
+ * own — it proves a terminal event exists, not that Stop caused one. Every stop
+ * case therefore snapshots the event count first and asserts against new events
+ * only. This is the property that lets a "Stop does nothing" adapter bug fail
+ * the contract instead of sailing through it.
+ */
+const awaitEventAfter = (
+  session: ConformanceSession,
+  fromIndex: number,
+  predicate: (event: ProviderRuntimeEvent) => boolean,
+  options: { readonly timeoutMs: number; readonly describe: string; readonly provider: string },
+): Effect.Effect<ProviderRuntimeEvent, ConformanceHarnessError> =>
+  session.events.pipe(
+    Effect.map((events) => events.slice(fromIndex).find(predicate)),
+    Effect.repeat({
+      while: (found) => found === undefined,
+      schedule: Schedule.spaced("10 millis"),
+    }),
+    Effect.timeoutOption(`${options.timeoutMs} millis`),
+    Effect.flatMap((result) =>
+      Option.isSome(result) && result.value !== undefined
+        ? Effect.succeed(result.value)
+        : Effect.fail(
+            new ConformanceHarnessErrorClass({
+              provider: options.provider,
+              detail: `timed out waiting for ${options.describe} (no matching event after the action)`,
+            }),
+          ),
+    ),
+  );
 
 const HISTORY_MARKER = "stored-history-marker-zebra-42";
 
@@ -152,11 +199,13 @@ export function runCoreLoopConformance(binding: ConformanceBinding): void {
           describe: "turn started",
         });
 
+        const before = (yield* session.events).length;
         yield* session.adapter.interruptTurn(session.threadId);
 
-        yield* session.awaitEvent(isStopSettled, {
+        yield* awaitEventAfter(session, before, isStopSettled, {
           timeoutMs: STOP_SETTLE_BUDGET_MS,
           describe: "session settled after Stop",
+          provider: binding.provider,
         });
       }),
     );
@@ -182,12 +231,207 @@ export function runCoreLoopConformance(binding: ConformanceBinding): void {
           })
           .pipe(Effect.catchTag("ConformanceHarnessError", () => Effect.void));
 
+        const before = (yield* session.events).length;
         yield* session.adapter.interruptTurn(session.threadId);
 
-        yield* session.awaitEvent(isStopSettled, {
+        yield* awaitEventAfter(session, before, isStopSettled, {
           timeoutMs: STOP_SETTLE_BUDGET_MS,
           describe: "session settled after Stop mid-tool",
+          provider: binding.provider,
         });
+      }),
+    );
+
+    caseFor(
+      "stop-with-stale-turn-id-settles",
+      "interrupt settles even when the client names a turn the adapter moved past",
+      () =>
+        Effect.gen(function* () {
+          // Clients Stop the turn *they* know about. Any adapter that treats the
+          // turn id as a gate rather than a hint drops the interrupt on the
+          // floor, and the session is unstoppable with no error to explain it.
+          // The other stop cases pass no turn id at all, which is why this hole
+          // stayed open.
+          const script = [
+            { kind: "tool-start" as const, toolId: "tool-1", name: "long_tool" },
+            { kind: "hang" as const },
+          ];
+          const session = yield* binding.openSession(script);
+          yield* session.sendScriptedTurn({ text: "use a long tool", script });
+          yield* session.awaitEvent((event) => event.type === "turn.started", {
+            timeoutMs: FIRST_EVENT_BUDGET_MS,
+            describe: "turn started",
+          });
+
+          const before = (yield* session.events).length;
+          yield* session.adapter.interruptTurn(
+            session.threadId,
+            TurnId.make("turn-the-client-still-remembers"),
+          );
+
+          yield* awaitEventAfter(session, before, isStopSettled, {
+            timeoutMs: STOP_SETTLE_BUDGET_MS,
+            describe: "session settled after Stop with a stale turn id",
+            provider: binding.provider,
+          });
+        }),
+    );
+
+    caseFor("follow-up-then-stop-settles", "interrupt settles after a mid-turn follow-up", () =>
+      Effect.gen(function* () {
+        // The real sequence users hit: send, follow up while it is still
+        // working, then Stop. Whichever way the adapter dispositions the
+        // follow-up (steer or queue), Stop must still settle the session.
+        const script = [
+          { kind: "assistant-text" as const, text: "working" },
+          { kind: "hang" as const },
+        ];
+        const session = yield* binding.openSession(script);
+        yield* session.sendScriptedTurn({ text: "first", script });
+        const started = yield* session.awaitEvent((event) => event.type === "turn.started", {
+          timeoutMs: FIRST_EVENT_BUDGET_MS,
+          describe: "first turn started",
+        });
+
+        yield* session.sendScriptedTurn({ text: "actually, do this instead", script });
+
+        // Stop naming the first turn — exactly what a client holding the
+        // pre-follow-up turn id sends.
+        const before = (yield* session.events).length;
+        yield* session.adapter.interruptTurn(
+          session.threadId,
+          started.turnId ?? TurnId.make("unknown-turn"),
+        );
+
+        yield* awaitEventAfter(session, before, isStopSettled, {
+          timeoutMs: STOP_SETTLE_BUDGET_MS,
+          describe: "session settled after follow-up then Stop",
+          provider: binding.provider,
+        });
+      }),
+    );
+
+    caseFor("double-stop-does-not-wedge", "a second Stop is harmless", () =>
+      Effect.gen(function* () {
+        // Users double-tap Stop when the first press looks like it did nothing.
+        // The second must not error, resurrect the turn, or wedge the session.
+        const script = [
+          { kind: "assistant-text" as const, text: "thinking" },
+          { kind: "hang" as const },
+        ];
+        const session = yield* binding.openSession(script);
+        yield* session.sendScriptedTurn({ text: "long task", script });
+        yield* session.awaitEvent((event) => event.type === "turn.started", {
+          timeoutMs: FIRST_EVENT_BUDGET_MS,
+          describe: "turn started",
+        });
+
+        const before = (yield* session.events).length;
+        yield* session.adapter.interruptTurn(session.threadId);
+        yield* awaitEventAfter(session, before, isStopSettled, {
+          timeoutMs: STOP_SETTLE_BUDGET_MS,
+          describe: "session settled after first Stop",
+          provider: binding.provider,
+        });
+
+        // Must not fail. A second Stop against a settled session is a no-op,
+        // not an error the UI has to explain.
+        yield* session.adapter.interruptTurn(session.threadId);
+
+        const afterSecondStop = (yield* session.events).length;
+        const resurrected = (yield* session.events)
+          .slice(afterSecondStop)
+          .some((event) => event.type === "turn.started");
+        assert.isFalse(resurrected, "second Stop restarted a turn");
+      }),
+    );
+
+    caseFor(
+      "tool-name-survives-untitled-updates",
+      "a named tool keeps its name across untitled updates",
+      () =>
+        Effect.gen(function* () {
+          // Providers stream status/output updates that carry no title. Letting
+          // one of those rename the row to a generic placeholder is what pins
+          // the Working status to "Tool call" for the life of a long tool.
+          const script = [
+            { kind: "tool-start" as const, toolId: "tool-1", name: "Read File" },
+            { kind: "tool-untitled-update" as const, toolId: "tool-1" },
+            { kind: "complete" as const },
+          ];
+          const session = yield* binding.openSession(script);
+          yield* session.sendScriptedTurn({ text: "read a file", script });
+          yield* session.awaitEvent(isTurnTerminal, {
+            timeoutMs: FIRST_EVENT_BUDGET_MS,
+            describe: "turn terminal",
+          });
+
+          const titles = (yield* session.events).flatMap((event) => {
+            if (
+              event.type !== "item.started" &&
+              event.type !== "item.updated" &&
+              event.type !== "item.completed"
+            ) {
+              return [];
+            }
+            const title = (event.payload as { readonly title?: unknown }).title;
+            return typeof title === "string" ? [title] : [];
+          });
+
+          assert.isAbove(titles.length, 0, "no tool titles reached the runtime event stream");
+          const degraded = titles.filter((title) => isGenericToolActivityTitle(title));
+          assert.deepEqual(
+            degraded,
+            [],
+            `tool title degraded to a generic placeholder: ${JSON.stringify(titles)}`,
+          );
+        }),
+    );
+
+    caseFor("follow-up-reaches-the-provider", "a mid-turn follow-up reaches the provider", () =>
+      Effect.gen(function* () {
+        // Whether the adapter steers or queues, the user's words must reach the
+        // model. Runtime events cannot show this — a steer reuses the live turn
+        // id, so a dropped follow-up is indistinguishable from a working one.
+        const script = [
+          { kind: "assistant-text" as const, text: "working" },
+          { kind: "hang" as const },
+        ];
+        const session = yield* binding.openSession(script);
+        const promptsReceived = session.promptsReceived;
+        if (promptsReceived === undefined) {
+          return yield* Effect.fail(
+            new ConformanceHarnessErrorClass({
+              provider: binding.provider,
+              detail:
+                "binding exposes no promptsReceived hook; waive this case explicitly instead of leaving it unasserted",
+            }),
+          );
+        }
+        yield* session.sendScriptedTurn({ text: "first", script });
+        yield* session.awaitEvent((event) => event.type === "turn.started", {
+          timeoutMs: FIRST_EVENT_BUDGET_MS,
+          describe: "turn started",
+        });
+
+        const followUpText = "follow-up-marker-quokka-77";
+        yield* session.sendScriptedTurn({ text: followUpText, script });
+
+        yield* promptsReceived.pipe(
+          Effect.map((prompts) => prompts.some((prompt) => prompt.includes(followUpText))),
+          Effect.repeat({ while: (found) => !found, schedule: Schedule.spaced("50 millis") }),
+          Effect.timeoutOption(`${FOLLOW_UP_DELIVERY_BUDGET_MS} millis`),
+          Effect.flatMap((result) =>
+            Option.isSome(result) && result.value
+              ? Effect.void
+              : Effect.fail(
+                  new ConformanceHarnessErrorClass({
+                    provider: binding.provider,
+                    detail: `mid-turn follow-up never reached the provider within ${FOLLOW_UP_DELIVERY_BUDGET_MS}ms`,
+                  }),
+                ),
+          ),
+        );
       }),
     );
 

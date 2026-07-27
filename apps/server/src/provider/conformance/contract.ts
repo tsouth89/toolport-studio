@@ -55,6 +55,11 @@ export const CONFORMANCE_CASE_IDS = [
   "stop-mid-stream-settles",
   "stop-mid-tool-terminalizes",
   "stop-with-pending-approval-settles",
+  "stop-with-stale-turn-id-settles",
+  "follow-up-then-stop-settles",
+  "double-stop-does-not-wedge",
+  "tool-name-survives-untitled-updates",
+  "follow-up-reaches-the-provider",
   "send-while-running-has-one-behavior",
   "post-stop-follow-up-runs",
   "process-death-is-typed-error",
@@ -70,6 +75,12 @@ export type ConformanceCaseId = (typeof CONFORMANCE_CASE_IDS)[number];
 export type ConformanceScriptStep =
   | { readonly kind: "assistant-text"; readonly text: string }
   | { readonly kind: "tool-start"; readonly toolId: string; readonly name: string }
+  /**
+   * Further updates for an already-named tool that carry no name of their own —
+   * a status change or a chunk of streamed output. Providers emit these
+   * constantly; the tool must keep the name it was given.
+   */
+  | { readonly kind: "tool-untitled-update"; readonly toolId: string }
   | { readonly kind: "tool-end"; readonly toolId: string }
   | { readonly kind: "approval-request"; readonly requestId: string; readonly toolName: string }
   /** Provider goes quiet with the turn still open. Nothing further is emitted. */
@@ -119,6 +130,17 @@ export interface ConformanceSession {
   }) => Effect.Effect<void, ProviderAdapterError | ConformanceHarnessError>;
   /** Runtime events observed so far, in emission order. */
   readonly events: Effect.Effect<ReadonlyArray<ProviderRuntimeEvent>>;
+  /**
+   * Prompt texts the fake provider actually received, in arrival order.
+   *
+   * The only assertion surface that can prove a mid-turn send *reached the
+   * model* rather than being dropped or silently held. Runtime events cannot:
+   * a steer reuses the live turn id, so a follow-up that never left the adapter
+   * looks identical to one the provider is working on. Optional because it
+   * requires the fake to record inbound prompts; bindings that do not are
+   * waived from `follow-up-reaches-the-provider` rather than passing vacuously.
+   */
+  readonly promptsReceived?: Effect.Effect<ReadonlyArray<string>, ConformanceHarnessError>;
   /**
    * Durable resume handle for this session, if the adapter has published one.
    * Used by `resume-preserves-history` to stop and reopen without losing the

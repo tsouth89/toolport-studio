@@ -299,6 +299,12 @@ function playScript(
 
 export const codexConformanceBinding: ConformanceBinding = {
   provider: "codex",
+  waivers: {
+    "follow-up-reaches-the-provider":
+      "binding exposes no promptsReceived hook yet; delivery is unasserted for this provider",
+    "tool-name-survives-untitled-updates":
+      "fake cannot emit an untitled update for an already-named tool",
+  },
   // Declared to match what the client actually does: the composer sends
   // `intent: "steer"` for every provider. If Codex cannot honour that, the
   // contract must say so out loud rather than let the UI keep promising it.

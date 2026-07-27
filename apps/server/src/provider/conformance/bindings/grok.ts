@@ -14,6 +14,8 @@
  *
  * Cursor is the same family and will bind almost identically.
  */
+import * as NodeFs from "node:fs";
+import * as NodeOs from "node:os";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 
@@ -76,6 +78,11 @@ export function scriptToAcpEnv(script: ConformanceScript): Record<string, string
         env.T3_ACP_PROMPT_RESPONSE_TEXT = step.text;
         break;
       }
+      case "tool-untitled-update": {
+        // Named tool_call followed by title-less tool_call_update frames.
+        env.T3_ACP_EMIT_GENERIC_TOOL_PLACEHOLDERS = "1";
+        break;
+      }
       case "tool-start":
       case "tool-end": {
         // tool-start + hang: open a tool then wedge (Stop mid-tool).
@@ -120,9 +127,16 @@ export const grokConformanceBinding: ConformanceBinding = {
   sendWhileRunning: "steer",
   openSession: (script, options?: ConformanceOpenSessionOptions) =>
     Effect.gen(function* () {
+      // Raw inbound JSON-RPC log — the only way to prove a mid-turn follow-up
+      // actually reached the agent rather than being dropped in the adapter.
+      const requestLogPath = NodePath.join(
+        NodeOs.tmpdir(),
+        `t3-conformance-grok-${process.pid}-${Date.now()}-${Math.floor(Math.random() * 1e6)}.log`,
+      );
       const environment: NodeJS.ProcessEnv = {
         ...process.env,
         ...scriptToAcpEnv(script),
+        T3_ACP_REQUEST_LOG_PATH: requestLogPath,
       };
 
       const layer = Layer.effect(
@@ -181,6 +195,14 @@ export const grokConformanceBinding: ConformanceBinding = {
           adapter
             .sendTurn({ threadId: THREAD_ID, input: text, attachments: [] })
             .pipe(Effect.forkScoped, Effect.asVoid) as never,
+        promptsReceived: Effect.sync(() => {
+          if (!NodeFs.existsSync(requestLogPath)) {
+            return [];
+          }
+          return NodeFs.readFileSync(requestLogPath, "utf8")
+            .split("\n")
+            .filter((line) => line.includes("session/prompt"));
+        }),
         awaitEvent: (predicate, options) =>
           Ref.get(observed).pipe(
             Effect.map((events) => events.find(predicate)),
