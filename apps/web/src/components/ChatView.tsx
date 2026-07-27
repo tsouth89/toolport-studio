@@ -227,6 +227,7 @@ import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { MessagesTimeline } from "./chat/MessagesTimeline";
 import {
+  deriveActiveWorkingFollowUpIntent,
   deriveActiveWorkingToolLabel,
   shouldOfferLastUserMessageRetry,
 } from "./chat/MessagesTimeline.logic";
@@ -6142,6 +6143,23 @@ function ChatViewContent(props: ChatViewProps) {
                         ) : (
                           "…"
                         )}
+                        {(() => {
+                          const followUp = deriveActiveWorkingFollowUpIntent({
+                            timelineEntries,
+                            activeTurnStartedAt: activeWorkStartedAt,
+                          });
+                          if (!followUp) {
+                            return null;
+                          }
+                          return (
+                            <span
+                              className="min-w-0 max-w-[min(28rem,50vw)] truncate font-normal text-muted-foreground"
+                              title={followUp}
+                            >
+                              · Following up: {followUp}
+                            </span>
+                          );
+                        })()}
                       </span>
                     ) : null}
                     {activeThreadQueueCount > 0 ? (

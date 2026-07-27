@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   computeStableMessagesTimelineRows,
   computeMessageDurationStart,
+  deriveActiveWorkingFollowUpIntent,
   deriveActiveWorkingToolLabel,
   deriveMessagesTimelineRows,
   normalizeCompactToolLabel,
@@ -1350,6 +1351,107 @@ describe("computeStableMessagesTimelineRows", () => {
       activeToolLabel: "Ran command",
       activeToolDetail: "gh pr checks 479 --watch",
       hasLongRunningOpenTool: true,
+    });
+  });
+
+  it("surfaces mid-turn follow-up intent on the Working row over a ghost tool", () => {
+    expect(
+      deriveActiveWorkingFollowUpIntent({
+        timelineEntries: [
+          {
+            id: "u1",
+            kind: "message",
+            createdAt: "2026-01-01T00:00:01Z",
+            message: {
+              id: "u1" as never,
+              role: "user",
+              text: "proceed as recommended",
+              turnId: null,
+              createdAt: "2026-01-01T00:00:01Z",
+              updatedAt: "2026-01-01T00:00:01Z",
+              streaming: false,
+            },
+          },
+          {
+            id: "u2",
+            kind: "message",
+            createdAt: "2026-01-01T00:00:40Z",
+            message: {
+              id: "u2" as never,
+              role: "user",
+              text: "save it as a draft release before you publish",
+              turnId: "turn-1" as never,
+              createdAt: "2026-01-01T00:00:40Z",
+              updatedAt: "2026-01-01T00:00:40Z",
+              streaming: false,
+            },
+          },
+        ],
+        activeTurnStartedAt: "2026-01-01T00:00:00Z",
+      }),
+    ).toBe("save it as a draft release before you publish");
+
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "u1",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:01Z",
+          message: {
+            id: "u1" as never,
+            role: "user",
+            text: "proceed as recommended",
+            turnId: null,
+            createdAt: "2026-01-01T00:00:01Z",
+            updatedAt: "2026-01-01T00:00:01Z",
+            streaming: false,
+          },
+        },
+        {
+          id: "work-ghost",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:10Z",
+          entry: {
+            id: "work-1",
+            createdAt: "2026-01-01T00:00:10Z",
+            turnId: "turn-1" as never,
+            label: "Tool call",
+            toolTitle: "Tool call",
+            tone: "tool",
+            toolLifecycleStatus: "inProgress",
+          },
+        },
+        {
+          id: "u2",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:40Z",
+          message: {
+            id: "u2" as never,
+            role: "user",
+            text: "save it as a draft release before you publish",
+            turnId: "turn-1" as never,
+            createdAt: "2026-01-01T00:00:40Z",
+            updatedAt: "2026-01-01T00:00:40Z",
+            streaming: false,
+          },
+        },
+      ],
+      latestTurn: {
+        turnId: "turn-1" as never,
+        state: "running",
+        startedAt: "2026-01-01T00:00:00Z",
+        completedAt: null,
+      },
+      isWorking: true,
+      activeTurnStartedAt: "2026-01-01T00:00:00Z",
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    expect(rows.find((row) => row.kind === "working")).toMatchObject({
+      kind: "working",
+      activeToolLabel: "Following up",
+      activeToolDetail: "save it as a draft release before you publish · Tool call",
     });
   });
 });

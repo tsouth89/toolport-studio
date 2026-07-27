@@ -1345,11 +1345,13 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
       const firstTurnStarted = yield* Deferred.make<TurnId>();
       const steerCompleted =
         yield* Deferred.make<Extract<ProviderRuntimeEvent, { type: "turn.completed" }>>();
+      const runtimeEvents: ProviderRuntimeEvent[] = [];
       const eventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
         Effect.gen(function* () {
           if (String(event.threadId) !== String(threadId)) {
             return;
           }
+          runtimeEvents.push(event);
           if (event.type === "turn.started") {
             yield* Deferred.succeed(firstTurnStarted, event.turnId).pipe(Effect.ignore);
           }
@@ -1390,6 +1392,16 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
       assert.equal(String(completed.turnId), String(liveTurnId));
       // Steer keeps one turn; hang fiber should also release after preempt.
       yield* Fiber.join(hangFiber).pipe(Effect.timeout("8 seconds"), Effect.ignore);
+
+      // UI must learn the interjection immediately (not only when tools finish).
+      const followingUp = runtimeEvents.find(
+        (event) =>
+          event.type === "runtime.warning" &&
+          typeof event.payload?.message === "string" &&
+          event.payload.message.includes("Following up:") &&
+          event.payload.message.includes("stop and do this instead"),
+      );
+      assert.ok(followingUp, "steer must emit a Following up runtime.warning");
 
       const sessions = yield* adapter.listSessions();
       const session = sessions.find((entry) => entry.threadId === threadId);

@@ -158,6 +158,27 @@ export function makeAcpPlanUpdatedEvent(input: {
   };
 }
 
+function fallbackTitleFromAcpToolKind(kind: string | undefined): string {
+  switch (kind) {
+    case "execute":
+      return "Running command";
+    case "read":
+      return "Reading files";
+    case "edit":
+    case "delete":
+    case "move":
+      return "Editing files";
+    case "search":
+      return "Searching";
+    case "fetch":
+      return "Fetching";
+    case "think":
+      return "Thinking";
+    default:
+      return kind && kind.trim().length > 0 ? kind.trim() : "Tool call";
+  }
+}
+
 export function makeAcpToolCallEvent(input: {
   readonly stamp: AcpEventStamp;
   readonly provider: ProviderDriverKind;
@@ -172,7 +193,9 @@ export function makeAcpToolCallEvent(input: {
   const data: Record<string, unknown> = {
     ...input.toolCall.data,
     toolCallId: input.toolCall.toolCallId,
+    ...(input.toolCall.kind ? { kind: input.toolCall.kind } : {}),
   };
+  const title = input.toolCall.title?.trim() || fallbackTitleFromAcpToolKind(input.toolCall.kind);
   return {
     type:
       input.toolCall.status === "completed" || input.toolCall.status === "failed"
@@ -186,7 +209,7 @@ export function makeAcpToolCallEvent(input: {
     payload: {
       itemType: canonicalItemTypeFromAcpToolKind(input.toolCall.kind),
       ...(runtimeStatus ? { status: runtimeStatus } : {}),
-      ...(input.toolCall.title ? { title: input.toolCall.title } : {}),
+      title,
       ...(input.toolCall.detail ? { detail: input.toolCall.detail } : {}),
       data,
     },

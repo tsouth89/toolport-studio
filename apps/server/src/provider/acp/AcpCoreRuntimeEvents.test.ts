@@ -113,9 +113,36 @@ describe("AcpCoreRuntimeEvents", () => {
       payload: {
         itemType: "command_execution",
         status: "completed",
+        title: "Terminal",
         data: {
           command: "bun run test",
           toolCallId: "tool-1",
+          kind: "execute",
+        },
+      },
+    });
+
+    // Untitled ACP tools (common from Grok) must not land as bare "Tool call".
+    expect(
+      makeAcpToolCallEvent({
+        stamp,
+        provider: ProviderDriverKind.make("grok"),
+        threadId: "thread-1" as never,
+        turnId,
+        toolCall: {
+          toolCallId: "tool-untitled",
+          kind: "read",
+          status: "inProgress",
+        },
+        rawPayload: { sessionId: "session-1" },
+      }),
+    ).toMatchObject({
+      type: "item.updated",
+      payload: {
+        title: "Reading files",
+        data: {
+          toolCallId: "tool-untitled",
+          kind: "read",
         },
       },
     });

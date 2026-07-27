@@ -749,8 +749,13 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         const stamp = yield* makeEventStamp();
         const openIds = [...ctx.openToolCallIds];
         for (const toolCallId of openIds) {
+          const kind = ctx.openToolKinds.get(toolCallId);
+          const rawTitle =
+            ctx.openToolTitles.get(toolCallId)?.trim() || ctx.lastOpenToolTitle?.trim() || "";
+          // Prefer a real title; if we only stored the wire kind ("execute"),
+          // leave title empty so makeAcpToolCallEvent maps kind → "Running command".
           const title =
-            ctx.openToolTitles.get(toolCallId)?.trim() || ctx.lastOpenToolTitle?.trim() || "tool";
+            rawTitle.length > 0 && rawTitle !== "tool" && rawTitle !== kind ? rawTitle : undefined;
           yield* offerRuntimeEvent(
             makeAcpToolCallEvent({
               stamp,
@@ -759,19 +764,21 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               turnId,
               toolCall: {
                 toolCallId,
-                title,
+                ...(title ? { title } : {}),
+                ...(kind ? { kind } : {}),
                 status: "failed",
                 detail: "Tool did not complete before the turn stopped.",
-                data: { toolCallId, forcedClose: true },
+                data: { toolCallId, forcedClose: true, ...(kind ? { kind } : {}) },
               },
               rawPayload: {
                 source: "studio.open-tool-force-close",
                 toolCallId,
-                title,
+                ...(title ? { title } : {}),
+                ...(kind ? { kind } : {}),
               },
             }),
           );
-          ctx.completedToolTitles.push(`${title} (stopped)`);
+          ctx.completedToolTitles.push(`${title ?? kind ?? "tool"} (stopped)`);
         }
         ctx.openToolCallIds.clear();
         ctx.openToolTitles.clear();
@@ -2092,13 +2099,23 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                     )
                   : undefined;
               const usesContextRehydration = rehydrationPrefix !== undefined;
+              // Mid-turn steers must not look like a soft queue of the old plan.
+              // Lead with an explicit interjection so the model pivots now.
+              const interjectionLeadIn =
+                steeringTurnId !== undefined
+                  ? "The user interjected while you were working. Stop the previous plan and prioritize this instruction:\n\n"
+                  : "";
+              const steeredText =
+                text && interjectionLeadIn.length > 0 ? `${interjectionLeadIn}${text}` : text;
               const promptText =
-                text && rehydrationPrefix
-                  ? `${rehydrationPrefix}${text}`
+                steeredText && rehydrationPrefix
+                  ? `${rehydrationPrefix}${steeredText}`
                   : rehydrationPrefix
                     ? `${rehydrationPrefix}(continue)`
-                    : text;
-              if (steeringTurnId === undefined && text) {
+                    : steeredText;
+              // Always record raw user text (no lead-in), including mid-turn
+              // steers, so resume/rehydration keep the interjection they sent.
+              if (text) {
                 ctx.conversationLog = appendGrokConversationText(ctx.conversationLog, "user", text);
               }
               const promptParts: Array<EffectAcpSchema.ContentBlock> = [
@@ -2180,8 +2197,14 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
 
         return yield* Effect.gen(function* () {
           // Reset activity clock at prompt start so prior turn silence cannot trip us.
+          // Force-close open tools BEFORE clearing tracking — otherwise ghost
+          // inProgress rows stay in the work log as eternal "Tool call" and
+          // forceClose on steer becomes a no-op (the bug behind opaque Working).
           const activityCtx = sessions.get(input.threadId);
           if (activityCtx) {
+            if (activityCtx.openToolCallIds.size > 0) {
+              yield* forceCloseOpenTools(activityCtx, input.threadId, prepared.turnId);
+            }
             const activityNow = yield* Clock.currentTimeMillis;
             activityCtx.lastTurnActivityAtMs = activityNow;
             activityCtx.lastToolActivityAtMs = activityNow;
@@ -2260,20 +2283,51 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             }
           });
 
-          // Steering must interject now: ACP serializes session/prompt, so
-          // without preemption a second message waits until the first finishes
-          // (user sees "ignored until turn ends"). Cancel the active prompt,
-          // keep the same Studio turn, then send the new message immediately.
+          // Full interjection loop (not a soft queue):
+          // 1) Open tools already force-closed above (before tracking reset).
+          // 2) Preempt the in-flight session/prompt (ACP serializes prompts).
+          // 3) Tell the UI we heard the new message (Working chrome / work log).
+          // 4) Then send the new prompt on the same Studio turn.
           if (prepared.isSteering) {
-            yield* prepared.acp.preemptActivePrompt;
-            // Re-bind activity clocks so the pre-steer silence does not trip
-            // the watchdog against the new interjection.
             const liveForSteer = sessions.get(input.threadId);
             if (liveForSteer) {
               const nowMs = yield* Clock.currentTimeMillis;
               liveForSteer.lastTurnActivityAtMs = nowMs;
               liveForSteer.lastToolActivityAtMs = nowMs;
+              liveForSteer.turnVisibleUpdateCount += 1;
             }
+            yield* prepared.acp.preemptActivePrompt;
+            // Preview from the real user text only (strip interjection lead-in).
+            const followUpPreview = (() => {
+              const textPart = prepared.promptParts.find(
+                (part) => part && typeof part === "object" && part.type === "text",
+              );
+              const raw =
+                textPart && "text" in textPart && typeof textPart.text === "string"
+                  ? textPart.text.trim()
+                  : "";
+              const withoutLeadIn = raw
+                .replace(
+                  /^The user interjected while you were working\.\s*Stop the previous plan and prioritize this instruction:\s*/i,
+                  "",
+                )
+                .trim();
+              const preview = withoutLeadIn.length > 0 ? withoutLeadIn : raw;
+              if (preview.length === 0) {
+                return "new message";
+              }
+              return preview.length > 96 ? `${preview.slice(0, 95).trimEnd()}…` : preview;
+            })();
+            yield* offerRuntimeEvent({
+              type: "runtime.warning",
+              ...(yield* makeEventStamp()),
+              provider: PROVIDER,
+              threadId: input.threadId,
+              turnId: prepared.turnId,
+              payload: {
+                message: `Following up: ${followUpPreview}`,
+              },
+            });
           }
 
           // When the silence watchdog wins, prefer a controlled settle over
