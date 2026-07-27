@@ -2149,6 +2149,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 promptParts,
                 turnId,
                 usesContextRehydration,
+                isSteering: steeringTurnId !== undefined,
               };
             }).pipe(
               Effect.tapCause(() =>
@@ -2258,6 +2259,22 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               });
             }
           });
+
+          // Steering must interject now: ACP serializes session/prompt, so
+          // without preemption a second message waits until the first finishes
+          // (user sees "ignored until turn ends"). Cancel the active prompt,
+          // keep the same Studio turn, then send the new message immediately.
+          if (prepared.isSteering) {
+            yield* prepared.acp.preemptActivePrompt;
+            // Re-bind activity clocks so the pre-steer silence does not trip
+            // the watchdog against the new interjection.
+            const liveForSteer = sessions.get(input.threadId);
+            if (liveForSteer) {
+              const nowMs = yield* Clock.currentTimeMillis;
+              liveForSteer.lastTurnActivityAtMs = nowMs;
+              liveForSteer.lastToolActivityAtMs = nowMs;
+            }
+          }
 
           // When the silence watchdog wins, prefer a controlled settle over
           // failing the whole sendTurn: the UI keys off turn.completed failed.

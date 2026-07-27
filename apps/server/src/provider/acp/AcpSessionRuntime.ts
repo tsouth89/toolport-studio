@@ -206,6 +206,12 @@ export class AcpSessionRuntime extends Context.Service<
      */
     readonly cancel: Effect.Effect<void, EffectAcpErrors.AcpError>;
     /**
+     * Immediately releases the in-flight `session/prompt` so a steering message
+     * can run now instead of waiting for the current tool loop to finish.
+     * Does not force-settle the Studio turn (adapters keep the same turn id).
+     */
+    readonly preemptActivePrompt: Effect.Effect<void>;
+    /**
      * True when the most recent prompt was released by the local cancel latch
      * (agent process may still be wedged). Callers should recycle the child
      * before the next prompt.
@@ -929,6 +935,36 @@ export const make = (
           }),
         ),
       ),
+      preemptActivePrompt: Effect.gen(function* () {
+        const cancelledResponse = {
+          stopReason: "cancelled",
+        } satisfies EffectAcpSchema.PromptResponse;
+        const started = yield* Ref.get(startStateRef);
+        if (started._tag === "Started") {
+          // Best-effort agent cancel; never block the steering prompt on it.
+          yield* acp.agent
+            .cancel({ sessionId: started.result.sessionId })
+            .pipe(Effect.ignore, Effect.forkIn(runtimeScope));
+        }
+        const localCancel = yield* Ref.get(activePromptCancelRef);
+        if (Option.isSome(localCancel)) {
+          // Force-release the prompt semaphore immediately so the steering
+          // message is not stuck behind the rest of the current tool loop.
+          yield* Deferred.succeed(localCancel.value, cancelledResponse).pipe(Effect.ignore);
+        }
+        const activePromptFiber = yield* Ref.get(activePromptFiberRef);
+        if (Option.isSome(activePromptFiber)) {
+          yield* Fiber.interrupt(activePromptFiber.value).pipe(
+            Effect.ignore,
+            Effect.forkIn(runtimeScope),
+          );
+        }
+        // Yield so the cancelled prompt's ensuring block can clear refs and
+        // release the serialization permit before the steer calls prompt().
+        for (let yieldAttempt = 0; yieldAttempt < 8; yieldAttempt += 1) {
+          yield* Effect.yieldNow;
+        }
+      }),
       wasForceCancelled: Ref.get(forceCancelledRef),
       setMode: (modeId) =>
         Ref.get(modeStateRef).pipe(

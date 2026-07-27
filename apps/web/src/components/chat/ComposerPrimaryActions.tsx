@@ -28,8 +28,10 @@ interface ComposerPrimaryActionsProps {
   preserveComposerFocusOnPointerDown?: boolean;
   onPreviousPendingQuestion: () => void;
   onInterrupt: () => void;
-  /** Inject composer content into the live turn (steer). */
+  /** Inject composer content into the live turn (steer / interject). */
   onSteer?: () => void;
+  /** Queue for after the live turn finishes. */
+  onQueue?: () => void;
   onImplementPlanInNewThread: () => void;
 }
 
@@ -70,6 +72,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   onPreviousPendingQuestion,
   onInterrupt,
   onSteer,
+  onQueue,
   onImplementPlanInNewThread,
 }: ComposerPrimaryActionsProps) {
   const pointerFocusProps = preserveComposerFocusOnPointerDown
@@ -145,23 +148,10 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
     );
   }
 
-  // Live turn: Queue (default submit) + Send now (steer) + Stop.
-  // Ctrl is used by sidebar thread-jump hints on Windows, so steer is a button.
+  // Live turn: Send (steer/interject) + Queue (after turn) + Stop.
   if (isRunning) {
     return (
       <div className="flex items-center gap-1.5">
-        <Button
-          type="submit"
-          size="sm"
-          variant="outline"
-          className="h-8 rounded-full px-2.5 text-xs"
-          {...pointerFocusProps}
-          disabled={isEnvironmentUnavailable || !hasSendableContent}
-          aria-label="Queue message for after this turn"
-          title="Queue for after this turn"
-        >
-          Queue
-        </Button>
         <Button
           type="button"
           size="sm"
@@ -169,10 +159,23 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
           {...pointerFocusProps}
           disabled={isEnvironmentUnavailable || !hasSendableContent || !onSteer}
           aria-label="Send into live turn now"
-          title="Send into the live turn now (steer)"
+          title="Interject into the live turn now"
           onClick={() => onSteer?.()}
         >
-          Send now
+          Send
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="h-8 rounded-full px-2.5 text-xs"
+          {...pointerFocusProps}
+          disabled={isEnvironmentUnavailable || !hasSendableContent || !onQueue}
+          aria-label="Queue message for after this turn"
+          title="Queue for after this turn"
+          onClick={() => onQueue?.()}
+        >
+          Queue
         </Button>
         <button
           type="button"

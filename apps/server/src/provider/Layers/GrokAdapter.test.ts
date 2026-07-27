@@ -1333,6 +1333,73 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
       }).pipe(TestClock.withLive),
   );
 
+  it.effect("steers a mid-turn message by preempting the in-flight prompt", () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("grok-steer-preempt");
+      // First prompt hangs until cancel; steer must cancel it and run immediately.
+      const adapter = yield* makeMockTestAdapter({
+        T3_ACP_HANG_PROMPT_TEXT: "work forever",
+        T3_ACP_PROMPT_RESPONSE_TEXT: "steered reply",
+      });
+
+      const firstTurnStarted = yield* Deferred.make<TurnId>();
+      const steerCompleted =
+        yield* Deferred.make<Extract<ProviderRuntimeEvent, { type: "turn.completed" }>>();
+      const eventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.gen(function* () {
+          if (String(event.threadId) !== String(threadId)) {
+            return;
+          }
+          if (event.type === "turn.started") {
+            yield* Deferred.succeed(firstTurnStarted, event.turnId).pipe(Effect.ignore);
+          }
+          if (event.type === "turn.completed") {
+            yield* Deferred.succeed(steerCompleted, event).pipe(Effect.ignore);
+          }
+        }),
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("grok"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+
+      const hangFiber = yield* adapter
+        .sendTurn({
+          threadId,
+          input: "work forever on this task",
+          attachments: [],
+        })
+        .pipe(Effect.forkChild);
+
+      const liveTurnId = yield* Deferred.await(firstTurnStarted).pipe(Effect.timeout("8 seconds"));
+
+      // Without preemption this would block until the hang ends (never).
+      const steered = yield* adapter
+        .sendTurn({
+          threadId,
+          input: "stop and do this instead",
+          attachments: [],
+        })
+        .pipe(Effect.timeout("12 seconds"));
+
+      assert.equal(String(steered.turnId), String(liveTurnId));
+      const completed = yield* Deferred.await(steerCompleted).pipe(Effect.timeout("8 seconds"));
+      assert.equal(String(completed.turnId), String(liveTurnId));
+      // Steer keeps one turn; hang fiber should also release after preempt.
+      yield* Fiber.join(hangFiber).pipe(Effect.timeout("8 seconds"), Effect.ignore);
+
+      const sessions = yield* adapter.listSessions();
+      const session = sessions.find((entry) => entry.threadId === threadId);
+      assert.equal(session?.status, "ready");
+
+      yield* Fiber.interrupt(eventsFiber);
+      yield* adapter.stopSession(threadId);
+    }).pipe(TestClock.withLive),
+  );
+
   it.effect(
     "accepts an immediate follow-up after session-scoped Stop without preparation interrupt",
     () =>

@@ -4673,9 +4673,9 @@ function ChatViewContent(props: ChatViewProps) {
       ctrlOrMetaKey: options?.ctrlOrMetaKey ?? false,
       ...(options?.intent === undefined ? {} : { explicitIntent: options.intent }),
     });
-    // While a turn is live, default Send/Enter queues the next turn. "Send now"
-    // (composer button or queue-item action) steers into the live turn. Stop
-    // cancels the whole live turn (ACP); queued messages are kept.
+    // While a turn is live, default Send/Enter steers (interjects) into the
+    // live turn. Explicit "Queue" defers until the turn finishes. Stop cancels
+    // the whole live turn (ACP); queued messages are kept.
     if (submitIntent === "queue" && phase === "running") {
       if (!hasSendableContent) {
         return false;

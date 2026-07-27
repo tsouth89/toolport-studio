@@ -1075,6 +1075,12 @@ export function makeCursorAdapter(
             });
           }
 
+          // ACP serializes session/prompt. Without preemption, a steer waits
+          // for the entire current tool loop — not true interjection.
+          if (steeringTurnId !== undefined) {
+            yield* ctx.acp.preemptActivePrompt;
+          }
+
           const result = yield* ctx.acp
             .prompt({
               prompt: promptParts,
