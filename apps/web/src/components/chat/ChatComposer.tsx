@@ -1892,7 +1892,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       key === "Enter" &&
       shouldSubmitComposerOnEnter({ isMobileViewport, shiftKey: event.shiftKey })
     ) {
-      // Ctrl/Cmd+Enter while running steers into the live turn; bare Enter queues.
+      // Bare Enter while running queues (or flushes the queue if empty).
+      // Ctrl/Cmd+Enter steers into the live turn immediately.
       submitComposer(undefined, {
         ctrlOrMetaKey: event.ctrlKey || event.metaKey,
         ...(event.ctrlKey || event.metaKey ? { intent: "steer" as const } : {}),

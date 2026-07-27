@@ -146,10 +146,9 @@ export function resolveComposerSubmitIntent(input: {
     return "queue";
   }
   if (input.phase === "running") {
-    // Default while running: interject (steer) into the live turn — same as
-    // chatting with Grok/Claude Desktop. Explicit "Queue" still defers until
-    // the turn finishes.
-    return "steer";
+    // Default while running: queue for after this turn (Grok Build-style).
+    // Ctrl/Cmd+Enter (or explicit "Send now") steers into the live turn.
+    return input.ctrlOrMetaKey ? "steer" : "queue";
   }
   return "send";
 }

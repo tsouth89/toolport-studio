@@ -85,7 +85,6 @@ import {
   findSidebarProposedPlan,
   findLatestProposedPlan,
   deriveWorkLogEntries,
-  formatDuration,
   hasActionableProposedPlan,
   isLatestTurnSettled,
   isPendingRequestTimeoutWarningMessage,
@@ -225,7 +224,6 @@ import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { MessagesTimeline } from "./chat/MessagesTimeline";
 import {
-  deriveActiveWorkingFollowUpIntent,
   deriveActiveWorkingToolLabel,
   shouldOfferLastUserMessageRetry,
 } from "./chat/MessagesTimeline.logic";
@@ -495,20 +493,6 @@ interface TerminalLaunchContext {
 }
 
 type PersistentTerminalLaunchContext = Pick<TerminalLaunchContext, "cwd" | "worktreePath">;
-
-/** Live elapsed label for the sticky live-turn chrome (ticks once per second). */
-function LiveWorkElapsedLabel({ startedAt }: { startedAt: string }) {
-  const [nowMs, setNowMs] = useState(() => Date.now());
-  useEffect(() => {
-    const id = window.setInterval(() => setNowMs(Date.now()), 1_000);
-    return () => window.clearInterval(id);
-  }, [startedAt]);
-  const startedMs = Date.parse(startedAt);
-  if (!Number.isFinite(startedMs)) {
-    return null;
-  }
-  return <>{formatDuration(Math.max(0, nowMs - startedMs))}</>;
-}
 
 function useLocalDispatchState(input: {
   activeThread: Thread | undefined;
@@ -1669,6 +1653,7 @@ function ChatViewContent(props: ChatViewProps) {
   );
   const activeThreadQueueCount = activeThreadQueueItems.length;
   const queueFlushInFlightRef = useRef(false);
+  const sendQueuedItemNowRef = useRef<(itemId: string) => void>(() => {});
   const activeProjectRef = activeThread
     ? scopeProjectRef(activeThread.environmentId, activeThread.projectId)
     : null;
@@ -4530,9 +4515,17 @@ function ChatViewContent(props: ChatViewProps) {
       ctrlOrMetaKey: options?.ctrlOrMetaKey ?? false,
       ...(options?.intent === undefined ? {} : { explicitIntent: options.intent }),
     });
-    // While a turn is live, default Send/Enter steers (interjects) into the
-    // live turn. Explicit "Queue" defers until the turn finishes. Stop cancels
-    // the whole live turn (ACP); queued messages are kept.
+    // While a turn is live, default Enter/Send queues for after the turn
+    // (Grok Build-style). Empty Enter with a non-empty queue flushes the head
+    // immediately (steer). Ctrl/Cmd+Enter or "Send now" steers. Stop cancels
+    // the live turn; queued messages are kept unless cleared.
+    if (phase === "running" && !hasSendableContent && activeThreadQueueCount > 0) {
+      const head = useThreadTurnQueueStore.getState().list(activeThread.id)[0];
+      if (head) {
+        sendQueuedItemNowRef.current(head.id);
+        return true;
+      }
+    }
     if (submitIntent === "queue" && phase === "running") {
       if (!hasSendableContent) {
         return false;
@@ -5061,6 +5054,7 @@ function ChatViewContent(props: ChatViewProps) {
       setComposerDraftTerminalContexts,
     ],
   );
+  sendQueuedItemNowRef.current = sendQueuedItemNow;
 
   // Drain queued turns once the live turn is fully settled. Stop keeps the queue.
   useEffect(() => {
@@ -5969,94 +5963,14 @@ function ChatViewContent(props: ChatViewProps) {
         <div className="flex min-h-0 min-w-0 flex-1">
           {/* Chat column */}
           <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
-            {/* Provider status + live-turn chrome overlay the timeline (no layout jump). */}
+            {/* Provider status overlays the timeline (no layout jump). Live-turn
+                chrome lives in the composer (queue strip + stop) — no redundant
+                Working bar / second Stop control at the top. */}
             <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex flex-col gap-1.5 px-2 pt-1 sm:px-3">
               <ProviderStatusBanner
                 status={visibleProviderStatus}
                 onDismiss={() => setDismissedProviderStatusBannerKey(providerStatusBannerKey)}
               />
-              {activeThreadId && (isWorking || activeThreadQueueCount > 0) ? (
-                <div
-                  className="pointer-events-auto mx-auto flex w-full max-w-3xl flex-wrap items-center justify-between gap-x-3 gap-y-1 rounded-lg border border-primary/30 bg-background/95 px-3 py-1.5 text-xs text-foreground shadow-sm backdrop-blur-sm"
-                  role="status"
-                  aria-live="polite"
-                >
-                  <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
-                    {isWorking ? (
-                      <span className="inline-flex min-w-0 items-center gap-1.5 font-medium">
-                        <span className="inline-flex items-center gap-[3px]" aria-hidden="true">
-                          <span className="h-1.5 w-1.5 rounded-full animate-status-pulse bg-primary" />
-                          <span className="h-1.5 w-1.5 rounded-full animate-status-pulse bg-primary [animation-delay:200ms]" />
-                          <span className="h-1.5 w-1.5 rounded-full animate-status-pulse bg-primary [animation-delay:400ms]" />
-                        </span>
-                        {phase === "connecting" || (isSendBusy && phase !== "running")
-                          ? "Starting"
-                          : "Working"}
-                        {activeWorkStartedAt ? (
-                          <span className="font-normal tabular-nums text-muted-foreground">
-                            · <LiveWorkElapsedLabel startedAt={activeWorkStartedAt} />
-                          </span>
-                        ) : (
-                          "…"
-                        )}
-                        {(() => {
-                          const followUp = deriveActiveWorkingFollowUpIntent({
-                            timelineEntries,
-                            activeTurnStartedAt: activeWorkStartedAt,
-                          });
-                          if (!followUp) {
-                            return null;
-                          }
-                          return (
-                            <span
-                              className="min-w-0 max-w-[min(28rem,50vw)] truncate font-normal text-muted-foreground"
-                              title={followUp}
-                            >
-                              · Following up: {followUp}
-                            </span>
-                          );
-                        })()}
-                      </span>
-                    ) : null}
-                    {activeThreadQueueCount > 0 ? (
-                      <span className="text-muted-foreground">
-                        {isWorking ? "· " : ""}
-                        {activeThreadQueueCount === 1
-                          ? "1 message queued"
-                          : `${activeThreadQueueCount} messages queued`}
-                        {phase === "running" || phase === "connecting"
-                          ? " (after this turn)"
-                          : " (sending next)"}
-                      </span>
-                    ) : null}
-                  </div>
-                  <div className="flex shrink-0 items-center gap-1.5">
-                    {activeThreadQueueCount > 0 ? (
-                      <button
-                        type="button"
-                        className="rounded-md px-2 py-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
-                        onClick={() => {
-                          useThreadTurnQueueStore.getState().clear(activeThreadId);
-                        }}
-                      >
-                        Clear queue
-                      </button>
-                    ) : null}
-                    {isWorking ? (
-                      <button
-                        type="button"
-                        className="rounded-md bg-destructive/90 px-2 py-0.5 font-semibold text-white hover:bg-destructive"
-                        onClick={() => {
-                          void onInterrupt();
-                        }}
-                        aria-label="Stop generation"
-                      >
-                        Stop
-                      </button>
-                    ) : null}
-                  </div>
-                </div>
-              ) : null}
             </div>
             {/* Messages Wrapper */}
             <div className="relative flex min-h-0 flex-1 flex-col">
@@ -6179,11 +6093,11 @@ function ChatViewContent(props: ChatViewProps) {
                             <div className="flex items-center justify-between gap-2">
                               <span className="font-medium">
                                 {activeThreadQueueCount === 1
-                                  ? "1 message queued for after this turn"
-                                  : `${activeThreadQueueCount} messages queued for after this turn`}
+                                  ? "1 message queued"
+                                  : `${activeThreadQueueCount} messages queued`}
                                 {phase === "running" || phase === "connecting"
-                                  ? " · Send now injects into the live turn"
-                                  : ""}
+                                  ? " · after this turn · Enter again to send now"
+                                  : " · sending next"}
                               </span>
                               <button
                                 type="button"

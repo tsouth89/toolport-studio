@@ -1,5 +1,5 @@
 import { memo, type PointerEventHandler } from "react";
-import { ChevronDownIcon, ChevronLeftIcon } from "lucide-react";
+import { ChevronDownIcon, ChevronLeftIcon, ListPlusIcon, ZapIcon } from "lucide-react";
 import { cn } from "~/lib/utils";
 import { StageBackdropButtonArt, useSidebarStageBackdropVariant } from "../SidebarStageBackdrop";
 import { Button } from "../ui/button";
@@ -30,7 +30,7 @@ interface ComposerPrimaryActionsProps {
   onInterrupt: () => void;
   /** Inject composer content into the live turn (steer / interject). */
   onSteer?: () => void;
-  /** Queue for after the live turn finishes. */
+  /** Queue for after the live turn finishes (default while running). */
   onQueue?: () => void;
   onImplementPlanInNewThread: () => void;
 }
@@ -56,6 +56,30 @@ export const formatPendingPrimaryActionLabel = (input: {
 const preventPointerFocus: PointerEventHandler<HTMLElement> = (event) => {
   event.preventDefault();
 };
+
+const StopCircleButton = memo(function StopCircleButton({
+  onClick,
+  pointerFocusProps,
+  ariaLabel,
+}: {
+  onClick: () => void;
+  pointerFocusProps?: { onPointerDown: PointerEventHandler<HTMLElement> };
+  ariaLabel: string;
+}) {
+  return (
+    <button
+      type="button"
+      className="flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-full border border-destructive/25 bg-destructive/10 text-destructive transition-colors duration-150 hover:border-destructive/40 hover:bg-destructive/15 active:bg-destructive/20 sm:size-8"
+      {...pointerFocusProps}
+      onClick={onClick}
+      aria-label={ariaLabel}
+    >
+      <svg width="11" height="11" viewBox="0 0 12 12" fill="currentColor" aria-hidden="true">
+        <rect x="2.5" y="2.5" width="7" height="7" rx="1.25" />
+      </svg>
+    </button>
+  );
+});
 
 export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   compact,
@@ -134,60 +158,62 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   // Stuck local "Sending" (pre-running): cancel only — no provider turn yet.
   if (isSendBusy && !isRunning) {
     return (
-      <button
-        type="button"
-        className="flex size-8 cursor-pointer items-center justify-center rounded-full bg-destructive/90 text-white shadow-xs shadow-destructive/24 inset-shadow-[0_1px_--theme(--color-white/16%)] transition-all duration-150 hover:bg-destructive hover:scale-105 active:inset-shadow-[0_1px_--theme(--color-black/8%)] active:shadow-none sm:h-8 sm:w-8"
-        {...pointerFocusProps}
+      <StopCircleButton
         onClick={onInterrupt}
-        aria-label="Cancel sending"
-      >
-        <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor" aria-hidden="true">
-          <rect x="2" y="2" width="8" height="8" rx="1.5" />
-        </svg>
-      </button>
+        {...(pointerFocusProps ? { pointerFocusProps } : {})}
+        ariaLabel="Cancel sending"
+      />
     );
   }
 
-  // Live turn: Send (steer/interject) + Queue (after turn) + Stop.
+  // Live turn: primary Queue (Enter), secondary Send now (steer), Stop.
   if (isRunning) {
+    const canQueueOrSteer = !isEnvironmentUnavailable && hasSendableContent;
     return (
-      <div className="flex items-center gap-1.5">
-        <Button
-          type="button"
-          size="sm"
-          className="h-8 rounded-full px-2.5 text-xs"
-          {...pointerFocusProps}
-          disabled={isEnvironmentUnavailable || !hasSendableContent || !onSteer}
-          aria-label="Send into live turn now"
-          title="Interject into the live turn now"
-          onClick={() => onSteer?.()}
-        >
-          Send
-        </Button>
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          className="h-8 rounded-full px-2.5 text-xs"
-          {...pointerFocusProps}
-          disabled={isEnvironmentUnavailable || !hasSendableContent || !onQueue}
-          aria-label="Queue message for after this turn"
-          title="Queue for after this turn"
-          onClick={() => onQueue?.()}
-        >
-          Queue
-        </Button>
+      <div className="flex items-center gap-1">
         <button
           type="button"
-          className="flex size-8 cursor-pointer items-center justify-center rounded-full bg-destructive/90 text-white shadow-xs shadow-destructive/24 inset-shadow-[0_1px_--theme(--color-white/16%)] transition-all duration-150 hover:bg-destructive hover:scale-105 active:inset-shadow-[0_1px_--theme(--color-black/8%)] active:shadow-none sm:h-8 sm:w-8"
+          className={cn(
+            "inline-flex h-8 items-center gap-1.5 rounded-full px-2.5 text-xs font-medium text-muted-foreground transition-colors",
+            "hover:bg-muted/80 hover:text-foreground",
+            "disabled:pointer-events-none disabled:opacity-35",
+          )}
           {...pointerFocusProps}
-          onClick={onInterrupt}
-          aria-label="Stop generation"
+          disabled={!canQueueOrSteer || !onSteer}
+          aria-label="Send into live turn now"
+          title="Send now (Ctrl+Enter) — inject into the live turn"
+          onClick={() => onSteer?.()}
         >
-          <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor" aria-hidden="true">
-            <rect x="2" y="2" width="8" height="8" rx="1.5" />
-          </svg>
+          <ZapIcon className="size-3.5 shrink-0 opacity-80" aria-hidden="true" />
+          <span className="hidden sm:inline">Send now</span>
         </button>
+        <button
+          type="button"
+          className={cn(
+            "relative isolate inline-flex h-8 items-center gap-1.5 overflow-hidden rounded-full px-3 text-xs font-semibold text-primary-foreground transition-all duration-150",
+            "enabled:cursor-pointer enabled:inset-shadow-[0_1px_--theme(--color-white/16%)] hover:scale-[1.02] active:scale-[0.98]",
+            "disabled:pointer-events-none disabled:opacity-35",
+            stageBackdropVariant
+              ? "bg-transparent enabled:shadow-xs enabled:shadow-black/20 enabled:hover:brightness-110"
+              : "bg-primary/90 enabled:shadow-xs enabled:shadow-primary/20 hover:bg-primary",
+          )}
+          {...pointerFocusProps}
+          disabled={!canQueueOrSteer || !onQueue}
+          aria-label="Queue message for after this turn"
+          title="Queue (Enter) — runs after this turn finishes"
+          onClick={() => onQueue?.()}
+        >
+          <span className="absolute inset-0 -z-10" aria-hidden="true">
+            <StageBackdropButtonArt variant={stageBackdropVariant} />
+          </span>
+          <ListPlusIcon className="size-3.5 shrink-0" aria-hidden="true" />
+          Queue
+        </button>
+        <StopCircleButton
+          onClick={onInterrupt}
+          {...(pointerFocusProps ? { pointerFocusProps } : {})}
+          ariaLabel="Stop generation"
+        />
       </div>
     );
   }
