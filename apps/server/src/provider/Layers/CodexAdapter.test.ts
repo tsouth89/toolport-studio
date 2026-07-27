@@ -513,11 +513,12 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
       );
       const secondOptions = runtimeFactory.lastRuntime?.options;
       NodeAssert.ok(secondOptions);
+      // Exact match, not substring: the adapter emits one fully-formed
+      // `-c mcp_servers.<name>.url=<json>` argument, so asserting on the whole
+      // token is both stricter and free of URL-substring ambiguity.
       NodeAssert.equal(
-        secondOptions.appServerArgs?.some(
-          (argument) =>
-            argument.includes("mcp_servers.toolport") &&
-            argument.includes("https://toolport.example/mcp"),
+        secondOptions.appServerArgs?.includes(
+          `mcp_servers.toolport.url=${JSON.stringify("https://toolport.example/mcp")}`,
         ),
         true,
         "recycled launch must include toolport MCP URL config",
