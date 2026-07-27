@@ -95,11 +95,12 @@ const ACP_APPROVAL_MODE_ALIASES = ["ask"];
 /** Auto-cancel unanswered permission prompts so multi-session dogfood cannot hang forever. */
 const CURSOR_PENDING_APPROVAL_TIMEOUT_MS = 3 * 60_000;
 /**
- * Cursor ACP (especially first prompt / slow models like Grok via Cursor) can
- * sit on session/prompt with zero session/update traffic. Surface a warning so
- * Working is not a silent black hole.
+ * Cursor ACP can sit with zero session/update traffic (first token, post-tool
+ * thinking, or a wedged stream). Surface a warning so Working is not a silent
+ * black hole. Open tools suppress the warning: quiet tools are valid work.
  */
 const CURSOR_SILENT_PROMPT_WARNING_MS = 20_000;
+const CURSOR_SILENCE_POLL_MS = 5_000;
 /** Slightly longer for multi-question forms. */
 const CURSOR_PENDING_USER_INPUT_TIMEOUT_MS = 5 * 60_000;
 
@@ -1394,38 +1395,46 @@ export function makeCursorAdapter(
             });
           }
 
-          // Dogfood: Cursor often emits no session/update for tens of seconds on
-          // first prompt / slow models. Warn once so Working is not silent.
+          // Dogfood: first-token delay and post-tool thinking can look dead.
+          // Poll while the turn is live; warn once after sustained silence with
+          // no open tools (quiet tools are valid long-running work).
           const silenceWatchTurnId = turnId;
-          const silenceWatchStartedAtMs = ctx.lastVisibleActivityAtMs;
           yield* Effect.gen(function* () {
-            yield* Effect.sleep(`${CURSOR_SILENT_PROMPT_WARNING_MS} millis`);
-            if (ctx.stopped) {
+            while (!ctx.stopped) {
+              yield* Effect.sleep(`${CURSOR_SILENCE_POLL_MS} millis`);
+              if (ctx.stopped) {
+                return;
+              }
+              if (ctx.silentPromptWarningTurnId === String(silenceWatchTurnId)) {
+                return;
+              }
+              const stillThisTurn =
+                ctx.activeTurnId === silenceWatchTurnId ||
+                (ctx.promptsInFlight > 0 && ctx.lastNotificationTurnId === silenceWatchTurnId);
+              if (!stillThisTurn || ctx.promptsInFlight <= 0) {
+                return;
+              }
+              if (ctx.openToolCallIds.size > 0) {
+                continue;
+              }
+              const now = yield* Clock.currentTimeMillis;
+              if (now - ctx.lastVisibleActivityAtMs < CURSOR_SILENT_PROMPT_WARNING_MS) {
+                continue;
+              }
+              ctx.silentPromptWarningTurnId = String(silenceWatchTurnId);
+              yield* offerRuntimeEvent({
+                type: "runtime.warning",
+                ...(yield* makeEventStamp()),
+                provider: PROVIDER,
+                threadId: input.threadId,
+                turnId: silenceWatchTurnId,
+                payload: {
+                  message:
+                    "Cursor has gone silent with no open tools. The agent may still be thinking, or the stream may be stuck. Wait, or press Stop and send again.",
+                },
+              });
               return;
             }
-            if (ctx.silentPromptWarningTurnId === String(silenceWatchTurnId)) {
-              return;
-            }
-            const stillThisTurn =
-              ctx.activeTurnId === silenceWatchTurnId ||
-              ctx.lastNotificationTurnId === silenceWatchTurnId;
-            const stillSilent = ctx.lastVisibleActivityAtMs <= silenceWatchStartedAtMs;
-            const stillInFlight = ctx.promptsInFlight > 0;
-            if (!stillThisTurn || !stillSilent || !stillInFlight) {
-              return;
-            }
-            ctx.silentPromptWarningTurnId = String(silenceWatchTurnId);
-            yield* offerRuntimeEvent({
-              type: "runtime.warning",
-              ...(yield* makeEventStamp()),
-              provider: PROVIDER,
-              threadId: input.threadId,
-              turnId: silenceWatchTurnId,
-              payload: {
-                message:
-                  "Cursor has not streamed any progress yet. The ACP agent may still be starting or thinking. Wait, or press Stop and send again.",
-              },
-            });
           }).pipe(Effect.forkChild);
 
           yield* applyRequestedSessionConfiguration({

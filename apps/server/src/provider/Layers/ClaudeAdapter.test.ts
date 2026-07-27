@@ -1537,6 +1537,85 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("force-closes open tools when Stop interrupts mid-tool", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+      const toolStarted = yield* Deferred.make<void>();
+      const turnCompleted =
+        yield* Deferred.make<Extract<ProviderRuntimeEvent, { type: "turn.completed" }>>();
+
+      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.gen(function* () {
+          runtimeEvents.push(event);
+          if (event.type === "item.started" && event.payload.itemType === "command_execution") {
+            yield* Deferred.succeed(toolStarted, undefined).pipe(Effect.ignore);
+          }
+          if (event.type === "turn.completed") {
+            yield* Deferred.succeed(turnCompleted, event).pipe(Effect.ignore);
+          }
+        }),
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      const turn = yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "run a long tool",
+        attachments: [],
+      });
+
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-mid-tool",
+        uuid: "stream-tool-start",
+        parent_tool_use_id: null,
+        event: {
+          type: "content_block_start",
+          index: 0,
+          content_block: {
+            type: "tool_use",
+            id: "tool-open-1",
+            name: "Bash",
+            input: { command: "sleep 999" },
+          },
+        },
+      } as unknown as SDKMessage);
+
+      yield* Deferred.await(toolStarted).pipe(Effect.timeout("3 seconds"));
+      yield* adapter.interruptTurn(THREAD_ID, turn.turnId);
+
+      const completed = yield* Deferred.await(turnCompleted).pipe(Effect.timeout("3 seconds"));
+      assert.equal(completed.payload.state, "interrupted");
+
+      const forcedClose = runtimeEvents.find(
+        (event) =>
+          event.type === "item.completed" &&
+          event.payload.data &&
+          typeof event.payload.data === "object" &&
+          "forcedClose" in event.payload.data &&
+          (event.payload.data as { forcedClose?: unknown }).forcedClose === true,
+      );
+      assert.isDefined(forcedClose);
+      if (forcedClose?.type === "item.completed") {
+        assert.equal(forcedClose.payload.status, "failed");
+        assert.match(String(forcedClose.payload.detail ?? ""), /did not complete/i);
+      }
+
+      yield* Fiber.interrupt(runtimeEventsFiber);
+      yield* adapter.stopSession(THREAD_ID);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+      TestClock.withLive,
+    );
+  });
+
   it.effect("cancels pending approvals and user-input on interrupt", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

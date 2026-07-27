@@ -90,7 +90,7 @@ import {
 } from "../Errors.ts";
 import { type ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
 import { buildConversationRehydrationPrefix } from "../conversationRehydration.ts";
-import { canSteerSendTurn } from "../turnEngine/index.ts";
+import { canSteerSendTurn, shouldForceCloseOpenToolsOnStop } from "../turnEngine/index.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.UnknownFromJsonString);
 const decodeUnknownJsonStringExit = Schema.decodeUnknownExit(Schema.UnknownFromJsonString);
@@ -2231,8 +2231,13 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       return;
     }
 
+    // Stop / failed settle must force-close open tools (shared Stop policy).
+    // Without this, long turns leave ghost inProgress rows after Working clears.
+    const forceCloseOpenTools =
+      status !== "completed" && context.inFlightTools.size > 0 && shouldForceCloseOpenToolsOnStop();
     for (const [index, tool] of context.inFlightTools.entries()) {
       const toolStamp = yield* makeEventStamp();
+      const forced = forceCloseOpenTools || status !== "completed";
       yield* offerRuntimeEvent({
         type: "item.completed",
         eventId: toolStamp.eventId,
@@ -2245,18 +2250,23 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           itemType: tool.itemType,
           status: status === "completed" ? "completed" : "failed",
           title: tool.title,
-          ...(tool.detail ? { detail: tool.detail } : {}),
+          ...(forced
+            ? { detail: "Tool did not complete before the turn stopped." }
+            : tool.detail
+              ? { detail: tool.detail }
+              : {}),
           data: {
             toolName: tool.toolName,
             input: tool.input,
+            ...(forced ? { forcedClose: true } : {}),
           },
         },
         providerRefs: nativeProviderRefs(context, {
           providerItemId: tool.itemId,
         }),
         raw: {
-          source: "claude.sdk.message",
-          method: "claude/result",
+          source: forced ? "studio.open-tool-force-close" : "claude.sdk.message",
+          method: forced ? "claude/interrupt" : "claude/result",
           payload: result ?? { status },
         },
       });
