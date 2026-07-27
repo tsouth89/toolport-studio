@@ -17,6 +17,7 @@ import {
   ProviderInstanceId,
   type ProviderRuntimeEvent,
   type ProviderRequestKind,
+  type RuntimeMode,
   type ThreadTokenUsageSnapshot,
   type ProviderUserInputAnswers,
   RuntimeItemId,
@@ -133,9 +134,19 @@ export interface CodexAdapterLiveOptions {
 
 interface CodexAdapterSessionContext {
   readonly threadId: ThreadId;
-  readonly scope: Scope.Closeable;
-  readonly runtime: CodexSessionRuntimeShape;
-  readonly eventFiber: Fiber.Fiber<void, never>;
+  scope: Scope.Closeable;
+  runtime: CodexSessionRuntimeShape;
+  eventFiber: Fiber.Fiber<void, never>;
+  /**
+   * Whether this app-server process was launched with Toolport MCP config.
+   * Settings toggles update process.env immediately; mismatch triggers recycle.
+   */
+  injectsToolportMcp: boolean;
+  /** Launch inputs retained so Toolport MCP rebind can respawn app-server. */
+  cwd: string;
+  runtimeMode: RuntimeMode;
+  model: string | undefined;
+  serviceTier: ReturnType<typeof getCodexServiceTierOptionValue> | undefined;
   stopped: boolean;
 }
 
@@ -1455,6 +1466,141 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
   );
   const makeEventStamp = () => Effect.all({ eventId: nextEventId, createdAt: nowIso });
 
+  const createRuntime = options?.makeRuntime ?? makeCodexSessionRuntime;
+
+  const startEventFiber = (runtime: CodexSessionRuntimeShape) =>
+    Stream.runForEach(runtime.events, (event) =>
+      Effect.gen(function* () {
+        yield* writeNativeEvent(event);
+        const runtimeEvents = mapToRuntimeEvents(event, event.threadId);
+        if (runtimeEvents.length === 0) {
+          yield* Effect.logDebug("ignoring unhandled Codex provider event", {
+            method: event.method,
+            threadId: event.threadId,
+            turnId: event.turnId,
+            itemId: event.itemId,
+          });
+          return;
+        }
+        yield* Queue.offerAll(runtimeEventQueue, runtimeEvents);
+      }),
+    ).pipe(Effect.forkChild);
+
+  const disposeCodexProcess = (session: CodexAdapterSessionContext) =>
+    Effect.gen(function* () {
+      const eventFiber = session.eventFiber;
+      const scope = session.scope;
+      const runtime = session.runtime;
+      yield* runtime.close.pipe(Effect.ignore);
+      // Await scope close so stopSession finalizers (and tests that assert
+      // them) observe teardown before returning. Recycle on rebind also needs
+      // the prior process fully released before spawning the next one.
+      yield* Effect.ignore(Scope.close(scope, Exit.void));
+      yield* Fiber.interrupt(eventFiber).pipe(Effect.ignore);
+    });
+
+  /**
+   * Toolport MCP is launch-time Codex app-server config (`-c mcp_servers.*`).
+   * Settings toggles update process.env immediately; recycle the child so
+   * Linear/etc apply without starting a brand-new thread (Grok/Cursor parity).
+   */
+  const rebindCodexToolportMcpIfNeeded = (session: CodexAdapterSessionContext) =>
+    Effect.gen(function* () {
+      if (session.stopped) {
+        return;
+      }
+      const env = options?.environment ?? process.env;
+      const wantsToolport = McpProviderSession.isToolportMcpInjectionEnabled(env);
+      if (wantsToolport === session.injectsToolportMcp) {
+        return;
+      }
+
+      yield* Effect.logInfo("Codex Toolport MCP setting changed; recycling app-server process", {
+        threadId: session.threadId,
+        from: session.injectsToolportMcp,
+        to: wantsToolport,
+      });
+
+      const previous = yield* session.runtime.getSession.pipe(Effect.orElseSucceed(() => null));
+      const resumeCursor =
+        previous !== null && isCodexResumeCursorSchema(previous.resumeCursor)
+          ? previous.resumeCursor
+          : undefined;
+
+      yield* disposeCodexProcess(session);
+
+      const mcpBindings = McpProviderSession.readMcpProviderBindings(session.threadId, env);
+      const injectsToolportMcp = mcpBindings.some(
+        (binding) => binding.name === McpProviderSession.TOOLPORT_MCP_SERVER_NAME,
+      );
+      const mcpLaunchOptions =
+        mcpBindings.length > 0 ? codexMcpLaunchOptions(mcpBindings, env) : undefined;
+      const model = previous?.model ?? session.model;
+      const runtimeInput: CodexSessionRuntimeOptions = {
+        threadId: session.threadId,
+        providerInstanceId: boundInstanceId,
+        cwd: previous?.cwd ?? session.cwd,
+        binaryPath: codexConfig.binaryPath,
+        launchArgs: resolveCodexLaunchArgs(codexConfig.launchArgs, options?.environment),
+        ...(options?.environment ? { environment: options.environment } : {}),
+        ...(codexConfig.homePath ? { homePath: codexConfig.homePath } : {}),
+        ...(resumeCursor ? { resumeCursor } : {}),
+        runtimeMode: previous?.runtimeMode ?? session.runtimeMode,
+        ...(model ? { model } : {}),
+        ...(session.serviceTier ? { serviceTier: session.serviceTier } : {}),
+        ...(mcpLaunchOptions ?? {}),
+        ...(options?.pendingApprovalTimeoutMs !== undefined
+          ? { pendingApprovalTimeoutMs: options.pendingApprovalTimeoutMs }
+          : {}),
+        ...(options?.pendingUserInputTimeoutMs !== undefined
+          ? { pendingUserInputTimeoutMs: options.pendingUserInputTimeoutMs }
+          : {}),
+      };
+
+      const sessionScope = yield* Scope.make("sequential");
+      const runtime = yield* createRuntime(runtimeInput).pipe(
+        Effect.provideService(Scope.Scope, sessionScope),
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
+        Effect.provideService(Crypto.Crypto, crypto),
+        Effect.mapError(
+          (cause) =>
+            new ProviderAdapterProcessError({
+              provider: PROVIDER,
+              threadId: session.threadId,
+              detail: cause.message,
+              cause,
+            }),
+        ),
+      );
+      const eventFiber = yield* startEventFiber(runtime);
+      yield* runtime.start().pipe(
+        Effect.mapError(
+          (cause) =>
+            new ProviderAdapterProcessError({
+              provider: PROVIDER,
+              threadId: session.threadId,
+              detail: cause.message,
+              cause,
+            }),
+        ),
+        Effect.onError(() =>
+          runtime.close.pipe(
+            Effect.andThen(Effect.ignore(Scope.close(sessionScope, Exit.void))),
+            Effect.andThen(Fiber.interrupt(eventFiber)),
+            Effect.ignore,
+          ),
+        ),
+      );
+
+      session.scope = sessionScope;
+      session.runtime = runtime;
+      session.eventFiber = eventFiber;
+      session.injectsToolportMcp = injectsToolportMcp;
+      session.cwd = runtimeInput.cwd;
+      session.runtimeMode = runtimeInput.runtimeMode;
+      session.model = model;
+    });
+
   const startSession: CodexAdapterShape["startSession"] = (input) =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -1475,9 +1621,17 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           input.modelSelection?.instanceId === boundInstanceId
             ? getCodexServiceTierOptionValue(input.modelSelection)
             : undefined;
+        const cwd = input.cwd ?? process.cwd();
+        const model =
+          input.modelSelection?.instanceId === boundInstanceId
+            ? input.modelSelection.model
+            : undefined;
         const mcpBindings = McpProviderSession.readMcpProviderBindings(
           input.threadId,
           options?.environment ?? process.env,
+        );
+        const injectsToolportMcp = mcpBindings.some(
+          (binding) => binding.name === McpProviderSession.TOOLPORT_MCP_SERVER_NAME,
         );
         const mcpLaunchOptions =
           mcpBindings.length > 0
@@ -1486,7 +1640,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         const runtimeInput: CodexSessionRuntimeOptions = {
           threadId: input.threadId,
           providerInstanceId: boundInstanceId,
-          cwd: input.cwd ?? process.cwd(),
+          cwd,
           binaryPath: codexConfig.binaryPath,
           launchArgs: resolveCodexLaunchArgs(codexConfig.launchArgs, options?.environment),
           ...(options?.environment ? { environment: options.environment } : {}),
@@ -1495,9 +1649,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
             ? { resumeCursor: input.resumeCursor }
             : {}),
           runtimeMode: input.runtimeMode,
-          ...(input.modelSelection?.instanceId === boundInstanceId
-            ? { model: input.modelSelection.model }
-            : {}),
+          ...(model ? { model } : {}),
           ...(serviceTier ? { serviceTier } : {}),
           ...(mcpLaunchOptions ?? {}),
           ...(options?.pendingApprovalTimeoutMs !== undefined
@@ -1512,7 +1664,6 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         yield* Effect.addFinalizer(() =>
           sessionScopeTransferred ? Effect.void : Scope.close(sessionScope, Exit.void),
         );
-        const createRuntime = options?.makeRuntime ?? makeCodexSessionRuntime;
         const runtime = yield* createRuntime(runtimeInput).pipe(
           Effect.provideService(Scope.Scope, sessionScope),
           Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
@@ -1528,22 +1679,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           ),
         );
 
-        const eventFiber = yield* Stream.runForEach(runtime.events, (event) =>
-          Effect.gen(function* () {
-            yield* writeNativeEvent(event);
-            const runtimeEvents = mapToRuntimeEvents(event, event.threadId);
-            if (runtimeEvents.length === 0) {
-              yield* Effect.logDebug("ignoring unhandled Codex provider event", {
-                method: event.method,
-                threadId: event.threadId,
-                turnId: event.turnId,
-                itemId: event.itemId,
-              });
-              return;
-            }
-            yield* Queue.offerAll(runtimeEventQueue, runtimeEvents);
-          }),
-        ).pipe(Effect.forkChild);
+        const eventFiber = yield* startEventFiber(runtime);
 
         const started = yield* runtime.start().pipe(
           Effect.mapError(
@@ -1569,6 +1705,11 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           scope: sessionScope,
           runtime,
           eventFiber,
+          injectsToolportMcp,
+          cwd,
+          runtimeMode: input.runtimeMode,
+          model,
+          serviceTier,
           stopped: false,
         });
         sessionScopeTransferred = true;
@@ -1612,7 +1753,10 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
   const sendTurn: CodexAdapterShape["sendTurn"] = Effect.fn("sendTurn")(function* (input) {
     // Validate session before slow attachment IO so missing sessions fail fast
     // and Working chrome can flip to running during image read/encode.
-    yield* requireSession(input.threadId);
+    const sessionForRebind = yield* requireSession(input.threadId);
+    // Toolport MCP is fixed at app-server launch; rebind before the next prompt
+    // so Settings toggles apply without starting a brand-new thread.
+    yield* rebindCodexToolportMcpIfNeeded(sessionForRebind);
     const prepStamp = yield* makeEventStamp();
     yield* Queue.offer(runtimeEventQueue, {
       type: "session.state.changed",
@@ -1804,9 +1948,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     }
     session.stopped = true;
     sessions.delete(session.threadId);
-    yield* session.runtime.close.pipe(Effect.ignore);
-    yield* Effect.ignore(Scope.close(session.scope, Exit.void));
-    yield* Fiber.interrupt(session.eventFiber).pipe(Effect.ignore);
+    yield* disposeCodexProcess(session);
   });
 
   const stopSession: CodexAdapterShape["stopSession"] = (threadId) =>

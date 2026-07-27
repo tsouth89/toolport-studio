@@ -221,6 +221,12 @@ interface OpenCodeSessionContext {
   activeAgent: string | undefined;
   activeVariant: string | undefined;
   /**
+   * Whether Toolport MCP was added to this OpenCode server for the session.
+   * Settings toggles update process.env immediately; mismatch triggers rebind
+   * via mcp.add / mcp.disconnect (local servers only).
+   */
+  injectsToolportMcp: boolean;
+  /**
    * One-shot guard flipped by `stopOpenCodeContext` / `emitUnexpectedExit`.
    * The session lifecycle is owned by `sessionScope`; this Ref exists only
    * so concurrent callers can race the transition safely via `getAndSet`.
@@ -235,6 +241,32 @@ interface OpenCodeSessionContext {
    *   - tears down the OpenCode server process for scope-owned servers.
    */
   readonly sessionScope: Scope.Closeable;
+}
+
+function openCodeMcpConfigFromBinding(binding: McpProviderSession.McpProviderBinding):
+  | {
+      readonly type: "local";
+      readonly command: ReadonlyArray<string>;
+      readonly environment: Record<string, string>;
+    }
+  | {
+      readonly type: "remote";
+      readonly url: string;
+      readonly headers: Record<string, string>;
+      readonly oauth: false;
+    } {
+  return binding.transport === "stdio"
+    ? {
+        type: "local",
+        command: [binding.command, ...binding.args],
+        environment: { ...binding.env },
+      }
+    : {
+        type: "remote",
+        url: binding.url,
+        headers: { ...binding.headers },
+        oauth: false,
+      };
 }
 
 export interface OpenCodeAdapterLiveOptions {
@@ -1223,23 +1255,16 @@ export function makeOpenCodeAdapter(
                   yield* runOpenCodeSdk("mcp.add", () =>
                     client.mcp.add({
                       name: binding.name,
-                      config:
-                        binding.transport === "stdio"
-                          ? {
-                              type: "local",
-                              command: [binding.command, ...binding.args],
-                              environment: { ...binding.env },
-                            }
-                          : {
-                              type: "remote",
-                              url: binding.url,
-                              headers: { ...binding.headers },
-                              oauth: false,
-                            },
+                      config: openCodeMcpConfigFromBinding(binding),
                     }),
                   );
                 }
               }
+              const injectsToolportMcp =
+                !server.external &&
+                mcpBindings.some(
+                  (binding) => binding.name === McpProviderSession.TOOLPORT_MCP_SERVER_NAME,
+                );
               // Resume: re-adopt the session named by the durable cursor —
               // OpenCode scopes history by session id. The probe recovers only
               // a confirmed not-found (start fresh); transport/auth/server
@@ -1330,6 +1355,7 @@ export function makeOpenCodeAdapter(
                 client,
                 openCodeSession: resolved.openCodeSession,
                 created: resolved.created,
+                injectsToolportMcp,
               };
             }).pipe(Effect.provideService(Scope.Scope, sessionScope)),
           );
@@ -1394,6 +1420,7 @@ export function makeOpenCodeAdapter(
           activeTurnId: undefined,
           activeAgent: undefined,
           activeVariant: undefined,
+          injectsToolportMcp: started.injectsToolportMcp,
           stopped: yield* Ref.make(false),
           sessionScope: started.sessionScope,
         };
@@ -1419,8 +1446,69 @@ export function makeOpenCodeAdapter(
       },
     );
 
+    /**
+     * Toolport MCP is added at session start via mcp.add (local servers only).
+     * Settings toggles update process.env immediately; rebind with add/disconnect
+     * so Linear/etc apply without starting a brand-new thread.
+     */
+    const rebindOpenCodeToolportMcpIfNeeded = Effect.fn("rebindOpenCodeToolportMcpIfNeeded")(
+      function* (context: OpenCodeSessionContext) {
+        if (yield* Ref.get(context.stopped)) {
+          return;
+        }
+        const env = options?.environment ?? process.env;
+        const wantsToolport = McpProviderSession.isToolportMcpInjectionEnabled(env);
+        if (wantsToolport === context.injectsToolportMcp) {
+          return;
+        }
+
+        // External OpenCode servers are user-managed; Studio cannot inject MCP.
+        // Mark the desired setting applied so we do not retry every turn.
+        if (context.server.external) {
+          context.injectsToolportMcp = wantsToolport;
+          return;
+        }
+
+        yield* Effect.logInfo("OpenCode Toolport MCP setting changed; rebinding MCP servers", {
+          threadId: context.session.threadId,
+          from: context.injectsToolportMcp,
+          to: wantsToolport,
+        });
+
+        if (wantsToolport) {
+          const mcpBindings = McpProviderSession.readMcpProviderBindings(
+            context.session.threadId,
+            env,
+          );
+          const toolport = mcpBindings.find(
+            (binding) => binding.name === McpProviderSession.TOOLPORT_MCP_SERVER_NAME,
+          );
+          if (toolport) {
+            yield* runOpenCodeSdk("mcp.add", () =>
+              context.client.mcp.add({
+                name: toolport.name,
+                config: openCodeMcpConfigFromBinding(toolport),
+              }),
+            );
+          }
+        } else {
+          yield* runOpenCodeSdk("mcp.disconnect", () =>
+            context.client.mcp.disconnect({
+              name: McpProviderSession.TOOLPORT_MCP_SERVER_NAME,
+            }),
+          ).pipe(Effect.ignore);
+        }
+        // Record the setting we just applied (even if gateway path was missing)
+        // so we do not rebind on every subsequent turn.
+        context.injectsToolportMcp = wantsToolport;
+      },
+    );
+
     const sendTurn: OpenCodeAdapterShape["sendTurn"] = Effect.fn("sendTurn")(function* (input) {
       const context = yield* ensureSessionContext(sessions, input.threadId);
+      // Toolport MCP is fixed at session start for local servers; rebind before
+      // the next prompt so Settings toggles apply without a new thread.
+      yield* rebindOpenCodeToolportMcpIfNeeded(context);
       // A sendTurn while a turn is active is a steer: OpenCode queues the
       // prompt into the busy session and the work continues as one turn, so
       // the active turn id is reused instead of opening a new turn.

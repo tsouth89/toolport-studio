@@ -448,6 +448,85 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
     }).pipe(Effect.provide(layer));
   });
 
+  it.effect("recycles app-server when Toolport MCP injection is toggled mid-session", () => {
+    const runtimeFactory = makeRuntimeFactory();
+    const environment: NodeJS.ProcessEnv = {
+      TOOLPORT_STUDIO_TOOLPORT_MCP: "off",
+    };
+    const layer = Layer.effect(
+      CodexAdapter,
+      Effect.gen(function* () {
+        const codexConfig = decodeCodexSettings({});
+        return yield* makeCodexAdapter(codexConfig, {
+          environment,
+          makeRuntime: runtimeFactory.factory,
+        });
+      }),
+    ).pipe(
+      Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+      Layer.provideMerge(ServerSettingsService.layerTest()),
+      Layer.provideMerge(providerSessionDirectoryTestLayer),
+      Layer.provideMerge(NodeServices.layer),
+    );
+
+    return Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const threadId = asThreadId("sess-toolport-mcp-rebind");
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId,
+        runtimeMode: "full-access",
+        cwd: process.cwd(),
+      });
+
+      NodeAssert.equal(runtimeFactory.factory.mock.calls.length, 1);
+      const firstOptions = runtimeFactory.lastRuntime?.options;
+      NodeAssert.ok(firstOptions);
+      NodeAssert.equal(
+        firstOptions.appServerArgs?.some((argument) =>
+          argument.includes("mcp_servers.toolport"),
+        ) === true,
+        false,
+        "Toolport must not be in launch config while off",
+      );
+
+      yield* adapter.sendTurn({
+        threadId,
+        input: "before toolport",
+        attachments: [],
+      });
+      NodeAssert.equal(runtimeFactory.factory.mock.calls.length, 1, "no recycle without toggle");
+
+      environment.TOOLPORT_STUDIO_TOOLPORT_MCP = "on";
+      environment.TOOLPORT_STUDIO_MCP_URL = "https://toolport.example/mcp";
+
+      yield* adapter.sendTurn({
+        threadId,
+        input: "after toolport on",
+        attachments: [],
+      });
+
+      NodeAssert.equal(
+        runtimeFactory.factory.mock.calls.length,
+        2,
+        "Toolport toggle must recycle the Codex app-server",
+      );
+      const secondOptions = runtimeFactory.lastRuntime?.options;
+      NodeAssert.ok(secondOptions);
+      NodeAssert.equal(
+        secondOptions.appServerArgs?.some(
+          (argument) =>
+            argument.includes("mcp_servers.toolport") &&
+            argument.includes("https://toolport.example/mcp"),
+        ),
+        true,
+        "recycled launch must include toolport MCP URL config",
+      );
+
+      yield* adapter.stopSession(threadId);
+    }).pipe(Effect.provide(layer));
+  });
+
   it.effect("maps codex model options for the adapter's bound custom instance id", () => {
     const customInstanceId = ProviderInstanceId.make("codex_personal");
     const customRuntimeFactory = makeRuntimeFactory();

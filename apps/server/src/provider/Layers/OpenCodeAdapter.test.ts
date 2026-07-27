@@ -74,6 +74,8 @@ const runtimeMock = {
     sessionDirectoryById: new Map<string, string>(),
     sessionUpdateCalls: [] as Array<{ sessionID: string; permission: unknown }>,
     forkCalls: [] as Array<{ sessionID: string; directory?: string }>,
+    mcpAddCalls: [] as Array<{ name: string; config: unknown }>,
+    mcpDisconnectCalls: [] as string[],
   },
   reset() {
     this.state.startCalls.length = 0;
@@ -94,6 +96,8 @@ const runtimeMock = {
     this.state.sessionDirectoryById.clear();
     this.state.sessionUpdateCalls.length = 0;
     this.state.forkCalls.length = 0;
+    this.state.mcpAddCalls.length = 0;
+    this.state.mcpDisconnectCalls.length = 0;
   },
 };
 
@@ -211,6 +215,16 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
             }
           })(),
         }),
+      },
+      mcp: {
+        add: async ({ name, config }: { name: string; config: unknown }) => {
+          runtimeMock.state.mcpAddCalls.push({ name, config });
+          return { data: true };
+        },
+        disconnect: async ({ name }: { name: string }) => {
+          runtimeMock.state.mcpDisconnectCalls.push(name);
+          return { data: true };
+        },
       },
     }) as unknown as ReturnType<OpenCodeRuntimeShape["createOpenCodeSdkClient"]>,
   loadOpenCodeInventory: () =>
@@ -387,7 +401,82 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       yield* adapter.stopSession(threadId);
     }),
   );
+});
 
+it.effect("rebinds Toolport MCP on local OpenCode when the settings toggle flips", () => {
+  const environment: NodeJS.ProcessEnv = {
+    TOOLPORT_STUDIO_TOOLPORT_MCP: "off",
+  };
+  // Local spawn (no serverUrl) so Studio owns the server and can mcp.add.
+  const localSettings = Schema.decodeSync(OpenCodeSettings)({
+    binaryPath: "fake-opencode",
+  });
+  const layer = Layer.effect(
+    OpenCodeAdapter,
+    makeOpenCodeAdapter(localSettings, { environment }),
+  ).pipe(
+    Layer.provideMerge(Layer.succeed(OpenCodeRuntime, OpenCodeRuntimeTestDouble)),
+    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+    Layer.provideMerge(ServerSettingsService.layerTest()),
+    Layer.provideMerge(providerSessionDirectoryTestLayer),
+    Layer.provideMerge(NodeServices.layer),
+  );
+
+  return Effect.gen(function* () {
+    const adapter = yield* OpenCodeAdapter;
+    const threadId = asThreadId("thread-opencode-toolport-rebind");
+
+    yield* adapter.startSession({
+      provider: ProviderDriverKind.make("opencode"),
+      threadId,
+      runtimeMode: "full-access",
+      cwd: process.cwd(),
+    });
+
+    NodeAssert.equal(
+      runtimeMock.state.mcpAddCalls.some((call) => call.name === "toolport"),
+      false,
+      "Toolport must not be added while injection is off",
+    );
+
+    yield* adapter.sendTurn({
+      threadId,
+      input: "before toolport",
+      modelSelection: createModelSelection(ProviderInstanceId.make("opencode"), "anthropic/sonnet"),
+    });
+    NodeAssert.equal(runtimeMock.state.mcpAddCalls.filter((c) => c.name === "toolport").length, 0);
+
+    environment.TOOLPORT_STUDIO_TOOLPORT_MCP = "on";
+    environment.TOOLPORT_STUDIO_MCP_URL = "https://toolport.example/mcp";
+
+    yield* adapter.sendTurn({
+      threadId,
+      input: "after toolport on",
+      modelSelection: createModelSelection(ProviderInstanceId.make("opencode"), "anthropic/sonnet"),
+    });
+
+    const toolportAdds = runtimeMock.state.mcpAddCalls.filter((call) => call.name === "toolport");
+    NodeAssert.equal(toolportAdds.length, 1, "toggle on must mcp.add toolport");
+    NodeAssert.deepEqual(toolportAdds[0]?.config, {
+      type: "remote",
+      url: "https://toolport.example/mcp",
+      headers: {},
+      oauth: false,
+    });
+
+    environment.TOOLPORT_STUDIO_TOOLPORT_MCP = "off";
+    yield* adapter.sendTurn({
+      threadId,
+      input: "after toolport off",
+      modelSelection: createModelSelection(ProviderInstanceId.make("opencode"), "anthropic/sonnet"),
+    });
+    NodeAssert.deepEqual(runtimeMock.state.mcpDisconnectCalls, ["toolport"]);
+
+    yield* adapter.stopSession(threadId);
+  }).pipe(Effect.provide(layer));
+});
+
+it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive more", (it) => {
   it.effect("falls back to a fresh session when the persisted session is gone", () =>
     Effect.gen(function* () {
       const adapter = yield* OpenCodeAdapter;
