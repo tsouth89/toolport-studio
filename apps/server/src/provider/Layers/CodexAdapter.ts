@@ -457,6 +457,24 @@ function contentStreamKindFromMethod(
   }
 }
 
+/**
+ * High-frequency stream deltas dominate native logs and host IO under multi-
+ * session dogfood (SOU-400). Keep lifecycle rows; skip per-token deltas.
+ */
+export function shouldLogCodexNativeEvent(event: ProviderEvent): boolean {
+  switch (event.method) {
+    case "item/agentMessage/delta":
+    case "item/reasoning/textDelta":
+    case "item/reasoning/summaryTextDelta":
+    case "item/commandExecution/outputDelta":
+    case "item/fileChange/outputDelta":
+    case "item/plan/delta":
+      return false;
+    default:
+      return true;
+  }
+}
+
 function asRuntimeItemId(itemId: ProviderEvent["itemId"] & string): RuntimeItemId {
   return RuntimeItemId.make(itemId);
 }
@@ -1770,6 +1788,9 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
 
   const writeNativeEvent = Effect.fn("writeNativeEvent")(function* (event: ProviderEvent) {
     if (!nativeEventLogger) {
+      return;
+    }
+    if (!shouldLogCodexNativeEvent(event)) {
       return;
     }
     yield* nativeEventLogger.write(event, event.threadId);

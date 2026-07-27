@@ -45,7 +45,7 @@ import {
   type CodexSessionRuntimeShape,
   type CodexThreadSnapshot,
 } from "./CodexSessionRuntime.ts";
-import { makeCodexAdapter } from "./CodexAdapter.ts";
+import { makeCodexAdapter, shouldLogCodexNativeEvent } from "./CodexAdapter.ts";
 const decodeCodexSettings = Schema.decodeSync(CodexSettings);
 
 // Test-local service tag so the rest of the file can keep using `yield* CodexAdapter`.
@@ -57,6 +57,31 @@ const asThreadId = (value: string): ThreadId => ThreadId.make(value);
 const asTurnId = (value: string): TurnId => TurnId.make(value);
 const asEventId = (value: string): EventId => EventId.make(value);
 const asItemId = (value: string): ProviderItemId => ProviderItemId.make(value);
+
+it("skips high-frequency Codex deltas in the native event log", () => {
+  NodeAssert.equal(
+    shouldLogCodexNativeEvent({
+      id: asEventId("e1"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      kind: "notification",
+      threadId: asThreadId("t1"),
+      method: "item/agentMessage/delta",
+    }),
+    false,
+  );
+  NodeAssert.equal(
+    shouldLogCodexNativeEvent({
+      id: asEventId("e2"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      kind: "notification",
+      threadId: asThreadId("t1"),
+      method: "turn/started",
+    }),
+    true,
+  );
+});
 
 class FakeCodexRuntime implements CodexSessionRuntimeShape {
   private readonly eventQueue = Effect.runSync(Queue.unbounded<ProviderEvent>());
