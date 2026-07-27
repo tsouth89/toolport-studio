@@ -199,10 +199,13 @@ export function toolportStudioClientEnv(): Readonly<Record<string, string>> {
 /**
  * Whether Studio should inject the Toolport gateway into provider sessions.
  *
- * Default is **off** (SOU-402): coding turns should not spawn a gateway or
- * inflate the tool catalog. Opt in via:
- * - Settings → inject Toolport MCP (`TOOLPORT_STUDIO_TOOLPORT_MCP=on`), or
- * - Explicit `TOOLPORT_STUDIO_MCP_URL` (HTTP endpoint is intentional config).
+ * Product default is **on** via server settings (`injectToolportMcpInProviderSessions`),
+ * which writes `TOOLPORT_STUDIO_TOOLPORT_MCP=on|off` at server start/update.
+ * When the env flag is unset (tests / raw process):
+ * - explicit off/false/0 → disabled
+ * - explicit on/true/1 → enabled
+ * - `TOOLPORT_STUDIO_MCP_URL` set → enabled
+ * - otherwise → disabled (safe for hermetic tests)
  */
 export function isToolportMcpInjectionEnabled(environment: NodeJS.ProcessEnv): boolean {
   const flag = nonEmpty(environment.TOOLPORT_STUDIO_TOOLPORT_MCP)?.toLowerCase();
@@ -212,7 +215,7 @@ export function isToolportMcpInjectionEnabled(environment: NodeJS.ProcessEnv): b
   if (flag === "1" || flag === "true" || flag === "on") {
     return true;
   }
-  // Explicit streamable HTTP URL is treated as opt-in configuration.
+  // Explicit streamable HTTP URL is treated as intentional configuration.
   return Boolean(nonEmpty(environment.TOOLPORT_STUDIO_MCP_URL));
 }
 

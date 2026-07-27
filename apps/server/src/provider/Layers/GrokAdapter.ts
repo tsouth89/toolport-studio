@@ -422,6 +422,12 @@ interface GrokSessionContext {
    */
   acpCompromised: boolean;
   /**
+   * Whether this ACP process was spawned with Toolport MCP injected.
+   * Settings toggles update process.env; long-lived children must recycle
+   * when this no longer matches {@link McpProviderSession.isToolportMcpInjectionEnabled}.
+   */
+  injectsToolportMcp: boolean;
+  /**
    * Visible assistant/tool stream events observed for the active turn. Used to
    * detect silent end_turn completions that leave the session looking dead.
    */
@@ -1719,6 +1725,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         ctx.notificationFiber = yield* startNotificationFiber(ctx);
         ctx.acpDisposed = false;
         ctx.acpCompromised = false;
+        ctx.injectsToolportMcp = injectsToolportGateway;
         // Fresh ACP process: drop residual Stop/watchdog interrupt bookkeeping so
         // the next user message cannot steer into a cancelled turn id and fail
         // preparation with "Grok prompt was interrupted during preparation."
@@ -1876,6 +1883,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             currentReasoningEffort: startReasoningEffort,
             stopped: false,
             acpCompromised: false,
+            injectsToolportMcp: injectsToolportGateway,
             turnVisibleUpdateCount: 0,
             lastTurnActivityAtMs: yield* Clock.currentTimeMillis,
             lastToolActivityAtMs: yield* Clock.currentTimeMillis,
@@ -1961,6 +1969,20 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 to: requestedReasoningEffort,
               });
               ctx.currentReasoningEffort = requestedReasoningEffort;
+              ctx.acpCompromised = true;
+            }
+            // Toolport MCP is also spawn-time (ACP mcpServers). Settings toggles
+            // update process.env immediately; existing children must recycle so
+            // Linear/etc become available without starting a brand-new thread.
+            const wantsToolportMcp = McpProviderSession.isToolportMcpInjectionEnabled(
+              options?.environment ?? process.env,
+            );
+            if (wantsToolportMcp !== ctx.injectsToolportMcp) {
+              yield* Effect.logInfo("Grok Toolport MCP setting changed; recycling ACP process", {
+                threadId: input.threadId,
+                from: ctx.injectsToolportMcp,
+                to: wantsToolportMcp,
+              });
               ctx.acpCompromised = true;
             }
             // After Stop (or silent empty end_turn) the child may be wedged.

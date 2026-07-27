@@ -825,7 +825,7 @@ export function GeneralSettingsPanel() {
 
         <SettingsRow
           title="Toolport tools in sessions"
-          description="Inject the Toolport gateway into provider sessions (Linear, email, and other MCP tools). Off by default so coding turns stay lean; turn on when the agent should use Toolport."
+          description="Inject the Toolport gateway into provider sessions (Linear, email, and other MCP tools). On by default. Existing sessions pick up a change on the next message (provider process may restart once)."
           resetAction={
             settings.injectToolportMcpInProviderSessions !==
             DEFAULT_UNIFIED_SETTINGS.injectToolportMcpInProviderSessions ? (
@@ -843,9 +843,16 @@ export function GeneralSettingsPanel() {
           control={
             <Switch
               checked={settings.injectToolportMcpInProviderSessions}
-              onCheckedChange={(checked) =>
-                updateSettings({ injectToolportMcpInProviderSessions: Boolean(checked) })
-              }
+              onCheckedChange={(checked) => {
+                updateSettings({ injectToolportMcpInProviderSessions: Boolean(checked) });
+                toastManager.add({
+                  type: "info",
+                  title: checked ? "Toolport tools enabled" : "Toolport tools disabled",
+                  description: checked
+                    ? "Send another message in open chats so they pick up Linear and other Toolport MCP tools (provider process may restart once)."
+                    : "New turns will not inject the Toolport gateway. Open chats may still have tools until their process restarts.",
+                });
+              }}
               aria-label="Inject Toolport tools into provider sessions"
             />
           }

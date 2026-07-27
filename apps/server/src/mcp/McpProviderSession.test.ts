@@ -141,7 +141,8 @@ it.effect("falls back to the legacy Conduit data leaf when Toolport is absent", 
   }).pipe(Effect.provide(NodeServices.layer)),
 );
 
-it("defaults Toolport MCP injection to off without explicit opt-in", () => {
+it("treats unset env as off; explicit on/off/url control injection", () => {
+  // Hermetic default: unset env → off (server settings write on/off at boot).
   expect(McpProviderSession.isToolportMcpInjectionEnabled({})).toBe(false);
   expect(
     McpProviderSession.isToolportMcpInjectionEnabled({ TOOLPORT_STUDIO_TOOLPORT_MCP: "on" }),

@@ -76,7 +76,7 @@ Soft budgets after a week of multi-session use (adjust with evidence):
 
 ## Current product defaults that affect the scorecard
 
-- **Toolport MCP injection**: default **off** (Settings → “Toolport tools in sessions”)
+- **Toolport MCP injection**: default **on** (Settings → “Toolport tools in sessions”; toggle off for lean coding-only turns)
 - **Assistant streaming**: default **off** (buffered); enable for token-by-token UI
 - **Grok silence policy**: never auto-kill open tools; post-tool/think ceiling 15m only when no tool is open
 - **Pending approvals / AskUserQuestion**: auto-cancel after **3 minutes** (approvals) / **5 minutes** (user input) on Grok, Claude, Cursor, Codex so multi-session dogfood cannot hang forever

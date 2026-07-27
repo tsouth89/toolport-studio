@@ -404,11 +404,12 @@ export const ServerSettings = Schema.Struct({
   enableProviderUpdateChecks: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   /**
    * When true, inject the Toolport gateway MCP into provider sessions (Claude,
-   * Grok, Codex, Cursor, …). Default false so native coding turns stay lean
-   * (SOU-402). Env: TOOLPORT_STUDIO_TOOLPORT_MCP=on|off.
+   * Grok, Codex, Cursor, …). Default **true** for Toolport Studio daily-driver
+   * (Linear and other tools via the gateway). Turn off for lean coding-only turns.
+   * Env: TOOLPORT_STUDIO_TOOLPORT_MCP=on|off.
    */
   injectToolportMcpInProviderSessions: Schema.Boolean.pipe(
-    Schema.withDecodingDefault(Effect.succeed(false)),
+    Schema.withDecodingDefault(Effect.succeed(true)),
   ),
   automaticGitFetchInterval: Schema.DurationFromMillis.pipe(
     Schema.withDecodingDefault(
