@@ -28,20 +28,34 @@ interface GrokAcpRuntimeInput extends Omit<
   readonly childProcessSpawner: ChildProcessSpawner.ChildProcessSpawner["Service"];
   readonly grokSettings: GrokAcpRuntimeGrokSettings | null | undefined;
   readonly environment?: NodeJS.ProcessEnv;
+  /**
+   * Grok Build CLI reasoning effort (`high` | `medium` | `low`). Passed as
+   * `grok agent --reasoning-effort <value> stdio` at process start (ACP has no
+   * config option for this; the TUI sets it the same way).
+   */
+  readonly reasoningEffort?: string;
 }
 
 export function buildGrokAcpSpawnInput(
   grokSettings: GrokAcpRuntimeGrokSettings | null | undefined,
   cwd: string,
   environment?: NodeJS.ProcessEnv,
+  reasoningEffort?: string,
 ): AcpSessionRuntime.AcpSpawnInput {
   const binaryPath = grokSettings?.binaryPath?.trim() || "grok";
   // Node script agents (test mocks, custom wrappers) must be launched under the
   // current Node binary. Spawning a .mjs/.js path directly fails on Windows.
   const isNodeScript = /\.(c|m)?(js|ts)$/i.test(binaryPath);
+  const effort = reasoningEffort?.trim().toLowerCase();
+  const effortArgs =
+    effort === "high" || effort === "medium" || effort === "low"
+      ? (["--reasoning-effort", effort] as const)
+      : [];
+  // Flag belongs on `grok agent` (parent), before the `stdio` subcommand.
+  const agentArgs = ["agent", ...effortArgs, "stdio"] as const;
   return {
     command: isNodeScript ? process.execPath : binaryPath,
-    args: isNodeScript ? [binaryPath, "agent", "stdio"] : ["agent", "stdio"],
+    args: isNodeScript ? [binaryPath, ...agentArgs] : [...agentArgs],
     cwd,
     env: {
       ...environment,
@@ -84,7 +98,12 @@ export const makeGrokAcpRuntime = (
     const acpContext = yield* Layer.build(
       AcpSessionRuntime.layer({
         ...input,
-        spawn: buildGrokAcpSpawnInput(input.grokSettings, input.cwd, input.environment),
+        spawn: buildGrokAcpSpawnInput(
+          input.grokSettings,
+          input.cwd,
+          input.environment,
+          input.reasoningEffort,
+        ),
         authMethodId: resolveGrokAuthMethodId(input.environment),
       }).pipe(
         Layer.provide(

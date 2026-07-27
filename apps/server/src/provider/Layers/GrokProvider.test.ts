@@ -6,13 +6,35 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import { GrokSettings } from "@t3tools/contracts";
 
+import { ProviderInstanceId } from "@t3tools/contracts";
 import {
   buildInitialGrokProviderSnapshot,
   checkGrokProviderStatus,
   grokAuthAfterSuccessfulAcpDiscovery,
+  resolveGrokReasoningEffort,
 } from "./GrokProvider.ts";
 
 const decodeGrokSettings = Schema.decodeSync(GrokSettings);
+
+describe("resolveGrokReasoningEffort", () => {
+  it("defaults to high and accepts selection overrides", () => {
+    expect(resolveGrokReasoningEffort(undefined)).toBe("high");
+    expect(
+      resolveGrokReasoningEffort({
+        instanceId: ProviderInstanceId.make("grok"),
+        model: "grok-4.5",
+        options: [{ id: "reasoning", value: "low" }],
+      }),
+    ).toBe("low");
+    expect(
+      resolveGrokReasoningEffort({
+        instanceId: ProviderInstanceId.make("grok"),
+        model: "grok-4.5",
+        options: [{ id: "effort", value: "medium" }],
+      }),
+    ).toBe("medium");
+  });
+});
 
 describe("buildInitialGrokProviderSnapshot", () => {
   it.effect("returns a disabled snapshot when settings.enabled is false", () =>
@@ -36,6 +58,23 @@ describe("buildInitialGrokProviderSnapshot", () => {
       expect(snapshot.version).toBeNull();
       expect(snapshot.message).toContain("Checking Grok");
       expect(snapshot.requiresNewThreadForModelChange).toBe(true);
+    }),
+  );
+
+  it.effect("advertises high/medium/low reasoning options on built-in models", () =>
+    Effect.gen(function* () {
+      const snapshot = yield* buildInitialGrokProviderSnapshot(decodeGrokSettings({}));
+      const model = snapshot.models.find((entry) => entry.slug === "grok-build");
+      expect(model).toBeDefined();
+      const reasoning = model?.capabilities.optionDescriptors.find(
+        (descriptor) => descriptor.id === "reasoning" && descriptor.type === "select",
+      );
+      expect(reasoning?.type).toBe("select");
+      if (reasoning?.type !== "select") {
+        return;
+      }
+      expect(reasoning.options.map((option) => option.id)).toEqual(["high", "medium", "low"]);
+      expect(reasoning.options.find((option) => option.isDefault)?.id).toBe("high");
     }),
   );
 });

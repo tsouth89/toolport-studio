@@ -65,6 +65,11 @@ import {
   resolveGrokAcpBaseModelId,
 } from "../acp/GrokAcpSupport.ts";
 import {
+  GROK_DEFAULT_REASONING_EFFORT,
+  type GrokReasoningEffort,
+  resolveGrokReasoningEffort,
+} from "./GrokProvider.ts";
+import {
   extractXAiAskUserQuestions,
   makeXAiAskUserQuestionCancelledResponse,
   makeXAiAskUserQuestionResponse,
@@ -404,6 +409,11 @@ interface GrokSessionContext {
    * continues it, and only the last remaining prompt settles the turn. */
   promptsInFlight: number;
   currentModelId: string | undefined;
+  /**
+   * Reasoning effort the ACP child was spawned with (`grok agent --reasoning-effort`).
+   * Changing effort requires recycling the process (not a mid-session config option).
+   */
+  currentReasoningEffort: GrokReasoningEffort;
   stopped: boolean;
   /**
    * Set after Stop force-cancels a prompt. The ACP child may still be wedged;
@@ -1578,6 +1588,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               // resume if start still fails with Path not found.
               ...(resumeSessionId ? { resumeSessionId } : {}),
               clientInfo: { name: "t3-code", version: "0.0.0" },
+              reasoningEffort: ctx.currentReasoningEffort,
               ...(mcpBindings.length > 0
                 ? { mcpServers: McpProviderSession.toAcpMcpServers(mcpBindings) }
                 : {}),
@@ -1770,6 +1781,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             options?.environment,
             injectsToolportGateway,
           );
+          const startReasoningEffort = resolveGrokReasoningEffort(grokModelSelection);
           const acp = yield* makeGrokAcpRuntime({
             grokSettings,
             ...(grokEnvironment ? { environment: grokEnvironment } : {}),
@@ -1777,6 +1789,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             cwd,
             ...(resumeSessionId ? { resumeSessionId } : {}),
             clientInfo: { name: "t3-code", version: "0.0.0" },
+            reasoningEffort: startReasoningEffort,
             ...(mcpBindings.length > 0
               ? { mcpServers: McpProviderSession.toAcpMcpServers(mcpBindings) }
               : {}),
@@ -1853,6 +1866,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             interruptedTurnIds: new Set(),
             promptsInFlight: 0,
             currentModelId: boundModelId,
+            currentReasoningEffort: startReasoningEffort,
             stopped: false,
             acpCompromised: false,
             turnVisibleUpdateCount: 0,
@@ -1921,6 +1935,27 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           input.threadId,
           Effect.gen(function* () {
             const ctx = yield* requireSession(input.threadId);
+            const turnModelSelectionForEffort =
+              input.modelSelection?.instanceId === boundInstanceId
+                ? input.modelSelection
+                : undefined;
+            const requestedReasoningEffort = resolveGrokReasoningEffort(
+              turnModelSelectionForEffort,
+            );
+            // Reasoning effort is a spawn-time CLI flag; recycle when it changes
+            // so the next prompt runs at the level the user selected.
+            if (
+              turnModelSelectionForEffort !== undefined &&
+              requestedReasoningEffort !== ctx.currentReasoningEffort
+            ) {
+              yield* Effect.logInfo("Grok reasoning effort changed; recycling ACP process", {
+                threadId: input.threadId,
+                from: ctx.currentReasoningEffort,
+                to: requestedReasoningEffort,
+              });
+              ctx.currentReasoningEffort = requestedReasoningEffort;
+              ctx.acpCompromised = true;
+            }
             // After Stop (or silent empty end_turn) the child may be wedged.
             // Recycle before any new work so turns cannot black-hole.
             if (ctx.acpCompromised) {

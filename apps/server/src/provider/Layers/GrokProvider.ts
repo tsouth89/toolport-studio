@@ -1,6 +1,7 @@
 import {
   type GrokSettings,
   type ModelCapabilities,
+  type ModelSelection,
   type ServerProvider,
   type ServerProviderAuth,
   type ServerProviderModel,
@@ -15,10 +16,11 @@ import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import { HttpClient } from "effect/unstable/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-import { createModelCapabilities } from "@t3tools/shared/model";
+import { createModelCapabilities, getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 
 import {
+  buildSelectOptionDescriptor,
   buildServerProvider,
   isCommandMissingCause,
   parseGenericCliVersion,
@@ -38,8 +40,62 @@ const GROK_PRESENTATION = {
   showInteractionModeToggle: false,
   requiresNewThreadForModelChange: true,
 } as const;
-const EMPTY_CAPABILITIES: ModelCapabilities = createModelCapabilities({
-  optionDescriptors: [],
+
+/** Matches Grok Build TUI / CLI: high | medium | low (default high). */
+export const GROK_REASONING_EFFORT_LEVELS = ["high", "medium", "low"] as const;
+export type GrokReasoningEffort = (typeof GROK_REASONING_EFFORT_LEVELS)[number];
+export const GROK_DEFAULT_REASONING_EFFORT: GrokReasoningEffort = "high";
+
+export function isGrokReasoningEffort(
+  value: string | null | undefined,
+): value is GrokReasoningEffort {
+  return (
+    value === "high" ||
+    value === "medium" ||
+    value === "low" ||
+    value === "HIGH" ||
+    value === "MEDIUM" ||
+    value === "LOW"
+  );
+}
+
+export function normalizeGrokReasoningEffort(
+  value: string | null | undefined,
+): GrokReasoningEffort | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const normalized = value.trim().toLowerCase();
+  return isGrokReasoningEffort(normalized) ? (normalized as GrokReasoningEffort) : undefined;
+}
+
+export function resolveGrokReasoningEffort(
+  modelSelection: ModelSelection | null | undefined,
+): GrokReasoningEffort {
+  return (
+    normalizeGrokReasoningEffort(getModelSelectionStringOptionValue(modelSelection, "reasoning")) ??
+    normalizeGrokReasoningEffort(getModelSelectionStringOptionValue(modelSelection, "effort")) ??
+    GROK_DEFAULT_REASONING_EFFORT
+  );
+}
+
+function buildGrokReasoningOptionDescriptor(
+  levels: ReadonlyArray<{ value: string; label: string; isDefault?: boolean }> = [
+    { value: "high", label: "High", isDefault: true },
+    { value: "medium", label: "Medium" },
+    { value: "low", label: "Low" },
+  ],
+) {
+  return buildSelectOptionDescriptor({
+    id: "reasoning",
+    label: "Reasoning",
+    description: "Grok reasoning effort (same levels as the Grok terminal).",
+    options: levels,
+  });
+}
+
+const DEFAULT_GROK_CAPABILITIES: ModelCapabilities = createModelCapabilities({
+  optionDescriptors: [buildGrokReasoningOptionDescriptor()],
 });
 
 const VERSION_PROBE_TIMEOUT_MS = 4_000;
@@ -50,7 +106,7 @@ const GROK_BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
     slug: "grok-build",
     name: "Grok Build",
     isCustom: false,
-    capabilities: EMPTY_CAPABILITIES,
+    capabilities: DEFAULT_GROK_CAPABILITIES,
   },
 ];
 
@@ -101,7 +157,84 @@ function grokModelsFromSettings(
   customModels: ReadonlyArray<string> | undefined,
   builtInModels: ReadonlyArray<ServerProviderModel> = GROK_BUILT_IN_MODELS,
 ): ReadonlyArray<ServerProviderModel> {
-  return providerModelsFromSettings(builtInModels, customModels ?? [], EMPTY_CAPABILITIES);
+  return providerModelsFromSettings(builtInModels, customModels ?? [], DEFAULT_GROK_CAPABILITIES);
+}
+
+function reasoningLevelsFromGrokModelMeta(
+  meta: { readonly [x: string]: unknown } | null | undefined,
+): ReadonlyArray<{ value: string; label: string; isDefault?: boolean }> | undefined {
+  if (!meta || typeof meta !== "object") {
+    return undefined;
+  }
+  const efforts = meta.reasoningEfforts;
+  if (!Array.isArray(efforts) || efforts.length === 0) {
+    return undefined;
+  }
+  const levels = efforts.flatMap((entry) => {
+    if (!entry || typeof entry !== "object") {
+      return [];
+    }
+    const record = entry as Record<string, unknown>;
+    const valueRaw =
+      typeof record.value === "string"
+        ? record.value
+        : typeof record.id === "string"
+          ? record.id
+          : undefined;
+    const value = normalizeGrokReasoningEffort(valueRaw);
+    if (!value) {
+      return [];
+    }
+    const label =
+      typeof record.label === "string" && record.label.trim().length > 0
+        ? record.label.trim()
+        : value.charAt(0).toUpperCase() + value.slice(1);
+    const isDefault = record.default === true;
+    return [{ value, label, ...(isDefault ? { isDefault: true as const } : {}) }];
+  });
+  if (levels.length === 0) {
+    return undefined;
+  }
+  // Prefer agent-advertised default; else mark high or first entry.
+  if (!levels.some((level) => level.isDefault)) {
+    const high = levels.find((level) => level.value === GROK_DEFAULT_REASONING_EFFORT);
+    if (high) {
+      high.isDefault = true;
+    } else {
+      levels[0] = { ...levels[0]!, isDefault: true };
+    }
+  }
+  // If meta also reports current reasoningEffort, prefer that as default.
+  const current = normalizeGrokReasoningEffort(
+    typeof meta.reasoningEffort === "string" ? meta.reasoningEffort : undefined,
+  );
+  if (current) {
+    for (const level of levels) {
+      if (level.value === current) {
+        level.isDefault = true;
+      } else if (level.isDefault && level.value !== current) {
+        delete level.isDefault;
+      }
+    }
+  }
+  return levels;
+}
+
+function capabilitiesFromGrokModelInfo(model: EffectAcpSchema.ModelInfo): ModelCapabilities {
+  const levels = reasoningLevelsFromGrokModelMeta(model._meta ?? undefined);
+  if (levels && levels.length > 0) {
+    return createModelCapabilities({
+      optionDescriptors: [buildGrokReasoningOptionDescriptor(levels)],
+    });
+  }
+  // Agent omitted effort metadata — still offer the standard TUI levels.
+  if (
+    model._meta &&
+    (model._meta as { supportsReasoningEffort?: unknown }).supportsReasoningEffort === true
+  ) {
+    return DEFAULT_GROK_CAPABILITIES;
+  }
+  return DEFAULT_GROK_CAPABILITIES;
 }
 
 function buildGrokDiscoveredModelsFromSessionModelState(
@@ -122,7 +255,7 @@ function buildGrokDiscoveredModelsFromSessionModelState(
         slug,
         name: model.name.trim() || slug,
         isCustom: false,
-        capabilities: EMPTY_CAPABILITIES,
+        capabilities: capabilitiesFromGrokModelInfo(model),
       };
     })
     .filter((model): model is ServerProviderModel => model !== undefined);

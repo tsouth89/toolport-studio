@@ -34,6 +34,26 @@ describe("buildGrokAcpSpawnInput", () => {
       },
     });
   });
+
+  it("passes reasoning effort as a parent-agent flag before stdio", () => {
+    const spawn = buildGrokAcpSpawnInput(
+      { binaryPath: "/usr/local/bin/grok" },
+      "/tmp/project",
+      undefined,
+      "medium",
+    );
+    expect(spawn.args).toEqual(["agent", "--reasoning-effort", "medium", "stdio"]);
+  });
+
+  it("ignores invalid reasoning effort values", () => {
+    const spawn = buildGrokAcpSpawnInput(
+      { binaryPath: "/usr/local/bin/grok" },
+      "/tmp/project",
+      undefined,
+      "ultra",
+    );
+    expect(spawn.args).toEqual(["agent", "stdio"]);
+  });
 });
 
 describe("buildGrokAcpEnvironmentForStudio", () => {
