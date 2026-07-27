@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   archiveSelectedThreadEntries,
+  buildActiveSidebarProjectPanels,
   buildMultiSelectThreadContextMenuItems,
   createThreadJumpHintVisibilityController,
   getSidebarThreadIdsToPrewarm,
@@ -988,6 +989,87 @@ describe("resolveProjectStatusIndicator", () => {
   });
 });
 
+describe("buildActiveSidebarProjectPanels", () => {
+  it("groups active threads under projects with preview and show-more", () => {
+    const env = EnvironmentId.make("env-1");
+    const projectGroups = [
+      {
+        projectKey: "toolport",
+        displayName: "toolport-studio",
+        isNoProject: false,
+        memberProjectRefs: [{ environmentId: env, projectId: ProjectId.make("proj-toolport") }],
+      },
+      {
+        projectKey: "general",
+        displayName: "No project",
+        isNoProject: true,
+        memberProjectRefs: [{ environmentId: env, projectId: ProjectId.make("proj-general") }],
+      },
+    ];
+    const activeThreads = Array.from({ length: 7 }, (_, index) => ({
+      id: ThreadId.make(`toolport-${index + 1}`),
+      environmentId: env,
+      projectId: ProjectId.make("proj-toolport"),
+    })).concat([
+      {
+        id: ThreadId.make("general-1"),
+        environmentId: env,
+        projectId: ProjectId.make("proj-general"),
+      },
+    ]);
+
+    const panels = buildActiveSidebarProjectPanels({
+      projectGroups,
+      activeThreads,
+      expandedProjectKeys: new Set(),
+      previewLimit: 5,
+    });
+
+    expect(panels.map((panel) => panel.projectKey)).toEqual(["toolport", "general"]);
+    expect(panels[0]?.visibleThreads).toHaveLength(5);
+    expect(panels[0]?.hasHiddenThreads).toBe(true);
+    expect(panels[0]?.hiddenCount).toBe(2);
+    expect(panels[1]?.isNoProject).toBe(true);
+    expect(panels[1]?.visibleThreads).toHaveLength(1);
+  });
+
+  it("does not hard-pin No project; respects projectGroups order", () => {
+    const env = EnvironmentId.make("env-1");
+    const projectGroups = [
+      {
+        projectKey: "recent-project",
+        displayName: "ceiling",
+        isNoProject: false,
+        memberProjectRefs: [{ environmentId: env, projectId: ProjectId.make("proj-a") }],
+      },
+      {
+        projectKey: "general",
+        displayName: "No project",
+        isNoProject: true,
+        memberProjectRefs: [{ environmentId: env, projectId: ProjectId.make("proj-g") }],
+      },
+    ];
+    const panels = buildActiveSidebarProjectPanels({
+      projectGroups,
+      activeThreads: [
+        {
+          id: ThreadId.make("a1"),
+          environmentId: env,
+          projectId: ProjectId.make("proj-a"),
+        },
+        {
+          id: ThreadId.make("g1"),
+          environmentId: env,
+          projectId: ProjectId.make("proj-g"),
+        },
+      ],
+      expandedProjectKeys: new Set(),
+      previewLimit: 5,
+    });
+    expect(panels.map((p) => p.projectKey)).toEqual(["recent-project", "general"]);
+  });
+});
+
 describe("getVisibleThreadsForProject", () => {
   it("includes the active thread even when it falls below the folded preview", () => {
     const threads = Array.from({ length: 8 }, (_, index) =>
@@ -1157,15 +1239,18 @@ describe("getFallbackThreadIdAfterDelete", () => {
   });
 });
 describe("sortProjectsForSidebar", () => {
-  it("sorts projects by the most recent user message across their threads", () => {
+  it("sorts projects by the most recent activity across their threads", () => {
     const projects = [
       makeProject({ id: ProjectId.make("project-1"), title: "Older project" }),
       makeProject({ id: ProjectId.make("project-2"), title: "Newer project" }),
     ];
+    // SOU-356 activity sort uses max(user message, messages, updatedAt).
+    // Keep updatedAt aligned with message times so message recency decides.
     const threads = [
       makeThread({
         projectId: ProjectId.make("project-1"),
-        updatedAt: "2026-03-09T10:20:00.000Z",
+        updatedAt: "2026-03-09T10:01:00.000Z",
+        latestUserMessageAt: "2026-03-09T10:01:00.000Z",
         messages: [
           {
             id: "message-1" as never,
@@ -1182,6 +1267,7 @@ describe("sortProjectsForSidebar", () => {
         id: ThreadId.make("thread-2"),
         projectId: ProjectId.make("project-2"),
         updatedAt: "2026-03-09T10:05:00.000Z",
+        latestUserMessageAt: "2026-03-09T10:05:00.000Z",
         messages: [
           {
             id: "message-2" as never,

@@ -102,6 +102,7 @@ import { formatRelativeTimeLabel, parseTimestampDate } from "../timestampFormat"
 import type { SidebarThreadSummary } from "../types";
 import { cn } from "~/lib/utils";
 import {
+  buildActiveSidebarProjectPanels,
   formatWorkingDurationLabel,
   firstValidTimestampMs,
   hasUnseenCompletion,
@@ -1010,6 +1011,7 @@ export default function Sidebar() {
   const autoSettleAfterDays = useClientSettings((s) => s.sidebarAutoSettleAfterDays);
   const confirmThreadDelete = useClientSettings((s) => s.confirmThreadDelete);
   const sidebarProjectSortOrder = useClientSettings((s) => s.sidebarProjectSortOrder);
+  const sidebarThreadPreviewCount = useClientSettings((s) => s.sidebarThreadPreviewCount);
   const projectGroupingSettings = useClientSettings(selectProjectGroupingSettings);
   const { settleThread, unsettleThread, snoozeThread, unsnoozeThread, deleteThread } =
     useThreadActions();
@@ -1113,6 +1115,50 @@ export default function Sidebar() {
     () => sortLogicalProjectsForSidebar(unsortedProjectGroups, threads, sidebarProjectSortOrder),
     [sidebarProjectSortOrder, threads, unsortedProjectGroups],
   );
+  // Include General / projectless as a peer group for the active list (SOU-417).
+  // Scope picker still uses projectGroups without General.
+  const unsortedThreadListProjectGroups = useMemo(
+    () =>
+      buildSidebarProjectSnapshots({
+        projects,
+        settings: projectGroupingSettings,
+        primaryEnvironmentId,
+        resolveEnvironmentLabel: (environmentId) => environmentLabelById.get(environmentId) ?? null,
+      }).map((group) => {
+        const isNoProject =
+          group.memberProjects.length > 0 &&
+          group.memberProjects.every((member) => isGeneralChatProject(member));
+        return {
+          ...group,
+          displayName: isNoProject ? "No project" : group.displayName,
+          isNoProject,
+        };
+      }),
+    [environmentLabelById, primaryEnvironmentId, projectGroupingSettings, projects],
+  );
+  const threadListProjectGroups = useMemo(
+    () =>
+      sortLogicalProjectsForSidebar(
+        unsortedThreadListProjectGroups,
+        threads,
+        sidebarProjectSortOrder === "manual" ? "updated_at" : sidebarProjectSortOrder,
+      ),
+    [sidebarProjectSortOrder, threads, unsortedThreadListProjectGroups],
+  );
+  const [expandedProjectKeys, setExpandedProjectKeys] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const toggleProjectThreadListExpanded = useCallback((projectKey: string) => {
+    setExpandedProjectKeys((current) => {
+      const next = new Set(current);
+      if (next.has(projectKey)) {
+        next.delete(projectKey);
+      } else {
+        next.add(projectKey);
+      }
+      return next;
+    });
+  }, []);
   const serverProviders = useAtomValue(primaryServerProvidersAtom);
   const providerEntryByInstanceId = useMemo(
     () =>
@@ -1427,6 +1473,26 @@ export default function Sidebar() {
     snoozeWakeTick,
     threads,
   ]);
+
+  const activeProjectPanels = useMemo(
+    () =>
+      buildActiveSidebarProjectPanels({
+        projectGroups: threadListProjectGroups,
+        activeThreads,
+        activeThreadId: routeThreadRef?.threadId ?? null,
+        activeThreadEnvironmentId: routeThreadRef?.environmentId ?? null,
+        expandedProjectKeys,
+        previewLimit: sidebarThreadPreviewCount,
+      }),
+    [
+      activeThreads,
+      expandedProjectKeys,
+      routeThreadRef?.environmentId,
+      routeThreadRef?.threadId,
+      sidebarThreadPreviewCount,
+      threadListProjectGroups,
+    ],
+  );
 
   // Arm a timeout for the earliest upcoming wake so the shelf empties the
   // moment a snooze expires instead of on the next minute tick. Sorted
@@ -2023,6 +2089,9 @@ export default function Sidebar() {
                 : []),
               { id: "rename", label: "Rename thread" },
               { id: "mark-unread", label: "Mark unread" },
+              ...(isElectron && window.desktopBridge?.openSessionPopOut
+                ? [{ id: "open-popout", label: "Open in new window" }]
+                : []),
               { id: "delete", label: "Delete", destructive: true, icon: "trash" },
             ],
             position,
@@ -2037,6 +2106,25 @@ export default function Sidebar() {
           return;
         }
         switch (clicked.value) {
+          case "open-popout": {
+            const openPopOut = window.desktopBridge?.openSessionPopOut;
+            if (!openPopOut) return;
+            try {
+              await openPopOut({
+                environmentId: String(thread.environmentId),
+                threadId: String(thread.id),
+              });
+            } catch (error) {
+              toastManager.add(
+                stackedThreadToast({
+                  type: "error",
+                  title: "Could not open window",
+                  description: error instanceof Error ? error.message : "An error occurred.",
+                }),
+              );
+            }
+            return;
+          }
           case "new-thread-on-branch": {
             // Explicit branch carry-over: reuse the thread's worktree when it
             // has one, otherwise its branch on the local checkout.
@@ -2446,9 +2534,60 @@ export default function Sidebar() {
                     />
                   );
                 };
-                const items: ReactNode[] = activeThreads.map((thread) =>
-                  renderThreadRow(thread, "active"),
-                );
+                // SOU-417: nest active threads under project groups (5 + show more).
+                // No project / General sorts with other groups by recency (not pinned).
+                const items: ReactNode[] = [];
+                for (const panel of activeProjectPanels) {
+                  items.push(
+                    <li
+                      key={`project-header:${panel.projectKey}`}
+                      data-thread-selection-safe
+                      data-testid="sidebar-project-group-header"
+                      data-project-key={panel.projectKey}
+                      className="list-none"
+                    >
+                      <div className="mb-1 mt-3 flex w-full items-center gap-2 px-2.5 text-left first:mt-1">
+                        <span
+                          className={cn(
+                            "min-w-0 truncate text-xs font-medium",
+                            panel.isNoProject
+                              ? "text-muted-foreground"
+                              : "text-sidebar-foreground/80",
+                          )}
+                          title={panel.displayName}
+                        >
+                          {panel.displayName}
+                        </span>
+                        <span className="h-px flex-1 bg-sidebar-border/60" />
+                        <span className="shrink-0 font-mono text-[10px] text-muted-foreground/50">
+                          {panel.threads.length}
+                        </span>
+                      </div>
+                    </li>,
+                  );
+                  for (const thread of panel.visibleThreads) {
+                    items.push(renderThreadRow(thread, "active"));
+                  }
+                  if (panel.hasHiddenThreads) {
+                    const expanded = expandedProjectKeys.has(panel.projectKey);
+                    items.push(
+                      <li
+                        key={`project-show-more:${panel.projectKey}`}
+                        className="list-none"
+                        data-thread-selection-safe
+                      >
+                        <button
+                          type="button"
+                          data-testid="sidebar-project-show-more"
+                          onClick={() => toggleProjectThreadListExpanded(panel.projectKey)}
+                          className="mb-0.5 flex h-[26px] w-full items-center justify-center gap-1.5 rounded-md px-2 font-mono text-[11px] text-muted-foreground transition-colors hover:bg-sidebar-row-hover hover:text-foreground"
+                        >
+                          {expanded ? "Show less" : `Show ${panel.hiddenCount} more`}
+                        </button>
+                      </li>,
+                    );
+                  }
+                }
                 // Snoozed shelf: between the inbox and Settled — out of the
                 // way, never gone. The header always renders while anything
                 // is snoozed (the count is the whole footprint when

@@ -14,6 +14,7 @@ import { APP_BASE_NAME, APP_DISPLAY_NAME, APP_STAGE_LABEL } from "../branding";
 import { resolveServerBackedAppDisplayName } from "../branding.logic";
 import { AppSidebarLayout } from "../components/AppSidebarLayout";
 import { CommandPalette } from "../components/CommandPalette";
+import { isChatOnlyShellHref } from "../shellMode";
 import { ConnectOnboardingDialog } from "../components/cloud/ConnectOnboardingDialog";
 import { RelayClientInstallDialog } from "../components/cloud/RelayClientInstallDialog";
 import { SshPasswordPromptDialog } from "../components/desktop/SshPasswordPromptDialog";
@@ -115,7 +116,13 @@ function RootRouteView() {
     );
   }
 
-  const appShell = (
+  // SOU-395: session pop-out windows load ?shell=chat — chat only, no full shell.
+  const chatOnlyShell = isChatOnlyShellHref();
+  const appShell = chatOnlyShell ? (
+    <div className="flex h-dvh min-h-0 w-full flex-col overflow-hidden bg-background">
+      <Outlet />
+    </div>
+  ) : (
     <CommandPalette>
       <AppSidebarLayout>
         <Outlet />
@@ -129,13 +136,15 @@ function RootRouteView() {
         <DocumentTitleSync />
         <GlassAppearanceSync />
         {primaryEnvironmentAuthenticated ? <AuthenticatedTracingBootstrap /> : null}
-        <RelayClientInstallDialog />
-        <ConnectOnboardingDialog />
-        <SshPasswordPromptDialog />
+        {chatOnlyShell ? null : <RelayClientInstallDialog />}
+        {chatOnlyShell ? null : <ConnectOnboardingDialog />}
+        {chatOnlyShell ? null : <SshPasswordPromptDialog />}
         <SlowRpcRequestToastCoordinator />
         <HostedStaticEnvironmentBootstrap />
         {primaryEnvironmentAuthenticated ? <EventRouter /> : null}
-        {primaryEnvironmentAuthenticated ? <ProviderUpdateLaunchNotification /> : null}
+        {primaryEnvironmentAuthenticated && !chatOnlyShell ? (
+          <ProviderUpdateLaunchNotification />
+        ) : null}
         {appShell}
       </AnchoredToastProvider>
     </ToastProvider>

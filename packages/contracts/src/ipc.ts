@@ -1021,6 +1021,14 @@ export interface DesktopBridge {
     position?: { x: number; y: number },
   ) => Promise<T | null>;
   openExternal: (url: string) => Promise<boolean>;
+  /**
+   * Desktop-only: open a lightweight chat-only window for one session (SOU-395).
+   * Absent on web builds.
+   */
+  openSessionPopOut?: (input: {
+    readonly environmentId: string;
+    readonly threadId: string;
+  }) => Promise<void>;
   onMenuAction: (listener: (action: string) => void) => () => void;
   getWindowFullscreenState: () => boolean;
   onWindowFullscreenStateChange: (listener: (fullscreen: boolean) => void) => () => void;

@@ -72,6 +72,14 @@ export class DesktopWindow extends Context.Service<
     // mode), before the WSL backend that serves the renderer is ready. It is
     // dismissed automatically once the real main window reveals.
     readonly showConnectingSplash: Effect.Effect<void>;
+    /**
+     * SOU-395: open or focus a lightweight session pop-out (chat-only shell).
+     * Same app process; closing the window does not stop the provider session.
+     */
+    readonly createOrFocusSessionPopOut: (input: {
+      readonly environmentId: string;
+      readonly threadId: string;
+    }) => Effect.Effect<Electron.BrowserWindow, DesktopWindowError>;
     // Marks the primary backend as ready so `createMainIfBackendReady` and the
     // macOS "activate without windows" path may open the real main window. The
     // renderer now always loads the local client URL (getDesktopUrl) and connects
@@ -89,6 +97,22 @@ export class DesktopWindow extends Context.Service<
     readonly syncAppearance: Effect.Effect<void>;
   }
 >()("@t3tools/desktop/window/DesktopWindow") {}
+
+export function buildSessionPopOutUrl(input: {
+  readonly isDevelopment: boolean;
+  readonly environmentId: string;
+  readonly threadId: string;
+}): string {
+  const base = getDesktopUrl(input.isDevelopment);
+  const env = encodeURIComponent(input.environmentId);
+  const thread = encodeURIComponent(input.threadId);
+  // Hash history in Electron: path + search live after #.
+  return `${base}#/${env}/${thread}?shell=chat`;
+}
+
+export function sessionPopOutKey(environmentId: string, threadId: string): string {
+  return `${environmentId}\0${threadId}`;
+}
 
 const { logInfo: logWindowInfo, logWarning: logWindowWarning } =
   makeComponentLogger("desktop-window");
@@ -261,6 +285,9 @@ export const make = Effect.gen(function* () {
   // The transient "Connecting to WSL" splash window, tracked separately so it
   // is never mistaken for the real main window.
   const splashWindowRef = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
+  // SOU-395: lightweight chat-only windows keyed by environment+thread.
+  // Not registered as main; closing only removes the map entry.
+  const sessionPopOutsRef = yield* Ref.make(new Map<string, Electron.BrowserWindow>());
   const context = yield* Effect.context<DesktopWindowRuntimeServices>();
   const runFork = Effect.runForkWith(context);
   const runPromise = Effect.runPromiseWith(context);
@@ -746,10 +773,104 @@ export const make = Effect.gen(function* () {
     Effect.withSpan("desktop.window.showConnectingSplash"),
   );
 
+  const createOrFocusSessionPopOut = Effect.fn("desktop.window.createOrFocusSessionPopOut")(
+    function* (input: { readonly environmentId: string; readonly threadId: string }) {
+      const key = sessionPopOutKey(input.environmentId, input.threadId);
+      const existingMap = yield* Ref.get(sessionPopOutsRef);
+      const existing = existingMap.get(key);
+      if (existing && !existing.isDestroyed()) {
+        yield* electronWindow.reveal(existing);
+        return existing;
+      }
+
+      yield* previewManager.getBrowserSession();
+      const applicationUrl = buildSessionPopOutUrl({
+        isDevelopment: environment.isDevelopment,
+        environmentId: input.environmentId,
+        threadId: input.threadId,
+      });
+      const iconPaths = yield* assets.iconPaths;
+      const iconOption = getIconOption(iconPaths, environment.platform);
+      const shouldUseDarkColors = yield* electronTheme.shouldUseDarkColors;
+      const window = yield* electronWindow.create({
+        width: 720,
+        height: 900,
+        minWidth: 420,
+        minHeight: 480,
+        show: false,
+        autoHideMenuBar: true,
+        ...(environment.platform === "darwin" ? { disableAutoHideCursor: true } : {}),
+        backgroundColor: getInitialWindowBackgroundColor(shouldUseDarkColors),
+        ...iconOption,
+        title: environment.displayName,
+        ...getWindowTitleBarOptions(shouldUseDarkColors, environment.platform),
+        webPreferences: {
+          preload: environment.preloadPath,
+          contextIsolation: true,
+          nodeIntegration: false,
+          sandbox: true,
+          webviewTag: true,
+        },
+      });
+
+      if (environment.platform === "darwin") {
+        window.setAutoHideCursor(false);
+      }
+
+      window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+      window.webContents.on("will-navigate", (event, url) => {
+        if (
+          !isSameOriginRendererNavigation({
+            applicationUrl: getDesktopUrl(environment.isDevelopment),
+            navigationUrl: url,
+          })
+        ) {
+          event.preventDefault();
+        }
+      });
+
+      const revealSubscribers: RevealSubscription[] = [
+        (fire) => window.once("ready-to-show", fire),
+      ];
+      if (environment.platform === "linux") {
+        revealSubscribers.push((fire) => window.webContents.once("did-finish-load", fire));
+      }
+      bindFirstRevealTrigger(revealSubscribers, () => {
+        void runPromise(electronWindow.reveal(window));
+      });
+
+      window.on("closed", () => {
+        void runPromise(
+          Ref.update(sessionPopOutsRef, (map) => {
+            const next = new Map(map);
+            if (next.get(key) === window) {
+              next.delete(key);
+            }
+            return next;
+          }),
+        );
+      });
+
+      yield* Ref.update(sessionPopOutsRef, (map) => {
+        const next = new Map(map);
+        next.set(key, window);
+        return next;
+      });
+
+      void window.loadURL(applicationUrl).catch(() => undefined);
+      yield* logWindowInfo("session pop-out created", {
+        environmentId: input.environmentId,
+        threadId: input.threadId,
+      });
+      return window;
+    },
+  );
+
   return DesktopWindow.of({
     createMain,
     ensureMain,
     revealOrCreateMain,
+    createOrFocusSessionPopOut,
     activate: Effect.gen(function* () {
       const existingWindow = yield* currentMainWindow;
       if (Option.isSome(existingWindow)) {

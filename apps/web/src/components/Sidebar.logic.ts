@@ -623,6 +623,107 @@ export function resolveProjectStatusIndicator(
   return highestPriorityStatus;
 }
 
+/**
+ * One project section in the active sidebar list (SOU-417).
+ * Groups are ordered by latest thread activity; "No project" is a peer group
+ * (not hard-pinned) when general/projectless chats exist.
+ */
+export type ActiveSidebarProjectPanel<TThread> = {
+  readonly projectKey: string;
+  readonly displayName: string;
+  readonly isNoProject: boolean;
+  readonly threads: readonly TThread[];
+  readonly visibleThreads: readonly TThread[];
+  readonly hasHiddenThreads: boolean;
+  readonly hiddenCount: number;
+};
+
+/**
+ * Bucket active threads under project groups for the nested sidebar.
+ * Only groups with at least one thread are returned. Within each group the
+ * input thread order is preserved (caller sorts). Preview/expand uses
+ * {@link getVisibleThreadsForProject}.
+ */
+export function buildActiveSidebarProjectPanels<
+  TThread extends {
+    readonly id: string;
+    readonly environmentId: string;
+    readonly projectId: string;
+  },
+  TProject extends {
+    readonly projectKey: string;
+    readonly displayName: string;
+    readonly memberProjectRefs: readonly {
+      readonly environmentId: string;
+      readonly projectId: string;
+    }[];
+    readonly isNoProject?: boolean;
+  },
+>(input: {
+  readonly projectGroups: readonly TProject[];
+  readonly activeThreads: readonly TThread[];
+  readonly activeThreadId?: string | null;
+  readonly activeThreadEnvironmentId?: string | null;
+  readonly expandedProjectKeys: ReadonlySet<string>;
+  readonly previewLimit: number;
+}): ActiveSidebarProjectPanel<TThread>[] {
+  const projectKeyByRef = new Map<string, string>();
+  for (const group of input.projectGroups) {
+    for (const ref of group.memberProjectRefs) {
+      projectKeyByRef.set(`${ref.environmentId}\0${ref.projectId}`, group.projectKey);
+    }
+  }
+
+  const threadsByProjectKey = new Map<string, TThread[]>();
+  for (const thread of input.activeThreads) {
+    const projectKey = projectKeyByRef.get(`${thread.environmentId}\0${thread.projectId}`);
+    if (!projectKey) continue;
+    const bucket = threadsByProjectKey.get(projectKey);
+    if (bucket) {
+      bucket.push(thread);
+    } else {
+      threadsByProjectKey.set(projectKey, [thread]);
+    }
+  }
+
+  const panels: ActiveSidebarProjectPanel<TThread>[] = [];
+  for (const group of input.projectGroups) {
+    const threads = threadsByProjectKey.get(group.projectKey);
+    if (!threads || threads.length === 0) continue;
+
+    const isExpanded = input.expandedProjectKeys.has(group.projectKey);
+    const activeThreadIdForGroup =
+      input.activeThreadId != null &&
+      input.activeThreadEnvironmentId != null &&
+      threads.some(
+        (thread) =>
+          thread.id === input.activeThreadId &&
+          thread.environmentId === input.activeThreadEnvironmentId,
+      )
+        ? input.activeThreadId
+        : undefined;
+
+    const visibility = getVisibleThreadsForProject({
+      threads,
+      activeThreadId: activeThreadIdForGroup as TThread["id"] | undefined,
+      isThreadListExpanded: isExpanded,
+      previewLimit: input.previewLimit,
+    });
+
+    panels.push({
+      projectKey: group.projectKey,
+      displayName: group.displayName,
+      isNoProject: group.isNoProject === true,
+      threads,
+      visibleThreads: visibility.visibleThreads,
+      hasHiddenThreads: visibility.hasHiddenThreads,
+      hiddenCount: visibility.hiddenThreads.length,
+    });
+  }
+
+  return panels;
+}
+
 export function getVisibleThreadsForProject<T extends Pick<Thread, "id">>(input: {
   threads: readonly T[];
   activeThreadId: T["id"] | undefined;
