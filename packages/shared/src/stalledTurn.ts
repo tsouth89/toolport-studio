@@ -114,6 +114,16 @@ export function formatQuietTurnNotice(
   if (!toolLabel) {
     return base;
   }
+  // Open-tool labels are already progressive ("Running git log"), so splice them
+  // in as the verb instead of stacking "still running Running git log".
+  const progressive = /^(?<verb>[a-z]+ing)\b\s*(?<rest>.*)$/iu.exec(toolLabel);
+  const verb = progressive?.groups?.verb;
+  if (verb) {
+    const rest = progressive?.groups?.rest?.trim();
+    return rest
+      ? `${base} · still ${verb.toLowerCase()} ${rest}`
+      : `${base} · still ${verb.toLowerCase()}`;
+  }
   return `${base} · still running ${toolLabel}`;
 }
 

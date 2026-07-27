@@ -1497,11 +1497,11 @@ describe("deriveWorkLogEntries", () => {
     expect(entries[0]).toMatchObject({
       id: "tool-complete",
       createdAt: "2026-02-23T00:00:03.000Z",
-      label: "Tool call completed",
+      label: "Ran sed",
       detail: 'Read: {"file_path":"/tmp/app.ts"}',
       command: "sed -n 1,40p /tmp/app.ts",
       itemType: "dynamic_tool_call",
-      toolTitle: "Tool call",
+      toolTitle: "Ran sed",
     });
   });
 
@@ -1880,7 +1880,7 @@ describe("formatWorkLogToolLabel", () => {
           toolLifecycleStatus: "completed",
         }),
       ),
-    ).toBe("Toolport call tool");
+    ).toBe("Called Toolport call tool");
     expect(
       formatWorkLogToolLabel(
         entry({
@@ -1890,7 +1890,7 @@ describe("formatWorkLogToolLabel", () => {
           itemType: "mcp_tool_call",
         }),
       ),
-    ).toBe("Toolport search tools");
+    ).toBe("Called Toolport search tools");
   });
 
   it("keeps already-friendly MCP server · tool titles", () => {
@@ -1906,7 +1906,7 @@ describe("formatWorkLogToolLabel", () => {
     ).toBe("t3-code · preview_status");
   });
 
-  it("formats command/read lines like Grok Build", () => {
+  it("formats command/read lines as verb-first action gists", () => {
     expect(
       formatWorkLogToolLabel(
         entry({
@@ -1917,7 +1917,19 @@ describe("formatWorkLogToolLabel", () => {
           command: "git status",
         }),
       ),
-    ).toBe("Run git status");
+    ).toBe("Ran git status");
+    expect(
+      formatWorkLogToolLabel(
+        entry({
+          id: "cmd-open",
+          label: "Terminal",
+          toolTitle: "Terminal",
+          itemType: "command_execution",
+          toolLifecycleStatus: "inProgress",
+          command: "git fetch origin production; git checkout -B polish/x origin/production",
+        }),
+      ),
+    ).toBe("Running git fetch +1 more");
     expect(
       formatWorkLogToolLabel(
         entry({
@@ -1944,7 +1956,7 @@ describe("formatWorkLogToolLabel", () => {
     ).toBe("Thought");
   });
 
-  it("formats bash titles as Run lines", () => {
+  it("formats bash titles as command lines", () => {
     expect(
       formatWorkLogToolLabel(
         entry({
@@ -1955,7 +1967,7 @@ describe("formatWorkLogToolLabel", () => {
           command: "pnpm test",
         }),
       ),
-    ).toBe("Run pnpm test");
+    ).toBe("Ran pnpm test");
   });
 });
 

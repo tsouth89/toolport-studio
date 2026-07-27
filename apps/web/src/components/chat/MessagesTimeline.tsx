@@ -1137,7 +1137,8 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
     row.hasLongRunningOpenTool,
     toolLabel,
   );
-  const toolTitle = [toolLabel, toolDetail].filter(Boolean).join(" — ") || undefined;
+  const toolTooltip = row.activeToolTooltip?.trim() || toolDetail;
+  const toolTitle = [toolLabel, toolTooltip].filter(Boolean).join(" — ") || undefined;
   const onOpenActivity = activity.onOpenActivity;
   const onInterrupt = activity.onInterrupt;
   const showRecoveryStop = quiet.isQuiet && onInterrupt !== null;
@@ -2309,7 +2310,7 @@ function toolWorkEntryHeading(
   workEntry: TimelineWorkEntry,
   thoughtDurationLabel?: string | null,
 ): string {
-  // Grok Build-style scannable line: "Run …", "Read …", "Thought for 3.4s", etc.
+  // Verb-first scannable line: "Ran git log +2 more", "Read app.ts", "Thought for 3.4s".
   if (isThinkingWorkLogEntry(workEntry)) {
     return formatWorkLogThoughtLine(thoughtDurationLabel);
   }
@@ -2329,7 +2330,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   const showWarningIndicator = workEntry.sourceActivityKind === "runtime.warning";
   const isThought = isThinkingWorkLogEntry(workEntry);
   const heading = toolWorkEntryHeading(workEntry, thoughtDurationLabel);
-  // Line already includes the scannable context (Run git status…); only show a
+  // Line already includes the scannable context (Ran git status); only show a
   // muted preview when it adds something the headline does not already say.
   const rawPreview = isThought ? null : workEntryPreview(workEntry, workspaceRoot);
   const preview =
@@ -2400,7 +2401,8 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
           {isInProgress ? (
             <Loader2Icon className="size-3 animate-spin opacity-90" aria-hidden />
           ) : showFailedIndicator ? (
-            <XIcon className="size-3 opacity-90" aria-hidden />
+            // The X is the only failure signal in the row; keep it readable.
+            <XIcon className="size-3 opacity-90" role="img" aria-label={`${heading} failed`} />
           ) : showSuccessIndicator && !isThought ? (
             <span className="block size-1.5 rotate-45 rounded-[1px] bg-current opacity-80" />
           ) : (

@@ -3,6 +3,7 @@ import {
   formatDuration,
   formatWorkLogToolContext,
   formatWorkLogToolLabel,
+  isThinkingWorkLogEntry,
   workEntryIndicatesToolNeutralStatus,
   workEntryLooksLongRunning,
   workLogEntryIsNarrationStackEntry,
@@ -209,6 +210,8 @@ export type MessagesTimelineRow =
       activeToolLabel: string | null;
       /** Short command/path context for the active tool, when real. */
       activeToolDetail: string | null;
+      /** Full command/context for the row tooltip only. */
+      activeToolTooltip: string | null;
       /** Open execute/monitor tool — suppress early quiet notices. */
       hasLongRunningOpenTool: boolean;
     };
@@ -244,9 +247,26 @@ export function normalizeCompactToolLabel(value: string): string {
 export type ActiveWorkingToolStatus = {
   readonly label: string;
   readonly detail: string | null;
+  /** Full context for the row tooltip — never rendered inline. */
+  readonly tooltip: string | null;
   readonly isOpenTool: boolean;
   readonly isLongRunningOpenTool: boolean;
 };
+
+const WORKING_TOOLTIP_MAX_LENGTH = 400;
+
+/** Later of two work entries by creation time; a missing rival always loses. */
+function isNewerWorkEntry(entry: WorkLogEntry, rival: WorkLogEntry | null): boolean {
+  if (rival === null) {
+    return true;
+  }
+  const entryMs = Date.parse(entry.createdAt);
+  const rivalMs = Date.parse(rival.createdAt);
+  if (!Number.isFinite(entryMs) || !Number.isFinite(rivalMs)) {
+    return false;
+  }
+  return entryMs >= rivalMs;
+}
 
 /**
  * Best-effort Working-row tool status: prefer an open/in-progress tool on the
@@ -261,16 +281,21 @@ export function deriveActiveWorkingToolStatus(input: {
   const unsettledTurnId = input.unsettledTurnId ?? null;
   let openTool: WorkLogEntry | null = null;
   let lastTool: WorkLogEntry | null = null;
+  let lastThought: WorkLogEntry | null = null;
 
   for (const timelineEntry of input.timelineEntries) {
     if (timelineEntry.kind !== "work") {
       continue;
     }
     const entry = timelineEntry.entry;
-    if (!workLogEntryIsToolLike(entry)) {
+    if (unsettledTurnId !== null && entry.turnId != null && entry.turnId !== unsettledTurnId) {
       continue;
     }
-    if (unsettledTurnId !== null && entry.turnId != null && entry.turnId !== unsettledTurnId) {
+    if (isThinkingWorkLogEntry(entry)) {
+      lastThought = entry;
+      continue;
+    }
+    if (!workLogEntryIsToolLike(entry)) {
       continue;
     }
     lastTool = entry;
@@ -279,18 +304,45 @@ export function deriveActiveWorkingToolStatus(input: {
     }
   }
 
-  const active = openTool ?? lastTool;
+  // An open tool is genuinely the current work. Otherwise the newest activity
+  // wins: parking on a finished tool name while the model is thinking is what
+  // makes a busy turn read as a stuck one.
+  const active =
+    openTool ??
+    (lastThought !== null && isNewerWorkEntry(lastThought, lastTool) ? lastThought : lastTool);
   if (!active) {
     return null;
   }
-  const label = formatWorkLogToolLabel(active);
+  // Open tool or newest thought = happening now. A settled tool we fell back to
+  // (post-tool silence) stays in the past tense.
+  const isLiveActivity = openTool !== null || active === lastThought;
+  const label = formatWorkLogToolLabel(active, isLiveActivity ? "present" : "past");
   if (label.length === 0) {
     return null;
   }
-  const detail = formatWorkLogToolContext(active) ?? null;
+  // Never surface reasoning prose beside "Thinking" — the label is the whole
+  // signal; the thought text belongs to the rail, not the status line.
+  if (active === lastThought) {
+    return {
+      label,
+      detail: null,
+      tooltip: null,
+      isOpenTool: false,
+      isLongRunningOpenTool: false,
+    };
+  }
+  const context = formatWorkLogToolContext(active) ?? null;
+  const command = active.command?.trim();
+  // The headline already gists the command, so echoing a truncated copy beside
+  // it is the "Ran git log …; git status …" dump this row is meant to avoid.
+  // Paths and queries still earn their place inline; the command gets a tooltip.
+  const detail =
+    command || (context !== null && context.toLowerCase() === label.toLowerCase()) ? null : context;
+  const tooltip = command ?? context;
   return {
     label,
-    detail: detail && detail.toLowerCase() !== label.toLowerCase() ? detail : null,
+    detail,
+    tooltip: tooltip ? tooltip.slice(0, WORKING_TOOLTIP_MAX_LENGTH) : null,
     isOpenTool: openTool !== null,
     isLongRunningOpenTool: openTool !== null && workEntryLooksLongRunning(openTool),
   };
@@ -779,6 +831,7 @@ export function deriveMessagesTimelineRows(input: {
       createdAt: input.activeTurnStartedAt,
       activeToolLabel: label,
       activeToolDetail: detail,
+      activeToolTooltip: activeTool?.tooltip ?? null,
       hasLongRunningOpenTool: activeTool?.isLongRunningOpenTool ?? false,
     });
   }
@@ -817,6 +870,7 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
         a.createdAt === bw.createdAt &&
         a.activeToolLabel === bw.activeToolLabel &&
         a.activeToolDetail === bw.activeToolDetail &&
+        a.activeToolTooltip === bw.activeToolTooltip &&
         a.hasLongRunningOpenTool === bw.hasLongRunningOpenTool
       );
     }

@@ -653,7 +653,7 @@ describe("MessagesTimeline", () => {
     );
 
     expect(markup).toContain("lucide-x");
-    expect(markup).toContain('aria-label="Tool call failed"');
+    expect(markup).toContain('aria-label="Searched failed"');
   });
 
   it("shows a quiet notice and recovery Stop after the 2m silence threshold", () => {
@@ -714,7 +714,7 @@ describe("MessagesTimeline", () => {
     );
 
     expect(markup).toContain("Quiet for");
-    expect(markup).toContain("still running Ran command");
+    expect(markup).toContain("still running a command");
     expect(markup).toContain('aria-label="Stop generation"');
   });
 

@@ -15,6 +15,7 @@ import {
 import {
   deriveToolActivityPresentation,
   humanizeToolDisplayName,
+  type ToolActivityTense,
 } from "@t3tools/shared/toolActivity";
 
 import type {
@@ -162,7 +163,22 @@ export function workLogEntryIsToolLike(entry: WorkLogEntry): boolean {
   return entry.itemType !== undefined && isToolLifecycleItemType(entry.itemType);
 }
 
-function isGenericWorkLogToolLabel(value: string | undefined): boolean {
+/** Headlines that name no specific action — a better label may replace them. */
+const GENERIC_WORK_LOG_TOOL_LABELS = new Set([
+  "calling a tool",
+  "calling an agent",
+  "ran a command",
+  "ran a tool",
+  "running a command",
+  "running a tool",
+  "step",
+  "terminal",
+  "tool",
+  "tool call",
+  "toolcall",
+]);
+
+export function isGenericWorkLogToolLabel(value: string | undefined): boolean {
   if (!value) {
     return true;
   }
@@ -171,14 +187,12 @@ function isGenericWorkLogToolLabel(value: string | undefined): boolean {
     .toLowerCase()
     .replace(/\s+(?:complete|completed|started|updated)\s*$/u, "")
     .trim();
-  return (
-    normalized.length === 0 ||
-    normalized === "tool" ||
-    normalized === "tool call" ||
-    normalized === "toolcall" ||
-    normalized === "step" ||
-    normalized === "terminal"
-  );
+  return normalized.length === 0 || GENERIC_WORK_LOG_TOOL_LABELS.has(normalized);
+}
+
+/** Open tools narrate in the present ("Running git log"); settled ones in the past. */
+export function workLogEntryTense(entry: WorkLogEntry): ToolActivityTense {
+  return entry.toolLifecycleStatus === "inProgress" ? "present" : "past";
 }
 
 function looksLikeWorkLogDump(value: string): boolean {
@@ -237,25 +251,32 @@ export function workLogEntryIsNarrationStackEntry(entry: WorkLogEntry): boolean 
 }
 
 /**
- * Timeline heading for work rows (Grok Build-style):
+ * Timeline heading for work rows — always verb-first, never argv:
  * - Thinking → "Thought" (callers may append duration via formatWorkLogThoughtLine)
- * - Tools → "Run …" / "Read …" / "Searched …" when metadata allows
+ * - Tools → "Ran git log +2 more" / "Read app.ts" / "Searched …"
+ * Open tools narrate in the present ("Running git log").
  */
-export function formatWorkLogTimelineLine(entry: WorkLogEntry): string {
+export function formatWorkLogTimelineLine(
+  entry: WorkLogEntry,
+  tense: ToolActivityTense = workLogEntryTense(entry),
+): string {
   if (isThinkingWorkLogEntry(entry)) {
-    return "Thought";
+    return tense === "present" ? "Thinking" : "Thought";
   }
-  return formatWorkLogToolLabel(entry);
+  return formatWorkLogToolLabel(entry, tense);
 }
 
 /**
  * Human tool name for Working row + Activity. Prefers structured presentation
  * (itemType/command/path) so wire titles and generic "Tool" never win over
- * scannable "Run …" / "Read …" lines. Humanizes MCP wire names.
+ * scannable "Ran …" / "Read …" lines. Humanizes MCP wire names.
  */
-export function formatWorkLogToolLabel(entry: WorkLogEntry): string {
+export function formatWorkLogToolLabel(
+  entry: WorkLogEntry,
+  tense: ToolActivityTense = workLogEntryTense(entry),
+): string {
   if (isThinkingWorkLogEntry(entry)) {
-    return "Thought";
+    return tense === "present" ? "Thinking" : "Thought";
   }
 
   const rawTitle = (entry.toolTitle ?? entry.label)
@@ -265,6 +286,7 @@ export function formatWorkLogToolLabel(entry: WorkLogEntry): string {
     itemType: entry.itemType,
     title: rawTitle || entry.toolTitle || entry.label,
     detail: entry.detail,
+    tense,
     data: {
       ...(entry.toolData && typeof entry.toolData === "object" ? { item: entry.toolData } : {}),
       ...(entry.command ? { command: entry.command } : {}),
@@ -285,7 +307,11 @@ export function formatWorkLogToolLabel(entry: WorkLogEntry): string {
   if (!isGenericWorkLogToolLabel(rawTitle)) {
     return humanizeToolDisplayName(rawTitle);
   }
-  return "Tool call";
+  // Both are generic, but "Running a command" still says more than "a tool".
+  if (summary.length > 0) {
+    return summary;
+  }
+  return tense === "present" ? "Running a tool" : "Ran a tool";
 }
 
 /** Short real context (command / path) — never dumps. */
@@ -327,8 +353,8 @@ export function workEntryLooksLongRunning(entry: WorkLogEntry): boolean {
     /\bci\b/.test(label) ||
     /\bpoll\b/.test(label) ||
     label.startsWith("start monitor") ||
-    label.startsWith("run ") ||
-    label.includes("ran command")
+    label.startsWith("ran ") ||
+    label.startsWith("running ")
   );
 }
 
@@ -951,13 +977,21 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
     entry.toolLifecycleStatus = toolLifecycleStatus;
   }
 
+  // Key off what the provider sent, before any label rewrite below: a mid-stream
+  // update that first carries a command would otherwise change the derived label
+  // and stop collapsing into the same tool row.
+  const collapseKey = deriveToolLifecycleCollapseKey(entry);
+  if (collapseKey) {
+    entry.collapseKey = collapseKey;
+  }
+
   // Only rewrite when the provider left a generic "Tool" label. Keep specific
   // titles (bash, grep, MCP server · tool) intact for the timeline.
   const displaySeed = title ?? activity.summary;
   if (
     !isTaskActivity &&
     (activity.kind === "tool.updated" || activity.kind === "tool.completed") &&
-    isGenericToolLabel(displaySeed)
+    isGenericWorkLogToolLabel(displaySeed)
   ) {
     const presentationData: Record<string, unknown> = {
       ...(payloadData ?? {}),
@@ -971,40 +1005,18 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
       data: presentationData,
       fallbackSummary: activity.summary,
     });
-    if (!isGenericToolLabel(presentation.summary)) {
+    if (!isGenericWorkLogToolLabel(presentation.summary)) {
       entry.toolTitle = presentation.summary;
       entry.label = presentation.summary;
     }
     if (presentation.detail) {
-      if (!entry.detail || isGenericToolLabel(entry.detail) || entry.detail === title) {
+      if (!entry.detail || isGenericWorkLogToolLabel(entry.detail) || entry.detail === title) {
         entry.detail = presentation.detail;
       }
     }
   }
 
-  const collapseKey = deriveToolLifecycleCollapseKey(entry);
-  if (collapseKey) {
-    entry.collapseKey = collapseKey;
-  }
   return entry;
-}
-
-function isGenericToolLabel(value: string | undefined): boolean {
-  if (!value) {
-    return true;
-  }
-  const normalized = value
-    .trim()
-    .toLowerCase()
-    .replace(/\s+(?:complete|completed|started|updated)\s*$/u, "")
-    .trim();
-  return (
-    normalized.length === 0 ||
-    normalized === "tool" ||
-    normalized === "tool call" ||
-    normalized === "toolcall" ||
-    normalized === "terminal"
-  );
 }
 
 function isTerminalToolLifecycleStatus(status: WorkLogToolLifecycleStatus | undefined): boolean {
@@ -1128,14 +1140,26 @@ function mergeDerivedWorkLogEntries(
   const toolCallId = next.toolCallId ?? previous.toolCallId;
   const toolLifecycleStatus = next.toolLifecycleStatus ?? previous.toolLifecycleStatus;
   const toolData = next.toolData ?? previous.toolData;
+  // The terminal update usually drops the command that an earlier update carried.
+  // Prefer whichever side actually named the action so the collapsed row keeps
+  // "Ran sed" instead of falling back to the provider's generic "Tool call".
+  const label =
+    isGenericWorkLogToolLabel(next.label) && !isGenericWorkLogToolLabel(previous.label)
+      ? previous.label
+      : next.label;
+  const displayTitle =
+    isGenericWorkLogToolLabel(toolTitle) && !isGenericWorkLogToolLabel(previous.toolTitle)
+      ? previous.toolTitle
+      : toolTitle;
   return {
     ...previous,
     ...next,
+    label,
     ...(detail ? { detail } : {}),
     ...(command ? { command } : {}),
     ...(rawCommand ? { rawCommand } : {}),
     ...(changedFiles.length > 0 ? { changedFiles } : {}),
-    ...(toolTitle ? { toolTitle } : {}),
+    ...(displayTitle ? { toolTitle: displayTitle } : {}),
     ...(itemType ? { itemType } : {}),
     ...(requestKind ? { requestKind } : {}),
     ...(collapseKey ? { collapseKey } : {}),

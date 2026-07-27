@@ -16,6 +16,7 @@ import {
   type TimelineEntry,
   type WorkLogEntry,
 } from "./session-logic";
+import type { ToolActivityTense } from "@t3tools/shared/toolActivity";
 import { proposedPlanTitle } from "./proposedPlan";
 import type { ProposedPlan, TurnDiffFileChange, TurnDiffSummary } from "./types";
 
@@ -191,6 +192,10 @@ function isGenericActivityLabel(value: string | undefined): boolean {
     normalized === "tool" ||
     normalized === "tool call" ||
     normalized === "toolcall" ||
+    normalized === "ran a tool" ||
+    normalized === "running a tool" ||
+    normalized === "ran a command" ||
+    normalized === "running a command" ||
     normalized === "step" ||
     normalized === "terminal" ||
     normalized === "working" ||
@@ -198,11 +203,11 @@ function isGenericActivityLabel(value: string | undefined): boolean {
   );
 }
 
-function stepLabel(entry: WorkLogEntry): string {
+function stepLabel(entry: WorkLogEntry, tense?: ToolActivityTense): string {
   if (!workLogEntryIsToolLike(entry)) {
     return (entry.toolTitle ?? entry.label).trim() || "Step";
   }
-  return formatWorkLogToolLabel(entry);
+  return tense ? formatWorkLogToolLabel(entry, tense) : formatWorkLogToolLabel(entry);
 }
 
 /**
@@ -647,13 +652,13 @@ export function deriveThreadActivityViewModel(input: {
         (entry) =>
           workLogEntryIsToolLike(entry) &&
           entry.toolLifecycleStatus !== "inProgress" &&
-          stepLabel(entry) !== "Tool call",
+          !isGenericActivityLabel(stepLabel(entry)),
       );
 
     // Only an explicit in-progress tool is Current as a tool. Thinking may
     // label Current while tools are quiet; it is not a Recent milestone.
     if (runningTool) {
-      const label = stepLabel(runningTool);
+      const label = stepLabel(runningTool, "present");
       const detail = formatActivityDetail(formatWorkLogToolContext(runningTool));
       current = {
         // Prefer the real tool name as the hero (Grok-terminal style), not

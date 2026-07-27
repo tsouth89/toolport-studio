@@ -4,6 +4,7 @@ import {
   computeMessageDurationStart,
   deriveActiveWorkingFollowUpIntent,
   deriveActiveWorkingToolLabel,
+  deriveActiveWorkingToolStatus,
   deriveMessagesTimelineRows,
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
@@ -1040,7 +1041,7 @@ describe("deriveMessagesTimelineRows", () => {
       "work-4",
     ]);
     expect(sharedToolLabelForWorkEntries(timelineEntries.map((entry) => entry.entry))).toBe(
-      "Read file",
+      "Read a file",
     );
   });
 });
@@ -1380,7 +1381,88 @@ describe("computeStableMessagesTimelineRows", () => {
         ],
         unsettledTurnId: "turn-1" as never,
       }),
-    ).toBe("Run git status");
+    ).toBe("Ran git status");
+  });
+
+  it("narrates thinking that lands after the last finished tool", () => {
+    const status = deriveActiveWorkingToolStatus({
+      timelineEntries: [
+        {
+          id: "work-done",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:05Z",
+          entry: {
+            id: "work-1",
+            createdAt: "2026-01-01T00:00:05Z",
+            turnId: "turn-1" as never,
+            label: "Ran command",
+            toolTitle: "bash completed",
+            command: "git status",
+            tone: "tool",
+            toolLifecycleStatus: "completed",
+          },
+        },
+        {
+          id: "work-think",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:09Z",
+          entry: {
+            id: "work-2",
+            createdAt: "2026-01-01T00:00:09Z",
+            turnId: "turn-1" as never,
+            label: "Weighing the next step",
+            toolTitle: "Thinking",
+            tone: "thinking",
+            detail: "Private reasoning prose that must not reach the status line.",
+          },
+        },
+      ],
+      unsettledTurnId: "turn-1" as never,
+    });
+
+    expect(status?.label).toBe("Thinking");
+    expect(status?.detail).toBeNull();
+    expect(status?.tooltip).toBeNull();
+  });
+
+  it("keeps an open tool as the status even when a thought lands after it", () => {
+    const status = deriveActiveWorkingToolStatus({
+      timelineEntries: [
+        {
+          id: "work-open",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:05Z",
+          entry: {
+            id: "work-1",
+            createdAt: "2026-01-01T00:00:05Z",
+            turnId: "turn-1" as never,
+            label: "Terminal",
+            toolTitle: "Terminal",
+            itemType: "command_execution",
+            command: "cargo build --release",
+            tone: "tool",
+            toolLifecycleStatus: "inProgress",
+          },
+        },
+        {
+          id: "work-think",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:09Z",
+          entry: {
+            id: "work-2",
+            createdAt: "2026-01-01T00:00:09Z",
+            turnId: "turn-1" as never,
+            label: "Waiting on the build",
+            toolTitle: "Thinking",
+            tone: "thinking",
+          },
+        },
+      ],
+      unsettledTurnId: "turn-1" as never,
+    });
+
+    expect(status?.label).toBe("Running cargo build");
+    expect(status?.isOpenTool).toBe(true);
   });
 
   it("surfaces command context and long-running open tools on the Working row", () => {
@@ -1415,10 +1497,13 @@ describe("computeStableMessagesTimelineRows", () => {
       revertTurnCountByUserMessageId: new Map(),
     });
 
+    // Headline gists the action; the argv is tooltip-only so the single line
+    // never carries the command twice.
     expect(rows.find((row) => row.kind === "working")).toMatchObject({
       kind: "working",
-      activeToolLabel: "Run gh pr checks 479 --watch",
-      activeToolDetail: "gh pr checks 479 --watch",
+      activeToolLabel: "Running gh pr checks",
+      activeToolDetail: null,
+      activeToolTooltip: "gh pr checks 479 --watch",
       hasLongRunningOpenTool: true,
     });
   });
@@ -1520,7 +1605,7 @@ describe("computeStableMessagesTimelineRows", () => {
     expect(rows.find((row) => row.kind === "working")).toMatchObject({
       kind: "working",
       activeToolLabel: "Following up",
-      activeToolDetail: "save it as a draft release before you publish · Tool call",
+      activeToolDetail: "save it as a draft release before you publish · Running a tool",
     });
   });
 });

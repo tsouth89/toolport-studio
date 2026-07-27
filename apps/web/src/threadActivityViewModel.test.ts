@@ -157,7 +157,7 @@ describe("deriveThreadActivityViewModel", () => {
       ]),
     });
 
-    expect(model.recentSteps.map((step) => step.label)).toEqual(["grep", "shell"]);
+    expect(model.recentSteps.map((step) => step.label)).toEqual(["Searched", "shell"]);
     expect(model.recentSteps.map((step) => step.status)).toEqual(["completed", "interrupted"]);
     expect(model.recentSteps[1]?.detail).toBe("interrupted by user");
   });
@@ -213,7 +213,7 @@ describe("deriveThreadActivityViewModel", () => {
     });
 
     // 10 reads collapse to one denser row + the command stays distinct.
-    expect(model.recentSteps.map((step) => step.label)).toEqual(["Read file × 10", "Ran command"]);
+    expect(model.recentSteps.map((step) => step.label)).toEqual(["Read a file × 10", "Ran vp"]);
     expect(model.recentSteps[0]?.detail).toBe("apps/web/src/file-9.ts");
   });
 
@@ -307,7 +307,7 @@ describe("deriveThreadActivityViewModel", () => {
 
     expect(model.current?.source).toBe("working");
     expect(model.current?.label).toBe("Working");
-    expect(model.current?.detail).toBe("After Searched files");
+    expect(model.current?.detail).toBe("After Searched");
     expect(model.recentSteps[0]?.status).toBe("completed");
     // Dumps stay out; short real context is allowed.
     expect(model.recentSteps[0]?.detail).toBeUndefined();
@@ -353,7 +353,8 @@ describe("deriveThreadActivityViewModel", () => {
       ]),
     });
 
-    expect(model.current?.label).toBe("Ran command");
+    // Open tool → progressive form; the argv stays in the detail line.
+    expect(model.current?.label).toBe("Running vp");
     expect(model.current?.detail).toContain("vp test run");
     expect(model.current?.detail).not.toContain("stdout");
   });
@@ -382,7 +383,7 @@ describe("deriveThreadActivityViewModel", () => {
       ]),
     });
 
-    expect(model.recentSteps.map((step) => step.label)).toEqual(["Searched files", "Tool call"]);
+    expect(model.recentSteps.map((step) => step.label)).toEqual(["Searched", "Ran a tool"]);
     expect(model.recentSteps[0]?.detail).toBe("patternX");
     expect(model.recentSteps[1]?.detail).toBe("apps/web/src/threadActivityViewModel.ts");
   });

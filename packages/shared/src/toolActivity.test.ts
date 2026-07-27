@@ -2,12 +2,14 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   deriveToolActivityPresentation,
+  formatShellCommandHeadline,
   humanizeToolDisplayName,
   looksLikeWireToolName,
+  summarizeShellCommand,
 } from "./toolActivity.ts";
 
 describe("toolActivity", () => {
-  it("normalizes command tools to a Grok Build-style Run headline", () => {
+  it("normalizes command tools to a verb-first action gist", () => {
     expect(
       deriveToolActivityPresentation({
         itemType: "command_execution",
@@ -19,9 +21,116 @@ describe("toolActivity", () => {
         fallbackSummary: "Terminal",
       }),
     ).toEqual({
-      summary: "Run bun run lint",
+      summary: "Ran bun run lint",
       detail: "bun run lint",
     });
+  });
+
+  it("gists chained shell commands instead of dumping the whole string", () => {
+    expect(
+      deriveToolActivityPresentation({
+        itemType: "command_execution",
+        title: "Terminal",
+        data: {
+          command:
+            "git log --oneline -20; git status -sb; git log origin/main..HEAD --oneline 2>$null; if ($?) { echo ok }",
+        },
+        fallbackSummary: "Terminal",
+      }).summary,
+    ).toBe("Ran git log +2 more");
+
+    expect(
+      deriveToolActivityPresentation({
+        itemType: "command_execution",
+        title: "Terminal",
+        data: {
+          command: `python -c "from pathlib import Path; p=Path(r'C:\\Users\\me\\.grok'); print(p)"`,
+        },
+        fallbackSummary: "Terminal",
+      }).summary,
+    ).toBe("Ran python");
+  });
+
+  it("keeps subcommands for tools whose first word is the action", () => {
+    const summaryFor = (command: string) =>
+      deriveToolActivityPresentation({
+        itemType: "command_execution",
+        title: "Terminal",
+        data: { command },
+        fallbackSummary: "Terminal",
+      }).summary;
+
+    expect(summaryFor("npm run build")).toBe("Ran npm run build");
+    expect(summaryFor("gh pr checks 479 --watch")).toBe("Ran gh pr checks");
+    expect(summaryFor("git commit -m 'wip; not done'")).toBe("Ran git commit");
+    expect(summaryFor("rg --files-with-matches foo | head -20")).toBe("Ran rg");
+    expect(summaryFor("sudo NODE_ENV=production /usr/local/bin/pnpm exec vitest")).toBe(
+      "Ran pnpm exec vitest",
+    );
+    expect(summaryFor("$env:CI = '1'")).toBe("Ran a command");
+  });
+
+  it("gists the shell shapes that used to dump into the Working row", () => {
+    const cases: ReadonlyArray<readonly [string, string]> = [
+      [
+        "git log --oneline -20; git status -sb; git log origin/main..HEAD --oneline 2>$null",
+        "git log +2 more",
+      ],
+      [
+        "git fetch origin production; git checkout -B polish/account-settings-density origin/production",
+        "git fetch +1 more",
+      ],
+      ["pnpm vp test apps/web && pnpm lint", "pnpm vp +1 more"],
+      ["cd apps/web && npm run build", "cd +1 more"],
+      ["docker compose up -d", "docker compose up"],
+      ["kubectl get pods -n prod", "kubectl get pods"],
+      ["cat package.json | jq .scripts", "cat"],
+      ["C:\\Python311\\python.exe -m pytest -q", "python"],
+    ];
+
+    for (const [command, expected] of cases) {
+      expect(summarizeShellCommand(command)).toBeDefined();
+      expect(formatShellCommandHeadline(command, "Ran")).toBe(`Ran ${expected}`);
+    }
+  });
+
+  it("narrates open tools in the present tense", () => {
+    expect(
+      deriveToolActivityPresentation({
+        itemType: "command_execution",
+        title: "Terminal",
+        tense: "present",
+        data: { command: "git log --oneline -20; git status -sb" },
+        fallbackSummary: "Terminal",
+      }).summary,
+    ).toBe("Running git log +1 more");
+
+    expect(
+      deriveToolActivityPresentation({
+        itemType: "dynamic_tool_call",
+        title: "Read File",
+        tense: "present",
+        data: { kind: "read", locations: [{ path: "/tmp/app.ts" }] },
+        fallbackSummary: "Read File",
+      }).summary,
+    ).toBe("Reading app.ts");
+  });
+
+  it("re-gists legacy headlines that baked the whole command into the title", () => {
+    expect(
+      deriveToolActivityPresentation({
+        title: "Run git log --oneline -20; git status -sb",
+        fallbackSummary: "Terminal",
+      }).summary,
+    ).toBe("Ran git log +1 more");
+
+    // A tool genuinely named "Run tests" is not shell — leave it alone.
+    expect(
+      deriveToolActivityPresentation({
+        title: "Run tests",
+        fallbackSummary: "Run tests",
+      }).summary,
+    ).toBe("Run tests");
   });
 
   it("uses structured file paths for read-file tools when available", () => {
@@ -55,7 +164,7 @@ describe("toolActivity", () => {
         fallbackSummary: "Read File",
       }),
     ).toEqual({
-      summary: "Read file",
+      summary: "Read a file",
     });
   });
 
@@ -72,7 +181,7 @@ describe("toolActivity", () => {
         fallbackSummary: "Tool",
       }),
     ).toEqual({
-      summary: "Toolport run script",
+      summary: "Called Toolport run script",
     });
   });
 
@@ -91,7 +200,7 @@ describe("toolActivity", () => {
         fallbackSummary: "toolport__toolport_search_tools",
       }),
     ).toEqual({
-      summary: "Toolport search tools",
+      summary: "Called Toolport search tools",
     });
   });
 
@@ -112,7 +221,7 @@ describe("toolActivity", () => {
     });
   });
 
-  it("classifies bash/shell titles as Run lines even without command_execution itemType", () => {
+  it("classifies bash/shell titles as command lines even without command_execution itemType", () => {
     expect(
       deriveToolActivityPresentation({
         itemType: "dynamic_tool_call",
@@ -123,7 +232,7 @@ describe("toolActivity", () => {
         fallbackSummary: "Bash",
       }),
     ).toEqual({
-      summary: "Run git status --short",
+      summary: "Ran git status",
       detail: "git status --short",
     });
   });

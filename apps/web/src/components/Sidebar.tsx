@@ -333,10 +333,11 @@ const SidebarRow = memo(function SidebarRow(props: {
   // Same semantics as v1 (never-visited counts as read).
   const isUnread = hasUnseenCompletion({ ...thread, lastVisitedAt });
   const status = resolveSidebarStatus(thread);
-  // In-flight rows recede; prominence is for rows that need a human.
   const isInFlight = status === "working" || status === "approval" || status === "input";
-  const shouldRecede =
-    (status === "ready" || isInFlight) && !isUnread && !props.isActive && !isSelected;
+  // Live work, a finished-but-unseen turn, and failures are what you scan for —
+  // they hold the prominence. Settled rows you have already read recede.
+  const isLive = isInFlight || isUnread || status === "failed";
+  const shouldRecede = !isLive && !props.isActive && !isSelected;
   const topStatus =
     status === "working"
       ? {
@@ -519,10 +520,6 @@ const SidebarRow = memo(function SidebarRow(props: {
         : shouldRecede
           ? "text-sidebar-muted-foreground/75 hover:bg-sidebar-row-hover hover:text-sidebar-foreground"
           : "bg-transparent text-sidebar-foreground hover:bg-sidebar-row-hover",
-    isInFlight &&
-      !props.isActive &&
-      !isSelected &&
-      "opacity-70 transition-opacity hover:opacity-100",
     isDragging && "opacity-50",
     onDragStart && !isRenaming && "cursor-grab active:cursor-grabbing",
   );
@@ -545,14 +542,12 @@ const SidebarRow = memo(function SidebarRow(props: {
       className={cn(
         "min-w-0 flex-1 truncate text-[13px] leading-5",
         // Title is the row; keep weight light like Claude Desktop.
-        isUnread || props.isActive ? "font-medium" : "font-normal",
-        isUnread
-          ? "text-foreground"
-          : shouldRecede
-            ? "text-muted-foreground/80"
-            : status === "failed"
-              ? "text-foreground/95"
-              : "text-sidebar-foreground/90",
+        isLive || props.isActive ? "font-medium" : "font-normal",
+        shouldRecede
+          ? "text-muted-foreground/80"
+          : isLive
+            ? "text-foreground"
+            : "text-sidebar-foreground/90",
       )}
     >
       {thread.title}
