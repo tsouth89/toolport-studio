@@ -11,7 +11,7 @@ export function BetaSettingsPanel() {
       <SettingsSection title="Beta features">
         <SettingsRow
           title="No beta toggles right now"
-          description="Settled / auto-settle was removed from the chat list in favor of Archive chat. New experiments will show up here."
+          description="Settled and Snooze were removed from the chat list in favor of Archive chat. New experiments will show up here."
         />
       </SettingsSection>
     </SettingsPageContainer>
