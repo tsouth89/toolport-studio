@@ -6,7 +6,13 @@ import {
   scopeThreadRef,
   scopedThreadKey,
 } from "@t3tools/client-runtime/environment";
-import type { ScopedThreadRef, SidebarProjectGroupingMode } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  ProjectId,
+  ThreadId,
+  type ScopedThreadRef,
+  type SidebarProjectGroupingMode,
+} from "@t3tools/contracts";
 import {
   ArchiveIcon,
   ChevronDownIcon,
@@ -95,14 +101,20 @@ import type { SidebarThreadSummary } from "../types";
 import { cn } from "~/lib/utils";
 import {
   buildActiveSidebarProjectPanels,
+  encodeSidebarThreadDragPayload,
   formatWorkingDurationLabel,
   hasUnseenCompletion,
+  isThreadAlreadyInProject,
   isTrailingDoubleClick,
   orderItemsByPreferredIds,
+  parseSidebarThreadDragPayload,
   resolveAdjacentThreadId,
+  resolveSameEnvironmentProjectMember,
   resolveSidebarStatus,
   resolveWorkingStartedAt,
   shouldNavigateAfterProjectRemoval,
+  SIDEBAR_DND_PROJECT_MIME,
+  SIDEBAR_DND_THREAD_MIME,
   sortLogicalProjectsForSidebar,
   sortThreadsForSidebar,
 } from "./Sidebar.logic";
@@ -275,6 +287,9 @@ const SidebarRow = memo(function SidebarRow(props: {
   environmentLabel: string | null;
   projectCwd: string | null;
   projectTitle: string | null;
+  /** Nested under project shelves: hide redundant project name on the row. */
+  nestUnderProjectShelf?: boolean;
+  isDragging?: boolean;
   providerEntryByInstanceId: ReadonlyMap<string, ProviderInstanceEntry>;
   onThreadClick: (event: ReactMouseEvent, threadRef: ScopedThreadRef) => void;
   onThreadActivate: (threadRef: ScopedThreadRef) => void;
@@ -286,9 +301,13 @@ const SidebarRow = memo(function SidebarRow(props: {
   renamingTitle: string;
   onContextMenu: (threadRef: ScopedThreadRef, position: { x: number; y: number }) => void;
   onArchive: (threadRef: ScopedThreadRef) => void;
+  onDragStart?: (event: ReactDragEvent, thread: SidebarThreadSummary) => void;
+  onDragEnd?: () => void;
 }) {
   const {
     isRenaming,
+    nestUnderProjectShelf = false,
+    isDragging = false,
     onCancelRename,
     onCommitRename,
     onContextMenu,
@@ -297,6 +316,8 @@ const SidebarRow = memo(function SidebarRow(props: {
     onStartRename,
     onThreadActivate,
     onThreadClick,
+    onDragStart,
+    onDragEnd,
     renamingTitle,
     thread,
   } = props;
@@ -463,6 +484,21 @@ const SidebarRow = memo(function SidebarRow(props: {
     },
     [onArchive, threadRef],
   );
+  const handleRowDragStart = useCallback(
+    (event: ReactDragEvent) => {
+      if (isRenaming || !onDragStart) {
+        event.preventDefault();
+        return;
+      }
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("button, input, a")) {
+        event.preventDefault();
+        return;
+      }
+      onDragStart(event, thread);
+    },
+    [isRenaming, onDragStart, thread],
+  );
   const handlePrClick = useCallback(
     (event: ReactMouseEvent<HTMLElement>) => {
       if (pr?.url) openPrLink(event, pr.url);
@@ -487,6 +523,8 @@ const SidebarRow = memo(function SidebarRow(props: {
       !props.isActive &&
       !isSelected &&
       "opacity-70 transition-opacity hover:opacity-100",
+    isDragging && "opacity-50",
+    onDragStart && !isRenaming && "cursor-grab active:cursor-grabbing",
   );
 
   const title = isRenaming ? (
@@ -534,10 +572,15 @@ const SidebarRow = memo(function SidebarRow(props: {
 
   const diff = latestTurnDiff(thread);
 
+  const showProjectTitle = !nestUnderProjectShelf && props.projectTitle != null;
+
   return (
     <li
       data-thread-item
       className="list-none py-0.5 [content-visibility:auto] [contain-intrinsic-size:auto_96px]"
+      draggable={!isRenaming && onDragStart != null}
+      onDragStart={handleRowDragStart}
+      onDragEnd={onDragEnd}
     >
       <Tooltip>
         <TooltipTrigger
@@ -561,7 +604,7 @@ const SidebarRow = memo(function SidebarRow(props: {
                 cwd={props.projectCwd ?? ""}
                 className="size-4 shrink-0"
               />
-              {props.projectTitle ? (
+              {showProjectTitle ? (
                 <span
                   className={cn(
                     "min-w-0 flex-1 truncate text-xs text-muted-foreground/85",
@@ -1084,7 +1127,9 @@ export default function Sidebar() {
   );
 
   const [draggingProjectKey, setDraggingProjectKey] = useState<string | null>(null);
+  const [draggingThreadKey, setDraggingThreadKey] = useState<string | null>(null);
   const [dragOverProjectKey, setDragOverProjectKey] = useState<string | null>(null);
+  const [dragOverKind, setDragOverKind] = useState<"project" | "thread" | null>(null);
 
   const physicalKeysForProjectKey = useCallback(
     (projectKey: string): string[] => {
@@ -1116,25 +1161,137 @@ export default function Sidebar() {
     return keys;
   }, [projectOrder, threadListProjectGroups]);
 
-  const handleProjectGroupDragStart = useCallback((event: ReactDragEvent, projectKey: string) => {
-    event.dataTransfer.effectAllowed = "move";
-    event.dataTransfer.setData("text/plain", projectKey);
-    setDraggingProjectKey(projectKey);
+  const clearSidebarDragState = useCallback(() => {
+    setDraggingProjectKey(null);
+    setDraggingThreadKey(null);
+    setDragOverProjectKey(null);
+    setDragOverKind(null);
   }, []);
 
-  const handleProjectGroupDragOver = useCallback((event: ReactDragEvent, projectKey: string) => {
-    event.preventDefault();
-    event.dataTransfer.dropEffect = "move";
-    setDragOverProjectKey(projectKey);
+  const handleProjectGroupDragStart = useCallback((event: ReactDragEvent, projectKey: string) => {
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData(SIDEBAR_DND_PROJECT_MIME, projectKey);
+    // Fallback for environments that only expose text/plain on drop.
+    event.dataTransfer.setData("text/plain", projectKey);
+    setDraggingProjectKey(projectKey);
+    setDraggingThreadKey(null);
   }, []);
+
+  const handleThreadRowDragStart = useCallback(
+    (event: ReactDragEvent, thread: SidebarThreadSummary) => {
+      event.dataTransfer.effectAllowed = "move";
+      const payload = encodeSidebarThreadDragPayload({
+        environmentId: thread.environmentId,
+        threadId: thread.id,
+        projectId: thread.projectId,
+      });
+      event.dataTransfer.setData(SIDEBAR_DND_THREAD_MIME, payload);
+      event.dataTransfer.setData("text/plain", payload);
+      setDraggingThreadKey(scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)));
+      setDraggingProjectKey(null);
+    },
+    [],
+  );
+
+  const handleThreadRowDragEnd = useCallback(() => {
+    clearSidebarDragState();
+  }, [clearSidebarDragState]);
+
+  const handleProjectGroupDragOver = useCallback(
+    (event: ReactDragEvent, projectKey: string) => {
+      const types = new Set(event.dataTransfer.types);
+      // Prefer live drag state (reliable across browsers); fall back to MIME.
+      const kind: "project" | "thread" =
+        draggingThreadKey != null || types.has(SIDEBAR_DND_THREAD_MIME) ? "thread" : "project";
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "move";
+      setDragOverProjectKey(projectKey);
+      setDragOverKind(kind);
+    },
+    [draggingThreadKey],
+  );
+
+  const moveThreadToProjectGroup = useCallback(
+    async (
+      payload: {
+        environmentId: string;
+        threadId: string;
+        projectId: string;
+      },
+      targetProjectKey: string,
+    ) => {
+      const group = threadListProjectGroups.find((entry) => entry.projectKey === targetProjectKey);
+      if (!group) return;
+      const member = resolveSameEnvironmentProjectMember(
+        group.memberProjectRefs,
+        payload.environmentId,
+      );
+      if (!member) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Couldn’t move session",
+            description: "A conversation can only move within its current environment.",
+          }),
+        );
+        return;
+      }
+      if (
+        isThreadAlreadyInProject({
+          sourceProjectId: payload.projectId,
+          targetProjectId: member.projectId,
+        })
+      ) {
+        return;
+      }
+      const result = await updateThreadMetadata({
+        environmentId: EnvironmentId.make(payload.environmentId),
+        input: {
+          threadId: ThreadId.make(payload.threadId),
+          projectId: ProjectId.make(member.projectId),
+          // Folder change invalidates checkout binding (same as command palette attach).
+          branch: null,
+          worktreePath: null,
+        },
+      });
+      if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+        const error = squashAtomCommandFailure(result);
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Couldn’t move session",
+            description: error instanceof Error ? error.message : "An error occurred.",
+          }),
+        );
+      }
+    },
+    [threadListProjectGroups, updateThreadMetadata],
+  );
 
   const handleProjectGroupDrop = useCallback(
     (event: ReactDragEvent, targetProjectKey: string) => {
       event.preventDefault();
-      const draggedKey = event.dataTransfer.getData("text/plain") || draggingProjectKey || "";
-      setDraggingProjectKey(null);
-      setDragOverProjectKey(null);
+      const threadRaw =
+        event.dataTransfer.getData(SIDEBAR_DND_THREAD_MIME) ||
+        (draggingThreadKey != null ? event.dataTransfer.getData("text/plain") : "");
+      const threadPayload = parseSidebarThreadDragPayload(threadRaw);
+      if (threadPayload) {
+        clearSidebarDragState();
+        void moveThreadToProjectGroup(threadPayload, targetProjectKey);
+        return;
+      }
+
+      const draggedKey =
+        event.dataTransfer.getData(SIDEBAR_DND_PROJECT_MIME) ||
+        event.dataTransfer.getData("text/plain") ||
+        draggingProjectKey ||
+        "";
+      clearSidebarDragState();
       if (!draggedKey || draggedKey === targetProjectKey) {
+        return;
+      }
+      // Reject accidental drops of non-project text.
+      if (draggedKey.startsWith("{")) {
         return;
       }
       const draggedPinned = pinnedProjectKeys.includes(draggedKey);
@@ -1162,8 +1319,11 @@ export default function Sidebar() {
       }
     },
     [
+      clearSidebarDragState,
       currentPhysicalOrder,
       draggingProjectKey,
+      draggingThreadKey,
+      moveThreadToProjectGroup,
       physicalKeysForProjectKey,
       pinnedProjectKeys,
       reorderPinnedProjectKeys,
@@ -1175,8 +1335,17 @@ export default function Sidebar() {
   );
 
   const handleProjectGroupDragEnd = useCallback(() => {
-    setDraggingProjectKey(null);
-    setDragOverProjectKey(null);
+    clearSidebarDragState();
+  }, [clearSidebarDragState]);
+
+  const handleProjectGroupDragLeave = useCallback((event: ReactDragEvent, projectKey: string) => {
+    const related = event.relatedTarget as Node | null;
+    if (related && event.currentTarget.contains(related)) return;
+    setDragOverProjectKey((current) => {
+      if (current !== projectKey) return current;
+      setDragOverKind(null);
+      return null;
+    });
   }, []);
 
   const toggleProjectPinned = useCallback(
@@ -1846,6 +2015,8 @@ export default function Sidebar() {
                           `${thread.environmentId}:${thread.projectId}`,
                         ) ?? null
                       }
+                      nestUnderProjectShelf
+                      isDragging={draggingThreadKey === threadKey}
                       providerEntryByInstanceId={providerEntryByInstanceId}
                       onThreadClick={handleThreadClick}
                       onThreadActivate={navigateToThread}
@@ -1857,6 +2028,8 @@ export default function Sidebar() {
                       renamingTitle={renamingThreadKey === threadKey ? renamingTitle : ""}
                       onContextMenu={handleThreadContextMenu}
                       onArchive={attemptArchive}
+                      onDragStart={handleThreadRowDragStart}
+                      onDragEnd={handleThreadRowDragEnd}
                     />
                   );
                 };
@@ -1864,6 +2037,15 @@ export default function Sidebar() {
                 // Cap at sidebarThreadPreviewCount (default 5) with Show more.
                 const items: ReactNode[] = [];
                 for (const panel of activeProjectPanels) {
+                  const isDropTarget =
+                    dragOverProjectKey === panel.projectKey &&
+                    draggingProjectKey !== panel.projectKey;
+                  const dropHighlightClass =
+                    isDropTarget && dragOverKind === "thread"
+                      ? "rounded-md ring-1 ring-inset ring-sky-500/50 bg-sky-500/10"
+                      : isDropTarget
+                        ? "rounded-md bg-sidebar-row-hover/80"
+                        : null;
                   items.push(
                     <li
                       key={`project-header:${panel.projectKey}`}
@@ -1873,14 +2055,13 @@ export default function Sidebar() {
                       data-pinned={panel.isPinned ? "true" : "false"}
                       className={cn(
                         "list-none",
-                        dragOverProjectKey === panel.projectKey &&
-                          draggingProjectKey !== panel.projectKey &&
-                          "rounded-md bg-sidebar-row-hover/80",
+                        dropHighlightClass,
                         draggingProjectKey === panel.projectKey && "opacity-60",
                       )}
-                      draggable
+                      draggable={draggingThreadKey == null}
                       onDragStart={(event) => handleProjectGroupDragStart(event, panel.projectKey)}
                       onDragOver={(event) => handleProjectGroupDragOver(event, panel.projectKey)}
+                      onDragLeave={(event) => handleProjectGroupDragLeave(event, panel.projectKey)}
                       onDrop={(event) => handleProjectGroupDrop(event, panel.projectKey)}
                       onDragEnd={handleProjectGroupDragEnd}
                     >
@@ -1933,12 +2114,22 @@ export default function Sidebar() {
                     items.push(
                       <li
                         key={`project-empty:${panel.projectKey}`}
-                        className="list-none"
+                        className={cn(
+                          "list-none",
+                          isDropTarget &&
+                            dragOverKind === "thread" &&
+                            "rounded-md ring-1 ring-inset ring-sky-500/40 bg-sky-500/5",
+                        )}
                         data-thread-selection-safe
                         data-testid="sidebar-project-empty-hint"
+                        onDragOver={(event) => handleProjectGroupDragOver(event, panel.projectKey)}
+                        onDragLeave={(event) =>
+                          handleProjectGroupDragLeave(event, panel.projectKey)
+                        }
+                        onDrop={(event) => handleProjectGroupDrop(event, panel.projectKey)}
                       >
-                        <div className="mb-0.5 px-5 py-1 font-mono text-[11px] text-muted-foreground/45">
-                          No sessions yet
+                        <div className="mb-0.5 px-5 py-1.5 font-mono text-[11px] text-muted-foreground/45">
+                          {draggingThreadKey != null ? "Drop session here" : "Drag sessions here"}
                         </div>
                       </li>,
                     );

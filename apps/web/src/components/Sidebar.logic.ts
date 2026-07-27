@@ -639,6 +639,60 @@ export type ActiveSidebarProjectPanel<TThread> = {
   readonly hiddenCount: number;
 };
 
+/** MIME types for sidebar HTML5 DnD (project reorder vs session move). */
+export const SIDEBAR_DND_PROJECT_MIME = "application/x-toolport-sidebar-project";
+export const SIDEBAR_DND_THREAD_MIME = "application/x-toolport-sidebar-thread";
+
+export type SidebarThreadDragPayload = {
+  readonly environmentId: string;
+  readonly threadId: string;
+  readonly projectId: string;
+};
+
+export function encodeSidebarThreadDragPayload(payload: SidebarThreadDragPayload): string {
+  return JSON.stringify(payload);
+}
+
+export function parseSidebarThreadDragPayload(raw: string): SidebarThreadDragPayload | null {
+  if (raw.trim().length === 0) return null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (
+      parsed === null ||
+      typeof parsed !== "object" ||
+      typeof (parsed as { environmentId?: unknown }).environmentId !== "string" ||
+      typeof (parsed as { threadId?: unknown }).threadId !== "string" ||
+      typeof (parsed as { projectId?: unknown }).projectId !== "string"
+    ) {
+      return null;
+    }
+    const { environmentId, threadId, projectId } = parsed as SidebarThreadDragPayload;
+    if (environmentId.length === 0 || threadId.length === 0 || projectId.length === 0) {
+      return null;
+    }
+    return { environmentId, threadId, projectId };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Pick the physical project member in the same environment as the dragged
+ * session. Logical shelves may span environments; moves stay in-env.
+ */
+export function resolveSameEnvironmentProjectMember<
+  TMember extends { readonly environmentId: string; readonly projectId: string },
+>(members: readonly TMember[], environmentId: string): TMember | null {
+  return members.find((member) => member.environmentId === environmentId) ?? null;
+}
+
+export function isThreadAlreadyInProject(input: {
+  readonly sourceProjectId: string;
+  readonly targetProjectId: string;
+}): boolean {
+  return input.sourceProjectId === input.targetProjectId;
+}
+
 /**
  * Place pinned logical project groups first (in pin order), then keep the
  * remaining groups in their incoming manual/shelf order.

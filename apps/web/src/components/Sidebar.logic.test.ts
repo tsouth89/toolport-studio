@@ -5,6 +5,7 @@ import {
   buildActiveSidebarProjectPanels,
   buildMultiSelectThreadContextMenuItems,
   createThreadJumpHintVisibilityController,
+  encodeSidebarThreadDragPayload,
   getSidebarThreadIdsToPrewarm,
   getVisibleSidebarThreadIds,
   resolveAdjacentThreadId,
@@ -13,9 +14,12 @@ import {
   getProjectSortTimestamp,
   hasUnseenCompletion,
   isContextMenuPointerDown,
+  isThreadAlreadyInProject,
   isTrailingDoubleClick,
   orderItemsByPreferredIds,
+  parseSidebarThreadDragPayload,
   resolveProjectStatusIndicator,
+  resolveSameEnvironmentProjectMember,
   resolveSidebarStageBadgeLabel,
   resolveThreadRowClassName,
   resolveSidebarStatus,
@@ -1145,6 +1149,51 @@ describe("buildActiveSidebarProjectPanels", () => {
       previewLimit: 5,
     });
     expect(panels.map((p) => p.projectKey)).toEqual(["recent-project", "general"]);
+  });
+});
+
+describe("sidebar session drag helpers", () => {
+  it("round-trips thread drag payloads", () => {
+    const payload = {
+      environmentId: "env-1",
+      threadId: "thread-1",
+      projectId: "proj-a",
+    };
+    expect(parseSidebarThreadDragPayload(encodeSidebarThreadDragPayload(payload))).toEqual(payload);
+  });
+
+  it("rejects invalid thread drag payloads", () => {
+    expect(parseSidebarThreadDragPayload("")).toBeNull();
+    expect(parseSidebarThreadDragPayload("not-json")).toBeNull();
+    expect(parseSidebarThreadDragPayload(JSON.stringify({ environmentId: "e" }))).toBeNull();
+    expect(
+      parseSidebarThreadDragPayload(
+        JSON.stringify({ environmentId: "", threadId: "t", projectId: "p" }),
+      ),
+    ).toBeNull();
+  });
+
+  it("resolves same-environment project members only", () => {
+    const envA = EnvironmentId.make("env-a");
+    const envB = EnvironmentId.make("env-b");
+    const members = [
+      { environmentId: envA, projectId: ProjectId.make("proj-a") },
+      { environmentId: envB, projectId: ProjectId.make("proj-b") },
+    ];
+    expect(resolveSameEnvironmentProjectMember(members, envA)?.projectId).toBe("proj-a");
+    expect(resolveSameEnvironmentProjectMember(members, envB)?.projectId).toBe("proj-b");
+    expect(
+      resolveSameEnvironmentProjectMember(members, EnvironmentId.make("env-missing")),
+    ).toBeNull();
+  });
+
+  it("detects no-op moves when already in the target project", () => {
+    expect(isThreadAlreadyInProject({ sourceProjectId: "proj-a", targetProjectId: "proj-a" })).toBe(
+      true,
+    );
+    expect(isThreadAlreadyInProject({ sourceProjectId: "proj-a", targetProjectId: "proj-b" })).toBe(
+      false,
+    );
   });
 });
 
