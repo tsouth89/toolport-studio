@@ -17,15 +17,12 @@ import {
   ArchiveIcon,
   ChevronDownIcon,
   CircleAlertIcon,
-  CircleCheckIcon,
-  CircleDashedIcon,
   CopyIcon,
   FolderIcon,
   FolderPlusIcon,
   GitBranchIcon,
   EllipsisIcon,
   GripVerticalIcon,
-  MessageSquareIcon,
   PinIcon,
   PlusIcon,
   SearchIcon,
@@ -543,8 +540,11 @@ const SidebarRow = memo(function SidebarRow(props: {
         "min-w-0 flex-1 truncate text-[13px] leading-5",
         // Title is the row; keep weight light like Claude Desktop.
         isLive || props.isActive ? "font-medium" : "font-normal",
+        // Derived from foreground, not muted-foreground: the dark theme lifts
+        // muted toward white, so muted/80 sat only a shade below a live row and
+        // the two states read the same.
         shouldRecede
-          ? "text-muted-foreground/80"
+          ? "text-foreground/50"
           : isLive
             ? "text-foreground"
             : "text-sidebar-foreground/90",
@@ -581,8 +581,36 @@ const SidebarRow = memo(function SidebarRow(props: {
             />
           }
         >
-          {/* Claude Desktop density: one title line + compact trailing status */}
-          <div className="relative z-10 flex h-7 min-w-0 items-center gap-1.5 px-2">
+          {/* One title line. State reads as a leading glyph so the right edge
+              stays empty — metadata is revealed on hover, not parsed at rest. */}
+          <div
+            className={cn(
+              "relative z-10 flex h-7 min-w-0 items-center gap-1.5 px-2",
+              nestUnderProjectShelf && "ps-4",
+            )}
+          >
+            <span
+              className="flex size-3 shrink-0 items-center justify-center"
+              aria-hidden
+              title={topStatus?.label}
+            >
+              {topStatus ? (
+                <span
+                  className={cn(
+                    "block size-1.5 rounded-full",
+                    status === "working"
+                      ? "animate-status-pulse bg-sky-500 dark:bg-sky-400"
+                      : status === "approval"
+                        ? "bg-amber-500 dark:bg-amber-300"
+                        : status === "input"
+                          ? "bg-indigo-500 dark:bg-indigo-300"
+                          : status === "failed"
+                            ? "bg-red-500 dark:bg-red-400"
+                            : "bg-emerald-500 dark:bg-emerald-400",
+                  )}
+                />
+              ) : null}
+            </span>
             {showProjectFavicon ? (
               <ProjectFavicon
                 environmentId={thread.environmentId}
@@ -597,33 +625,27 @@ const SidebarRow = memo(function SidebarRow(props: {
             ) : null}
             <div className="flex min-w-0 flex-1 items-center gap-1">{title}</div>
             <span className="relative ml-auto flex h-5 min-w-0 shrink-0 items-center justify-end pl-1">
+              {/* At rest only live work earns space here: elapsed time is
+                  changing information, everything else is lookup-on-demand. */}
               <span className="flex items-center gap-1 transition-opacity group-hover/sidebar-row:opacity-0">
-                {topStatus ? (
+                {status === "working" ? (
                   <span
                     className={cn(
-                      "inline-flex max-w-[5.5rem] items-center gap-0.5 truncate text-[11px] font-medium",
-                      topStatus.className,
+                      "inline-flex items-center gap-0.5 text-[11px]",
+                      topStatus?.className,
                     )}
+                    role="status"
                   >
-                    {topStatus.icon === "working" ? (
-                      <CircleDashedIcon aria-hidden className="size-3 shrink-0" />
-                    ) : topStatus.icon === "done" ? (
-                      <CircleCheckIcon aria-hidden className="size-3 shrink-0" />
-                    ) : null}
-                    <span role="status" className="truncate">
-                      {topStatus.label}
+                    <span aria-hidden className="tabular-nums">
+                      <WorkingDuration startedAt={resolveWorkingStartedAt(thread)} />
                     </span>
-                    {status === "working" ? (
-                      <span aria-hidden className="tabular-nums">
-                        <WorkingDuration startedAt={resolveWorkingStartedAt(thread)} />
-                      </span>
-                    ) : null}
                   </span>
-                ) : (
-                  <span className="tabular-nums text-[11px] text-muted-foreground/55">
-                    {threadTimeLabel(thread)}
-                  </span>
-                )}
+                ) : null}
+              </span>
+              <span className="absolute inset-y-0 right-0 flex items-center gap-1 opacity-0 transition-opacity focus-within:opacity-100 group-hover/sidebar-row:opacity-100">
+                <span className="tabular-nums text-[11px] text-muted-foreground/55">
+                  {threadTimeLabel(thread)}
+                </span>
                 {prStatus && pr ? (
                   <button
                     type="button"
@@ -652,8 +674,6 @@ const SidebarRow = memo(function SidebarRow(props: {
                     />
                   </span>
                 ) : null}
-              </span>
-              <span className="absolute inset-y-0 right-0 flex items-center opacity-0 transition-opacity focus-within:opacity-100 group-hover/sidebar-row:opacity-100">
                 <button
                   type="button"
                   aria-label="Archive chat"
@@ -2037,23 +2057,32 @@ export default function Sidebar() {
                       onDrop={(event) => handleProjectGroupDrop(event, panel.projectKey)}
                       onDragEnd={handleProjectGroupDragEnd}
                     >
-                      <div className="group/project-header mt-2 mb-0.5 flex h-6 w-full items-center gap-1 px-1.5 text-left first:mt-0.5">
+                      {/* Air between groups is what makes a small dim label read
+                          as a header. Claude Desktop's headers are smaller and
+                          fainter than their rows and still land, because the
+                          groups are actually separated. */}
+                      <div className="group/project-header mt-5 mb-1 flex h-5 w-full items-center gap-1 px-1.5 text-left first:mt-1">
                         <GripVerticalIcon
                           className="size-3 shrink-0 cursor-grab text-muted-foreground/40 opacity-0 transition-opacity group-hover/project-header:opacity-100 active:cursor-grabbing"
                           aria-hidden
                         />
                         <span
                           className={cn(
+                            // A project is the parent of the rows beneath it, so it
+                            // cannot read as smaller and fainter than its children.
+                            // Still under the 13px session title, but heavier and
+                            // brighter so it lands as a header rather than a
+                            // shrunken sibling.
                             "min-w-0 truncate text-[11px] font-medium tracking-wide",
                             panel.isNoProject
-                              ? "text-muted-foreground"
-                              : "text-sidebar-muted-foreground",
+                              ? "text-muted-foreground/70"
+                              : "text-sidebar-muted-foreground/85",
                           )}
                           title={panel.displayName}
                         >
                           {panel.displayName}
                         </span>
-                        <span className="h-px flex-1 bg-sidebar-border/50" />
+                        <span className="flex-1" />
                         <button
                           type="button"
                           data-testid="sidebar-project-pin"
@@ -2077,7 +2106,7 @@ export default function Sidebar() {
                           <PinIcon className={cn("size-3", panel.isPinned && "fill-current")} />
                         </button>
                         {panel.threads.length > 0 ? (
-                          <span className="shrink-0 font-mono text-[10px] text-muted-foreground/45">
+                          <span className="shrink-0 font-mono text-[10px] text-muted-foreground/45 opacity-0 transition-opacity group-hover/project-header:opacity-100">
                             {panel.threads.length}
                           </span>
                         ) : null}
