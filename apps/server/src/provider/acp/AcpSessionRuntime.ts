@@ -853,62 +853,72 @@ export const make = (
       getModeState: Ref.get(modeStateRef),
       getConfigOptions: Ref.get(configOptionsRef),
       prompt: (payload) =>
-        promptSerializationSemaphore.withPermit(
-          Effect.gen(function* () {
-            const started = yield* getStartedState;
-            yield* closeActiveAssistantSegment({
-              queue: eventQueue,
-              assistantSegmentRef,
-            });
-            const requestPayload = {
-              sessionId: started.sessionId,
-              ...payload,
-            } satisfies EffectAcpSchema.PromptRequest;
-            const cancelledResponse = {
-              stopReason: "cancelled",
-            } satisfies EffectAcpSchema.PromptResponse;
-            const localCancel = yield* Deferred.make<EffectAcpSchema.PromptResponse>();
-            const promptRpcFiber = yield* runLoggedRequest(
-              "session/prompt",
-              requestPayload,
-              acp.agent.prompt(requestPayload),
-            ).pipe(Effect.forkIn(runtimeScope));
-            yield* Ref.set(activePromptFiberRef, Option.some(promptRpcFiber));
-            yield* Ref.set(activePromptCancelRef, Option.some(localCancel));
-            yield* Ref.set(forceCancelledRef, false);
-            // Race local cancel against the RPC so Stop never depends on the
-            // agent process becoming interruptible. Fiber.interrupt of the RPC
-            // may hang forever on a wedged child process; the latch still wins.
-            return yield* Effect.raceFirst(
-              Fiber.join(promptRpcFiber).pipe(
-                Effect.catchCause((cause) =>
-                  Cause.hasInterruptsOnly(cause)
-                    ? Effect.succeed(cancelledResponse)
-                    : Effect.failCause(cause),
+        Effect.flatMap(Clock.currentTimeMillis, (requestedAtMs) =>
+          promptSerializationSemaphore.withPermit(
+            Effect.gen(function* () {
+              // A steering prompt must not sit behind the prompt it preempted.
+              // When this is non-trivial the interject silently became a queue.
+              const waitedMs = (yield* Clock.currentTimeMillis) - requestedAtMs;
+              if (waitedMs > 250) {
+                yield* Effect.logWarning("ACP prompt waited for the prompt slot", { waitedMs });
+              }
+              const started = yield* getStartedState;
+              yield* closeActiveAssistantSegment({
+                queue: eventQueue,
+                assistantSegmentRef,
+              });
+              const requestPayload = {
+                sessionId: started.sessionId,
+                ...payload,
+              } satisfies EffectAcpSchema.PromptRequest;
+              const cancelledResponse = {
+                stopReason: "cancelled",
+              } satisfies EffectAcpSchema.PromptResponse;
+              const localCancel = yield* Deferred.make<EffectAcpSchema.PromptResponse>();
+              const promptRpcFiber = yield* runLoggedRequest(
+                "session/prompt",
+                requestPayload,
+                acp.agent.prompt(requestPayload),
+              ).pipe(Effect.forkIn(runtimeScope));
+              yield* Ref.set(activePromptFiberRef, Option.some(promptRpcFiber));
+              yield* Ref.set(activePromptCancelRef, Option.some(localCancel));
+              yield* Ref.set(forceCancelledRef, false);
+              // Race local cancel against the RPC so Stop never depends on the
+              // agent process becoming interruptible. Fiber.interrupt of the RPC
+              // may hang forever on a wedged child process; the latch still wins.
+              return yield* Effect.raceFirst(
+                Fiber.join(promptRpcFiber).pipe(
+                  Effect.catchCause((cause) =>
+                    Cause.hasInterruptsOnly(cause)
+                      ? Effect.succeed(cancelledResponse)
+                      : Effect.failCause(cause),
+                  ),
+                  Effect.tap(() => Ref.set(forceCancelledRef, false)),
                 ),
-                Effect.tap(() => Ref.set(forceCancelledRef, false)),
-              ),
-              Deferred.await(localCancel).pipe(Effect.tap(() => Ref.set(forceCancelledRef, true))),
-            ).pipe(
-              Effect.ensuring(
-                Effect.gen(function* () {
-                  yield* Ref.set(activePromptCancelRef, Option.none());
-                  yield* Ref.set(activePromptFiberRef, Option.none());
-                  // Best-effort only: never block prompt settlement on process health.
-                  yield* Fiber.interrupt(promptRpcFiber).pipe(
-                    Effect.ignore,
-                    Effect.forkIn(runtimeScope),
-                  );
-                }),
-              ),
-              Effect.tap(() =>
-                closeActiveAssistantSegment({
-                  queue: eventQueue,
-                  assistantSegmentRef,
-                }),
-              ),
-            );
-          }),
+                Deferred.await(localCancel).pipe(
+                  Effect.tap(() => Ref.set(forceCancelledRef, true)),
+                ),
+              ).pipe(
+                Effect.ensuring(
+                  Effect.gen(function* () {
+                    yield* Ref.set(activePromptCancelRef, Option.none());
+                    yield* Ref.set(activePromptFiberRef, Option.none());
+                    // Best-effort only: never block prompt settlement on process health.
+                    yield* Fiber.interrupt(promptRpcFiber).pipe(
+                      Effect.ignore,
+                      Effect.forkIn(runtimeScope),
+                    );
+                  }),
+                ),
+                Effect.tap(() =>
+                  closeActiveAssistantSegment({
+                    queue: eventQueue,
+                    assistantSegmentRef,
+                  }),
+                ),
+              );
+            }),
+          ),
         ),
       cancel: getStartedState.pipe(
         Effect.flatMap((started) =>

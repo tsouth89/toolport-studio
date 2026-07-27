@@ -4,7 +4,10 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import type * as EffectAcpSchema from "effect-acp/schema";
-import { deriveToolActivityPresentation } from "@t3tools/shared/toolActivity";
+import {
+  deriveToolActivityPresentation,
+  isGenericToolActivityTitle,
+} from "@t3tools/shared/toolActivity";
 import type { ToolLifecycleItemType } from "@t3tools/contracts";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -358,12 +361,21 @@ function makeToolCallState(
     data.locations = input.locations;
   }
   const fallbackDetail = command ?? normalizedTitle ?? textContent;
+  // Streamed output alone is not a name. A progress-only update ("[===> ]
+  // 364/377") used to synthesize a generic title that then overwrote the real
+  // one in the merge below, pinning the row to "Tool call" for the rest of the
+  // tool's life. Only name a tool from something that actually identifies it.
   const hasPresentationSeed =
     title !== undefined ||
     kind !== undefined ||
     command !== undefined ||
     normalizedTitle !== undefined ||
-    textContent !== undefined;
+    (input.locations !== undefined && input.locations !== null);
+  const status = normalizeToolCallStatus(input.status, options?.fallbackStatus);
+  // Persisted titles stay in the neutral past tense: this title is computed once
+  // and then carried across later updates, so a live tense would freeze at the
+  // status we happened to see first. The client re-derives "Running …" for open
+  // tools at render time, where the status is current.
   const presentation = hasPresentationSeed
     ? deriveToolActivityPresentation({
         itemType: canonicalItemTypeFromAcpToolKind(kind),
@@ -373,7 +385,6 @@ function makeToolCallState(
         fallbackSummary: title ?? "Tool",
       })
     : undefined;
-  const status = normalizeToolCallStatus(input.status, options?.fallbackStatus);
   return {
     toolCallId,
     ...(kind ? { kind } : {}),
@@ -412,7 +423,13 @@ export function mergeToolCallState(
 ): AcpToolCallState {
   const nextKind = typeof next.data.kind === "string" ? next.data.kind : undefined;
   const kind = nextKind ?? previous?.kind;
-  const title = next.title ?? previous?.title;
+  // A tool keeps the most specific name it has ever had. Later updates often
+  // carry only streamed output or a status change; letting their generic title
+  // win renamed a live "Ran cargo run" row to "Tool call" mid-flight.
+  const title =
+    isGenericToolActivityTitle(next.title) && !isGenericToolActivityTitle(previous?.title)
+      ? previous?.title
+      : (next.title ?? previous?.title);
   const status = next.status ?? previous?.status;
   const command = next.command ?? previous?.command;
   const detail = next.detail ?? previous?.detail;

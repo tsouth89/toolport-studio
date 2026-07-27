@@ -2176,6 +2176,18 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               },
             });
             ctx.turnQueue = disposed.state;
+            // Mid-turn sends have no observable record of which branch they took,
+            // so a steer that silently degrades to start-new/queued looks
+            // identical to "Grok ignored me". Log the decision inputs.
+            yield* Effect.logInfo("Grok send disposition", {
+              threadId: input.threadId,
+              disposition: disposed.disposition._tag,
+              promptsInFlight: ctx.promptsInFlight,
+              liveActiveTurnId: liveActiveTurnId ?? null,
+              queuePhase: disposed.state.phase,
+              interrupted:
+                liveActiveTurnId !== undefined && ctx.interruptedTurnIds.has(liveActiveTurnId),
+            });
             if (disposed.disposition._tag === "queued") {
               // Hold this send until the live turn settles, then auto-start.
               // sendTurnBlocksUntilSettled: await the deferred so the client
@@ -2531,7 +2543,16 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               liveForSteer.lastToolActivityAtMs = nowMs;
               liveForSteer.turnVisibleUpdateCount += 1;
             }
+            // Time the preempt→prompt handoff. If the agent holds the ACP prompt
+            // slot, the steering prompt queues behind the live tool loop and the
+            // user sees "Grok ignored my message" instead of an interject.
+            const preemptStartedMs = yield* Clock.currentTimeMillis;
             yield* prepared.acp.preemptActivePrompt;
+            yield* Effect.logInfo("Grok steer preempted active prompt", {
+              threadId: input.threadId,
+              turnId: prepared.turnId,
+              preemptMs: (yield* Clock.currentTimeMillis) - preemptStartedMs,
+            });
             if (shouldEmitSyntheticFollowUpChrome()) {
               const textPart = prepared.promptParts.find(
                 (part) => part && typeof part === "object" && part.type === "text",
@@ -2968,10 +2989,20 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             return { _tag: "Ignore" as const };
           }
           const activeTurnId = ctx.activeTurnId ?? ctx.session.activeTurnId;
-          if (turnId !== undefined && activeTurnId !== undefined && activeTurnId !== turnId) {
+          // Stop is a thread-level intent. The requested turn id is a hint, not
+          // a gate: a mid-turn follow-up rebinds ctx.activeTurnId, so the client
+          // can legitimately ask to stop an id the adapter has already moved
+          // past. Ignoring that made Stop a silent no-op with nothing running it
+          // could recover from — cancel whatever is actually live instead.
+          const hasLiveWork =
+            activeTurnId !== undefined ||
+            ctx.promptsInFlight > 0 ||
+            ctx.session.status === "running" ||
+            ctx.session.status === "connecting";
+          if (!hasLiveWork) {
             return { _tag: "Ignore" as const };
           }
-          const interruptedTurnId = turnId ?? activeTurnId;
+          const interruptedTurnId = activeTurnId ?? turnId;
           if (interruptedTurnId !== undefined) {
             ctx.interruptedTurnIds.add(interruptedTurnId);
           }
@@ -2994,17 +3025,15 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             }
             const activeTurnId = ctx.activeTurnId ?? ctx.session.activeTurnId;
             if (turnId !== undefined && activeTurnId !== undefined && activeTurnId !== turnId) {
-              return Option.none<GrokSessionContext>();
+              yield* Effect.logInfo("Grok Stop targeted a turn the adapter has moved past", {
+                threadId,
+                requestedTurnId: turnId,
+                liveTurnId: activeTurnId,
+              });
             }
-            if (
-              observed.interruptedTurnId !== undefined &&
-              activeTurnId !== undefined &&
-              activeTurnId !== observed.interruptedTurnId
-            ) {
-              return Option.none<GrokSessionContext>();
-            }
+            // Settle the live turn, not the one the client happened to know.
             const interruptedTurnId =
-              observed.interruptedTurnId ?? turnId ?? activeTurnId ?? ctx.session.activeTurnId;
+              activeTurnId ?? observed.interruptedTurnId ?? turnId ?? ctx.session.activeTurnId;
             yield* settlePendingApprovalsAsCancelled(ctx.pendingApprovals);
             yield* settlePendingUserInputsAsCancelled(ctx.pendingUserInputs);
             // Drop held sends on Stop — do not auto-start them after cancel.

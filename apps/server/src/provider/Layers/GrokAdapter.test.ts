@@ -1702,6 +1702,53 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
     }).pipe(TestClock.withLive),
   );
 
+  it.effect("stops the live turn when Stop targets a stale turn id", () =>
+    Effect.gen(function* () {
+      // A mid-turn follow-up rebinds the adapter's active turn, so the client can
+      // ask to stop an id the adapter has moved past. Stop used to be silently
+      // ignored on that mismatch, leaving the session unstoppable.
+      const threadId = ThreadId.make("grok-stop-stale-turn-id");
+      const adapter = yield* makeMockTestAdapter({
+        T3_ACP_HANG_PROMPT_FOREVER: "1",
+      });
+
+      const turnStarted = yield* Deferred.make<TurnId>();
+      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        event.type === "turn.started" &&
+        event.turnId !== undefined &&
+        String(event.threadId) === String(threadId)
+          ? Deferred.succeed(turnStarted, event.turnId).pipe(Effect.asVoid)
+          : Effect.void,
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("grok"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+
+      const sendTurnFiber = yield* adapter
+        .sendTurn({ threadId, input: "hang until stopped", attachments: [] })
+        .pipe(Effect.forkChild);
+      yield* Deferred.await(turnStarted).pipe(Effect.timeout("2 seconds"));
+      yield* Effect.sleep("200 millis");
+
+      yield* adapter
+        .interruptTurn(threadId, TurnId.make("turn-the-client-still-remembers"))
+        .pipe(Effect.timeout("3 seconds"));
+      yield* Fiber.join(sendTurnFiber).pipe(Effect.timeout("5 seconds"), Effect.ignore);
+
+      const sessions = yield* adapter.listSessions();
+      const session = sessions.find((entry) => entry.threadId === threadId);
+      assert.equal(session?.status, "ready");
+      assert.isUndefined(session?.activeTurnId);
+
+      yield* Fiber.interrupt(runtimeEventsFiber);
+      yield* adapter.stopSession(threadId);
+    }).pipe(TestClock.withLive),
+  );
+
   it.effect("drops late ACP notifications after a turn is cancelled", () =>
     Effect.gen(function* () {
       const threadId = ThreadId.make("grok-drop-late-cancelled-notifications");

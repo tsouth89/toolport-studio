@@ -347,7 +347,7 @@ describe("AcpSessionRuntime", () => {
       expect(toolCall?._tag).toBe("ToolCallUpdated");
       if (toolCall?._tag === "ToolCallUpdated") {
         expect(toolCall.toolCall.status).toBe("completed");
-        expect(toolCall.toolCall.title).toBe("Read file");
+        expect(toolCall.toolCall.title).toBe("Read a file");
       }
     }).pipe(
       Effect.provide(

@@ -181,7 +181,7 @@ describe("AcpRuntimeModel", () => {
         toolCall: {
           toolCallId: "tool-1",
           kind: "execute",
-          title: "Ran command",
+          title: "Ran bun run typecheck",
           status: "pending",
           command: "bun run typecheck",
           detail: "bun run typecheck",
@@ -248,10 +248,49 @@ describe("AcpRuntimeModel", () => {
       expect(mergeToolCallState(createdEvent.toolCall, updatedEvent.toolCall)).toMatchObject({
         toolCallId: "tool-1",
         status: "completed",
-        title: "Ran command",
+        title: "Ran bun run typecheck",
         detail: "bun run typecheck",
         command: "bun run typecheck",
       });
+    }
+  });
+
+  it("keeps a named tool named when a later update carries only streamed output", () => {
+    const created = parseSessionUpdateEvent({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "tool_call",
+        toolCallId: "tool-build",
+        title: "run_terminal_command",
+        kind: "execute",
+        status: "inProgress",
+        rawInput: { command: "cargo run --manifest-path rust/Cargo.toml" },
+      },
+    } satisfies EffectAcpSchema.SessionNotification);
+
+    // Progress-only update: no title, no kind, just a chunk of stdout. This is
+    // what renamed a live row to "Tool call" and pinned it there for minutes.
+    const progress = parseSessionUpdateEvent({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "tool_call_update",
+        toolCallId: "tool-build",
+        content: [
+          {
+            type: "content",
+            content: { type: "text", text: "[=====> ] 364/377: hyper, fluent-templates" },
+          },
+        ],
+      },
+    } satisfies EffectAcpSchema.SessionNotification);
+
+    const createdEvent = created.events[0];
+    const progressEvent = progress.events[0];
+    if (createdEvent?._tag === "ToolCallUpdated" && progressEvent?._tag === "ToolCallUpdated") {
+      expect(progressEvent.toolCall.title).toBeUndefined();
+      expect(mergeToolCallState(createdEvent.toolCall, progressEvent.toolCall).title).toBe(
+        "Ran cargo run",
+      );
     }
   });
 
