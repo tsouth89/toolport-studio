@@ -45,7 +45,8 @@ export const ComposerPendingApprovalPanel = memo(function ComposerPendingApprova
         ) : null}
       </div>
       <p className="mt-1 text-xs text-muted-foreground">
-        The agent is waiting. Approve to continue, or deny this request.
+        The agent is waiting. Approve to continue, or deny. Unanswered requests cancel after a few
+        minutes.
       </p>
       {approval.detail ? (
         <div className="mt-3 rounded-lg border border-border/65 bg-background/70 p-3">

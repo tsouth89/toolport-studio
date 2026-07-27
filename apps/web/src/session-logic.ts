@@ -486,6 +486,20 @@ function isStalePendingRequestFailureDetail(detail: string | undefined): boolean
   );
 }
 
+/** Quiet notice when auto-cancel fires for unanswered approval / AskUserQuestion. */
+export function isPendingRequestTimeoutWarningMessage(message: string | null | undefined): boolean {
+  if (typeof message !== "string" || message.length === 0) {
+    return false;
+  }
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes("timed out") &&
+    (normalized.includes("permission request") ||
+      normalized.includes("user input") ||
+      normalized.includes("cancelled automatically"))
+  );
+}
+
 export function derivePendingApprovals(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
 ): PendingApproval[] {

@@ -19,6 +19,7 @@ import {
   formatWorkLogToolLabel,
   hasActionableProposedPlan,
   isLatestTurnSettled,
+  isPendingRequestTimeoutWarningMessage,
   workEntryIndicatesToolFailure,
   workEntryIndicatesToolNeutralStatus,
   workEntryIndicatesToolSuccess,
@@ -50,6 +51,23 @@ function makeActivity(overrides: {
     ...(overrides.sequence !== undefined ? { sequence: overrides.sequence } : {}),
   };
 }
+
+describe("isPendingRequestTimeoutWarningMessage", () => {
+  it("matches permission and user-input auto-cancel copy", () => {
+    expect(
+      isPendingRequestTimeoutWarningMessage(
+        "Permission request timed out after 180s with no decision. Request was cancelled automatically.",
+      ),
+    ).toBe(true);
+    expect(
+      isPendingRequestTimeoutWarningMessage(
+        "User input timed out after 300s with no answer. Request was cancelled automatically.",
+      ),
+    ).toBe(true);
+    expect(isPendingRequestTimeoutWarningMessage("Model rate limited")).toBe(false);
+    expect(isPendingRequestTimeoutWarningMessage(null)).toBe(false);
+  });
+});
 
 describe("derivePendingApprovals", () => {
   it("tracks open approvals and removes resolved ones", () => {

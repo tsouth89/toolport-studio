@@ -21,6 +21,7 @@ describe("ComposerPendingApprovalPanel", () => {
 
     expect(markup).toContain("Allow this command?");
     expect(markup).toContain("The agent is waiting");
+    expect(markup).toContain("cancel after a few minutes");
     expect(markup).toContain('data-approval-detail="complete"');
     expect(markup).toContain('aria-label="Command"');
     expect(markup).toContain(detail);

@@ -88,6 +88,7 @@ import {
   formatDuration,
   hasActionableProposedPlan,
   isLatestTurnSettled,
+  isPendingRequestTimeoutWarningMessage,
 } from "../session-logic";
 import { type LegendListRef } from "@legendapp/list/react";
 import { getAnchoredTurnMetrics, type TimelineScrollMode } from "./chat/timelineScrollAnchoring";
@@ -2043,6 +2044,35 @@ function ChatViewContent(props: ChatViewProps) {
   const phase = derivePhase(activeThread?.session ?? null);
   const threadActivities = activeThread?.activities ?? EMPTY_ACTIVITIES;
   const workLogEntries = useMemo(() => deriveWorkLogEntries(threadActivities), [threadActivities]);
+  // Quiet notice when multi-session auto-cancel clears an unanswered approval form.
+  const seenTimeoutWarningActivityIdsRef = useRef(new Set<string>());
+  useEffect(() => {
+    for (const activity of threadActivities) {
+      if (activity.kind !== "runtime.warning") {
+        continue;
+      }
+      if (seenTimeoutWarningActivityIdsRef.current.has(activity.id)) {
+        continue;
+      }
+      const message =
+        activity.payload &&
+        typeof activity.payload === "object" &&
+        typeof (activity.payload as { message?: unknown }).message === "string"
+          ? (activity.payload as { message: string }).message
+          : typeof activity.summary === "string"
+            ? activity.summary
+            : null;
+      if (!isPendingRequestTimeoutWarningMessage(message)) {
+        continue;
+      }
+      seenTimeoutWarningActivityIdsRef.current.add(activity.id);
+      toastManager.add({
+        type: "warning",
+        title: "Request timed out",
+        description: message ?? "An unanswered permission or question was cancelled automatically.",
+      });
+    }
+  }, [threadActivities]);
   const pendingApprovals = useMemo(
     () => derivePendingApprovals(threadActivities),
     [threadActivities],
