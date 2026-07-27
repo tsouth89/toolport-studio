@@ -1,6 +1,6 @@
 {
   "name": "@t3tools/web",
-  "version": "0.1.0-alpha.11",
+  "version": "0.1.0-alpha.12",
   "private": true,
   "description": "The Toolport Studio conversation and workspace interface.",
   "type": "module",
