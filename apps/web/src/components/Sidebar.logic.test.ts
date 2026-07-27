@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   archiveSelectedThreadEntries,
+  applyPinnedLogicalProjectOrder,
   buildActiveSidebarProjectPanels,
   buildMultiSelectThreadContextMenuItems,
   createThreadJumpHintVisibilityController,
@@ -1029,8 +1030,58 @@ describe("buildActiveSidebarProjectPanels", () => {
     expect(panels[0]?.visibleThreads).toHaveLength(5);
     expect(panels[0]?.hasHiddenThreads).toBe(true);
     expect(panels[0]?.hiddenCount).toBe(2);
+    expect(panels[0]?.isPinned).toBe(false);
     expect(panels[1]?.isNoProject).toBe(true);
     expect(panels[1]?.visibleThreads).toHaveLength(1);
+  });
+
+  it("floats pinned logical projects to the top", () => {
+    const env = EnvironmentId.make("env-1");
+    const projectGroups = [
+      {
+        projectKey: "alpha",
+        displayName: "Alpha",
+        isNoProject: false,
+        memberProjectRefs: [{ environmentId: env, projectId: ProjectId.make("proj-a") }],
+      },
+      {
+        projectKey: "beta",
+        displayName: "Beta",
+        isNoProject: false,
+        memberProjectRefs: [{ environmentId: env, projectId: ProjectId.make("proj-b") }],
+      },
+    ];
+    const activeThreads = [
+      {
+        id: ThreadId.make("a1"),
+        environmentId: env,
+        projectId: ProjectId.make("proj-a"),
+      },
+      {
+        id: ThreadId.make("b1"),
+        environmentId: env,
+        projectId: ProjectId.make("proj-b"),
+      },
+    ];
+    const panels = buildActiveSidebarProjectPanels({
+      projectGroups,
+      activeThreads,
+      expandedProjectKeys: new Set(),
+      previewLimit: 5,
+      pinnedProjectKeys: ["beta"],
+    });
+    expect(panels.map((panel) => panel.projectKey)).toEqual(["beta", "alpha"]);
+    expect(panels[0]?.isPinned).toBe(true);
+    expect(panels[1]?.isPinned).toBe(false);
+  });
+
+  it("applyPinnedLogicalProjectOrder preserves unpinned relative order", () => {
+    const groups = [{ projectKey: "a" }, { projectKey: "b" }, { projectKey: "c" }];
+    expect(applyPinnedLogicalProjectOrder(groups, ["c"]).map((g) => g.projectKey)).toEqual([
+      "c",
+      "a",
+      "b",
+    ]);
   });
 
   it("does not hard-pin No project; respects projectGroups order", () => {

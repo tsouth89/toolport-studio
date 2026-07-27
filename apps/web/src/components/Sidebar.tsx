@@ -18,7 +18,10 @@ import {
   FolderPlusIcon,
   GitBranchIcon,
   EllipsisIcon,
+  GripVerticalIcon,
   MessageSquareIcon,
+  PinIcon,
+  PinOffIcon,
   PlusIcon,
   SearchIcon,
   ServerIcon,
@@ -32,6 +35,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type DragEvent as ReactDragEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
@@ -667,6 +671,10 @@ export default function Sidebar() {
     [projects],
   );
   const projectOrder = useUiStateStore((store) => store.projectOrder);
+  const pinnedProjectKeys = useUiStateStore((store) => store.pinnedProjectKeys);
+  const reorderProjectsInStore = useUiStateStore((store) => store.reorderProjects);
+  const setProjectPinned = useUiStateStore((store) => store.setProjectPinned);
+  const reorderPinnedProjectKeys = useUiStateStore((store) => store.reorderPinnedProjectKeys);
   const threads = useThreadShells();
   const router = useRouter();
   const { isMobile, setOpenMobile } = useSidebar();
@@ -755,33 +763,41 @@ export default function Sidebar() {
       }),
     [projectOrder, visibleProjects],
   );
+  // All projects (including General) in user shelf order. Manual is the product
+  // default: shelves stay put; pins float to the top.
+  const orderedAllProjects = useMemo(
+    () =>
+      orderItemsByPreferredIds({
+        items: projects,
+        preferredIds: projectOrder,
+        getId: getProjectOrderKey,
+        getPreferenceIds: (project) => [
+          getProjectOrderKey(project),
+          legacyProjectCwdPreferenceKey(project.workspaceRoot),
+        ],
+      }),
+    [projectOrder, projects],
+  );
   const unsortedProjectGroups = useMemo(
     () =>
       buildSidebarProjectSnapshots({
-        projects: sidebarProjectSortOrder === "manual" ? orderedProjects : visibleProjects,
+        projects: orderedProjects,
         settings: projectGroupingSettings,
         primaryEnvironmentId,
         resolveEnvironmentLabel: (environmentId) => environmentLabelById.get(environmentId) ?? null,
       }),
-    [
-      environmentLabelById,
-      orderedProjects,
-      primaryEnvironmentId,
-      projectGroupingSettings,
-      visibleProjects,
-      sidebarProjectSortOrder,
-    ],
+    [environmentLabelById, orderedProjects, primaryEnvironmentId, projectGroupingSettings],
   );
   const projectGroups = useMemo(
-    () => sortLogicalProjectsForSidebar(unsortedProjectGroups, threads, sidebarProjectSortOrder),
-    [sidebarProjectSortOrder, threads, unsortedProjectGroups],
+    () => sortLogicalProjectsForSidebar(unsortedProjectGroups, threads, "manual"),
+    [threads, unsortedProjectGroups],
   );
   // Include General / projectless as a peer group for the active list (SOU-417).
   // Scope picker still uses projectGroups without General.
   const unsortedThreadListProjectGroups = useMemo(
     () =>
       buildSidebarProjectSnapshots({
-        projects,
+        projects: orderedAllProjects,
         settings: projectGroupingSettings,
         primaryEnvironmentId,
         resolveEnvironmentLabel: (environmentId) => environmentLabelById.get(environmentId) ?? null,
@@ -795,17 +811,15 @@ export default function Sidebar() {
           isNoProject,
         };
       }),
-    [environmentLabelById, primaryEnvironmentId, projectGroupingSettings, projects],
+    [environmentLabelById, orderedAllProjects, primaryEnvironmentId, projectGroupingSettings],
   );
   const threadListProjectGroups = useMemo(
-    () =>
-      sortLogicalProjectsForSidebar(
-        unsortedThreadListProjectGroups,
-        threads,
-        sidebarProjectSortOrder === "manual" ? "updated_at" : sidebarProjectSortOrder,
-      ),
-    [sidebarProjectSortOrder, threads, unsortedThreadListProjectGroups],
+    () => sortLogicalProjectsForSidebar(unsortedThreadListProjectGroups, threads, "manual"),
+    [threads, unsortedThreadListProjectGroups],
   );
+  // Keep settings field for Settings UI / legacy, but thread list always uses
+  // shelf order + pins (not activity auto-sort).
+  void sidebarProjectSortOrder;
   const [expandedProjectKeys, setExpandedProjectKeys] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
@@ -1057,15 +1071,125 @@ export default function Sidebar() {
         activeThreadEnvironmentId: routeThreadRef?.environmentId ?? null,
         expandedProjectKeys,
         previewLimit: sidebarThreadPreviewCount,
+        pinnedProjectKeys,
       }),
     [
       activeThreads,
       expandedProjectKeys,
+      pinnedProjectKeys,
       routeThreadRef?.environmentId,
       routeThreadRef?.threadId,
       sidebarThreadPreviewCount,
       threadListProjectGroups,
     ],
+  );
+
+  const [draggingProjectKey, setDraggingProjectKey] = useState<string | null>(null);
+  const [dragOverProjectKey, setDragOverProjectKey] = useState<string | null>(null);
+
+  const physicalKeysForProjectKey = useCallback(
+    (projectKey: string): string[] => {
+      const group = threadListProjectGroups.find((entry) => entry.projectKey === projectKey);
+      if (!group) return [];
+      return group.memberProjects.map((member) => getProjectOrderKey(member));
+    },
+    [threadListProjectGroups],
+  );
+
+  const currentPhysicalOrder = useMemo(() => {
+    const keys: string[] = [];
+    const seen = new Set<string>();
+    for (const group of threadListProjectGroups) {
+      for (const member of group.memberProjects) {
+        const key = getProjectOrderKey(member);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        keys.push(key);
+      }
+    }
+    // Include ordered physical keys not currently in a thread-bearing group so
+    // reorder does not drop them from projectOrder.
+    for (const key of projectOrder) {
+      if (seen.has(key)) continue;
+      seen.add(key);
+      keys.push(key);
+    }
+    return keys;
+  }, [projectOrder, threadListProjectGroups]);
+
+  const handleProjectGroupDragStart = useCallback((event: ReactDragEvent, projectKey: string) => {
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", projectKey);
+    setDraggingProjectKey(projectKey);
+  }, []);
+
+  const handleProjectGroupDragOver = useCallback((event: ReactDragEvent, projectKey: string) => {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    setDragOverProjectKey(projectKey);
+  }, []);
+
+  const handleProjectGroupDrop = useCallback(
+    (event: ReactDragEvent, targetProjectKey: string) => {
+      event.preventDefault();
+      const draggedKey = event.dataTransfer.getData("text/plain") || draggingProjectKey || "";
+      setDraggingProjectKey(null);
+      setDragOverProjectKey(null);
+      if (!draggedKey || draggedKey === targetProjectKey) {
+        return;
+      }
+      const draggedPinned = pinnedProjectKeys.includes(draggedKey);
+      const targetPinned = pinnedProjectKeys.includes(targetProjectKey);
+      if (draggedPinned && targetPinned) {
+        reorderPinnedProjectKeys(pinnedProjectKeys, draggedKey, targetProjectKey);
+        return;
+      }
+      // Moving across pin boundary: drop pin status of dragged if needed and
+      // reorder shelves by physical keys.
+      if (draggedPinned && !targetPinned) {
+        setProjectPinned(draggedKey, false);
+      }
+      if (!draggedPinned && targetPinned) {
+        setProjectPinned(draggedKey, true);
+      }
+      const draggedPhysical = physicalKeysForProjectKey(draggedKey);
+      const targetPhysical = physicalKeysForProjectKey(targetProjectKey);
+      if (draggedPhysical.length === 0 || targetPhysical.length === 0) {
+        return;
+      }
+      reorderProjectsInStore(currentPhysicalOrder, draggedPhysical, targetPhysical);
+      if (sidebarProjectSortOrder !== "manual") {
+        updateSettings({ sidebarProjectSortOrder: "manual" });
+      }
+    },
+    [
+      currentPhysicalOrder,
+      draggingProjectKey,
+      physicalKeysForProjectKey,
+      pinnedProjectKeys,
+      reorderPinnedProjectKeys,
+      reorderProjectsInStore,
+      setProjectPinned,
+      sidebarProjectSortOrder,
+      updateSettings,
+    ],
+  );
+
+  const handleProjectGroupDragEnd = useCallback(() => {
+    setDraggingProjectKey(null);
+    setDragOverProjectKey(null);
+  }, []);
+
+  const toggleProjectPinned = useCallback(
+    (event: ReactMouseEvent, projectKey: string, currentlyPinned: boolean) => {
+      event.preventDefault();
+      event.stopPropagation();
+      setProjectPinned(projectKey, !currentlyPinned);
+      if (sidebarProjectSortOrder !== "manual") {
+        updateSettings({ sidebarProjectSortOrder: "manual" });
+      }
+    },
+    [setProjectPinned, sidebarProjectSortOrder, updateSettings],
   );
 
   const orderedThreads = useMemo(() => activeThreads, [activeThreads]);
@@ -1737,8 +1861,8 @@ export default function Sidebar() {
                     />
                   );
                 };
-                // SOU-417: nest active threads under project groups (5 + show more).
-                // No project / General sorts with other groups by recency (not pinned).
+                // Nest sessions under stable project shelves (manual + pin order).
+                // Cap at sidebarThreadPreviewCount (default 5) with Show more.
                 const items: ReactNode[] = [];
                 for (const panel of activeProjectPanels) {
                   items.push(
@@ -1747,9 +1871,25 @@ export default function Sidebar() {
                       data-thread-selection-safe
                       data-testid="sidebar-project-group-header"
                       data-project-key={panel.projectKey}
-                      className="list-none"
+                      data-pinned={panel.isPinned ? "true" : "false"}
+                      className={cn(
+                        "list-none",
+                        dragOverProjectKey === panel.projectKey &&
+                          draggingProjectKey !== panel.projectKey &&
+                          "rounded-md bg-sidebar-row-hover/80",
+                        draggingProjectKey === panel.projectKey && "opacity-60",
+                      )}
+                      draggable
+                      onDragStart={(event) => handleProjectGroupDragStart(event, panel.projectKey)}
+                      onDragOver={(event) => handleProjectGroupDragOver(event, panel.projectKey)}
+                      onDrop={(event) => handleProjectGroupDrop(event, panel.projectKey)}
+                      onDragEnd={handleProjectGroupDragEnd}
                     >
-                      <div className="mb-1 mt-3 flex w-full items-center gap-2 px-2.5 text-left first:mt-1">
+                      <div className="group/project-header mb-1 mt-3 flex w-full items-center gap-1 px-1.5 text-left first:mt-1">
+                        <GripVerticalIcon
+                          className="size-3.5 shrink-0 cursor-grab text-muted-foreground/40 opacity-0 transition-opacity group-hover/project-header:opacity-100 active:cursor-grabbing"
+                          aria-hidden
+                        />
                         <span
                           className={cn(
                             "min-w-0 truncate text-xs font-medium",
@@ -1762,6 +1902,31 @@ export default function Sidebar() {
                           {panel.displayName}
                         </span>
                         <span className="h-px flex-1 bg-sidebar-border/60" />
+                        <button
+                          type="button"
+                          data-testid="sidebar-project-pin"
+                          aria-label={
+                            panel.isPinned
+                              ? `Unpin ${panel.displayName}`
+                              : `Pin ${panel.displayName}`
+                          }
+                          aria-pressed={panel.isPinned}
+                          onClick={(event) =>
+                            toggleProjectPinned(event, panel.projectKey, panel.isPinned)
+                          }
+                          className={cn(
+                            "inline-flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/50 transition-colors hover:bg-sidebar-row-hover hover:text-foreground",
+                            panel.isPinned
+                              ? "opacity-100 text-foreground/80"
+                              : "opacity-0 group-hover/project-header:opacity-100 focus-visible:opacity-100",
+                          )}
+                        >
+                          {panel.isPinned ? (
+                            <PinOffIcon className="size-3" />
+                          ) : (
+                            <PinIcon className="size-3" />
+                          )}
+                        </button>
                         <span className="shrink-0 font-mono text-[10px] text-muted-foreground/50">
                           {panel.threads.length}
                         </span>

@@ -566,29 +566,16 @@ function OpenCommandPaletteDialog(props: {
   const unsortedProjectGroups = useMemo(
     () =>
       buildSidebarProjectSnapshots({
-        projects:
-          clientSettings.sidebarProjectSortOrder === "manual" ? orderedProjects : visibleProjects,
+        projects: orderedProjects,
         settings: projectGroupingSettings,
         primaryEnvironmentId,
         resolveEnvironmentLabel: (environmentId) => environmentLabelById.get(environmentId) ?? null,
       }),
-    [
-      clientSettings.sidebarProjectSortOrder,
-      environmentLabelById,
-      orderedProjects,
-      primaryEnvironmentId,
-      projectGroupingSettings,
-      visibleProjects,
-    ],
+    [environmentLabelById, orderedProjects, primaryEnvironmentId, projectGroupingSettings],
   );
   const projectGroups = useMemo(
-    () =>
-      sortLogicalProjectsForSidebar(
-        unsortedProjectGroups,
-        threads,
-        clientSettings.sidebarProjectSortOrder,
-      ),
-    [clientSettings.sidebarProjectSortOrder, threads, unsortedProjectGroups],
+    () => sortLogicalProjectsForSidebar(unsortedProjectGroups, threads, "manual"),
+    [threads, unsortedProjectGroups],
   );
   const contextualProjectRef = useMemo(
     () =>

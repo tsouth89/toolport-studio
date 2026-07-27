@@ -111,9 +111,15 @@ function handleToastDismissClick(
   manager: typeof toastManager | typeof anchoredToastManager,
   toastId: ToastId,
   onClose: (() => void) | undefined,
+  event?: { preventDefault?: () => void; stopPropagation?: () => void },
 ) {
+  event?.preventDefault?.();
+  event?.stopPropagation?.();
   onClose?.();
+  // Prefer manager.close (Base UI) and fall back to remove if present.
   manager.close(toastId);
+  const maybeRemove = manager as { remove?: (id: ToastId) => void };
+  maybeRemove.remove?.(toastId);
 }
 
 function CopyErrorButton({ text }: { text: string }) {
@@ -660,18 +666,23 @@ function Toasts({ position }: { position: ToastPosition }) {
                 dismissAfterVisibleMs={toast.data?.dismissAfterVisibleMs}
                 toastId={toast.id}
               />
-              <div className={toastCornerDismissClass}>
-                <button
+              <div
+                className={cn(
+                  toastCornerDismissClass,
+                  "pointer-events-auto",
+                  hideCollapsedContent && "not-data-expanded:pointer-events-none",
+                )}
+              >
+                <Toast.Close
                   aria-label="Dismiss notification"
                   className={toastCornerOrbClass}
                   data-slot="toast-close"
-                  onClick={() =>
-                    handleToastDismissClick(toastManager, toast.id, toast.data?.onClose)
+                  onClick={(event) =>
+                    handleToastDismissClick(toastManager, toast.id, toast.data?.onClose, event)
                   }
-                  type="button"
                 >
                   <XIcon className="size-3" strokeWidth={2.25} />
-                </button>
+                </Toast.Close>
               </div>
               <Toast.Content
                 className={cn(
@@ -753,22 +764,22 @@ function AnchoredToasts() {
                     </Toast.Content>
                   ) : (
                     <>
-                      <div className={toastCornerDismissClass}>
-                        <button
+                      <div className={cn(toastCornerDismissClass, "pointer-events-auto")}>
+                        <Toast.Close
                           aria-label="Dismiss notification"
                           className={toastCornerOrbClass}
                           data-slot="toast-close"
-                          onClick={() =>
+                          onClick={(event) =>
                             handleToastDismissClick(
                               anchoredToastManager,
                               toast.id,
                               toast.data?.onClose,
+                              event,
                             )
                           }
-                          type="button"
                         >
                           <XIcon className="size-3" strokeWidth={2.25} />
-                        </button>
+                        </Toast.Close>
                       </div>
                       <Toast.Content
                         className={cn(

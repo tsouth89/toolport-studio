@@ -20,6 +20,8 @@ const LEGACY_PERSISTED_STATE_KEYS = [
 export interface PersistedUiState {
   projectExpandedById?: Record<string, boolean>;
   projectOrder?: string[];
+  /** Logical project keys pinned to the top of the sidebar (stable shelf order). */
+  pinnedProjectKeys?: string[];
   threadLastVisitedAtById?: Record<string, string>;
   collapsedProjectCwds?: string[];
   expandedProjectCwds?: string[];
@@ -32,6 +34,7 @@ export interface PersistedUiState {
 export interface UiProjectState {
   projectExpandedById: Record<string, boolean>;
   projectOrder: string[];
+  pinnedProjectKeys: string[];
 }
 
 export interface UiThreadState {
@@ -48,6 +51,7 @@ export interface UiState extends UiProjectState, UiThreadState, UiEndpointState 
 const initialState: UiState = {
   projectExpandedById: {},
   projectOrder: [],
+  pinnedProjectKeys: [],
   threadLastVisitedAtById: {},
   threadChangedFilesExpandedById: {},
   defaultAdvertisedEndpointKey: null,
@@ -121,10 +125,12 @@ export function parsePersistedState(parsed: PersistedUiState): UiState {
     parsed.projectOrder === undefined
       ? sanitizeStringArray(parsed.projectOrderCwds).map(legacyProjectCwdPreferenceKey)
       : sanitizeStringArray(parsed.projectOrder);
+  const pinnedProjectKeys = sanitizeStringArray(parsed.pinnedProjectKeys);
 
   return {
     projectExpandedById,
     projectOrder,
+    pinnedProjectKeys,
     threadLastVisitedAtById: sanitizeTimestampRecord(parsed.threadLastVisitedAtById),
     threadChangedFilesExpandedById:
       parsed.threadChangedFilesExpansionVersion === THREAD_CHANGED_FILES_EXPANSION_VERSION
@@ -203,6 +209,7 @@ export function persistState(state: UiState): void {
       JSON.stringify({
         projectExpandedById,
         projectOrder: state.projectOrder,
+        pinnedProjectKeys: state.pinnedProjectKeys,
         threadLastVisitedAtById: state.threadLastVisitedAtById,
         defaultAdvertisedEndpointKey: state.defaultAdvertisedEndpointKey,
         threadChangedFilesExpansionVersion: THREAD_CHANGED_FILES_EXPANSION_VERSION,
@@ -381,6 +388,55 @@ export function reorderProjects(
   };
 }
 
+/**
+ * Pin / unpin a logical project group. Pinned keys stay at the top of the
+ * sidebar in pin order; unpinned groups keep their manual shelf order.
+ */
+export function setProjectPinned(state: UiState, projectKey: string, pinned: boolean): UiState {
+  const key = projectKey.trim();
+  if (!key) {
+    return state;
+  }
+  const currentlyPinned = state.pinnedProjectKeys.includes(key);
+  if (pinned === currentlyPinned) {
+    return state;
+  }
+  if (pinned) {
+    return {
+      ...state,
+      pinnedProjectKeys: [...state.pinnedProjectKeys, key],
+    };
+  }
+  return {
+    ...state,
+    pinnedProjectKeys: state.pinnedProjectKeys.filter((entry) => entry !== key),
+  };
+}
+
+/** Reorder pinned logical keys (drag among pinned shelves). */
+export function reorderPinnedProjectKeys(
+  state: UiState,
+  currentPinnedKeys: readonly string[],
+  draggedKey: string,
+  targetKey: string,
+): UiState {
+  if (!draggedKey || draggedKey === targetKey) {
+    return state;
+  }
+  const order = [...currentPinnedKeys];
+  const from = order.indexOf(draggedKey);
+  const to = order.indexOf(targetKey);
+  if (from < 0 || to < 0) {
+    return state;
+  }
+  order.splice(from, 1);
+  order.splice(to, 0, draggedKey);
+  return {
+    ...state,
+    pinnedProjectKeys: order,
+  };
+}
+
 interface UiStateStore extends UiState {
   markThreadVisited: (threadId: string, visitedAt: string) => void;
   markThreadUnread: (threadId: string, latestTurnCompletedAt: string | null | undefined) => void;
@@ -391,6 +447,12 @@ interface UiStateStore extends UiState {
     currentProjectOrder: readonly string[],
     draggedProjectIds: readonly string[],
     targetProjectIds: readonly string[],
+  ) => void;
+  setProjectPinned: (projectKey: string, pinned: boolean) => void;
+  reorderPinnedProjectKeys: (
+    currentPinnedKeys: readonly string[],
+    draggedKey: string,
+    targetKey: string,
   ) => void;
 }
 
@@ -410,6 +472,10 @@ export const useUiStateStore = create<UiStateStore>((set) => ({
     set((state) =>
       reorderProjects(state, currentProjectOrder, draggedProjectIds, targetProjectIds),
     ),
+  setProjectPinned: (projectKey, pinned) =>
+    set((state) => setProjectPinned(state, projectKey, pinned)),
+  reorderPinnedProjectKeys: (currentPinnedKeys, draggedKey, targetKey) =>
+    set((state) => reorderPinnedProjectKeys(state, currentPinnedKeys, draggedKey, targetKey)),
 }));
 
 useUiStateStore.subscribe((state) => debouncedPersistState.maybeExecute(state));

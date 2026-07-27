@@ -9,10 +9,12 @@ import {
   PERSISTED_STATE_KEY,
   type PersistedUiState,
   persistState,
+  reorderPinnedProjectKeys,
   reorderProjects,
   resolveProjectExpanded,
   setDefaultAdvertisedEndpointKey,
   setProjectExpanded,
+  setProjectPinned,
   setThreadChangedFilesExpanded,
   type UiState,
 } from "./uiStateStore";
@@ -21,6 +23,7 @@ function makeUiState(overrides: Partial<UiState> = {}): UiState {
   return {
     projectExpandedById: {},
     projectOrder: [],
+    pinnedProjectKeys: [],
     threadLastVisitedAtById: {},
     threadChangedFilesExpandedById: {},
     defaultAdvertisedEndpointKey: null,
@@ -116,6 +119,21 @@ describe("uiStateStore pure functions", () => {
     );
   });
 
+  it("pins and unpins logical project keys", () => {
+    const state = makeUiState();
+    const pinned = setProjectPinned(state, "toolport", true);
+    expect(pinned.pinnedProjectKeys).toEqual(["toolport"]);
+    expect(setProjectPinned(pinned, "toolport", true)).toBe(pinned);
+    expect(setProjectPinned(pinned, "toolport", false).pinnedProjectKeys).toEqual([]);
+  });
+
+  it("reorders pinned project keys", () => {
+    const state = makeUiState({ pinnedProjectKeys: ["a", "b", "c"] });
+    expect(
+      reorderPinnedProjectKeys(state, state.pinnedProjectKeys, "a", "c").pinnedProjectKeys,
+    ).toEqual(["b", "c", "a"]);
+  });
+
   it("stores explicit changed-file expansion choices", () => {
     const threadId = ThreadId.make("thread-1");
     const collapsed = setThreadChangedFilesExpanded(makeUiState(), threadId, "turn-1", false);
@@ -173,6 +191,7 @@ describe("parsePersistedState", () => {
         logical: false,
       },
       projectOrder: ["physical-b", "physical-a"],
+      pinnedProjectKeys: [],
       threadLastVisitedAtById: {
         "environment:thread-1": "2026-02-25T12:35:00.000Z",
       },
@@ -292,6 +311,7 @@ describe("uiStateStore persistence", () => {
         logical: false,
       },
       projectOrder: ["physical-b", "physical-a"],
+      pinnedProjectKeys: [],
       threadLastVisitedAtById: {
         "environment:thread-1": "2026-02-25T12:35:00.000Z",
       },

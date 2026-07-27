@@ -625,18 +625,43 @@ export function resolveProjectStatusIndicator(
 
 /**
  * One project section in the active sidebar list (SOU-417).
- * Groups are ordered by latest thread activity; "No project" is a peer group
- * (not hard-pinned) when general/projectless chats exist.
+ * Groups use stable user order (manual + pins), not activity recency.
+ * "No project" is a peer group when general/projectless chats exist.
  */
 export type ActiveSidebarProjectPanel<TThread> = {
   readonly projectKey: string;
   readonly displayName: string;
   readonly isNoProject: boolean;
+  readonly isPinned: boolean;
   readonly threads: readonly TThread[];
   readonly visibleThreads: readonly TThread[];
   readonly hasHiddenThreads: boolean;
   readonly hiddenCount: number;
 };
+
+/**
+ * Place pinned logical project groups first (in pin order), then keep the
+ * remaining groups in their incoming manual/shelf order.
+ */
+export function applyPinnedLogicalProjectOrder<T extends { readonly projectKey: string }>(
+  groups: readonly T[],
+  pinnedProjectKeys: readonly string[],
+): T[] {
+  if (pinnedProjectKeys.length === 0 || groups.length === 0) {
+    return [...groups];
+  }
+  const byKey = new Map(groups.map((group) => [group.projectKey, group] as const));
+  const pinned: T[] = [];
+  const seen = new Set<string>();
+  for (const key of pinnedProjectKeys) {
+    const group = byKey.get(key);
+    if (!group || seen.has(key)) continue;
+    pinned.push(group);
+    seen.add(key);
+  }
+  const rest = groups.filter((group) => !seen.has(group.projectKey));
+  return [...pinned, ...rest];
+}
 
 /**
  * Bucket active threads under project groups for the nested sidebar.
@@ -666,6 +691,7 @@ export function buildActiveSidebarProjectPanels<
   readonly activeThreadEnvironmentId?: string | null;
   readonly expandedProjectKeys: ReadonlySet<string>;
   readonly previewLimit: number;
+  readonly pinnedProjectKeys?: readonly string[];
 }): ActiveSidebarProjectPanel<TThread>[] {
   const projectKeyByRef = new Map<string, string>();
   for (const group of input.projectGroups) {
@@ -686,8 +712,14 @@ export function buildActiveSidebarProjectPanels<
     }
   }
 
+  const pinnedSet = new Set(input.pinnedProjectKeys ?? []);
+  const orderedGroups = applyPinnedLogicalProjectOrder(
+    input.projectGroups,
+    input.pinnedProjectKeys ?? [],
+  );
+
   const panels: ActiveSidebarProjectPanel<TThread>[] = [];
-  for (const group of input.projectGroups) {
+  for (const group of orderedGroups) {
     const threads = threadsByProjectKey.get(group.projectKey);
     if (!threads || threads.length === 0) continue;
 
@@ -715,6 +747,7 @@ export function buildActiveSidebarProjectPanels<
       projectKey: group.projectKey,
       displayName: group.displayName,
       isNoProject: group.isNoProject === true,
+      isPinned: pinnedSet.has(group.projectKey),
       threads,
       visibleThreads: visibility.visibleThreads as TThread[],
       hasHiddenThreads: visibility.hasHiddenThreads,
