@@ -203,8 +203,10 @@ interface ClaudeTaskState {
 
 interface ClaudeSessionContext {
   session: ProviderSession;
-  readonly promptQueue: Queue.Queue<PromptQueueItem>;
-  readonly query: ClaudeQueryRuntime;
+  /** Replaced when Toolport MCP injection is rebound mid-session. */
+  promptQueue: Queue.Queue<PromptQueueItem>;
+  /** Replaced when Toolport MCP injection is rebound mid-session. */
+  query: ClaudeQueryRuntime;
   streamFiber: Fiber.Fiber<void, Error> | undefined;
   readonly startedAt: string;
   readonly basePermissionMode: PermissionMode | undefined;
@@ -229,6 +231,13 @@ interface ClaudeSessionContext {
    * (no native Claude resume session id on cold start).
    */
   needsContextRehydration: boolean;
+  /**
+   * Whether createQuery was started with Toolport MCP in mcpServers.
+   * Settings toggles do not reach a live SDK query until we restart it.
+   */
+  injectsToolportMcp: boolean;
+  /** Permission callback for createQuery; kept so MCP rebind can restart the runtime. */
+  canUseTool: CanUseTool;
   stopped: boolean;
 }
 
@@ -1490,6 +1499,134 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
   const offerRuntimeEvent = (event: ProviderRuntimeEvent): Effect.Effect<void> =>
     Queue.offer(runtimeEventQueue, event).pipe(Effect.asVoid);
+
+  /**
+   * Claude Code keeps mcpServers from createQuery for the life of that query.
+   * Resume also preserves the original tool catalog. When Settings flips
+   * Toolport injection, restart the query without resume and rehydrate history.
+   */
+  const rebindClaudeToolportMcpIfNeeded = Effect.fn("rebindClaudeToolportMcpIfNeeded")(function* (
+    context: ClaudeSessionContext,
+  ) {
+    if (context.stopped) {
+      return;
+    }
+    const env = options?.environment ?? process.env;
+    const wantsToolport = McpProviderSession.isToolportMcpInjectionEnabled(env);
+    if (wantsToolport === context.injectsToolportMcp) {
+      return;
+    }
+
+    yield* Effect.logInfo("Claude Toolport MCP setting changed; restarting query runtime", {
+      threadId: context.session.threadId,
+      from: context.injectsToolportMcp,
+      to: wantsToolport,
+    });
+
+    const streamFiber = context.streamFiber;
+    context.streamFiber = undefined;
+    if (streamFiber !== undefined && streamFiber.pollUnsafe() === undefined) {
+      yield* Fiber.interrupt(streamFiber).pipe(Effect.ignore);
+    }
+    yield* Effect.sync(() => {
+      try {
+        context.query.close();
+      } catch {
+        // Best-effort; process may already be gone.
+      }
+    });
+    yield* Queue.shutdown(context.promptQueue).pipe(Effect.ignore);
+
+    const promptQueue = yield* Queue.unbounded<PromptQueueItem>();
+    context.promptQueue = promptQueue;
+    const prompt = Stream.fromQueue(promptQueue).pipe(
+      Stream.filter((item) => item.type === "message"),
+      Stream.map((item) => item.message),
+      Stream.catchCause((cause) =>
+        Cause.hasInterruptsOnly(cause) ? Stream.empty : Stream.failCause(cause),
+      ),
+      Stream.toAsyncIterable,
+    );
+
+    const mcpBindings = McpProviderSession.readMcpProviderBindings(context.session.threadId, env);
+    const injectsToolport = mcpBindings.some(
+      (binding) => binding.name === McpProviderSession.TOOLPORT_MCP_SERVER_NAME,
+    );
+    const freshSessionId = yield* randomUUIDv4;
+    const apiModelId = context.currentApiModelId;
+    const permissionMode = context.basePermissionMode;
+    const queryOptions: ClaudeQueryOptions = {
+      ...(context.session.cwd ? { cwd: context.session.cwd } : {}),
+      ...(apiModelId ? { model: apiModelId } : {}),
+      pathToClaudeCodeExecutable: claudeSdkExecutablePath,
+      systemPrompt: { type: "preset", preset: "claude_code" },
+      settingSources: [...CLAUDE_SETTING_SOURCES],
+      ...(permissionMode ? { permissionMode } : {}),
+      ...(permissionMode === "bypassPermissions" ? { allowDangerouslySkipPermissions: true } : {}),
+      // Fresh session: resume keeps the pre-toggle MCP catalog.
+      sessionId: freshSessionId,
+      includePartialMessages: true,
+      canUseTool: context.canUseTool,
+      env: claudeEnvironment,
+      ...(context.session.cwd ? { additionalDirectories: [context.session.cwd] } : {}),
+      ...(mcpBindings.length > 0 ? { mcpServers: claudeMcpServers(mcpBindings) } : {}),
+    };
+
+    context.query = yield* Effect.try({
+      try: () =>
+        createQuery({
+          prompt,
+          options: queryOptions,
+        }),
+      catch: (cause) =>
+        new ProviderAdapterProcessError({
+          provider: PROVIDER,
+          threadId: context.session.threadId,
+          detail: "Failed to restart Claude runtime after Toolport MCP setting change.",
+          cause,
+        }),
+    });
+    context.resumeSessionId = freshSessionId;
+    context.needsContextRehydration = true;
+    context.injectsToolportMcp = injectsToolport;
+    context.lastAssistantUuid = undefined;
+    context.session = {
+      ...context.session,
+      resumeCursor: {
+        threadId: context.session.threadId,
+        resume: freshSessionId,
+        turnCount: 0,
+      },
+      updatedAt: yield* nowIso,
+    };
+
+    const runtimeContext = yield* Effect.context<never>();
+    const runFork = Effect.runForkWith(runtimeContext);
+    let newStreamFiber: Fiber.Fiber<void, never>;
+    newStreamFiber = runFork(
+      Effect.exit(runSdkStream(context)).pipe(
+        Effect.flatMap((exit) => {
+          if (context.stopped) {
+            return Effect.void;
+          }
+          if (context.streamFiber === newStreamFiber) {
+            context.streamFiber = undefined;
+          }
+          return handleStreamExit(context, exit).pipe(
+            Effect.catch((cause) =>
+              Effect.logError("Failed to close Claude runtime stream.", { cause }),
+            ),
+          );
+        }),
+      ),
+    );
+    context.streamFiber = newStreamFiber;
+    newStreamFiber.addObserver(() => {
+      if (context.streamFiber === newStreamFiber) {
+        context.streamFiber = undefined;
+      }
+    });
+  });
 
   const logNativeSdkMessage = Effect.fn("logNativeSdkMessage")(function* (
     context: ClaudeSessionContext,
@@ -3818,6 +3955,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         updatedAt: startedAt,
       };
 
+      const injectsToolportMcp = mcpBindings.some(
+        (binding) => binding.name === McpProviderSession.TOOLPORT_MCP_SERVER_NAME,
+      );
       const context: ClaudeSessionContext = {
         session,
         promptQueue,
@@ -3839,6 +3979,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         lastAssistantUuid: effectiveResumeSessionAt,
         lastThreadStartedId: undefined,
         needsContextRehydration,
+        injectsToolportMcp,
+        canUseTool,
         stopped: false,
       };
       yield* Ref.set(contextRef, context);
@@ -3920,6 +4062,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
   const sendTurn: ClaudeAdapterShape["sendTurn"] = Effect.fn("sendTurn")(function* (input) {
     const context = yield* requireSession(input.threadId);
+    // Toolport MCP is fixed at createQuery time; rebind before the next prompt
+    // so Settings toggles apply without starting a brand-new thread.
+    yield* rebindClaudeToolportMcpIfNeeded(context);
     const modelSelection =
       input.modelSelection !== undefined && input.modelSelection.instanceId === boundInstanceId
         ? input.modelSelection
