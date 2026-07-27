@@ -13,7 +13,6 @@ import * as Ref from "effect/Ref";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
-import * as TestClock from "effect/testing/TestClock";
 import * as ChildProcess from "effect/unstable/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 import * as EffectAcpClient from "effect-acp/client";
@@ -48,6 +47,26 @@ export interface AcpSessionEventStreamBarrier {
 }
 
 export type AcpSessionRuntimeEvent = AcpParsedSessionEvent | AcpSessionEventStreamBarrier;
+
+/**
+ * Sleep on the real wall clock, independent of the ambient Effect Clock.
+ *
+ * Used for cooperative-cancel grace windows, which must elapse in real time
+ * even when the surrounding suite drives a TestClock. Twin of the helper in
+ * ClaudeAdapter; both should fold into the shared turn engine (SOU-428).
+ */
+const sleepWallClock = (ms: number): Effect.Effect<void> =>
+  Effect.callback<void>((resume) => {
+    // The cancel grace window must elapse in real time even under a TestClock,
+    // which is the entire reason this helper exists.
+    // @effect-diagnostics-next-line globalTimersInEffect:off - deliberate wall-clock bypass.
+    const handle = setTimeout(() => {
+      resume(Effect.void);
+    }, ms);
+    return Effect.sync(() => {
+      clearTimeout(handle);
+    });
+  });
 
 const defaultSessionLoadTimeout = Duration.seconds(90);
 const defaultSessionLoadReplayIdleGap = Duration.seconds(2);
@@ -903,16 +922,18 @@ export const make = (
               .cancel({ sessionId: started.sessionId })
               .pipe(Effect.ignore, Effect.forkIn(runtimeScope));
 
-            // Use live clock for the grace window so TestClock-driven suites
-            // still observe cooperative agent cancel (25ms poll in the mock).
+            // Wall-clock grace window. This must not use `TestClock.withLive`:
+            // that resolves the ambient Clock and casts it to a TestClock
+            // (`fiber.getRef(Clock.Clock) as TestClock`), so under a live
+            // runtime it throws `testClock.withLive is not a function`. Callers
+            // pipe cancel through `Effect.ignore`, so the defect was swallowed
+            // and the force-cancel path below never ran — Stop silently did
+            // nothing against an agent still holding the prompt.
             const stillActiveAfterGrace = yield* Ref.get(activePromptCancelRef).pipe(
               Effect.flatMap((current) =>
                 Option.isNone(current)
                   ? Effect.succeed(current)
-                  : Effect.sleep("200 millis").pipe(
-                      TestClock.withLive,
-                      Effect.andThen(Ref.get(activePromptCancelRef)),
-                    ),
+                  : sleepWallClock(200).pipe(Effect.andThen(Ref.get(activePromptCancelRef))),
               ),
             );
 
