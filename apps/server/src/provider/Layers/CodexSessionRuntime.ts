@@ -42,6 +42,7 @@ import { codexSessionAppServerArgs } from "./codexLaunchArgs.ts";
 import { expandHomePath } from "../../pathExpansion.ts";
 import { buildCodexDeveloperInstructions } from "../CodexDeveloperInstructions.ts";
 import { buildConversationRehydrationPrefix } from "../conversationRehydration.ts";
+import { canSteerSendTurn } from "../turnEngine/index.ts";
 const decodeV2TurnStartResponse = Schema.decodeUnknownEffect(EffectCodexSchema.V2TurnStartResponse);
 
 const PROVIDER = ProviderDriverKind.make("codex");
@@ -399,14 +400,20 @@ export function buildCodexTurnInput(input: {
  * Whether a new `sendTurn` should fold into the live turn via `turn/steer`
  * instead of opening a new one with `turn/start`.
  *
- * Mirrors `canSteerGrokSendTurn`. Returns the turn id to steer, or undefined
- * when there is nothing live to steer into.
+ * Shared turn-engine steer policy (SOU-428). Returns the turn id to steer, or
+ * undefined when there is nothing live to steer into.
  */
 export function canSteerCodexSendTurn(input: {
   readonly status: string;
   readonly activeTurnId: TurnId | undefined;
 }): TurnId | undefined {
-  if (input.status !== "running") {
+  if (
+    !canSteerSendTurn({
+      promptsInFlight: input.status === "running" ? 1 : 0,
+      hasActiveTurnId: input.activeTurnId !== undefined,
+      activeTurnInterrupted: false,
+    })
+  ) {
     return undefined;
   }
   return input.activeTurnId;

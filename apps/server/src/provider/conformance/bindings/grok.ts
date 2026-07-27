@@ -63,6 +63,8 @@ class GrokConformanceAdapter extends Context.Service<GrokConformanceAdapter, Gro
  */
 export function scriptToAcpEnv(script: ConformanceScript): Record<string, string> {
   const env: Record<string, string> = {};
+  const hasHang = script.some((step) => step.kind === "hang");
+  const hasToolStart = script.some((step) => step.kind === "tool-start");
   for (const step of script) {
     switch (step.kind) {
       case "assistant-text": {
@@ -71,12 +73,21 @@ export function scriptToAcpEnv(script: ConformanceScript): Record<string, string
       }
       case "tool-start":
       case "tool-end": {
-        env.T3_ACP_EMIT_TOOL_CALLS = "1";
+        // tool-start + hang: open a tool then wedge (Stop mid-tool).
+        // tool-only: full tool lifecycle without hang.
+        if (hasToolStart && hasHang) {
+          env.T3_ACP_EMIT_TOOL_START_THEN_HANG = "1";
+        } else {
+          env.T3_ACP_EMIT_TOOL_CALLS = "1";
+        }
         break;
       }
       case "hang": {
-        // Prompt never settles — the wedged-turn shape Stop has to survive.
-        env.T3_ACP_HANG_PROMPT_FOREVER = "1";
+        // Hang only the first prompt so post-stop follow-up can complete
+        // (HANG_PROMPT_FOREVER would wedge the recycled process forever).
+        if (!(hasToolStart && hasHang)) {
+          env.T3_ACP_HANG_FIRST_PROMPT_FOREVER = "1";
+        }
         break;
       }
       case "die": {

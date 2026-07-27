@@ -90,6 +90,7 @@ import {
 } from "../Errors.ts";
 import { type ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
 import { buildConversationRehydrationPrefix } from "../conversationRehydration.ts";
+import { canSteerSendTurn } from "../turnEngine/index.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.UnknownFromJsonString);
 const decodeUnknownJsonStringExit = Schema.decodeUnknownExit(Schema.UnknownFromJsonString);
@@ -4075,8 +4076,15 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     // turn — no synthetic turn boundary. Stale synthetic turns (from
     // background agent responses between user prompts) are auto-closed
     // instead, so they don't block the user's next turn.
-    const steeringTurnState =
+    // Steer eligibility is shared turn-engine policy (SOU-428).
+    const liveRealTurn =
       context.turnState && context.turnState.synthetic !== true ? context.turnState : null;
+    const canSteer = canSteerSendTurn({
+      promptsInFlight: liveRealTurn !== null ? 1 : 0,
+      hasActiveTurnId: liveRealTurn !== null,
+      activeTurnInterrupted: false,
+    });
+    const steeringTurnState = canSteer ? liveRealTurn : null;
     if (context.turnState && steeringTurnState === null) {
       yield* completeTurn(context, "completed");
     }

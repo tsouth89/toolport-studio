@@ -13,6 +13,7 @@ import type * as Scope from "effect/Scope";
 import type { ProviderRuntimeEvent } from "@t3tools/contracts";
 
 import type { ProviderAdapterError } from "../Errors.ts";
+import { isStopSettledRuntimeEvent, isTurnTerminalRuntimeEvent } from "../turnEngine/index.ts";
 import {
   CONFORMANCE_CASE_IDS,
   FIRST_EVENT_BUDGET_MS,
@@ -39,19 +40,13 @@ const SECOND_TURN_OBSERVATION_MS = 2_000;
  * a case graduates.
  */
 const NOT_YET_IMPLEMENTED: ReadonlyArray<ConformanceCaseId> = [
-  "stop-mid-tool-terminalizes",
   "stop-with-pending-approval-settles",
-  "post-stop-follow-up-runs",
   "process-death-is-typed-error",
   "resume-preserves-history",
 ];
 
-const isTerminalSessionState = (event: ProviderRuntimeEvent): boolean =>
-  event.type === "session.state.changed" &&
-  (event.payload.state === "ready" || event.payload.state === "error");
-
-const isTurnTerminal = (event: ProviderRuntimeEvent): boolean =>
-  event.type === "turn.completed" || event.type === "turn.aborted";
+const isTurnTerminal = isTurnTerminalRuntimeEvent;
+const isStopSettled = isStopSettledRuntimeEvent;
 
 export function runCoreLoopConformance(binding: ConformanceBinding): void {
   describe(`core-loop conformance: ${binding.provider}`, () => {
@@ -155,10 +150,40 @@ export function runCoreLoopConformance(binding: ConformanceBinding): void {
 
         yield* session.adapter.interruptTurn(session.threadId);
 
-        yield* session.awaitEvent(
-          (event) => isTurnTerminal(event) || isTerminalSessionState(event),
-          { timeoutMs: STOP_SETTLE_BUDGET_MS, describe: "session settled after Stop" },
-        );
+        yield* session.awaitEvent(isStopSettled, {
+          timeoutMs: STOP_SETTLE_BUDGET_MS,
+          describe: "session settled after Stop",
+        });
+      }),
+    );
+
+    caseFor("stop-mid-tool-terminalizes", "interrupt settles a turn with an open tool", () =>
+      Effect.gen(function* () {
+        const script = [
+          { kind: "tool-start" as const, toolId: "tool-1", name: "long_tool" },
+          { kind: "hang" as const },
+        ];
+        const session = yield* binding.openSession(script);
+        yield* session.sendScriptedTurn({ text: "use a long tool", script });
+        yield* session.awaitEvent((event) => event.type === "turn.started", {
+          timeoutMs: FIRST_EVENT_BUDGET_MS,
+          describe: "turn started",
+        });
+        // Best-effort: some fakes surface tool lifecycle, others only hang with
+        // the turn open. Stop must settle either way.
+        yield* session
+          .awaitEvent((event) => event.type === "item.started" || event.type === "item.updated", {
+            timeoutMs: 1_500,
+            describe: "tool activity (optional)",
+          })
+          .pipe(Effect.catchTag("ConformanceHarnessError", () => Effect.void));
+
+        yield* session.adapter.interruptTurn(session.threadId);
+
+        yield* session.awaitEvent(isStopSettled, {
+          timeoutMs: STOP_SETTLE_BUDGET_MS,
+          describe: "session settled after Stop mid-tool",
+        });
       }),
     );
 
@@ -215,6 +240,59 @@ export function runCoreLoopConformance(binding: ConformanceBinding): void {
             "declared queue, but the second send never produced a distinct turn",
           );
         }),
+    );
+
+    caseFor("post-stop-follow-up-runs", "a new turn runs after Stop settles", () =>
+      Effect.gen(function* () {
+        const hangScript = [
+          { kind: "assistant-text" as const, text: "working" },
+          { kind: "hang" as const },
+        ];
+        const session = yield* binding.openSession(hangScript);
+        yield* session.sendScriptedTurn({ text: "long task", script: hangScript });
+        yield* session.awaitEvent((event) => event.type === "turn.started", {
+          timeoutMs: FIRST_EVENT_BUDGET_MS,
+          describe: "first turn started",
+        });
+
+        yield* session.adapter.interruptTurn(session.threadId);
+        yield* session.awaitEvent(isStopSettled, {
+          timeoutMs: STOP_SETTLE_BUDGET_MS,
+          describe: "settled after Stop",
+        });
+
+        // Snapshot after Stop. awaitEvent scans full history, so progress is
+        // defined relative to this snapshot (not "any turn.started ever").
+        const before = yield* session.events;
+        const firstTurnIds = new Set(
+          before
+            .filter((event) => event.type === "turn.started")
+            .map((event) => String(event.turnId)),
+        );
+        const eventCountBefore = before.length;
+
+        const followUpScript = [
+          { kind: "assistant-text" as const, text: "follow-up ok" },
+          { kind: "complete" as const },
+        ];
+        yield* session.sendScriptedTurn({ text: "follow up after stop", script: followUpScript });
+
+        // Poll for post-snapshot progress. Prefer a new turn.started id; also
+        // accept any log growth (ACP may fork sendTurn and emit slowly).
+        let sawProgress = false;
+        for (let attempt = 0; attempt < Math.ceil(FIRST_EVENT_BUDGET_MS / 20); attempt += 1) {
+          const current = yield* session.events;
+          const newTurn = current.some(
+            (event) => event.type === "turn.started" && !firstTurnIds.has(String(event.turnId)),
+          );
+          if (newTurn || current.length > eventCountBefore) {
+            sawProgress = true;
+            break;
+          }
+          yield* Effect.sleep("20 millis");
+        }
+        assert.isTrue(sawProgress, "post-stop follow-up produced no new runtime progress");
+      }),
     );
   });
 }

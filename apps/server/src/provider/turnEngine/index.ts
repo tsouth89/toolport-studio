@@ -17,3 +17,12 @@ export {
 } from "./InterjectionPolicy.ts";
 
 export { canSteerSendTurn } from "./SteerPolicy.ts";
+
+export type { StopSettleStep } from "./StopPolicy.ts";
+export {
+  isSessionSettledRuntimeEvent,
+  isStopSettledRuntimeEvent,
+  isTurnTerminalRuntimeEvent,
+  shouldForceCloseOpenToolsOnStop,
+  stopSettleSequence,
+} from "./StopPolicy.ts";

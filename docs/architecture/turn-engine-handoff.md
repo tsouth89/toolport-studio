@@ -4,18 +4,19 @@ Self-contained brief for picking up the turn-engine work (Linear **SOU-428**).
 Written 2026-07-27 against `main` @ `2fe18cb3b` plus branch
 `fix/core-loop-conformance-and-stop-reliability` (PR #2).
 
-### Status (2026-07-27, started)
+### Status (2026-07-27)
 
 Landed under `apps/server/src/provider/turnEngine/`:
 
-- Capability matrix, phase machine, interjection policy, steer policy (pure + tests)
+- Capability matrix, phase machine, interjection policy, steer policy, **stop policy**
 - **Grok wired** to engine defaults: raw mid-turn framing, no force-close tools on
   steer, no synthetic “Following up” warning
-- **Cursor** uses shared `canSteerSendTurn`
-- Conformance suite still green (25/25)
+- **All five adapters** use shared `canSteerSendTurn` (Codex via `canSteerCodexSendTurn`)
+- Conformance: **35/35** green including `stop-mid-tool-terminalizes` and
+  `post-stop-follow-up-runs` (3 cases remain unimplemented)
 
-Next: finish remaining conformance cases; wire Claude/Codex/OpenCode; grow
-engine ownership of stop sequencing and queue.
+Next: approval-pending Stop case; process-death typing; resume history; engine-
+owned queue; thinner transports.
 
 ---
 

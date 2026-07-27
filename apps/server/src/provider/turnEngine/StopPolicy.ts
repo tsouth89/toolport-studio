@@ -1,0 +1,51 @@
+/**
+ * Stop / settle policy shared across providers (SOU-428).
+ *
+ * Stop must always drive the turn to a terminal runtime state. Whether tools
+ * are force-closed is a product decision that lives here, not per-adapter.
+ */
+
+import type { ProviderRuntimeEvent } from "@t3tools/contracts";
+
+/** Stop tears down the turn; open tools should not block settlement. */
+export function shouldForceCloseOpenToolsOnStop(): boolean {
+  return true;
+}
+
+/** Runtime events that mean the turn itself is finished. */
+export function isTurnTerminalRuntimeEvent(event: ProviderRuntimeEvent): boolean {
+  return event.type === "turn.completed" || event.type === "turn.aborted";
+}
+
+/**
+ * Runtime events that mean the session is usable again after Stop
+ * (Working chrome can clear even if a specific turn id was lost).
+ */
+export function isSessionSettledRuntimeEvent(event: ProviderRuntimeEvent): boolean {
+  return (
+    event.type === "session.state.changed" &&
+    (event.payload.state === "ready" || event.payload.state === "error")
+  );
+}
+
+/** Either a turn terminal or session settled — Stop's success criterion. */
+export function isStopSettledRuntimeEvent(event: ProviderRuntimeEvent): boolean {
+  return isTurnTerminalRuntimeEvent(event) || isSessionSettledRuntimeEvent(event);
+}
+
+/**
+ * Preferred settle order for adapters that can do both:
+ * force-close open tools (optional), cancel/interrupt transport, emit turn terminal.
+ */
+export type StopSettleStep = "force-close-open-tools" | "interrupt-transport" | "emit-terminal";
+
+export function stopSettleSequence(input?: {
+  readonly hasOpenTools?: boolean;
+}): ReadonlyArray<StopSettleStep> {
+  const steps: Array<StopSettleStep> = [];
+  if (input?.hasOpenTools && shouldForceCloseOpenToolsOnStop()) {
+    steps.push("force-close-open-tools");
+  }
+  steps.push("interrupt-transport", "emit-terminal");
+  return steps;
+}

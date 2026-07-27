@@ -51,6 +51,7 @@ import {
   toOpenCodeQuestionAnswers,
   type OpenCodeServerConnection,
 } from "../opencodeRuntime.ts";
+import { canSteerSendTurn } from "../turnEngine/index.ts";
 import * as Option from "effect/Option";
 
 const PROVIDER = ProviderDriverKind.make("opencode");
@@ -1512,7 +1513,14 @@ export function makeOpenCodeAdapter(
       // A sendTurn while a turn is active is a steer: OpenCode queues the
       // prompt into the busy session and the work continues as one turn, so
       // the active turn id is reused instead of opening a new turn.
-      const steeringTurnId = context.activeTurnId;
+      // Steer eligibility is shared turn-engine policy (SOU-428).
+      const steeringTurnId = canSteerSendTurn({
+        promptsInFlight: context.activeTurnId !== undefined ? 1 : 0,
+        hasActiveTurnId: context.activeTurnId !== undefined,
+        activeTurnInterrupted: false,
+      })
+        ? context.activeTurnId
+        : undefined;
       const turnId = steeringTurnId ?? TurnId.make(`opencode-turn-${yield* randomUUIDv4}`);
       const modelSelection =
         input.modelSelection ??
