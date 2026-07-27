@@ -701,9 +701,9 @@ export function canSteerGrokSendTurn(input: {
 /**
  * Engine-owned disposition for a Grok send that may land while a turn is live.
  *
- * Uses persistent TurnQueue state + the capability matrix. When
- * `sendWhileRunning: "queue"`, concurrent sends are held and drained after
- * settle. When `"steer"`, eligible live turns fold the send into the same turn.
+ * Product default is mid-turn **steer** (ACP preempt / interject). When the
+ * capability matrix declares `queue`, concurrent sends are held and drained
+ * after settle instead. Interrupted turns are never steered or queued into.
  */
 export function resolveGrokSendDisposition(input: {
   readonly turnQueue: TurnQueueState;
@@ -711,13 +711,15 @@ export function resolveGrokSendDisposition(input: {
   readonly activeTurnId: TurnId | undefined;
   readonly interruptedTurnIds: ReadonlySet<TurnId>;
   readonly nextTurn: QueuedTurnInput;
+  /** Override capability for tests; defaults to Grok matrix entry. */
+  readonly sendWhileRunning?: "steer" | "queue";
 }): { readonly state: TurnQueueState; readonly disposition: SendDisposition } {
   const canSteer = canSteerGrokSendTurn({
     promptsInFlight: input.promptsInFlight,
     activeTurnId: input.activeTurnId,
     interruptedTurnIds: input.interruptedTurnIds,
   });
-  const behavior = PROVIDER_TURN_CAPABILITIES.grok.sendWhileRunning;
+  const behavior = input.sendWhileRunning ?? PROVIDER_TURN_CAPABILITIES.grok.sendWhileRunning;
 
   // No steerable live turn → open a new one (caller begins tracking).
   if (!canSteer || input.activeTurnId === undefined) {
@@ -726,15 +728,8 @@ export function resolveGrokSendDisposition(input: {
 
   // Track the live turn in queue bookkeeping, then apply capability policy.
   const tracked = trackLiveTurn(input.turnQueue, String(input.activeTurnId));
-  if (behavior === "steer") {
-    return {
-      state: tracked,
-      disposition: { _tag: "steer", turnId: String(input.activeTurnId) },
-    };
-  }
-
   return disposeSendWhileRunning(tracked, {
-    sendWhileRunning: "queue",
+    sendWhileRunning: behavior,
     nextTurn: input.nextTurn,
   });
 }

@@ -24,6 +24,7 @@ import {
   RuntimeRequestId,
   ProviderApprovalDecision,
   ThreadId,
+  TurnId,
   ProviderSendTurnInput,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -46,6 +47,11 @@ import {
   extractProviderErrorMessage,
   formatProviderEmittedFailureMessage,
 } from "@t3tools/shared/providerError";
+import {
+  OPEN_TOOL_FORCE_CLOSE_DETAIL,
+  OPEN_TOOL_FORCE_CLOSE_SOURCE,
+  shouldForceCloseRemainingOpenToolsOnSettle,
+} from "../turnEngine/index.ts";
 import { getCodexServiceTierOptionValue } from "../../codexModelOptions.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 
@@ -136,6 +142,13 @@ export interface CodexAdapterLiveOptions {
   readonly pendingUserInputTimeoutMs?: number;
 }
 
+type CodexOpenTool = {
+  readonly itemId: string;
+  readonly itemType: CanonicalItemType;
+  readonly title: string | undefined;
+  readonly turnId: string | undefined;
+};
+
 interface CodexAdapterSessionContext {
   readonly threadId: ThreadId;
   scope: Scope.Closeable;
@@ -152,6 +165,8 @@ interface CodexAdapterSessionContext {
   model: string | undefined;
   serviceTier: ReturnType<typeof getCodexServiceTierOptionValue> | undefined;
   stopped: boolean;
+  /** Open tool items for the live turn (force-closed on settle / Stop). */
+  openTools: Map<string, CodexOpenTool>;
 }
 
 function mapCodexRuntimeError(
@@ -1519,11 +1534,98 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
 
   const createRuntime = options?.makeRuntime ?? makeCodexSessionRuntime;
 
+  const forceCloseCodexOpenTools = (
+    session: CodexAdapterSessionContext,
+    turnId: string | undefined,
+  ): ReadonlyArray<ProviderRuntimeEvent> => {
+    if (!shouldForceCloseRemainingOpenToolsOnSettle(session.openTools.size)) {
+      session.openTools.clear();
+      return [];
+    }
+    const stampBase = {
+      provider: PROVIDER,
+      threadId: session.threadId,
+      createdAt: new Date().toISOString(),
+    };
+    const open = [...session.openTools.values()].filter(
+      (tool) => turnId === undefined || tool.turnId === undefined || tool.turnId === turnId,
+    );
+    for (const tool of open) {
+      session.openTools.delete(tool.itemId);
+    }
+    // Clear any leftover for other turns when settling without a turn filter.
+    if (turnId === undefined) {
+      session.openTools.clear();
+    }
+    return open.map((tool, index) => {
+      const resolvedTurnId = tool.turnId ?? turnId;
+      return {
+        ...stampBase,
+        eventId: EventId.make(`codex-force-close-${tool.itemId}-${index}`),
+        type: "item.completed" as const,
+        ...(resolvedTurnId ? { turnId: TurnId.make(resolvedTurnId) } : {}),
+        itemId: RuntimeItemId.make(tool.itemId),
+        payload: {
+          itemType: tool.itemType,
+          status: "failed" as const,
+          ...(tool.title ? { title: tool.title } : {}),
+          detail: OPEN_TOOL_FORCE_CLOSE_DETAIL,
+          data: { forcedClose: true, source: OPEN_TOOL_FORCE_CLOSE_SOURCE },
+        },
+        raw: {
+          source: "codex.app-server.notification" as const,
+          method: OPEN_TOOL_FORCE_CLOSE_SOURCE,
+          payload: { toolCallId: tool.itemId },
+        },
+      };
+    });
+  };
+
+  const trackCodexOpenToolsFromEvents = (
+    session: CodexAdapterSessionContext,
+    events: ReadonlyArray<ProviderRuntimeEvent>,
+  ): ReadonlyArray<ProviderRuntimeEvent> => {
+    const extras: ProviderRuntimeEvent[] = [];
+    for (const runtimeEvent of events) {
+      if (runtimeEvent.type === "item.started" && runtimeEvent.itemId) {
+        const itemId = String(runtimeEvent.itemId);
+        session.openTools.set(itemId, {
+          itemId,
+          itemType: runtimeEvent.payload.itemType,
+          title:
+            typeof runtimeEvent.payload.title === "string" ? runtimeEvent.payload.title : undefined,
+          turnId: runtimeEvent.turnId ? String(runtimeEvent.turnId) : undefined,
+        });
+      } else if (runtimeEvent.type === "item.completed" && runtimeEvent.itemId) {
+        session.openTools.delete(String(runtimeEvent.itemId));
+      } else if (runtimeEvent.type === "turn.completed" || runtimeEvent.type === "turn.aborted") {
+        extras.push(
+          ...forceCloseCodexOpenTools(
+            session,
+            runtimeEvent.turnId ? String(runtimeEvent.turnId) : undefined,
+          ),
+        );
+      }
+    }
+    // Force-closes must precede the terminal turn event so the UI never paints
+    // Working + inProgress tool after the turn is dead.
+    if (extras.length === 0) {
+      return events;
+    }
+    const terminalIndex = events.findIndex(
+      (event) => event.type === "turn.completed" || event.type === "turn.aborted",
+    );
+    if (terminalIndex < 0) {
+      return [...events, ...extras];
+    }
+    return [...events.slice(0, terminalIndex), ...extras, ...events.slice(terminalIndex)];
+  };
+
   const startEventFiber = (runtime: CodexSessionRuntimeShape) =>
     Stream.runForEach(runtime.events, (event) =>
       Effect.gen(function* () {
         yield* writeNativeEvent(event);
-        const runtimeEvents = mapToRuntimeEvents(event, event.threadId);
+        let runtimeEvents = mapToRuntimeEvents(event, event.threadId);
         if (runtimeEvents.length === 0) {
           yield* Effect.logDebug("ignoring unhandled Codex provider event", {
             method: event.method,
@@ -1532,6 +1634,10 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
             itemId: event.itemId,
           });
           return;
+        }
+        const session = sessions.get(event.threadId);
+        if (session) {
+          runtimeEvents = trackCodexOpenToolsFromEvents(session, runtimeEvents);
         }
         yield* Queue.offerAll(runtimeEventQueue, runtimeEvents);
       }),
@@ -1762,6 +1868,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           model,
           serviceTier,
           stopped: false,
+          openTools: new Map(),
         });
         sessionScopeTransferred = true;
 

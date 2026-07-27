@@ -257,17 +257,30 @@ it("refuses to steer into a cancelled/interrupted turn after Stop", () => {
   );
 });
 
-it("resolveGrokSendDisposition queues a live turn and starts new when idle/interrupted", () => {
+it("resolveGrokSendDisposition steers by default and queues when capability is queue", () => {
   const liveTurn = TurnId.make("turn-live");
   const cancelledTurn = TurnId.make("turn-cancelled");
   const nextTurn = { id: "queued-1", text: "also do X", enqueuedAtMs: 1 };
 
+  // Product default: mid-turn steer (ACP interject).
+  const steered = resolveGrokSendDisposition({
+    turnQueue: emptyTurnQueue(),
+    promptsInFlight: 1,
+    activeTurnId: liveTurn,
+    interruptedTurnIds: new Set(),
+    nextTurn,
+  });
+  assert.deepStrictEqual(steered.disposition, { _tag: "steer", turnId: String(liveTurn) });
+  assert.equal(pendingCount(steered.state), 0);
+
+  // Queue drain path when capability is queue.
   const queued = resolveGrokSendDisposition({
     turnQueue: emptyTurnQueue(),
     promptsInFlight: 1,
     activeTurnId: liveTurn,
     interruptedTurnIds: new Set(),
     nextTurn,
+    sendWhileRunning: "queue",
   });
   assert.equal(queued.disposition._tag, "queued");
   if (queued.disposition._tag === "queued") {

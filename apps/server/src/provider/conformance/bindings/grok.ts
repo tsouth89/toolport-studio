@@ -117,7 +117,7 @@ export function scriptToAcpEnv(script: ConformanceScript): Record<string, string
 
 export const grokConformanceBinding: ConformanceBinding = {
   provider: "grok",
-  sendWhileRunning: "queue",
+  sendWhileRunning: "steer",
   openSession: (script, options?: ConformanceOpenSessionOptions) =>
     Effect.gen(function* () {
       const environment: NodeJS.ProcessEnv = {

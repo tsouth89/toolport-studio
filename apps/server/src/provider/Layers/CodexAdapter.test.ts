@@ -720,6 +720,71 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
       }),
   );
 
+  it.effect("force-closes open tools when turn completes mid-tool", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const eventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.take(3),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* runtime.emit({
+        id: asEventId("evt-tool-start"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        method: "item/started",
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-open-tool"),
+        itemId: asItemId("cmd_open"),
+        payload: {
+          startedAtMs: 1_778_000_000_000,
+          threadId: "provider-thread-1",
+          turnId: "turn-open-tool",
+          item: {
+            type: "commandExecution",
+            id: "cmd_open",
+            command: "sleep 999",
+            cwd: "/tmp",
+            status: "inProgress",
+            commandActions: [],
+          },
+        },
+      });
+      yield* runtime.emit({
+        id: asEventId("evt-turn-mid-tool"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-01-01T00:00:01.000Z",
+        method: "turn/completed",
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-open-tool"),
+        payload: {
+          threadId: "provider-thread-1",
+          turn: {
+            id: "turn-open-tool",
+            status: "interrupted",
+            items: [],
+          },
+        },
+      });
+
+      const events = Array.from(yield* Fiber.join(eventsFiber));
+      NodeAssert.equal(events[0]?.type, "item.started");
+      NodeAssert.equal(events[1]?.type, "item.completed");
+      if (events[1]?.type === "item.completed") {
+        NodeAssert.equal(events[1].payload.status, "failed");
+        NodeAssert.match(String(events[1].payload.detail ?? ""), /did not complete/i);
+        NodeAssert.equal(
+          (events[1].payload.data as { forcedClose?: boolean } | undefined)?.forcedClose,
+          true,
+        );
+      }
+      NodeAssert.equal(events[2]?.type, "turn.completed");
+    }),
+  );
+
   it.effect("maps completed agent message items to canonical item.completed events", () =>
     Effect.gen(function* () {
       const { adapter, runtime } = yield* startLifecycleRuntime();

@@ -50,9 +50,10 @@ export const PROVIDER_TURN_CAPABILITIES: Readonly<
   },
   grok: {
     sendTurnBlocksUntilSettled: true,
-    // Hold mid-turn sends and auto-start after settle (TurnQueue drain).
-    // Steer remains available for other providers / future capability flips.
-    sendWhileRunning: "queue",
+    // Mid-turn interject (ACP preempt). Queue drain stays wired for
+    // sendWhileRunning: "queue" and is used by resolveGrokSendDisposition
+    // when that capability is selected.
+    sendWhileRunning: "steer",
     nativeInterject: "acp-preempt",
     interruptCanHang: true,
     subprocessLivenessObservable: true,

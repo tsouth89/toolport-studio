@@ -28,13 +28,13 @@ model, capability matrix, stop settle rules).
 
 ## Wiring status
 
-- **Grok:** TurnQueue drain (`sendWhileRunning: "queue"`) + force-close/chrome policy +
-  provider-emitted failure classification. Mid-turn sends are held and auto-started after settle;
-  Stop abandons the queue. Steer remains available if capability is flipped back.
+- **Grok:** mid-turn **steer** (ACP preempt) + force-close/chrome + provider-emitted failure
+  classification. TurnQueue drain is fully wired for `sendWhileRunning: "queue"` (held + auto-start
+  after settle; Stop abandons). Product default remains steer so concurrent messages interject.
 - **Cursor:** `canSteerSendTurn` + open-tool force-close on Stop + post-Stop ACP recycle + silence warning (no open tools) + provider-emitted failure classification
 - **Claude:** `canSteerSendTurn` + open-tool force-close on settle + provider-emitted failure classification
 - **OpenCode:** `canSteerSendTurn` + force-settle session on Stop + open-tool force-close on Stop/idle/error + provider-emitted failure classification on idle
-- **Codex:** `canSteerCodexSendTurn` → shared `canSteerSendTurn` + provider-emitted failure classification on completed turns
+- **Codex:** `canSteerCodexSendTurn` → shared `canSteerSendTurn` + provider-emitted failure classification on completed turns + open-tool force-close on settle
 - **Settle policy:** remaining open tools are force-closed on any settle (including
   successful end_turn), not only Stop — Claude/OpenCode match Grok/Cursor
 - **Provider-emitted failures:** pure capacity/auth dumps as assistant text must
