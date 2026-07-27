@@ -248,7 +248,7 @@ function defaultSummaryForItemType(
     case "file_change":
       return "Changed files";
     case "web_search":
-      return "Searched files";
+      return "Searched";
     case "image_view":
       return "Viewed image";
     case "mcp_tool_call":
@@ -260,6 +260,21 @@ function defaultSummaryForItemType(
     default:
       return undefined;
   }
+}
+
+function fileBasename(path: string): string {
+  const normalized = path.replace(/\\/gu, "/");
+  const parts = normalized.split("/");
+  return parts[parts.length - 1] || path;
+}
+
+/** Short single-line headline for tool rows (Grok Build-style scannable lines). */
+function truncateToolHeadline(value: string, maxLength: number): string {
+  const normalized = value.replace(/\s+/gu, " ").trim();
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+  return `${normalized.slice(0, Math.max(1, maxLength - 1)).trimEnd()}…`;
 }
 
 function classifyToolAction(input: {
@@ -333,16 +348,22 @@ export function deriveToolActivityPresentation(
   });
 
   if (action === "command") {
+    // Grok Build style: "Run git status" rather than "Ran command" + muted dump.
+    const headline = command ? truncateToolHeadline(command, 88) : undefined;
     return {
-      summary: "Ran command",
-      ...(command ? { detail: command } : {}),
+      summary: headline ? `Run ${headline}` : "Ran command",
+      ...(command && headline !== command
+        ? { detail: command }
+        : command
+          ? { detail: command }
+          : {}),
     };
   }
 
   if (action === "read") {
     if (primaryPath) {
       return {
-        summary: "Read file",
+        summary: `Read ${fileBasename(primaryPath)}`,
         detail: primaryPath,
       };
     }
@@ -352,9 +373,14 @@ export function deriveToolActivityPresentation(
   }
 
   if (action === "file_change") {
+    if (primaryPath) {
+      return {
+        summary: `Edited ${fileBasename(primaryPath)}`,
+        detail: primaryPath,
+      };
+    }
     return {
       summary: "Changed files",
-      ...(primaryPath ? { detail: primaryPath } : {}),
     };
   }
 
@@ -364,8 +390,9 @@ export function deriveToolActivityPresentation(
       asTrimmedString(asRecord(data?.rawInput)?.pattern) ??
       asTrimmedString(asRecord(data?.rawInput)?.searchTerm) ??
       asTrimmedString(asRecord(data?.rawInput)?.path);
+    const shortQuery = query ? truncateToolHeadline(query, 64) : undefined;
     return {
-      summary: "Searched files",
+      summary: shortQuery ? `Searched ${shortQuery}` : "Searched",
       ...(query ? { detail: query } : {}),
     };
   }

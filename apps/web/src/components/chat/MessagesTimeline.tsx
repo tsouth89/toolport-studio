@@ -32,6 +32,7 @@ import { FileDiff } from "@pierre/diffs/react";
 import {
   deriveTimelineEntries,
   formatWorkLogToolLabel,
+  formatWorkLogTimelineLine,
   workEntryIndicatesToolFailure,
   workEntryIndicatesToolNeutralStatus,
   workEntryIndicatesToolSuccess,
@@ -1385,57 +1386,51 @@ const WorkGroupSection = memo(function WorkGroupSection({
 
   if (onlyToolEntries) {
     const stepCount = nonEmptyEntries.length;
-    const groupLabel = `Tool use · ${stepCount} step${stepCount === 1 ? "" : "s"}`;
+    const groupLabel = `${stepCount} step${stepCount === 1 ? "" : "s"}`;
     const inProgressCount = nonEmptyEntries.filter(
       (entry) => entry.toolLifecycleStatus === "inProgress",
     ).length;
-    const canCollapse = stepCount > 1;
+    const canCollapse = stepCount > 6;
     const showBody = !canCollapse || cardExpanded;
 
     return (
-      <section
-        className="rounded-xl border border-border/55 bg-[color-mix(in_srgb,var(--shell-surface-raised,var(--card))_88%,transparent)] px-2.5 py-2 shadow-sm"
-        aria-label={groupLabel}
-      >
-        <button
-          type="button"
-          className={cn(
-            "flex w-full items-center gap-2 rounded-md px-0.5 py-0.5 text-left transition-colors",
-            canCollapse &&
+      <section className="relative py-0.5" aria-label={groupLabel}>
+        {/* Grok Build-style left rail through the tool stack */}
+        <div
+          className="pointer-events-none absolute bottom-1 left-[9px] top-1 w-px bg-border/50"
+          aria-hidden
+        />
+        {canCollapse ? (
+          <button
+            type="button"
+            className={cn(
+              "mb-0.5 flex w-full items-center gap-2 rounded-md px-0.5 py-0.5 text-left transition-colors",
               "cursor-pointer hover:bg-accent/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70",
-          )}
-          aria-expanded={canCollapse ? showBody : undefined}
-          disabled={!canCollapse}
-          onClick={() => {
-            if (canCollapse) setCardExpanded((value) => !value);
-          }}
-        >
-          <span className="flex size-5 shrink-0 items-center justify-center text-muted-foreground/70">
-            {inProgressCount > 0 ? (
-              <Loader2Icon className="size-3.5 animate-spin opacity-80" />
-            ) : (
-              <CheckIcon className="size-3.5 opacity-80" />
             )}
-          </span>
-          <span className="min-w-0 flex-1 truncate font-medium text-[12px] text-foreground/88">
-            {groupLabel}
-          </span>
-          {inProgressCount > 0 ? (
-            <span className="shrink-0 text-[11px] text-muted-foreground/70">
-              {inProgressCount} running
+            aria-expanded={showBody}
+            onClick={() => setCardExpanded((value) => !value)}
+          >
+            <span className="relative z-[1] flex size-5 shrink-0 items-center justify-center text-muted-foreground/70">
+              {inProgressCount > 0 ? (
+                <Loader2Icon className="size-3.5 animate-spin opacity-80" />
+              ) : (
+                <CheckIcon className="size-3.5 opacity-80" />
+              )}
             </span>
-          ) : null}
-          {canCollapse ? (
+            <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-foreground/80">
+              {groupLabel}
+              {inProgressCount > 0 ? ` · ${inProgressCount} running` : ""}
+            </span>
             <ChevronDownIcon
               className={cn(
                 "size-3.5 shrink-0 text-muted-foreground/65 transition-transform duration-200",
                 showBody && "rotate-180",
               )}
             />
-          ) : null}
-        </button>
+          </button>
+        ) : null}
         {showBody ? (
-          <div className="mt-1 space-y-px border-t border-border/40 pt-1">
+          <div className="space-y-0.5">
             {nonEmptyEntries.map((workEntry) => (
               <SimpleWorkEntryRow
                 key={workEntry.id}
@@ -1450,9 +1445,12 @@ const WorkGroupSection = memo(function WorkGroupSection({
   }
 
   return (
-    <section className="-mx-1 space-y-0.5 px-1 py-0.5" aria-label="Work Log">
-      <p className="px-0.5 pb-0.5 font-medium text-[11px] text-muted-foreground/65">Work Log</p>
-      <div className="space-y-px">
+    <section className="relative -mx-1 space-y-0.5 px-1 py-0.5" aria-label="Work Log">
+      <div
+        className="pointer-events-none absolute bottom-1 left-[13px] top-1 w-px bg-border/40"
+        aria-hidden
+      />
+      <div className="space-y-0.5">
         {nonEmptyEntries.map((workEntry) => (
           <SimpleWorkEntryRow
             key={workEntry.id}
@@ -2126,13 +2124,81 @@ function workEntryRawCommand(
   return rawCommand === workEntry.command.trim() ? null : rawCommand;
 }
 
+function looksLikeJsonBlob(value: string): boolean {
+  const trimmed = value.trim();
+  return (
+    (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
+    (trimmed.startsWith("[") && trimmed.endsWith("]"))
+  );
+}
+
+function formatMcpToolExpandedBody(toolData: unknown): string | null {
+  if (toolData === null || typeof toolData !== "object") {
+    return null;
+  }
+  const record = toolData as Record<string, unknown>;
+  const lines: string[] = [];
+  const server = typeof record.server === "string" ? record.server.trim() : "";
+  const tool = typeof record.tool === "string" ? record.tool.trim() : "";
+  if (server || tool) {
+    lines.push([server, tool].filter(Boolean).join(" · "));
+  }
+  const args = record.arguments ?? record.input ?? record.rawInput;
+  if (args !== undefined && args !== null) {
+    if (typeof args === "string" && args.trim() && !looksLikeJsonBlob(args)) {
+      lines.push(args.trim());
+    } else if (typeof args === "object") {
+      try {
+        const pretty = JSON.stringify(args, null, 2);
+        if (pretty.length > 0 && pretty !== "{}" && pretty !== "[]") {
+          lines.push(pretty.length > 1200 ? `${pretty.slice(0, 1199)}…` : pretty);
+        }
+      } catch {
+        // ignore
+      }
+    }
+  }
+  const result = record.result ?? record.output ?? record.content;
+  if (typeof result === "string" && result.trim()) {
+    const text = result.trim();
+    lines.push(text.length > 2000 ? `${text.slice(0, 1999)}…` : text);
+  } else if (result && typeof result === "object") {
+    try {
+      const pretty = JSON.stringify(result, null, 2);
+      if (pretty.length > 0 && pretty !== "{}" && pretty !== "[]") {
+        lines.push(pretty.length > 1200 ? `${pretty.slice(0, 1199)}…` : pretty);
+      }
+    } catch {
+      // ignore
+    }
+  }
+  return lines.length > 0 ? lines.join("\n\n") : null;
+}
+
 function buildToolCallExpandedBody(
   workEntry: TimelineWorkEntry,
   workspaceRoot: string | undefined,
 ): string | null {
   const blocks: string[] = [];
+  const isThought =
+    workEntry.tone === "thinking" ||
+    (workEntry.toolTitle?.trim().toLowerCase() === "thinking" &&
+      workEntry.sourceActivityKind === "task.progress");
+
+  // Thoughts: show the actual reasoning prose, not machine labels.
+  if (isThought) {
+    const thought = (workEntry.detail ?? workEntry.label)?.trim();
+    if (thought && thought.toLowerCase() !== "thinking" && thought.toLowerCase() !== "thought") {
+      return thought;
+    }
+    return null;
+  }
+
   if (workEntry.itemType === "mcp_tool_call" && workEntry.toolData !== undefined) {
-    blocks.push(`MCP call\n${JSON.stringify(workEntry.toolData, null, 2)}`);
+    const mcpBody = formatMcpToolExpandedBody(workEntry.toolData);
+    if (mcpBody) {
+      blocks.push(mcpBody);
+    }
   }
   const raw = workEntryRawCommand(workEntry);
   if (raw?.trim()) {
@@ -2141,7 +2207,24 @@ function buildToolCallExpandedBody(
     blocks.push(workEntry.command.trim());
   }
   if (workEntry.detail?.trim()) {
-    blocks.push(workEntry.detail.trim());
+    const detail = workEntry.detail.trim();
+    // Skip dumps that only restate the headline or pure JSON already shown.
+    const line = formatWorkLogTimelineLine(workEntry);
+    if (
+      detail.toLowerCase() !== line.toLowerCase() &&
+      !(workEntry.command && detail === workEntry.command.trim()) &&
+      !looksLikeJsonBlob(detail)
+    ) {
+      blocks.push(detail);
+    } else if (looksLikeJsonBlob(detail) && blocks.length === 0) {
+      // Prefer pretty-printed JSON over a one-line blob when nothing else is shown.
+      try {
+        const parsed: unknown = JSON.parse(detail);
+        blocks.push(JSON.stringify(parsed, null, 2));
+      } catch {
+        blocks.push(detail);
+      }
+    }
   }
   const changedFiles = workEntry.changedFiles ?? [];
   if (changedFiles.length > 0) {
@@ -2194,14 +2277,8 @@ function capitalizePhrase(value: string): string {
 }
 
 function toolWorkEntryHeading(workEntry: TimelineWorkEntry): string {
-  // Same human labels as Activity / Working row (SOU-386 one projection).
-  if (workLogEntryIsToolLike(workEntry)) {
-    return formatWorkLogToolLabel(workEntry);
-  }
-  if (!workEntry.toolTitle) {
-    return capitalizePhrase(normalizeCompactToolLabel(workEntry.label));
-  }
-  return capitalizePhrase(normalizeCompactToolLabel(workEntry.toolTitle));
+  // Grok Build-style scannable line: "Run …", "Read …", "Thought", etc.
+  return formatWorkLogTimelineLine(workEntry);
 }
 
 const stopRowToggle = (e: { stopPropagation: () => void }) => e.stopPropagation();
@@ -2213,49 +2290,48 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   const { workEntry, workspaceRoot } = props;
   const activity = use(TimelineRowActivityCtx);
   const [expanded, setExpanded] = useState(false);
-  const iconConfig = workToneIcon(workEntry.tone);
   const showWarningIndicator = workEntry.sourceActivityKind === "runtime.warning";
-  const entryIconName = showWarningIndicator ? "x" : workEntryIconName(workEntry);
+  const isThought =
+    workEntry.tone === "thinking" ||
+    (workEntry.toolTitle?.trim().toLowerCase() === "thinking" &&
+      workEntry.sourceActivityKind === "task.progress");
   const heading = toolWorkEntryHeading(workEntry);
-  const rawPreview = workEntryPreview(workEntry, workspaceRoot);
+  // Line already includes the scannable context (Run git status…); only show a
+  // muted preview when it adds something the headline does not already say.
+  const rawPreview = isThought ? null : workEntryPreview(workEntry, workspaceRoot);
   const preview =
     rawPreview &&
-    normalizeCompactToolLabel(rawPreview).toLowerCase() ===
-      normalizeCompactToolLabel(heading).toLowerCase()
-      ? null
-      : rawPreview;
-  const displayText = preview ? `${heading} - ${preview}` : heading;
+    !heading
+      .toLowerCase()
+      .includes(normalizeCompactToolLabel(rawPreview).toLowerCase().slice(0, 24))
+      ? rawPreview
+      : null;
+  const displayText = preview ? `${heading} · ${preview}` : heading;
   const expandedBody = buildToolCallExpandedBody(workEntry, workspaceRoot);
   const canExpand = expandedBody !== null;
   const showFailedIndicator = workEntryIndicatesToolFailure(workEntry);
   const showDestructiveRowStyle =
     showFailedIndicator &&
     (workEntry.sourceActivityKind === "runtime.error" || !workLogEntryIsToolLike(workEntry));
-  const iconWrapperClass = cn(
-    "flex size-5 shrink-0 items-center justify-center",
-    showWarningIndicator
-      ? "text-destructive"
-      : showDestructiveRowStyle
-        ? "text-destructive"
-        : workEntry.tone === "tool" || showFailedIndicator
-          ? "text-muted-foreground/65"
-          : iconConfig.className,
-  );
-  const headingClass = showWarningIndicator
-    ? "font-medium text-warning"
-    : showDestructiveRowStyle
-      ? "font-medium text-destructive"
-      : "font-medium text-foreground/82";
   const turnSettled = !activity.activeTurnInProgress;
   const showNeutralIndicator = !turnSettled && workEntryIndicatesToolNeutralStatus(workEntry);
   const showSuccessIndicator =
     workEntryIndicatesToolSuccess(workEntry) ||
     (turnSettled && workEntryIndicatesToolNeutralStatus(workEntry));
+  const isInProgress = workEntry.toolLifecycleStatus === "inProgress";
+  const headingClass = showWarningIndicator
+    ? "font-medium text-warning"
+    : showDestructiveRowStyle
+      ? "font-medium text-destructive"
+      : isThought
+        ? "font-medium text-muted-foreground"
+        : "font-medium text-foreground/88";
   const rowToggleProps = canExpand
     ? {
         role: "button" as const,
         tabIndex: 0 as const,
         "aria-label": displayText,
+        "aria-expanded": expanded,
         onClick: () => setExpanded((v) => !v),
         onKeyDown: (e: KeyboardEvent<HTMLDivElement>) => {
           if (e.key === "Enter" || e.key === " ") {
@@ -2271,92 +2347,73 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
       className={cn(
         "flex flex-col rounded-md px-0.5 py-0.5 transition-colors",
         canExpand &&
-          "cursor-pointer hover:bg-accent/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70",
+          "cursor-pointer hover:bg-accent/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70",
+        expanded && canExpand && "bg-accent/10",
       )}
       {...rowToggleProps}
     >
-      <div className="flex select-none items-center gap-1.5 transition-[opacity,translate] duration-200">
-        <span className={iconWrapperClass}>
-          <WorkEntryIconSvg
-            name={entryIconName}
-            className="block size-3.5 shrink-0 stroke-[1.8] opacity-80"
-          />
+      <div className="flex select-none items-center gap-1.5">
+        {/* Grok Build-style diamond / status bullet on the rail */}
+        <span
+          className={cn(
+            "relative z-[1] flex size-5 shrink-0 items-center justify-center",
+            showWarningIndicator || showDestructiveRowStyle
+              ? "text-destructive"
+              : isInProgress
+                ? "text-primary"
+                : "text-muted-foreground/55",
+          )}
+        >
+          {isInProgress ? (
+            <Loader2Icon className="size-3 animate-spin opacity-90" aria-hidden />
+          ) : showFailedIndicator ? (
+            <XIcon className="size-3 opacity-90" aria-hidden />
+          ) : showSuccessIndicator && !isThought ? (
+            <span className="block size-1.5 rotate-45 rounded-[1px] bg-current opacity-80" />
+          ) : (
+            <span className="block size-1.5 rotate-45 rounded-[1px] border border-current opacity-70" />
+          )}
         </span>
         <div className="flex min-w-0 flex-1 items-center gap-1.5">
           <div className="min-w-0 flex-1 overflow-hidden">
-            <p className="flex min-w-0 w-full items-baseline gap-1.5 text-[12px] leading-5">
-              <span className={cn("min-w-0 shrink truncate", headingClass)}>{heading}</span>
-              {preview && (
-                <span className="min-w-0 flex-1 truncate text-muted-foreground/55">{preview}</span>
-              )}
-            </p>
-          </div>
-          <div className="flex shrink-0 items-center gap-px text-muted-foreground/55">
-            <span
-              className="flex size-4 shrink-0 items-center justify-center"
-              aria-hidden={!canExpand}
-            >
-              {canExpand ? (
-                <ChevronDownIcon
-                  className={cn(
-                    "size-3 shrink-0 opacity-70 transition-transform duration-200",
-                    expanded && "rotate-180",
-                  )}
-                  aria-hidden
-                />
-              ) : null}
-            </span>
-            <span className="flex size-4 shrink-0 items-center justify-center">
-              {showFailedIndicator ? (
-                <Tooltip>
-                  <TooltipTrigger
-                    render={
-                      <span
-                        className="flex size-4 items-center justify-center"
-                        aria-label="Tool call failed"
-                      />
-                    }
-                  >
-                    <XIcon className="block size-3 shrink-0 text-destructive" aria-hidden />
-                  </TooltipTrigger>
-                  <TooltipPopup>Failed</TooltipPopup>
-                </Tooltip>
-              ) : showSuccessIndicator ? (
-                <Tooltip>
-                  <TooltipTrigger
-                    render={<span className="flex size-4 items-center justify-center" />}
-                  >
-                    <span className="inline-flex size-4 items-center justify-center">
-                      <CheckIcon
-                        className="block size-3 shrink-0 stroke-current"
-                        stroke="currentColor"
-                        aria-hidden
-                      />
+            <p className="flex min-w-0 w-full items-baseline gap-1.5 text-[12.5px] leading-5">
+              <span className={cn("min-w-0 shrink truncate", headingClass)}>
+                {canExpand ? (
+                  <span className="inline-flex items-center gap-1">
+                    <span
+                      className={cn(
+                        "inline-block text-[10px] text-muted-foreground/60 transition-transform",
+                        expanded && "rotate-90",
+                      )}
+                      aria-hidden
+                    >
+                      ▸
                     </span>
-                  </TooltipTrigger>
-                  <TooltipPopup>Completed</TooltipPopup>
-                </Tooltip>
-              ) : showNeutralIndicator ? (
-                <Tooltip>
-                  <TooltipTrigger
-                    render={<span className="flex size-4 items-center justify-center" />}
-                  >
-                    <MinusIcon className="block size-3 shrink-0 opacity-70" aria-hidden />
-                  </TooltipTrigger>
-                  <TooltipPopup>Empty</TooltipPopup>
-                </Tooltip>
+                    {heading}
+                  </span>
+                ) : (
+                  heading
+                )}
+              </span>
+              {preview ? (
+                <span className="min-w-0 flex-1 truncate text-muted-foreground/55">{preview}</span>
               ) : null}
-            </span>
+            </p>
           </div>
         </div>
       </div>
       {expanded && canExpand && expandedBody ? (
         <div
-          className="mt-1 ms-7 cursor-default border-s border-border/45 ps-3 pt-0.5"
+          className="mt-1 ms-[1.375rem] cursor-default border-s-2 border-primary/35 ps-3 pt-0.5 pb-1"
           onClick={stopRowToggle}
           onPointerDown={stopRowToggle}
         >
-          <pre className="max-h-64 cursor-text overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-muted-foreground select-text">
+          <pre
+            className={cn(
+              "max-h-72 cursor-text overflow-auto whitespace-pre-wrap break-words text-[12px] leading-relaxed text-foreground/75 select-text",
+              isThought ? "font-sans" : "font-mono text-[11px] text-muted-foreground",
+            )}
+          >
             {expandedBody}
           </pre>
         </div>

@@ -208,24 +208,42 @@ function truncateWorkLogContext(value: string, maxLength = 72): string {
   return `${normalized.slice(0, maxLength - 1).trimEnd()}…`;
 }
 
+function isThinkingWorkLogEntry(entry: WorkLogEntry): boolean {
+  if (entry.tone === "thinking") {
+    return true;
+  }
+  const title = (entry.toolTitle ?? "").trim().toLowerCase();
+  return title === "thinking" || title === "thought";
+}
+
 /**
- * Human tool name for Working row + Activity. Prefers provider title; rewrites
- * generic "Tool" labels from real itemType/command/path metadata, and humanizes
- * wire-form MCP names (`toolport__toolport_call_tool`).
+ * Timeline heading for work rows (Grok Build-style):
+ * - Thinking → "Thought"
+ * - Tools → "Run …" / "Read …" / "Searched …" when metadata allows
+ */
+export function formatWorkLogTimelineLine(entry: WorkLogEntry): string {
+  if (isThinkingWorkLogEntry(entry)) {
+    return "Thought";
+  }
+  return formatWorkLogToolLabel(entry);
+}
+
+/**
+ * Human tool name for Working row + Activity. Prefers structured presentation
+ * (itemType/command/path) so wire titles and generic "Tool" never win over
+ * scannable "Run …" / "Read …" lines. Humanizes MCP wire names.
  */
 export function formatWorkLogToolLabel(entry: WorkLogEntry): string {
-  const raw = (entry.toolTitle ?? entry.label).trim();
-  if (!workLogEntryIsToolLike(entry)) {
-    return humanizeToolDisplayName(raw || "Step");
-  }
-  if (!isGenericWorkLogToolLabel(raw)) {
-    const cleaned = raw.replace(/\s+(?:complete|completed)\s*$/i, "").trim() || raw;
-    return humanizeToolDisplayName(cleaned);
+  if (isThinkingWorkLogEntry(entry)) {
+    return "Thought";
   }
 
+  const rawTitle = (entry.toolTitle ?? entry.label)
+    .replace(/\s+(?:complete|completed|started|updated)\s*$/iu, "")
+    .trim();
   const presentation = deriveToolActivityPresentation({
     itemType: entry.itemType,
-    title: entry.toolTitle ?? entry.label,
+    title: rawTitle || entry.toolTitle || entry.label,
     detail: entry.detail,
     data: {
       ...(entry.toolData && typeof entry.toolData === "object" ? { item: entry.toolData } : {}),
@@ -236,9 +254,16 @@ export function formatWorkLogToolLabel(entry: WorkLogEntry): string {
     },
     fallbackSummary: entry.label,
   });
-  const summary = presentation.summary.trim();
+  const summary = presentation.summary
+    .trim()
+    .replace(/\s+(?:complete|completed|started|updated)\s*$/iu, "")
+    .trim();
   if (!isGenericWorkLogToolLabel(summary)) {
     return humanizeToolDisplayName(summary);
+  }
+
+  if (!isGenericWorkLogToolLabel(rawTitle)) {
+    return humanizeToolDisplayName(rawTitle);
   }
   return "Tool call";
 }

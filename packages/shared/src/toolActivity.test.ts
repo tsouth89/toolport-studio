@@ -7,7 +7,7 @@ import {
 } from "./toolActivity.ts";
 
 describe("toolActivity", () => {
-  it("normalizes command tools to a stable ran-command label", () => {
+  it("normalizes command tools to a Grok Build-style Run headline", () => {
     expect(
       deriveToolActivityPresentation({
         itemType: "command_execution",
@@ -19,7 +19,7 @@ describe("toolActivity", () => {
         fallbackSummary: "Terminal",
       }),
     ).toEqual({
-      summary: "Ran command",
+      summary: "Run bun run lint",
       detail: "bun run lint",
     });
   });
@@ -37,7 +37,7 @@ describe("toolActivity", () => {
         fallbackSummary: "Read File",
       }),
     ).toEqual({
-      summary: "Read file",
+      summary: "Read app.ts",
       detail: "/tmp/app.ts",
     });
   });
@@ -107,7 +107,7 @@ describe("toolActivity", () => {
         fallbackSummary: "Tool",
       }),
     ).toEqual({
-      summary: "Searched files",
+      summary: "Searched deriveThreadActivity",
       detail: "deriveThreadActivity",
     });
   });

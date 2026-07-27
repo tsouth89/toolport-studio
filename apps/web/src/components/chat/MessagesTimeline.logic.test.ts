@@ -1348,7 +1348,7 @@ describe("computeStableMessagesTimelineRows", () => {
 
     expect(rows.find((row) => row.kind === "working")).toMatchObject({
       kind: "working",
-      activeToolLabel: "Ran command",
+      activeToolLabel: "Run gh pr checks 479 --watch",
       activeToolDetail: "gh pr checks 479 --watch",
       hasLongRunningOpenTool: true,
     });

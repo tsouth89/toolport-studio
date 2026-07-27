@@ -1904,4 +1904,42 @@ describe("formatWorkLogToolLabel", () => {
       ),
     ).toBe("t3-code · preview_status");
   });
+
+  it("formats command/read lines like Grok Build", () => {
+    expect(
+      formatWorkLogToolLabel(
+        entry({
+          id: "cmd",
+          label: "Terminal",
+          toolTitle: "Terminal",
+          itemType: "command_execution",
+          command: "git status",
+        }),
+      ),
+    ).toBe("Run git status");
+    expect(
+      formatWorkLogToolLabel(
+        entry({
+          id: "read",
+          label: "Read File",
+          itemType: "dynamic_tool_call",
+          changedFiles: ["apps/web/src/App.tsx"],
+        }),
+      ),
+    ).toMatch(/^Read /);
+  });
+
+  it("labels thinking rows as Thought", () => {
+    expect(
+      formatWorkLogToolLabel(
+        entry({
+          id: "think",
+          label: "I should inspect the adapter",
+          toolTitle: "Thinking",
+          tone: "thinking",
+          detail: "Full reasoning prose goes here.",
+        }),
+      ),
+    ).toBe("Thought");
+  });
 });
