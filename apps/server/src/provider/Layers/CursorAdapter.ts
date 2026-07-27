@@ -1438,9 +1438,11 @@ export function makeCursorAdapter(
               model: resolvedModel,
             };
 
-            // Cursor (and some other ACP agents) can dump capacity/quota errors
-            // as ordinary agent_message_chunk text and still return end_turn.
-            // Treat those as failed turns, not successful replies.
+            // Cursor (and some other ACP agents) can dump provider-side failures
+            // (e.g. resource_exhausted for temporary model capacity/routing) as
+            // ordinary agent_message_chunk text and still return end_turn.
+            // Treat those as failed turns, not successful replies. Does not
+            // mean the user's Cursor plan is necessarily depleted.
             const emittedFailure =
               result.stopReason === "cancelled"
                 ? undefined

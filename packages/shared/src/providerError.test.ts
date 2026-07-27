@@ -96,7 +96,7 @@ describe("classifyProviderEmittedFailure", () => {
     expect(classifyProviderEmittedFailure("hello from mock")).toBeUndefined();
   });
 
-  it("formats provider/model guidance without losing the base message", () => {
+  it("formats provider/model guidance without claiming plan quota is depleted", () => {
     const failure = classifyProviderEmittedFailure(
       "Error: RetriableError: [resource_exhausted] Error",
     );
@@ -108,6 +108,8 @@ describe("classifyProviderEmittedFailure", () => {
     expect(formatted).toMatch(/resource_exhausted/i);
     expect(formatted).toMatch(/Cursor/);
     expect(formatted).toMatch(/grok-4\.5/);
+    expect(formatted).not.toMatch(/plan is exhausted|out of quota|billing/i);
+    expect(formatted).toMatch(/not necessarily your plan quota|not a Studio limit/i);
   });
 });
 

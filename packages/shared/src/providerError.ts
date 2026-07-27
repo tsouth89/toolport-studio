@@ -131,8 +131,10 @@ export function classifyProviderEmittedFailure(text: string): ProviderEmittedFai
       retriable: true,
       code: "resource_exhausted",
       class: "provider_error",
+      // Do not assume the user's plan/billing is depleted. Providers often emit
+      // this for temporary model capacity, routing, or upstream limits.
       message:
-        "Provider reported resource_exhausted (rate limit or temporary model capacity). Retry later, switch models, or use a provider that owns this model directly.",
+        "Provider returned resource_exhausted for this request (provider-side capacity or routing, not a Studio limit). Retry, switch models, or use the native provider for that model.",
     };
   }
 
@@ -223,19 +225,24 @@ export function formatProviderEmittedFailureMessage(
 ): string {
   const bits = [failure.message];
   if (context?.providerLabel && context?.model) {
-    if (failure.kind === "resource_exhausted" || failure.kind === "rate_limited") {
+    if (failure.kind === "resource_exhausted") {
       bits.push(
-        `${context.providerLabel} model "${context.model}" is exhausted or capacity-limited on that provider's stack.`,
+        `${context.providerLabel} rejected model "${context.model}" with that code (often temporary capacity on their path to the model, not necessarily your plan quota).`,
+      );
+    } else if (failure.kind === "rate_limited") {
+      bits.push(
+        `${context.providerLabel} rate-limited model "${context.model}". This may be a short window limit rather than overall plan usage.`,
       );
     }
-  } else if (
-    context?.model &&
-    (failure.kind === "resource_exhausted" || failure.kind === "rate_limited")
-  ) {
-    bits.push(`Model "${context.model}" hit a provider limit.`);
+  } else if (context?.model && failure.kind === "resource_exhausted") {
+    bits.push(
+      `Model "${context.model}" was rejected with resource_exhausted by the provider path.`,
+    );
+  } else if (context?.model && failure.kind === "rate_limited") {
+    bits.push(`Model "${context.model}" was rate-limited by the provider path.`);
   }
   if (failure.retriable) {
-    bits.push("This is usually temporary.");
+    bits.push("Often temporary; retry or use another model/provider.");
   }
   return bits.join(" ");
 }
