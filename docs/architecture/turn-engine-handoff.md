@@ -12,11 +12,11 @@ Landed under `apps/server/src/provider/turnEngine/`:
 - **Grok wired** to engine defaults: raw mid-turn framing, no force-close tools on
   steer, no synthetic “Following up” warning
 - **All five adapters** use shared `canSteerSendTurn` (Codex via `canSteerCodexSendTurn`)
-- Conformance: **35/35** green including `stop-mid-tool-terminalizes` and
-  `post-stop-follow-up-runs` (3 cases remain unimplemented)
+- Conformance: **45/45** green — only `resume-preserves-history` remains
+  unimplemented. Cursor prompt failures now emit typed `runtime.error` + failed
+  turn completion (process-death surface).
 
-Next: approval-pending Stop case; process-death typing; resume history; engine-
-owned queue; thinner transports.
+Next: resume history; engine-owned queue; thinner transports.
 
 ---
 

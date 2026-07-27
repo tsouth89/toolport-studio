@@ -34,6 +34,34 @@ export function isStopSettledRuntimeEvent(event: ProviderRuntimeEvent): boolean 
 }
 
 /**
+ * Process/transport death must surface as a typed runtime failure, not silence.
+ * Accepts error, exited, failed turn, or error session state.
+ */
+export function isProcessDeathRuntimeEvent(event: ProviderRuntimeEvent): boolean {
+  if (event.type === "runtime.error") {
+    return true;
+  }
+  if (event.type === "session.exited") {
+    return true;
+  }
+  if (event.type === "session.state.changed" && event.payload.state === "error") {
+    return true;
+  }
+  if (event.type === "turn.completed" && event.payload.state === "failed") {
+    return true;
+  }
+  if (event.type === "turn.aborted") {
+    return true;
+  }
+  return false;
+}
+
+/** Pending interactive prompts that Stop must not leave hanging. */
+export function isPendingInteractionRuntimeEvent(event: ProviderRuntimeEvent): boolean {
+  return event.type === "request.opened" || event.type === "user-input.requested";
+}
+
+/**
  * Preferred settle order for adapters that can do both:
  * force-close open tools (optional), cancel/interrupt transport, emit turn terminal.
  */

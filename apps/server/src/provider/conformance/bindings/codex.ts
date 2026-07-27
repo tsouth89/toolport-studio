@@ -268,8 +268,22 @@ function playScript(
           return;
         }
         case "approval-request": {
-          // Currently listed in the runner's NOT_YET_IMPLEMENTED set.
-          break;
+          yield* runtime.emit({
+            ...base,
+            id: nextId("approval") as never,
+            method: "item/commandExecution/requestApproval",
+            requestId: step.requestId as never,
+            requestKind: "commandExecution" as never,
+            payload: {
+              threadId: PROVIDER_THREAD_ID,
+              turnId: String(turnId),
+              itemId: step.requestId,
+              command: step.toolName,
+              reason: "conformance approval",
+            },
+          } as ProviderEvent);
+          // Leave the turn open so Stop can settle while the request is pending.
+          return;
         }
       }
     }

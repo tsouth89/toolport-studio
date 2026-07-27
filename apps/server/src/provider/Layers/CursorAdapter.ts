@@ -1259,6 +1259,52 @@ export function makeCursorAdapter(
               Effect.mapError((error) =>
                 mapAcpToAdapterError(PROVIDER, input.threadId, "session/prompt", error),
               ),
+              // Process/transport death must not leave Working stuck without a
+              // typed surface (conformance: process-death-is-typed-error).
+              Effect.tapError((error) =>
+                Effect.gen(function* () {
+                  if (ctx.forceSettledTurnIds.has(String(turnId))) {
+                    return;
+                  }
+                  if (ctx.promptsInFlight !== 1) {
+                    return;
+                  }
+                  ctx.forceSettledTurnIds.add(String(turnId));
+                  ctx.activeTurnId = undefined;
+                  const updatedAt = yield* nowIso;
+                  const { activeTurnId: _cleared, ...readySession } = ctx.session;
+                  ctx.session = {
+                    ...readySession,
+                    status: "ready",
+                    updatedAt,
+                    model: resolvedModel,
+                  };
+                  const message =
+                    error instanceof Error ? error.message : "Cursor prompt request failed.";
+                  yield* offerRuntimeEvent({
+                    type: "runtime.error",
+                    ...(yield* makeEventStamp()),
+                    provider: PROVIDER,
+                    threadId: input.threadId,
+                    turnId,
+                    payload: {
+                      message,
+                      class: "provider_error",
+                    },
+                  });
+                  yield* offerRuntimeEvent({
+                    type: "turn.completed",
+                    ...(yield* makeEventStamp()),
+                    provider: PROVIDER,
+                    threadId: input.threadId,
+                    turnId,
+                    payload: {
+                      state: "failed",
+                      errorMessage: message,
+                    },
+                  });
+                }),
+              ),
             );
 
           const turnRecord = ctx.turns.find((turn) => turn.id === turnId);

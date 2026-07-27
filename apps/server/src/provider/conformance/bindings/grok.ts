@@ -95,6 +95,9 @@ export function scriptToAcpEnv(script: ConformanceScript): Record<string, string
         break;
       }
       case "approval-request": {
+        // Grok: xAI ask hangs until answered (pending interaction under Stop).
+        // Cursor: cursor/ask_question also waits on the client response.
+        env.T3_ACP_EMIT_XAI_ASK_USER_QUESTION = "1";
         env.T3_ACP_EMIT_ASK_QUESTION = "1";
         break;
       }

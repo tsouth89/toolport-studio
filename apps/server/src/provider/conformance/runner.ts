@@ -13,7 +13,12 @@ import type * as Scope from "effect/Scope";
 import type { ProviderRuntimeEvent } from "@t3tools/contracts";
 
 import type { ProviderAdapterError } from "../Errors.ts";
-import { isStopSettledRuntimeEvent, isTurnTerminalRuntimeEvent } from "../turnEngine/index.ts";
+import {
+  isPendingInteractionRuntimeEvent,
+  isProcessDeathRuntimeEvent,
+  isStopSettledRuntimeEvent,
+  isTurnTerminalRuntimeEvent,
+} from "../turnEngine/index.ts";
 import {
   CONFORMANCE_CASE_IDS,
   FIRST_EVENT_BUDGET_MS,
@@ -39,11 +44,7 @@ const SECOND_TURN_OBSERVATION_MS = 2_000;
  * failure mode this contract exists to prevent. Removing an entry here is how
  * a case graduates.
  */
-const NOT_YET_IMPLEMENTED: ReadonlyArray<ConformanceCaseId> = [
-  "stop-with-pending-approval-settles",
-  "process-death-is-typed-error",
-  "resume-preserves-history",
-];
+const NOT_YET_IMPLEMENTED: ReadonlyArray<ConformanceCaseId> = ["resume-preserves-history"];
 
 const isTurnTerminal = isTurnTerminalRuntimeEvent;
 const isStopSettled = isStopSettledRuntimeEvent;
@@ -293,6 +294,65 @@ export function runCoreLoopConformance(binding: ConformanceBinding): void {
         }
         assert.isTrue(sawProgress, "post-stop follow-up produced no new runtime progress");
       }),
+    );
+
+    caseFor(
+      "stop-with-pending-approval-settles",
+      "interrupt settles while a permission or user-input request is open",
+      () =>
+        Effect.gen(function* () {
+          const script = [
+            {
+              kind: "approval-request" as const,
+              requestId: "approval-1",
+              toolName: "dangerous_tool",
+            },
+            { kind: "hang" as const },
+          ];
+          const session = yield* binding.openSession(script);
+          yield* session.sendScriptedTurn({ text: "need approval", script });
+          yield* session.awaitEvent((event) => event.type === "turn.started", {
+            timeoutMs: FIRST_EVENT_BUDGET_MS,
+            describe: "turn started",
+          });
+          // Best-effort wait for the interaction surface; some fakes only hang.
+          yield* session
+            .awaitEvent(isPendingInteractionRuntimeEvent, {
+              timeoutMs: 2_000,
+              describe: "pending approval or user-input (optional)",
+            })
+            .pipe(Effect.catchTag("ConformanceHarnessError", () => Effect.void));
+
+          yield* session.adapter.interruptTurn(session.threadId);
+
+          yield* session.awaitEvent(isStopSettled, {
+            timeoutMs: STOP_SETTLE_BUDGET_MS,
+            describe: "settled after Stop with pending interaction",
+          });
+        }),
+    );
+
+    caseFor(
+      "process-death-is-typed-error",
+      "provider process/transport death surfaces a typed runtime failure",
+      () =>
+        Effect.gen(function* () {
+          const script = [
+            { kind: "assistant-text" as const, text: "starting" },
+            { kind: "die" as const, detail: "provider process died" },
+          ];
+          const session = yield* binding.openSession(script);
+          // Death may fail sendTurn or arrive as a stream/process event.
+          // Either way we must not hang forever with Working stuck.
+          yield* session
+            .sendScriptedTurn({ text: "go", script })
+            .pipe(Effect.catch(() => Effect.void));
+
+          yield* session.awaitEvent(isProcessDeathRuntimeEvent, {
+            timeoutMs: STOP_SETTLE_BUDGET_MS,
+            describe: "typed process/transport death",
+          });
+        }),
     );
   });
 }

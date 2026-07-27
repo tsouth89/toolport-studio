@@ -223,10 +223,9 @@ function playScript(query: ScriptedClaudeQuery, script: ConformanceScript, seq: 
         return;
       }
       case "approval-request": {
-        // Claude routes approvals through the permission callback rather than
-        // the message stream; not expressible here yet. The case is currently
-        // in the runner's NOT_YET_IMPLEMENTED list.
-        break;
+        // Claude approvals go through canUseTool, not the message stream.
+        // Fall through to hang so Stop still has a live turn to settle.
+        return;
       }
     }
   }

@@ -212,8 +212,18 @@ function playScript(events: PushableEvents, script: ConformanceScript, seq: numb
         return;
       }
       case "approval-request": {
-        // Listed in the runner's NOT_YET_IMPLEMENTED set.
-        break;
+        events.push({
+          type: "permission.asked",
+          properties: {
+            id: step.requestId,
+            sessionID: SESSION_ID,
+            permission: "edit",
+            patterns: [step.toolName],
+            metadata: {},
+          },
+        });
+        // Leave the turn open so Stop can settle while permission is pending.
+        return;
       }
     }
   }

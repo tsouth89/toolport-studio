@@ -2,6 +2,8 @@ import { describe, expect, it } from "vite-plus/test";
 import type { ProviderRuntimeEvent } from "@t3tools/contracts";
 
 import {
+  isPendingInteractionRuntimeEvent,
+  isProcessDeathRuntimeEvent,
   isSessionSettledRuntimeEvent,
   isStopSettledRuntimeEvent,
   isTurnTerminalRuntimeEvent,
@@ -64,5 +66,49 @@ describe("StopPolicy", () => {
       "interrupt-transport",
       "emit-terminal",
     ]);
+  });
+
+  it("classifies process death surfaces", () => {
+    expect(
+      isProcessDeathRuntimeEvent({
+        ...base,
+        type: "runtime.error",
+        payload: { message: "dead", class: "provider_error" },
+      } as ProviderRuntimeEvent),
+    ).toBe(true);
+    expect(
+      isProcessDeathRuntimeEvent({
+        ...base,
+        type: "session.exited",
+        payload: { reason: "crash" },
+      } as ProviderRuntimeEvent),
+    ).toBe(true);
+    expect(
+      isProcessDeathRuntimeEvent({
+        ...base,
+        type: "turn.completed",
+        turnId: "t" as never,
+        payload: { state: "completed", stopReason: "end_turn" },
+      } as ProviderRuntimeEvent),
+    ).toBe(false);
+  });
+
+  it("classifies pending interaction events", () => {
+    expect(
+      isPendingInteractionRuntimeEvent({
+        ...base,
+        type: "request.opened",
+        requestId: "r1" as never,
+        payload: { requestType: "exec_command_approval" },
+      } as ProviderRuntimeEvent),
+    ).toBe(true);
+    expect(
+      isPendingInteractionRuntimeEvent({
+        ...base,
+        type: "user-input.requested",
+        requestId: "r1" as never,
+        payload: { questions: [] },
+      } as ProviderRuntimeEvent),
+    ).toBe(true);
   });
 });

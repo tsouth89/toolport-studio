@@ -20,6 +20,8 @@ export { canSteerSendTurn } from "./SteerPolicy.ts";
 
 export type { StopSettleStep } from "./StopPolicy.ts";
 export {
+  isPendingInteractionRuntimeEvent,
+  isProcessDeathRuntimeEvent,
   isSessionSettledRuntimeEvent,
   isStopSettledRuntimeEvent,
   isTurnTerminalRuntimeEvent,
