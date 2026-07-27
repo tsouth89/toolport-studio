@@ -643,7 +643,7 @@ export function GeneralSettingsPanel() {
 
         <SettingsRow
           title="Project Grouping"
-          description="Combine matching repositories across environments."
+          description="Combine matching repositories across environments. Drag project headers in the sidebar to reorder shelves; pin to keep favorites on top."
           resetAction={
             settings.sidebarProjectGroupingMode !==
             DEFAULT_UNIFIED_SETTINGS.sidebarProjectGroupingMode ? (
@@ -674,6 +674,46 @@ export function GeneralSettingsPanel() {
               }}
               aria-label="Project Grouping"
             />
+          }
+        />
+
+        <SettingsRow
+          title="Sessions per project"
+          description="How many sessions to show under each project before Show more."
+          resetAction={
+            settings.sidebarThreadPreviewCount !==
+            DEFAULT_UNIFIED_SETTINGS.sidebarThreadPreviewCount ? (
+              <SettingResetButton
+                label="sessions per project"
+                onClick={() =>
+                  updateSettings({
+                    sidebarThreadPreviewCount: DEFAULT_UNIFIED_SETTINGS.sidebarThreadPreviewCount,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Select
+              value={String(settings.sidebarThreadPreviewCount)}
+              onValueChange={(value) => {
+                const next = Number(value);
+                if (Number.isInteger(next) && next >= 1 && next <= 15) {
+                  updateSettings({ sidebarThreadPreviewCount: next });
+                }
+              }}
+            >
+              <SelectTrigger className="w-full sm:w-40" aria-label="Sessions per project">
+                <SelectValue>{settings.sidebarThreadPreviewCount}</SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                {[3, 5, 8, 10, 15].map((count) => (
+                  <SelectItem hideIndicator key={count} value={String(count)}>
+                    {count}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
           }
         />
 

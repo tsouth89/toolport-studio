@@ -21,7 +21,6 @@ import {
   GripVerticalIcon,
   MessageSquareIcon,
   PinIcon,
-  PinOffIcon,
   PlusIcon,
   SearchIcon,
   ServerIcon,
@@ -1911,21 +1910,18 @@ export default function Sidebar() {
                               : `Pin ${panel.displayName}`
                           }
                           aria-pressed={panel.isPinned}
+                          title={panel.isPinned ? "Unpin project" : "Pin project"}
                           onClick={(event) =>
                             toggleProjectPinned(event, panel.projectKey, panel.isPinned)
                           }
                           className={cn(
-                            "inline-flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/50 transition-colors hover:bg-sidebar-row-hover hover:text-foreground",
+                            "inline-flex size-5 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-sidebar-row-hover hover:text-foreground",
                             panel.isPinned
-                              ? "opacity-100 text-foreground/80"
-                              : "opacity-0 group-hover/project-header:opacity-100 focus-visible:opacity-100",
+                              ? "opacity-100 text-foreground"
+                              : "opacity-0 text-muted-foreground/50 group-hover/project-header:opacity-100 focus-visible:opacity-100",
                           )}
                         >
-                          {panel.isPinned ? (
-                            <PinOffIcon className="size-3" />
-                          ) : (
-                            <PinIcon className="size-3" />
-                          )}
+                          <PinIcon className={cn("size-3", panel.isPinned && "fill-current")} />
                         </button>
                         <span className="shrink-0 font-mono text-[10px] text-muted-foreground/50">
                           {panel.threads.length}
@@ -1933,6 +1929,20 @@ export default function Sidebar() {
                       </div>
                     </li>,
                   );
+                  if (panel.threads.length === 0) {
+                    items.push(
+                      <li
+                        key={`project-empty:${panel.projectKey}`}
+                        className="list-none"
+                        data-thread-selection-safe
+                        data-testid="sidebar-project-empty-hint"
+                      >
+                        <div className="mb-0.5 px-5 py-1 font-mono text-[11px] text-muted-foreground/45">
+                          No sessions yet
+                        </div>
+                      </li>,
+                    );
+                  }
                   for (const thread of panel.visibleThreads) {
                     items.push(renderThreadRow(thread));
                   }
@@ -1960,7 +1970,7 @@ export default function Sidebar() {
               })()}
             </ul>
           </TooltipProvider>
-          {activeThreads.length === 0 ? (
+          {activeThreads.length === 0 && activeProjectPanels.length === 0 ? (
             <div className="flex flex-col items-center gap-2 px-2 py-6 text-center text-xs text-muted-foreground/60">
               {projects.length === 0 ? (
                 <>

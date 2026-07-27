@@ -67,7 +67,8 @@ export function DraftHeroHeadline({
             environmentLabelById.get(environmentId) ?? null,
         }),
         threads,
-        projectSortOrder,
+        // Match sidebar shelves: stable order, not activity auto-sort.
+        projectSortOrder === "manual" ? "manual" : projectSortOrder,
       ),
     [
       environmentLabelById,

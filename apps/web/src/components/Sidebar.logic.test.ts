@@ -1035,6 +1035,33 @@ describe("buildActiveSidebarProjectPanels", () => {
     expect(panels[1]?.visibleThreads).toHaveLength(1);
   });
 
+  it("keeps empty real project shelves and hides empty No project", () => {
+    const env = EnvironmentId.make("env-1");
+    const projectGroups = [
+      {
+        projectKey: "empty-shelf",
+        displayName: "Empty shelf",
+        isNoProject: false,
+        memberProjectRefs: [{ environmentId: env, projectId: ProjectId.make("proj-empty") }],
+      },
+      {
+        projectKey: "general",
+        displayName: "No project",
+        isNoProject: true,
+        memberProjectRefs: [{ environmentId: env, projectId: ProjectId.make("proj-g") }],
+      },
+    ];
+    const panels = buildActiveSidebarProjectPanels({
+      projectGroups,
+      activeThreads: [],
+      expandedProjectKeys: new Set(),
+      previewLimit: 5,
+    });
+    expect(panels.map((panel) => panel.projectKey)).toEqual(["empty-shelf"]);
+    expect(panels[0]?.threads).toHaveLength(0);
+    expect(panels[0]?.visibleThreads).toHaveLength(0);
+  });
+
   it("floats pinned logical projects to the top", () => {
     const env = EnvironmentId.make("env-1");
     const projectGroups = [

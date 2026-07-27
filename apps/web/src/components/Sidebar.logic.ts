@@ -665,9 +665,9 @@ export function applyPinnedLogicalProjectOrder<T extends { readonly projectKey: 
 
 /**
  * Bucket active threads under project groups for the nested sidebar.
- * Only groups with at least one thread are returned. Within each group the
- * input thread order is preserved (caller sorts). Preview/expand uses
- * {@link getVisibleThreadsForProject}.
+ * Real project shelves are kept even when empty (Claude-style drop targets).
+ * Empty "No project" is omitted. Within each group the input thread order is
+ * preserved (caller sorts). Preview/expand uses {@link getVisibleThreadsForProject}.
  */
 export function buildActiveSidebarProjectPanels<
   TThread extends {
@@ -720,8 +720,10 @@ export function buildActiveSidebarProjectPanels<
 
   const panels: ActiveSidebarProjectPanel<TThread>[] = [];
   for (const group of orderedGroups) {
-    const threads = threadsByProjectKey.get(group.projectKey);
-    if (!threads || threads.length === 0) continue;
+    const threads = threadsByProjectKey.get(group.projectKey) ?? [];
+    const isNoProject = group.isNoProject === true;
+    // Keep empty real projects as shelves; hide empty "No project".
+    if (threads.length === 0 && isNoProject) continue;
 
     const isExpanded = input.expandedProjectKeys.has(group.projectKey);
     const activeThreadIdForGroup =
@@ -746,7 +748,7 @@ export function buildActiveSidebarProjectPanels<
     panels.push({
       projectKey: group.projectKey,
       displayName: group.displayName,
-      isNoProject: group.isNoProject === true,
+      isNoProject,
       isPinned: pinnedSet.has(group.projectKey),
       threads,
       visibleThreads: visibility.visibleThreads as TThread[],
