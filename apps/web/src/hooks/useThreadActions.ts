@@ -42,7 +42,7 @@ export class ThreadArchiveBlockedError extends Schema.TaggedErrorClass<ThreadArc
   },
 ) {
   override get message(): string {
-    return "Cannot archive a running thread.";
+    return "Stop the running turn before archiving this chat.";
   }
 }
 
@@ -126,6 +126,7 @@ export function useThreadActions() {
   });
   const sidebarThreadSortOrder = useClientSettings((settings) => settings.sidebarThreadSortOrder);
   const confirmThreadDelete = useClientSettings((settings) => settings.confirmThreadDelete);
+  const confirmThreadArchive = useClientSettings((settings) => settings.confirmThreadArchive);
   const clearComposerDraftForThread = useComposerDraftStore((store) => store.clearDraftThread);
   const clearProjectDraftThreadById = useComposerDraftStore(
     (store) => store.clearProjectDraftThreadById,
@@ -156,7 +157,10 @@ export function useThreadActions() {
   }, [router]);
 
   const archiveThread = useCallback(
-    async (target: ScopedThreadRef, opts: { onArchived?: () => void } = {}) => {
+    async (
+      target: ScopedThreadRef,
+      opts: { onArchived?: () => void; skipConfirm?: boolean } = {},
+    ) => {
       const resolved = resolveThreadTarget(target);
       if (!resolved) return AsyncResult.success(undefined);
       const { thread, threadRef } = resolved;
@@ -169,6 +173,26 @@ export function useThreadActions() {
             }),
           ),
         );
+      }
+
+      if (confirmThreadArchive && !opts.skipConfirm) {
+        const localApi = readLocalApi();
+        if (localApi) {
+          const confirmationResult = await settlePromise(() =>
+            localApi.dialogs.confirm(
+              [
+                `Archive chat "${thread.title}"?`,
+                "It leaves the sidebar. Restore anytime from Settings → Archive.",
+              ].join("\n"),
+            ),
+          );
+          if (confirmationResult._tag === "Failure") {
+            return confirmationResult;
+          }
+          if (!confirmationResult.value) {
+            return AsyncResult.success(undefined);
+          }
+        }
       }
 
       const currentRouteThreadRef = getCurrentRouteThreadRef();
@@ -197,7 +221,7 @@ export function useThreadActions() {
 
       return archiveResult;
     },
-    [archiveThreadMutation, getCurrentRouteThreadRef, resolveThreadTarget],
+    [archiveThreadMutation, confirmThreadArchive, getCurrentRouteThreadRef, resolveThreadTarget],
   );
 
   const unarchiveThread = useCallback(

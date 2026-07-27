@@ -983,7 +983,7 @@ export function GeneralSettingsPanel() {
 
         <SettingsRow
           title="Archive confirmation"
-          description="Require a second click on the inline archive action before a thread is archived."
+          description="Ask before archiving a chat. Archived chats leave the sidebar and can be restored under Settings → Archive."
           resetAction={
             settings.confirmThreadArchive !== DEFAULT_UNIFIED_SETTINGS.confirmThreadArchive ? (
               <SettingResetButton
@@ -1002,14 +1002,14 @@ export function GeneralSettingsPanel() {
               onCheckedChange={(checked) =>
                 updateSettings({ confirmThreadArchive: Boolean(checked) })
               }
-              aria-label="Confirm thread archiving"
+              aria-label="Confirm chat archiving"
             />
           }
         />
 
         <SettingsRow
           title="Delete confirmation"
-          description="Ask before deleting a thread and its chat history."
+          description="Ask before permanently deleting a chat and its history."
           resetAction={
             settings.confirmThreadDelete !== DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete ? (
               <SettingResetButton
@@ -1646,8 +1646,8 @@ export function ArchivedThreadsPanel() {
       if (!api) return;
       const clicked = await api.contextMenu.show(
         [
-          { id: "unarchive", label: "Unarchive" },
-          { id: "delete", label: "Delete", destructive: true },
+          { id: "unarchive", label: "Unarchive chat" },
+          { id: "delete", label: "Delete chat", destructive: true },
         ],
         position,
       );
@@ -1661,7 +1661,7 @@ export function ArchivedThreadsPanel() {
           toastManager.add(
             stackedThreadToast({
               type: "error",
-              title: "Failed to unarchive thread",
+              title: "Failed to unarchive chat",
               description: error instanceof Error ? error.message : "An error occurred.",
             }),
           );
@@ -1678,7 +1678,7 @@ export function ArchivedThreadsPanel() {
           toastManager.add(
             stackedThreadToast({
               type: "error",
-              title: "Failed to delete thread",
+              title: "Failed to delete chat",
               description: error instanceof Error ? error.message : "An error occurred.",
             }),
           );
@@ -1691,7 +1691,7 @@ export function ArchivedThreadsPanel() {
   return (
     <SettingsPageContainer>
       {archivedGroups.length === 0 ? (
-        <SettingsSection title="Archived threads">
+        <SettingsSection title="Archived chats">
           <SettingsRow
             title={
               <span className="inline-flex items-center gap-2">
@@ -1701,29 +1701,30 @@ export function ArchivedThreadsPanel() {
                   <ArchiveIcon className="size-3.5 text-muted-foreground" />
                 )}
                 {isLoadingArchive
-                  ? "Loading archived threads"
+                  ? "Loading archived chats"
                   : archiveError
-                    ? "Could not load archived threads"
-                    : "No archived threads"}
+                    ? "Could not load archived chats"
+                    : "No archived chats"}
               </span>
             }
             description={
               isLoadingArchive
                 ? "Checking connected environments."
-                : (archiveError ?? "Archived threads will appear here.")
+                : (archiveError ??
+                  "Archive a chat from the sidebar (right-click or hover Archive). It leaves the list but is not deleted — restore it here anytime.")
             }
           />
         </SettingsSection>
       ) : (
         archivedGroups.map(({ project, threads: projectThreads }) => (
           <SettingsSection
-            key={project.id}
+            key={`${project.environmentId}:${project.id}`}
             title={project.name}
             icon={<ProjectFavicon environmentId={project.environmentId} cwd={project.cwd} />}
           >
             {projectThreads.map((thread) => (
               <SettingsRow
-                key={thread.id}
+                key={`${thread.environmentId}:${thread.id}`}
                 onContextMenu={(event) => {
                   event.preventDefault();
                   void (async () => {
@@ -1741,7 +1742,7 @@ export function ArchivedThreadsPanel() {
                       toastManager.add(
                         stackedThreadToast({
                           type: "error",
-                          title: "Archived thread action failed",
+                          title: "Archived chat action failed",
                           description:
                             error instanceof Error ? error.message : "An error occurred.",
                         }),
@@ -1777,7 +1778,7 @@ export function ArchivedThreadsPanel() {
                           toastManager.add(
                             stackedThreadToast({
                               type: "error",
-                              title: "Failed to unarchive thread",
+                              title: "Failed to unarchive chat",
                               description:
                                 error instanceof Error ? error.message : "An error occurred.",
                             }),
@@ -1787,7 +1788,7 @@ export function ArchivedThreadsPanel() {
                     }}
                   >
                     <ArchiveX className="size-3.5" />
-                    <span>Unarchive</span>
+                    <span>Unarchive chat</span>
                   </Button>
                 }
               />

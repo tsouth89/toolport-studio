@@ -50,9 +50,9 @@ describe("ClientSettings glass opacity", () => {
 });
 
 describe("ClientSettings sidebar", () => {
-  it("defaults to a three-day auto-settle threshold", () => {
+  it("defaults auto-settle off (Archive is the soft-done path)", () => {
     const settings = decodeClientSettings({});
-    expect(settings.sidebarAutoSettleAfterDays).toBe(3);
+    expect(settings.sidebarAutoSettleAfterDays).toBeNull();
   });
 
   it("allows auto-settle by inactivity to be disabled", () => {

@@ -1250,7 +1250,6 @@ describe("sortProjectsForSidebar", () => {
       makeThread({
         projectId: ProjectId.make("project-1"),
         updatedAt: "2026-03-09T10:01:00.000Z",
-        latestUserMessageAt: "2026-03-09T10:01:00.000Z",
         messages: [
           {
             id: "message-1" as never,
@@ -1267,7 +1266,6 @@ describe("sortProjectsForSidebar", () => {
         id: ThreadId.make("thread-2"),
         projectId: ProjectId.make("project-2"),
         updatedAt: "2026-03-09T10:05:00.000Z",
-        latestUserMessageAt: "2026-03-09T10:05:00.000Z",
         messages: [
           {
             id: "message-2" as never,

@@ -45,7 +45,7 @@ export const SETTINGS_NAV_ITEMS: ReadonlyArray<{
   { label: "Source Control", to: "/settings/source-control", icon: GitBranchIcon },
   { label: "Connections", to: "/settings/connections", icon: Link2Icon },
   { label: "Beta", to: "/settings/beta", icon: FlaskConicalIcon },
-  { label: "Archive", to: "/settings/archived", icon: ArchiveIcon },
+  { label: "Archived chats", to: "/settings/archived", icon: ArchiveIcon },
 ];
 
 export function SettingsSidebarNav({ pathname }: { pathname: string }) {

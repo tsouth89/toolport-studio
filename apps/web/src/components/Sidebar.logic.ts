@@ -704,8 +704,9 @@ export function buildActiveSidebarProjectPanels<
         : undefined;
 
     const visibility = getVisibleThreadsForProject({
-      threads,
-      activeThreadId: activeThreadIdForGroup as TThread["id"] | undefined,
+      // getVisibleThreadsForProject brands ThreadId; panels only need id equality.
+      threads: threads as Array<TThread & Pick<Thread, "id">>,
+      activeThreadId: activeThreadIdForGroup as Thread["id"] | undefined,
       isThreadListExpanded: isExpanded,
       previewLimit: input.previewLimit,
     });
@@ -715,7 +716,7 @@ export function buildActiveSidebarProjectPanels<
       displayName: group.displayName,
       isNoProject: group.isNoProject === true,
       threads,
-      visibleThreads: visibility.visibleThreads,
+      visibleThreads: visibility.visibleThreads as TThread[],
       hasHiddenThreads: visibility.hasHiddenThreads,
       hiddenCount: visibility.hiddenThreads.length,
     });
