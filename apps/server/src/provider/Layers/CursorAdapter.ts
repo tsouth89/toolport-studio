@@ -81,7 +81,7 @@ import {
   extractTodosAsPlan,
 } from "../acp/CursorAcpExtension.ts";
 import { type CursorAdapterShape } from "../Services/CursorAdapter.ts";
-import { canSteerSendTurn } from "../turnEngine/index.ts";
+import { canSteerSendTurn, shouldForceCloseOpenToolsOnStop } from "../turnEngine/index.ts";
 import { resolveCursorAcpBaseModelId } from "./CursorProvider.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.UnknownFromJsonString);
@@ -171,6 +171,17 @@ interface CursorSessionContext {
    * arrive as agent_message_chunk + end_turn instead of a failed prompt RPC.
    */
   turnAssistantText: string;
+  /** Open ACP tool calls for the live turn (force-closed on Stop). */
+  openToolCallIds: Set<string>;
+  openToolTitles: Map<string, string>;
+  openToolKinds: Map<string, string | undefined>;
+  /** Turns already interrupted; late prompt RPCs must not re-open them. */
+  interruptedTurnIds: Set<TurnId>;
+  /**
+   * After Stop / silent failure the ACP child may be wedged. Next sendTurn
+   * recycles the process (Grok parity for long sessions).
+   */
+  acpCompromised: boolean;
   /** Number of sendTurn prompts currently in flight or being prepared.
    * >0 means a turn is actively running, so a new sendTurn is a steer that
    * continues it, and only the last remaining prompt settles the turn. */
@@ -779,6 +790,91 @@ export function makeCursorAdapter(
         ctx.lastVisibleActivityAtMs = yield* Clock.currentTimeMillis;
       });
 
+    const trackToolCallLifecycle = (
+      ctx: CursorSessionContext,
+      toolCall: {
+        readonly toolCallId: string;
+        readonly status?: "pending" | "inProgress" | "completed" | "failed";
+        readonly title?: string;
+        readonly kind?: string;
+      },
+    ) => {
+      const toolCallId = toolCall.toolCallId;
+      if (!toolCallId) {
+        return;
+      }
+      if (toolCall.status === "completed" || toolCall.status === "failed") {
+        ctx.openToolCallIds.delete(toolCallId);
+        ctx.openToolTitles.delete(toolCallId);
+        ctx.openToolKinds.delete(toolCallId);
+        return;
+      }
+      // pending / inProgress / unknown: treat as open so Stop can force-close.
+      ctx.openToolCallIds.add(toolCallId);
+      if (toolCall.title?.trim()) {
+        ctx.openToolTitles.set(toolCallId, toolCall.title.trim());
+      }
+      if (toolCall.kind !== undefined) {
+        ctx.openToolKinds.set(toolCallId, toolCall.kind);
+      }
+    };
+
+    /**
+     * Stop must not leave ghost inProgress tool rows (long turns + MCP tools).
+     * Shared product policy: shouldForceCloseOpenToolsOnStop().
+     */
+    const forceCloseOpenTools = (ctx: CursorSessionContext, threadId: ThreadId, turnId: TurnId) =>
+      Effect.gen(function* () {
+        if (!shouldForceCloseOpenToolsOnStop() || ctx.openToolCallIds.size === 0) {
+          return;
+        }
+        const stamp = yield* makeEventStamp();
+        const openIds = [...ctx.openToolCallIds];
+        for (const toolCallId of openIds) {
+          const kind = ctx.openToolKinds.get(toolCallId);
+          const rawTitle = ctx.openToolTitles.get(toolCallId)?.trim() || "";
+          const title =
+            rawTitle.length > 0 && rawTitle !== "tool" && rawTitle !== kind ? rawTitle : undefined;
+          yield* offerRuntimeEvent(
+            makeAcpToolCallEvent({
+              stamp,
+              provider: PROVIDER,
+              threadId,
+              turnId,
+              toolCall: {
+                toolCallId,
+                ...(title ? { title } : {}),
+                ...(kind ? { kind } : {}),
+                status: "failed",
+                detail: "Tool did not complete before the turn stopped.",
+                data: { toolCallId, forcedClose: true, ...(kind ? { kind } : {}) },
+              },
+              rawPayload: {
+                source: "studio.open-tool-force-close",
+                toolCallId,
+                ...(title ? { title } : {}),
+                ...(kind ? { kind } : {}),
+              },
+            }),
+          );
+        }
+        ctx.openToolCallIds.clear();
+        ctx.openToolTitles.clear();
+        ctx.openToolKinds.clear();
+      });
+
+    const markAcpCompromised = (ctx: CursorSessionContext, reason: string) =>
+      Effect.gen(function* () {
+        if (ctx.stopped || ctx.acpCompromised) {
+          return;
+        }
+        ctx.acpCompromised = true;
+        yield* Effect.logWarning("Cursor ACP marked compromised; will recycle before next turn", {
+          threadId: ctx.threadId,
+          reason,
+        });
+      });
+
     const startNotificationFiber = (ctx: CursorSessionContext) =>
       Stream.runDrain(
         Stream.mapEffect(ctx.acp.getEvents(), (event) =>
@@ -829,6 +925,7 @@ export function makeCursorAdapter(
                 return;
               case "ToolCallUpdated":
                 yield* noteVisibleActivity(ctx);
+                trackToolCallLifecycle(ctx, event.toolCall);
                 yield* logNative(ctx.threadId, "session/update", event.rawPayload, "acp.jsonrpc");
                 yield* offerRuntimeEvent(
                   makeAcpToolCallEvent({
@@ -887,36 +984,30 @@ export function makeCursorAdapter(
       );
 
     /**
-     * Toolport MCP is spawn-time (ACP mcpServers). Settings toggles update
-     * process.env immediately; recycle the child so Linear/etc apply without
-     * starting a brand-new thread (Grok/Claude parity).
+     * Recycle the Cursor ACP child while preserving resumeCursor when possible.
+     * Used for MCP rebind and post-Stop compromise recovery (long-session reliability).
      */
-    const rebindCursorToolportMcpIfNeeded = (ctx: CursorSessionContext) =>
+    const recycleCursorAcp = (ctx: CursorSessionContext, reason: string) =>
       Effect.gen(function* () {
         if (ctx.stopped) {
           return;
         }
         const env = options?.environment ?? process.env;
-        const wantsToolport = McpProviderSession.isToolportMcpInjectionEnabled(env);
-        if (wantsToolport === ctx.injectsToolportMcp) {
-          return;
-        }
-
-        yield* Effect.logInfo("Cursor Toolport MCP setting changed; recycling ACP process", {
-          threadId: ctx.threadId,
-          from: ctx.injectsToolportMcp,
-          to: wantsToolport,
-        });
-
         const previousSessionId = parseCursorResume(ctx.session.resumeCursor)?.sessionId;
         const cwd = ctx.session.cwd;
         if (!cwd?.trim()) {
           return yield* new ProviderAdapterValidationError({
             provider: PROVIDER,
-            operation: "rebindCursorToolportMcpIfNeeded",
+            operation: "recycleCursorAcp",
             issue: "The Cursor session has no working directory to restart from.",
           });
         }
+
+        yield* Effect.logInfo("Recycling Cursor ACP process", {
+          threadId: ctx.threadId,
+          reason,
+          hadResumeCursor: previousSessionId !== undefined,
+        });
 
         yield* disposeAcpProcess(ctx);
 
@@ -993,6 +1084,10 @@ export function makeCursorAdapter(
         ctx.scope = sessionScope;
         ctx.acp = acp;
         ctx.injectsToolportMcp = injectsToolport;
+        ctx.acpCompromised = false;
+        ctx.openToolCallIds.clear();
+        ctx.openToolTitles.clear();
+        ctx.openToolKinds.clear();
         ctx.session = {
           ...ctx.session,
           resumeCursor: {
@@ -1012,6 +1107,30 @@ export function makeCursorAdapter(
           };
         }
         ctx.notificationFiber = yield* startNotificationFiber(ctx);
+      });
+
+    /**
+     * Toolport MCP is spawn-time (ACP mcpServers). Settings toggles update
+     * process.env immediately; recycle the child so Linear/etc apply without
+     * starting a brand-new thread (Grok/Claude parity).
+     */
+    const rebindCursorToolportMcpIfNeeded = (ctx: CursorSessionContext) =>
+      Effect.gen(function* () {
+        if (ctx.stopped) {
+          return;
+        }
+        const env = options?.environment ?? process.env;
+        const wantsToolport = McpProviderSession.isToolportMcpInjectionEnabled(env);
+        if (wantsToolport === ctx.injectsToolportMcp) {
+          return;
+        }
+
+        yield* Effect.logInfo("Cursor Toolport MCP setting changed; recycling ACP process", {
+          threadId: ctx.threadId,
+          from: ctx.injectsToolportMcp,
+          to: wantsToolport,
+        });
+        yield* recycleCursorAcp(ctx, "toolport-mcp-setting-changed");
       });
 
     const startSession: CursorAdapterShape["startSession"] = (input) =>
@@ -1158,6 +1277,11 @@ export function makeCursorAdapter(
             lastVisibleActivityAtMs: yield* Clock.currentTimeMillis,
             silentPromptWarningTurnId: undefined,
             turnAssistantText: "",
+            openToolCallIds: new Set(),
+            openToolTitles: new Map(),
+            openToolKinds: new Map(),
+            interruptedTurnIds: new Set(),
+            acpCompromised: false,
             promptsInFlight: 0,
             forceSettledTurnIds: new Set(),
             injectsToolportMcp,
@@ -1202,16 +1326,27 @@ export function makeCursorAdapter(
         // Toolport MCP is fixed at ACP spawn; rebind before the next prompt so
         // Settings toggles apply without starting a brand-new thread.
         yield* rebindCursorToolportMcpIfNeeded(ctx);
+        // After Stop the child may be wedged; recycle before new work so long
+        // sessions cannot black-hole (Grok parity).
+        if (ctx.acpCompromised) {
+          yield* recycleCursorAcp(ctx, "compromised-before-send");
+        }
         // A sendTurn while a prompt is in flight is a steer: the agent folds
         // the new prompt into the ongoing work, so the active turn id is
         // reused instead of opening a new turn (shared steer policy, SOU-428).
+        const liveActiveTurnId = ctx.activeTurnId;
         const steeringTurnId = canSteerSendTurn({
           promptsInFlight: ctx.promptsInFlight,
-          hasActiveTurnId: ctx.activeTurnId !== undefined,
-          activeTurnInterrupted: false,
+          hasActiveTurnId: liveActiveTurnId !== undefined,
+          activeTurnInterrupted:
+            liveActiveTurnId !== undefined && ctx.interruptedTurnIds.has(liveActiveTurnId),
         })
-          ? ctx.activeTurnId
+          ? liveActiveTurnId
           : undefined;
+        if (steeringTurnId === undefined && (ctx.promptsInFlight > 0 || liveActiveTurnId)) {
+          ctx.promptsInFlight = 0;
+          ctx.activeTurnId = undefined;
+        }
         const turnId = steeringTurnId ?? TurnId.make(yield* randomUUIDv4);
         // Count this prompt immediately so a superseded in-flight prompt
         // resolving from here on does not settle the turn; the matching
@@ -1234,6 +1369,11 @@ export function makeCursorAdapter(
             ctx.lastPlanFingerprint = undefined;
             ctx.silentPromptWarningTurnId = undefined;
             ctx.turnAssistantText = "";
+            ctx.openToolCallIds.clear();
+            ctx.openToolTitles.clear();
+            ctx.openToolKinds.clear();
+            ctx.interruptedTurnIds.delete(turnId);
+            ctx.forceSettledTurnIds.delete(String(turnId));
           }
           ctx.session = {
             ...ctx.session,
@@ -1372,8 +1512,11 @@ export function makeCursorAdapter(
                     return;
                   }
                   ctx.forceSettledTurnIds.add(String(turnId));
+                  ctx.interruptedTurnIds.add(turnId);
                   ctx.activeTurnId = undefined;
                   ctx.lastNotificationTurnId = turnId;
+                  yield* forceCloseOpenTools(ctx, input.threadId, turnId);
+                  yield* markAcpCompromised(ctx, "prompt request failed");
                   const updatedAt = yield* nowIso;
                   const { activeTurnId: _cleared, ...readySession } = ctx.session;
                   ctx.session = {
@@ -1437,6 +1580,10 @@ export function makeCursorAdapter(
               updatedAt,
               model: resolvedModel,
             };
+
+            // Agent end_turn without tool completion still leaves open tools
+            // in the work log unless we force-close them here.
+            yield* forceCloseOpenTools(ctx, input.threadId, turnId);
 
             // Cursor (and some other ACP agents) can dump provider-side failures
             // (e.g. resource_exhausted for temporary model capacity/routing) as
@@ -1528,11 +1675,16 @@ export function makeCursorAdapter(
         // resolves the in-flight prompt (Claude/Grok parity).
         if (settleTurnId !== undefined && !ctx.forceSettledTurnIds.has(String(settleTurnId))) {
           ctx.forceSettledTurnIds.add(String(settleTurnId));
+          ctx.interruptedTurnIds.add(settleTurnId);
           // Clear live turn for Working chrome, but keep lastNotificationTurnId
           // so late ACP stream chunks after cancel still bind to this turn.
           ctx.activeTurnId = undefined;
           ctx.lastNotificationTurnId = settleTurnId;
           ctx.promptsInFlight = 0;
+          yield* forceCloseOpenTools(ctx, threadId, settleTurnId);
+          // Stop may leave the ACP child wedged mid-tool; recycle before the
+          // next message so long sessions stay usable.
+          yield* markAcpCompromised(ctx, "stop");
           const updatedAt = yield* nowIso;
           const { activeTurnId: _cleared, ...readySession } = ctx.session;
           ctx.session = {
@@ -1556,6 +1708,7 @@ export function makeCursorAdapter(
           (ctx.session.status === "running" || ctx.session.status === "connecting")
         ) {
           ctx.promptsInFlight = 0;
+          yield* markAcpCompromised(ctx, "stop-without-active-turn");
           const updatedAt = yield* nowIso;
           const { activeTurnId: _cleared, ...readySession } = ctx.session;
           ctx.session = {

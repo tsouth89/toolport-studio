@@ -29,7 +29,8 @@ model, capability matrix, stop settle rules).
 ## Wiring status
 
 - **Grok:** interjection + steer + force-close/chrome policy flags + `resolveGrokSendDisposition` (TurnQueue)
-- **Cursor / Claude / OpenCode:** `canSteerSendTurn`
+- **Cursor:** `canSteerSendTurn` + open-tool force-close on Stop + post-Stop ACP recycle + silent-prompt warning + provider-emitted failure classification
+- **Claude / OpenCode:** `canSteerSendTurn`
 - **Codex:** `canSteerCodexSendTurn` → shared `canSteerSendTurn`
 - Conformance (all five providers): first-progress, assistant-text, interrupt, stop-mid-tool,
   send-while-running, post-stop-follow-up, pending-approval, process-death, resume-preserves-history

@@ -1269,6 +1269,81 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
     }),
   );
 
+  it.effect("force-closes open tools when Stop interrupts mid-tool", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CursorAdapter;
+      const serverSettings = yield* ServerSettingsService;
+      const threadId = ThreadId.make("cursor-stop-mid-tool-force-close");
+      const toolOpened = yield* Deferred.make<void>();
+      const forcedClose =
+        yield* Deferred.make<Extract<ProviderRuntimeEvent, { type: "item.completed" }>>();
+      const turnCompleted =
+        yield* Deferred.make<Extract<ProviderRuntimeEvent, { type: "turn.completed" }>>();
+
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockAgentWrapper({ T3_ACP_EMIT_TOOL_START_THEN_HANG: "1" }),
+      );
+      yield* serverSettings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+
+      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.gen(function* () {
+          if (String(event.threadId) !== String(threadId)) {
+            return;
+          }
+          if (
+            (event.type === "item.updated" || event.type === "item.started") &&
+            event.payload.itemType !== "assistant_message"
+          ) {
+            yield* Deferred.succeed(toolOpened, undefined).pipe(Effect.ignore);
+          }
+          if (event.type === "item.completed") {
+            const data = event.payload.data;
+            if (
+              data &&
+              typeof data === "object" &&
+              "forcedClose" in data &&
+              (data as { forcedClose?: unknown }).forcedClose === true
+            ) {
+              yield* Deferred.succeed(forcedClose, event).pipe(Effect.ignore);
+            }
+          }
+          if (event.type === "turn.completed") {
+            yield* Deferred.succeed(turnCompleted, event).pipe(Effect.ignore);
+          }
+        }),
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("cursor"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+      });
+
+      yield* adapter
+        .sendTurn({
+          threadId,
+          input: "open a tool and hang",
+          attachments: [],
+        })
+        .pipe(Effect.forkChild);
+
+      yield* Deferred.await(toolOpened).pipe(Effect.timeout("8 seconds"));
+      yield* adapter.interruptTurn(threadId);
+
+      const closed = yield* Deferred.await(forcedClose).pipe(Effect.timeout("5 seconds"));
+      const completed = yield* Deferred.await(turnCompleted).pipe(Effect.timeout("5 seconds"));
+      yield* Fiber.interrupt(runtimeEventsFiber);
+
+      assert.equal(closed.payload.status, "failed");
+      assert.match(String(closed.payload.detail ?? ""), /did not complete/i);
+      assert.equal(completed.payload.state, "cancelled");
+
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
   it.effect("force-settles a hanging prompt on interrupt without waiting for ACP", () =>
     Effect.gen(function* () {
       const adapter = yield* CursorAdapter;
