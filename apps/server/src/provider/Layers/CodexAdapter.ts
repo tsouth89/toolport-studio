@@ -11,6 +11,7 @@ import {
   type CanonicalItemType,
   type CanonicalRequestType,
   type CodexSettings,
+  EventId,
   ProviderDriverKind,
   type ProviderEvent,
   ProviderInstanceId,
@@ -24,6 +25,7 @@ import {
   ThreadId,
   ProviderSendTurnInput,
 } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Crypto from "effect/Crypto";
 import * as Exit from "effect/Exit";
@@ -1420,6 +1422,20 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     options?.nativeEventLogger === undefined ? nativeEventLogger : undefined;
   const runtimeEventQueue = yield* Queue.unbounded<ProviderRuntimeEvent>();
   const sessions = new Map<ThreadId, CodexAdapterSessionContext>();
+  const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
+  const nextEventId = crypto.randomUUIDv4.pipe(
+    Effect.map((id) => EventId.make(id)),
+    Effect.mapError(
+      (cause) =>
+        new ProviderAdapterRequestError({
+          provider: PROVIDER,
+          method: "crypto/randomUUIDv4",
+          detail: "Failed to generate Codex runtime identifier.",
+          cause,
+        }),
+    ),
+  );
+  const makeEventStamp = () => Effect.all({ eventId: nextEventId, createdAt: nowIso });
 
   const startSession: CodexAdapterShape["startSession"] = (input) =>
     Effect.scoped(
@@ -1576,10 +1592,43 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
   });
 
   const sendTurn: CodexAdapterShape["sendTurn"] = Effect.fn("sendTurn")(function* (input) {
+    // Validate session before slow attachment IO so missing sessions fail fast
+    // and Working chrome can flip to running during image read/encode.
+    yield* requireSession(input.threadId);
+    const prepStamp = yield* makeEventStamp();
+    yield* Queue.offer(runtimeEventQueue, {
+      type: "session.state.changed",
+      eventId: prepStamp.eventId,
+      provider: PROVIDER,
+      createdAt: prepStamp.createdAt,
+      threadId: input.threadId,
+      payload: {
+        state: "running",
+        reason: "Preparing Codex turn",
+      },
+    });
+
     const codexAttachments = yield* Effect.forEach(
       input.attachments ?? [],
       (attachment) => resolveAttachment(input, attachment),
       { concurrency: 1 },
+    ).pipe(
+      Effect.tapError(() =>
+        Effect.gen(function* () {
+          const failStamp = yield* makeEventStamp();
+          yield* Queue.offer(runtimeEventQueue, {
+            type: "session.state.changed",
+            eventId: failStamp.eventId,
+            provider: PROVIDER,
+            createdAt: failStamp.createdAt,
+            threadId: input.threadId,
+            payload: {
+              state: "ready",
+              reason: "Codex attachment preparation failed",
+            },
+          });
+        }).pipe(Effect.ignore),
+      ),
     );
 
     const session = yield* requireSession(input.threadId);
@@ -1612,7 +1661,27 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           ? { recentToolSummaries: input.recentToolSummaries }
           : {}),
       })
-      .pipe(Effect.mapError((cause) => mapCodexRuntimeError(input.threadId, "turn/start", cause)));
+      .pipe(
+        Effect.mapError((cause) => mapCodexRuntimeError(input.threadId, "turn/start", cause)),
+        // Attachment/prep path can leave session marked running without a turn
+        // when turn/start fails; force ready so Working cannot stick.
+        Effect.tapError(() =>
+          Effect.gen(function* () {
+            const failStamp = yield* makeEventStamp();
+            yield* Queue.offer(runtimeEventQueue, {
+              type: "session.state.changed",
+              eventId: failStamp.eventId,
+              provider: PROVIDER,
+              createdAt: failStamp.createdAt,
+              threadId: input.threadId,
+              payload: {
+                state: "ready",
+                reason: "Codex turn preparation failed",
+              },
+            });
+          }).pipe(Effect.ignore),
+        ),
+      );
   });
 
   const requireSession = Effect.fn("requireSession")(function* (threadId: ThreadId) {
