@@ -51,7 +51,12 @@ import {
   toOpenCodeQuestionAnswers,
   type OpenCodeServerConnection,
 } from "../opencodeRuntime.ts";
-import { canSteerSendTurn } from "../turnEngine/index.ts";
+import {
+  canSteerSendTurn,
+  OPEN_TOOL_FORCE_CLOSE_DETAIL,
+  OPEN_TOOL_FORCE_CLOSE_SOURCE,
+  shouldForceCloseRemainingOpenToolsOnSettle,
+} from "../turnEngine/index.ts";
 import * as Option from "effect/Option";
 
 const PROVIDER = ProviderDriverKind.make("opencode");
@@ -205,6 +210,13 @@ function openCodeEventSessionTitle(event: OpenCodeSubscribedEvent): string | und
   return trimText(event.properties.info.title);
 }
 
+type OpenCodeOpenTool = {
+  readonly callID: string;
+  readonly tool: string;
+  readonly title: string;
+  readonly itemType: ToolLifecycleItemType;
+};
+
 interface OpenCodeSessionContext {
   session: ProviderSession;
   readonly client: OpencodeClient;
@@ -217,6 +229,8 @@ interface OpenCodeSessionContext {
   readonly partById: Map<string, Part>;
   readonly emittedTextByPartId: Map<string, string>;
   readonly completedAssistantPartIds: Set<string>;
+  /** Tools still pending/running for the live turn (force-closed on settle). */
+  readonly openTools: Map<string, OpenCodeOpenTool>;
   readonly turns: Array<OpenCodeTurnSnapshot>;
   activeTurnId: TurnId | undefined;
   activeAgent: string | undefined;
@@ -521,6 +535,27 @@ function detailFromToolPart(part: Extract<Part, { type: "tool" }>): string | und
   }
 }
 
+/**
+ * Track open OpenCode tools for force-close on settle. Terminal statuses clear
+ * the entry; pending/running keep it. Exported for unit tests.
+ */
+export function trackOpenCodeOpenTool(
+  openTools: Map<string, OpenCodeOpenTool>,
+  part: Extract<Part, { type: "tool" }>,
+): void {
+  if (part.state.status === "completed" || part.state.status === "error") {
+    openTools.delete(part.callID);
+    return;
+  }
+  const title = part.state.status === "running" ? (part.state.title ?? part.tool) : part.tool;
+  openTools.set(part.callID, {
+    callID: part.callID,
+    tool: part.tool,
+    title,
+    itemType: toToolLifecycleItemType(part.tool),
+  });
+}
+
 function toolStateCreatedAt(part: Extract<Part, { type: "tool" }>): string | undefined {
   switch (part.state.status) {
     case "running":
@@ -684,6 +719,49 @@ export function makeOpenCodeAdapter(
 
     const emit = (event: ProviderRuntimeEvent) =>
       Queue.offer(runtimeEvents, event).pipe(Effect.asVoid);
+
+    /**
+     * Force-close tools still pending/running when a turn settles. OpenCode can
+     * go idle or abort while a tool part never reaches completed/error, which
+     * left ghost inProgress rows in the work log.
+     */
+    const forceCloseOpenTools = Effect.fn("forceCloseOpenTools")(function* (
+      context: OpenCodeSessionContext,
+      turnId: TurnId | undefined,
+    ) {
+      if (!shouldForceCloseRemainingOpenToolsOnSettle(context.openTools.size) || !turnId) {
+        context.openTools.clear();
+        return;
+      }
+      const open = [...context.openTools.values()];
+      context.openTools.clear();
+      for (const tool of open) {
+        yield* emit({
+          ...(yield* buildEventBase({
+            threadId: context.session.threadId,
+            turnId,
+            itemId: tool.callID,
+            raw: {
+              source: OPEN_TOOL_FORCE_CLOSE_SOURCE,
+              toolCallId: tool.callID,
+              tool: tool.tool,
+            },
+          })),
+          type: "item.completed",
+          payload: {
+            itemType: tool.itemType,
+            status: "failed",
+            title: tool.title,
+            detail: OPEN_TOOL_FORCE_CLOSE_DETAIL,
+            data: {
+              tool: tool.tool,
+              forcedClose: true,
+            },
+          },
+        });
+      }
+    });
+
     const writeNativeEvent = (
       threadId: ThreadId,
       event: {
@@ -931,6 +1009,7 @@ export function makeOpenCodeAdapter(
           }
 
           if (part.type === "tool") {
+            trackOpenCodeOpenTool(context.openTools, part);
             const itemType = toToolLifecycleItemType(part.tool);
             const title =
               part.state.status === "running" ? (part.state.title ?? part.tool) : part.tool;
@@ -1090,6 +1169,7 @@ export function makeOpenCodeAdapter(
           }
 
           if (event.properties.status.type === "idle" && turnId) {
+            yield* forceCloseOpenTools(context, turnId);
             context.activeTurnId = undefined;
             yield* updateProviderSession(context, { status: "ready" }, { clearActiveTurnId: true });
             yield* emit({
@@ -1110,6 +1190,7 @@ export function makeOpenCodeAdapter(
         case "session.error": {
           const message = sessionErrorMessage(event.properties.error);
           const activeTurnId = context.activeTurnId;
+          yield* forceCloseOpenTools(context, activeTurnId);
           context.activeTurnId = undefined;
           yield* updateProviderSession(
             context,
@@ -1417,6 +1498,7 @@ export function makeOpenCodeAdapter(
           emittedTextByPartId: new Map(),
           messageRoleById: new Map(),
           completedAssistantPartIds: new Set(),
+          openTools: new Map(),
           turns: [],
           activeTurnId: undefined,
           activeAgent: undefined,
@@ -1657,6 +1739,9 @@ export function makeOpenCodeAdapter(
         yield* runOpenCodeSdk("session.abort", () =>
           context.client.session.abort({ sessionID: context.openCodeSessionId }),
         ).pipe(Effect.timeout("2 seconds"), Effect.ignore);
+
+        // Close ghost tool rows before clearing the turn (Stop settle order).
+        yield* forceCloseOpenTools(context, settleTurnId);
 
         // Force session ready even if OpenCode never emits session.status idle.
         // Leaving activeTurnId set after Stop makes the next send look like a

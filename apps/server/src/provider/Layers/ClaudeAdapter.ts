@@ -90,7 +90,12 @@ import {
 } from "../Errors.ts";
 import { type ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
 import { buildConversationRehydrationPrefix } from "../conversationRehydration.ts";
-import { canSteerSendTurn, shouldForceCloseOpenToolsOnStop } from "../turnEngine/index.ts";
+import {
+  canSteerSendTurn,
+  OPEN_TOOL_FORCE_CLOSE_DETAIL,
+  OPEN_TOOL_FORCE_CLOSE_SOURCE,
+  shouldForceCloseRemainingOpenToolsOnSettle,
+} from "../turnEngine/index.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.UnknownFromJsonString);
 const decodeUnknownJsonStringExit = Schema.decodeUnknownExit(Schema.UnknownFromJsonString);
@@ -2231,13 +2236,14 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       return;
     }
 
-    // Stop / failed settle must force-close open tools (shared Stop policy).
-    // Without this, long turns leave ghost inProgress rows after Working clears.
-    const forceCloseOpenTools =
-      status !== "completed" && context.inFlightTools.size > 0 && shouldForceCloseOpenToolsOnStop();
+    // Any settle with tools still open must force-close them (shared Stop
+    // policy). Includes successful end_turn where the agent never closed tools —
+    // otherwise ghost inProgress rows stay after Working clears.
+    const forceCloseOpenTools = shouldForceCloseRemainingOpenToolsOnSettle(
+      context.inFlightTools.size,
+    );
     for (const [index, tool] of context.inFlightTools.entries()) {
       const toolStamp = yield* makeEventStamp();
-      const forced = forceCloseOpenTools || status !== "completed";
       yield* offerRuntimeEvent({
         type: "item.completed",
         eventId: toolStamp.eventId,
@@ -2248,25 +2254,25 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         itemId: asRuntimeItemId(tool.itemId),
         payload: {
           itemType: tool.itemType,
-          status: status === "completed" ? "completed" : "failed",
+          status: forceCloseOpenTools ? "failed" : status === "completed" ? "completed" : "failed",
           title: tool.title,
-          ...(forced
-            ? { detail: "Tool did not complete before the turn stopped." }
+          ...(forceCloseOpenTools
+            ? { detail: OPEN_TOOL_FORCE_CLOSE_DETAIL }
             : tool.detail
               ? { detail: tool.detail }
               : {}),
           data: {
             toolName: tool.toolName,
             input: tool.input,
-            ...(forced ? { forcedClose: true } : {}),
+            ...(forceCloseOpenTools ? { forcedClose: true } : {}),
           },
         },
         providerRefs: nativeProviderRefs(context, {
           providerItemId: tool.itemId,
         }),
         raw: {
-          source: forced ? "studio.open-tool-force-close" : "claude.sdk.message",
-          method: forced ? "claude/interrupt" : "claude/result",
+          source: forceCloseOpenTools ? OPEN_TOOL_FORCE_CLOSE_SOURCE : "claude.sdk.message",
+          method: forceCloseOpenTools ? "claude/interrupt" : "claude/result",
           payload: result ?? { status },
         },
       });

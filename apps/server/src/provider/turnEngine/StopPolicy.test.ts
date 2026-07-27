@@ -7,7 +7,9 @@ import {
   isSessionSettledRuntimeEvent,
   isStopSettledRuntimeEvent,
   isTurnTerminalRuntimeEvent,
+  OPEN_TOOL_FORCE_CLOSE_DETAIL,
   shouldForceCloseOpenToolsOnStop,
+  shouldForceCloseRemainingOpenToolsOnSettle,
   stopSettleSequence,
 } from "./StopPolicy.ts";
 
@@ -21,6 +23,12 @@ const base = {
 describe("StopPolicy", () => {
   it("force-closes open tools on Stop", () => {
     expect(shouldForceCloseOpenToolsOnStop()).toBe(true);
+  });
+
+  it("force-closes remaining open tools on any settle, including completed", () => {
+    expect(shouldForceCloseRemainingOpenToolsOnSettle(0)).toBe(false);
+    expect(shouldForceCloseRemainingOpenToolsOnSettle(1)).toBe(true);
+    expect(OPEN_TOOL_FORCE_CLOSE_DETAIL).toMatch(/did not complete/i);
   });
 
   it("classifies turn terminal events", () => {

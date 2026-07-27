@@ -31,8 +31,10 @@ model, capability matrix, stop settle rules).
 - **Grok:** interjection + steer + force-close/chrome policy flags + `resolveGrokSendDisposition` (TurnQueue)
 - **Cursor:** `canSteerSendTurn` + open-tool force-close on Stop + post-Stop ACP recycle + silence warning (no open tools) + provider-emitted failure classification
 - **Claude:** `canSteerSendTurn` + open-tool force-close on Stop/interrupt (via `completeTurn`)
-- **OpenCode:** `canSteerSendTurn` + force-settle session on Stop
+- **OpenCode:** `canSteerSendTurn` + force-settle session on Stop + open-tool force-close on Stop/idle/error
 - **Codex:** `canSteerCodexSendTurn` → shared `canSteerSendTurn`
+- **Settle policy:** remaining open tools are force-closed on any settle (including
+  successful end_turn), not only Stop — Claude/OpenCode now match Grok/Cursor
 - Conformance (all five providers): first-progress, assistant-text, interrupt, stop-mid-tool,
   send-while-running, post-stop-follow-up, pending-approval, process-death, resume-preserves-history
 - Queue drain (hold + auto-start next after settle) is not transport-wired yet; capability matrix

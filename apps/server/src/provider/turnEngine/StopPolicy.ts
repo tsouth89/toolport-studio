@@ -12,6 +12,22 @@ export function shouldForceCloseOpenToolsOnStop(): boolean {
   return true;
 }
 
+/**
+ * Any settle (Stop, success end_turn, failure, process death) must not leave
+ * ghost inProgress tool rows. If tools are still open when the turn terminals,
+ * force-close them — same product rule as Stop, including "completed" turns
+ * where the agent never emitted tool completion.
+ */
+export function shouldForceCloseRemainingOpenToolsOnSettle(openToolCount: number): boolean {
+  return openToolCount > 0 && shouldForceCloseOpenToolsOnStop();
+}
+
+/** Shared work-log copy when Studio force-closes an open tool. */
+export const OPEN_TOOL_FORCE_CLOSE_DETAIL = "Tool did not complete before the turn stopped.";
+
+/** Raw event source tag for adapter force-close emits. */
+export const OPEN_TOOL_FORCE_CLOSE_SOURCE = "studio.open-tool-force-close";
+
 /** Runtime events that mean the turn itself is finished. */
 export function isTurnTerminalRuntimeEvent(event: ProviderRuntimeEvent): boolean {
   return event.type === "turn.completed" || event.type === "turn.aborted";

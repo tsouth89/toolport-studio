@@ -1616,6 +1616,103 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("force-closes leftover open tools when the turn completes successfully", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+      const toolStarted = yield* Deferred.make<void>();
+      const turnCompleted =
+        yield* Deferred.make<Extract<ProviderRuntimeEvent, { type: "turn.completed" }>>();
+
+      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.gen(function* () {
+          runtimeEvents.push(event);
+          if (event.type === "item.started" && event.payload.itemType === "command_execution") {
+            yield* Deferred.succeed(toolStarted, undefined).pipe(Effect.ignore);
+          }
+          if (event.type === "turn.completed") {
+            yield* Deferred.succeed(turnCompleted, event).pipe(Effect.ignore);
+          }
+        }),
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "run a tool then end without tool_result",
+        attachments: [],
+      });
+
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-open-on-complete",
+        uuid: "stream-tool-start-complete",
+        parent_tool_use_id: null,
+        event: {
+          type: "content_block_start",
+          index: 0,
+          content_block: {
+            type: "tool_use",
+            id: "tool-open-on-complete",
+            name: "Bash",
+            input: { command: "sleep 1" },
+          },
+        },
+      } as unknown as SDKMessage);
+
+      yield* Deferred.await(toolStarted).pipe(Effect.timeout("3 seconds"));
+
+      // Successful end_turn while the tool is still open — must not mark the
+      // tool completed as if it finished cleanly.
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        duration_ms: 10,
+        duration_api_ms: 10,
+        num_turns: 1,
+        result: "done",
+        stop_reason: "end_turn",
+        session_id: "sdk-session-open-on-complete",
+        uuid: "result-open-on-complete",
+        usage: {
+          input_tokens: 1,
+          output_tokens: 1,
+        },
+      } as unknown as SDKMessage);
+
+      const completed = yield* Deferred.await(turnCompleted).pipe(Effect.timeout("3 seconds"));
+      assert.equal(completed.payload.state, "completed");
+
+      const forcedClose = runtimeEvents.find(
+        (event) =>
+          event.type === "item.completed" &&
+          event.payload.data &&
+          typeof event.payload.data === "object" &&
+          "forcedClose" in event.payload.data &&
+          (event.payload.data as { forcedClose?: unknown }).forcedClose === true,
+      );
+      assert.isDefined(forcedClose);
+      if (forcedClose?.type === "item.completed") {
+        assert.equal(forcedClose.payload.status, "failed");
+        assert.match(String(forcedClose.payload.detail ?? ""), /did not complete/i);
+      }
+
+      yield* Fiber.interrupt(runtimeEventsFiber);
+      yield* adapter.stopSession(THREAD_ID).pipe(Effect.ignore);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+      TestClock.withLive,
+    );
+  });
+
   it.effect("cancels pending approvals and user-input on interrupt", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

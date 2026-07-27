@@ -13,7 +13,7 @@ import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
-import { beforeEach } from "vite-plus/test";
+import { beforeEach, describe, expect, it as plainIt } from "vite-plus/test";
 
 import {
   OpenCodeSettings,
@@ -37,6 +37,7 @@ import {
   isSameOpenCodeDirectory,
   makeOpenCodeAdapter,
   mergeOpenCodeAssistantText,
+  trackOpenCodeOpenTool,
 } from "./OpenCodeAdapter.ts";
 
 // Test-local service tag so the rest of the file can keep using `yield* OpenCodeAdapter`.
@@ -1463,4 +1464,39 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive more", (it) => {
       NodeAssert.deepEqual(closeCallsDuringRun, []);
     }),
   );
+});
+
+describe("trackOpenCodeOpenTool", () => {
+  plainIt("tracks running tools and clears terminal ones", () => {
+    const openTools = new Map();
+    trackOpenCodeOpenTool(openTools, {
+      id: "part-1",
+      sessionID: "s",
+      messageID: "m",
+      type: "tool",
+      callID: "call-1",
+      tool: "bash",
+      state: { status: "running", title: "ls", time: { start: 1 } },
+    } as never);
+    expect(openTools.has("call-1")).toBe(true);
+    expect(openTools.get("call-1")?.title).toBe("ls");
+
+    trackOpenCodeOpenTool(openTools, {
+      id: "part-1",
+      sessionID: "s",
+      messageID: "m",
+      type: "tool",
+      callID: "call-1",
+      tool: "bash",
+      state: {
+        status: "completed",
+        input: {},
+        output: "ok",
+        title: "ls",
+        metadata: {},
+        time: { start: 1, end: 2 },
+      },
+    } as never);
+    expect(openTools.has("call-1")).toBe(false);
+  });
 });
