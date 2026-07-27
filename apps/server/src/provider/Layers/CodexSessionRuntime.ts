@@ -1569,6 +1569,12 @@ export const makeCodexSessionRuntime = (
           const providerThreadId = yield* readProviderThreadId;
           const session = yield* Ref.get(sessionRef);
           const effectiveTurnId = turnId ?? session.activeTurnId;
+
+          // Clear open permission / user-input waits so Stop never leaves the
+          // UI on a dead approval panel (Cursor/Grok parity).
+          yield* settlePendingApprovals("cancel");
+          yield* settlePendingUserInputs({});
+
           if (!effectiveTurnId) {
             // Still force ready if session is stuck running without a turn id.
             if (session.status === "running" || session.status === "starting") {
@@ -1579,42 +1585,44 @@ export const makeCodexSessionRuntime = (
             }
             return;
           }
-          yield* client.request("turn/interrupt", {
-            threadId: providerThreadId,
-            turnId: effectiveTurnId,
-          });
-          // Force-settle after a successful interrupt. turn/completed from
-          // app-server is best-effort; without this, Working sticks when the
-          // notification never arrives (Claude/Grok/Cursor Stop parity).
+
+          // Force-settle before turn/interrupt. App-server interrupt can hang;
+          // Working must clear even when the RPC never returns.
           const alreadySettled = (yield* Ref.get(forceSettledTurnIdsRef)).has(
             String(effectiveTurnId),
           );
-          if (alreadySettled) {
-            return;
-          }
-          yield* Ref.update(forceSettledTurnIdsRef, (current) => {
-            const next = new Set(current);
-            next.add(String(effectiveTurnId));
-            return next;
-          });
-          yield* updateSession(sessionRef, {
-            status: "ready",
-            activeTurnId: undefined,
-          });
-          yield* emitEvent({
-            kind: "notification",
-            threadId: options.threadId,
-            turnId: effectiveTurnId,
-            method: "turn/completed",
-            payload: {
-              threadId: providerThreadId,
-              turn: {
-                id: String(effectiveTurnId),
-                status: "interrupted",
-                items: [],
+          if (!alreadySettled) {
+            yield* Ref.update(forceSettledTurnIdsRef, (current) => {
+              const next = new Set(current);
+              next.add(String(effectiveTurnId));
+              return next;
+            });
+            yield* updateSession(sessionRef, {
+              status: "ready",
+              activeTurnId: undefined,
+            });
+            yield* emitEvent({
+              kind: "notification",
+              threadId: options.threadId,
+              turnId: effectiveTurnId,
+              method: "turn/completed",
+              payload: {
+                threadId: providerThreadId,
+                turn: {
+                  id: String(effectiveTurnId),
+                  status: "interrupted",
+                  items: [],
+                },
               },
-            },
-          });
+            });
+          }
+
+          yield* client
+            .request("turn/interrupt", {
+              threadId: providerThreadId,
+              turnId: effectiveTurnId,
+            })
+            .pipe(Effect.timeout("2 seconds"), Effect.ignore);
         }),
       readThread: Effect.gen(function* () {
         const providerThreadId = yield* readProviderThreadId;

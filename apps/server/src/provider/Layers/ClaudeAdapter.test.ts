@@ -1533,6 +1533,71 @@ describe("ClaudeAdapterLive", () => {
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
+      TestClock.withLive,
+    );
+  });
+
+  it.effect("cancels pending approvals and user-input on interrupt", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "approval-required",
+      });
+      yield* Stream.take(adapter.streamEvents, 3).pipe(Stream.runDrain);
+
+      yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "need approval",
+        attachments: [],
+      });
+      yield* Stream.take(adapter.streamEvents, 1).pipe(Stream.runDrain);
+
+      const createInput = harness.getLastCreateQueryInput();
+      const canUseTool = createInput?.options.canUseTool;
+      assert.equal(typeof canUseTool, "function");
+      if (!canUseTool) {
+        return;
+      }
+
+      const permissionPromise = canUseTool(
+        "Bash",
+        { command: "pwd" },
+        {
+          signal: new AbortController().signal,
+          toolUseID: "tool-stop-clear",
+        },
+      );
+
+      const requested = yield* Stream.runHead(adapter.streamEvents);
+      assert.equal(requested._tag, "Some");
+      if (requested._tag !== "Some" || requested.value.type !== "request.opened") {
+        assert.fail("Expected request.opened");
+        return;
+      }
+
+      yield* adapter.interruptTurn(THREAD_ID);
+
+      const resolved = yield* Stream.runHead(adapter.streamEvents);
+      assert.equal(resolved._tag, "Some");
+      if (resolved._tag !== "Some" || resolved.value.type !== "request.resolved") {
+        assert.fail("Expected request.resolved on Stop");
+        return;
+      }
+      assert.equal(resolved.value.payload.decision, "cancel");
+
+      const permissionResult = yield* Effect.promise(() => permissionPromise);
+      assert.deepEqual(permissionResult, {
+        behavior: "deny",
+        message: "User cancelled tool execution.",
+      } satisfies PermissionResult);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+      TestClock.withLive,
     );
   });
 

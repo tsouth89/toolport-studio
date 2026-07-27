@@ -4062,13 +4062,50 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
   const interruptTurn: ClaudeAdapterShape["interruptTurn"] = Effect.fn("interruptTurn")(
     function* (threadId, _turnId) {
       const context = yield* requireSession(threadId);
-      yield* Effect.tryPromise({
-        try: () => context.query.interrupt(),
-        catch: (cause) => toRequestError(threadId, "turn/interrupt", cause),
-      });
-      // Force-settle immediately. The SDK interrupt is best-effort; if the stream
-      // never delivers a result, Working stays forever and Stop looks dead.
-      // completeTurn is idempotent once turnState is cleared; late results no-op.
+
+      // Cancel open permission / AskUserQuestion waits so Stop cannot leave the
+      // composer stuck on an approval panel while the turn settles.
+      for (const [requestId, pending] of context.pendingApprovals) {
+        yield* Deferred.succeed(pending.decision, "cancel").pipe(Effect.ignore);
+        const stamp = yield* makeEventStamp();
+        yield* offerRuntimeEvent({
+          type: "request.resolved",
+          eventId: stamp.eventId,
+          provider: PROVIDER,
+          createdAt: stamp.createdAt,
+          threadId: context.session.threadId,
+          ...(context.turnState ? { turnId: asCanonicalTurnId(context.turnState.turnId) } : {}),
+          requestId: asRuntimeRequestId(requestId),
+          payload: {
+            requestType: pending.requestType,
+            decision: "cancel",
+          },
+          providerRefs: nativeProviderRefs(context),
+        });
+      }
+      context.pendingApprovals.clear();
+
+      for (const [requestId, pending] of context.pendingUserInputs) {
+        yield* Deferred.succeed(pending.answers, {} as ProviderUserInputAnswers).pipe(
+          Effect.ignore,
+        );
+        const stamp = yield* makeEventStamp();
+        yield* offerRuntimeEvent({
+          type: "user-input.resolved",
+          eventId: stamp.eventId,
+          provider: PROVIDER,
+          createdAt: stamp.createdAt,
+          threadId: context.session.threadId,
+          ...(context.turnState ? { turnId: asCanonicalTurnId(context.turnState.turnId) } : {}),
+          requestId: asRuntimeRequestId(requestId),
+          payload: { answers: {} },
+          providerRefs: nativeProviderRefs(context),
+        });
+      }
+      context.pendingUserInputs.clear();
+
+      // Force-settle before talking to the SDK. interrupt() can hang on a wedged
+      // child; Working and Stop must still leave the running state (Cursor/Grok).
       if (context.turnState) {
         yield* completeTurn(context, "interrupted", "Turn interrupted.");
       } else if (context.session.status === "running" || context.session.status === "connecting") {
@@ -4080,6 +4117,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           updatedAt,
         };
       }
+
+      yield* Effect.tryPromise({
+        try: () => context.query.interrupt(),
+        catch: (cause) => toRequestError(threadId, "turn/interrupt", cause),
+      }).pipe(Effect.timeout("2 seconds"), Effect.ignore);
     },
   );
 
