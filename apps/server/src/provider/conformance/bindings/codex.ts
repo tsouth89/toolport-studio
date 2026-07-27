@@ -39,7 +39,12 @@ import type { CodexAdapterShape } from "../../Services/CodexAdapter.ts";
 import type { CodexSessionRuntimeShape } from "../../Layers/CodexSessionRuntime.ts";
 import { ProviderSessionDirectory } from "../../Services/ProviderSessionDirectory.ts";
 import { ConformanceHarnessError } from "../contract.ts";
-import type { ConformanceBinding, ConformanceScript, ConformanceSession } from "../contract.ts";
+import type {
+  ConformanceBinding,
+  ConformanceOpenSessionOptions,
+  ConformanceScript,
+  ConformanceSession,
+} from "../contract.ts";
 
 const decodeCodexSettings = Schema.decodeSync(CodexSettings);
 
@@ -93,6 +98,8 @@ class ScriptedCodexRuntime implements CodexSessionRuntimeShape {
       runtimeMode: this.options.runtimeMode as never,
       threadId: THREAD_ID,
       cwd: this.options.cwd,
+      // Durable handle for resume-preserves-history (Codex schema is { threadId }).
+      resumeCursor: { threadId: PROVIDER_THREAD_ID },
       createdAt: NOW,
       updatedAt: NOW,
     };
@@ -296,7 +303,7 @@ export const codexConformanceBinding: ConformanceBinding = {
   // `intent: "steer"` for every provider. If Codex cannot honour that, the
   // contract must say so out loud rather than let the UI keep promising it.
   sendWhileRunning: "steer",
-  openSession: (script) =>
+  openSession: (script, options?: ConformanceOpenSessionOptions) =>
     Effect.gen(function* () {
       const runtime = new ScriptedCodexRuntime({
         runtimeMode: "full-access",
@@ -331,12 +338,26 @@ export const codexConformanceBinding: ConformanceBinding = {
         threadId: THREAD_ID,
         provider: ProviderDriverKind.make("codex"),
         runtimeMode: "full-access",
+        ...(options?.resumeCursor !== undefined
+          ? { resumeCursor: options.resumeCursor as never }
+          : {}),
       });
 
       const session: ConformanceSession = {
         adapter: adapter as never,
         threadId: THREAD_ID,
         events: Ref.get(observed),
+        readResumeCursor: Effect.suspend(() =>
+          adapter
+            .listSessions()
+            .pipe(
+              Effect.map(
+                (sessions) =>
+                  sessions.find((entry) => String(entry.threadId) === String(THREAD_ID))
+                    ?.resumeCursor,
+              ),
+            ),
+        ),
         sendScriptedTurn: ({ text, script: turnScript }) =>
           Effect.gen(function* () {
             const result = yield* adapter.sendTurn({

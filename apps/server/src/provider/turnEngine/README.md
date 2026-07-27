@@ -15,6 +15,7 @@ model, capability matrix, stop settle rules).
 | `InterjectionPolicy` | How mid-turn text is framed; product default is raw pass-through   |
 | `SteerPolicy`        | Whether a send continues the live turn                             |
 | `StopPolicy`         | Stop settle order + terminal/settled event classification          |
+| `TurnQueue`          | In-memory disposition for send-while-running (`steer` \| `queue`)  |
 
 ## Product defaults (dogfood lessons)
 
@@ -27,10 +28,13 @@ model, capability matrix, stop settle rules).
 
 ## Wiring status
 
-- **Grok:** interjection + steer + force-close/chrome policy flags
+- **Grok:** interjection + steer + force-close/chrome policy flags + `resolveGrokSendDisposition` (TurnQueue)
 - **Cursor / Claude / OpenCode:** `canSteerSendTurn`
 - **Codex:** `canSteerCodexSendTurn` → shared `canSteerSendTurn`
-- Conformance: `stop-mid-tool-terminalizes` + `post-stop-follow-up-runs` active
+- Conformance (all five providers): first-progress, assistant-text, interrupt, stop-mid-tool,
+  send-while-running, post-stop-follow-up, pending-approval, process-death, resume-preserves-history
+- Queue drain (hold + auto-start next after settle) is not transport-wired yet; capability matrix
+  still declares `sendWhileRunning: "steer"` for every provider. `queued` disposition is refused.
 
 ## Tests
 

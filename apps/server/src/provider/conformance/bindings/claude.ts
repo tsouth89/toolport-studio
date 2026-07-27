@@ -33,7 +33,12 @@ import { ServerSettingsService } from "../../../serverSettings.ts";
 import { makeClaudeAdapter } from "../../Layers/ClaudeAdapter.ts";
 import type { ClaudeAdapterShape } from "../../Services/ClaudeAdapter.ts";
 import { ConformanceHarnessError } from "../contract.ts";
-import type { ConformanceBinding, ConformanceScript, ConformanceSession } from "../contract.ts";
+import type {
+  ConformanceBinding,
+  ConformanceOpenSessionOptions,
+  ConformanceScript,
+  ConformanceSession,
+} from "../contract.ts";
 
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 
@@ -234,7 +239,7 @@ function playScript(query: ScriptedClaudeQuery, script: ConformanceScript, seq: 
 export const claudeConformanceBinding: ConformanceBinding = {
   provider: "claude",
   sendWhileRunning: "steer",
-  openSession: (script) =>
+  openSession: (script, options?: ConformanceOpenSessionOptions) =>
     Effect.gen(function* () {
       const query = new ScriptedClaudeQuery();
       const layer = Layer.effect(
@@ -264,6 +269,9 @@ export const claudeConformanceBinding: ConformanceBinding = {
         threadId: THREAD_ID,
         provider: ProviderDriverKind.make("claudeAgent"),
         runtimeMode: "full-access",
+        ...(options?.resumeCursor !== undefined
+          ? { resumeCursor: options.resumeCursor as never }
+          : {}),
       });
 
       let turnSeq = 0;
@@ -272,6 +280,17 @@ export const claudeConformanceBinding: ConformanceBinding = {
         adapter: adapter as never,
         threadId: THREAD_ID,
         events: Ref.get(observed),
+        readResumeCursor: Effect.suspend(() =>
+          adapter
+            .listSessions()
+            .pipe(
+              Effect.map(
+                (sessions) =>
+                  sessions.find((entry) => String(entry.threadId) === String(THREAD_ID))
+                    ?.resumeCursor,
+              ),
+            ),
+        ),
         sendScriptedTurn: ({ text, script: turnScript }) =>
           Effect.gen(function* () {
             const result = yield* adapter.sendTurn({

@@ -28,3 +28,14 @@ export {
   shouldForceCloseOpenToolsOnStop,
   stopSettleSequence,
 } from "./StopPolicy.ts";
+
+export type { QueuedTurnInput, SendDisposition, TurnQueueState } from "./TurnQueue.ts";
+export {
+  beginTurn,
+  disposeSendWhileRunning,
+  emptyTurnQueue,
+  markTurnRunning,
+  markTurnStopping,
+  pendingCount,
+  settleTurn,
+} from "./TurnQueue.ts";

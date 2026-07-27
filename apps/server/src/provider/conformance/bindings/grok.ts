@@ -38,7 +38,12 @@ import { ServerConfig } from "../../../config.ts";
 import { makeGrokAdapter } from "../../Layers/GrokAdapter.ts";
 import type { GrokAdapterShape } from "../../Services/GrokAdapter.ts";
 import { ConformanceHarnessError } from "../contract.ts";
-import type { ConformanceBinding, ConformanceScript, ConformanceSession } from "../contract.ts";
+import type {
+  ConformanceBinding,
+  ConformanceOpenSessionOptions,
+  ConformanceScript,
+  ConformanceSession,
+} from "../contract.ts";
 
 const decodeGrokSettings = Schema.decodeSync(GrokSettings);
 
@@ -113,7 +118,7 @@ export function scriptToAcpEnv(script: ConformanceScript): Record<string, string
 export const grokConformanceBinding: ConformanceBinding = {
   provider: "grok",
   sendWhileRunning: "steer",
-  openSession: (script) =>
+  openSession: (script, options?: ConformanceOpenSessionOptions) =>
     Effect.gen(function* () {
       const environment: NodeJS.ProcessEnv = {
         ...process.env,
@@ -148,12 +153,26 @@ export const grokConformanceBinding: ConformanceBinding = {
         // fall back to server config.
         cwd: process.cwd(),
         runtimeMode: "full-access",
+        ...(options?.resumeCursor !== undefined
+          ? { resumeCursor: options.resumeCursor as never }
+          : {}),
       });
 
       const session: ConformanceSession = {
         adapter: adapter as never,
         threadId: THREAD_ID,
         events: Ref.get(observed),
+        readResumeCursor: Effect.suspend(() =>
+          adapter
+            .listSessions()
+            .pipe(
+              Effect.map(
+                (sessions) =>
+                  sessions.find((entry) => String(entry.threadId) === String(THREAD_ID))
+                    ?.resumeCursor,
+              ),
+            ),
+        ),
         // The per-turn script is intentionally unused: this family is scripted
         // at spawn. See the module comment.
         // Forked: under a hanging ACP prompt this never returns, so awaiting

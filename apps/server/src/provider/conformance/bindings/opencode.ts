@@ -38,7 +38,12 @@ import type { OpenCodeRuntimeShape } from "../../opencodeRuntime.ts";
 import type { OpenCodeAdapterShape } from "../../Services/OpenCodeAdapter.ts";
 import { ProviderSessionDirectory } from "../../Services/ProviderSessionDirectory.ts";
 import { ConformanceHarnessError } from "../contract.ts";
-import type { ConformanceBinding, ConformanceScript, ConformanceSession } from "../contract.ts";
+import type {
+  ConformanceBinding,
+  ConformanceOpenSessionOptions,
+  ConformanceScript,
+  ConformanceSession,
+} from "../contract.ts";
 
 const THREAD_ID = ThreadId.make("conformance-opencode-thread");
 const SERVER_URL = "http://127.0.0.1:9999";
@@ -284,7 +289,7 @@ function makeRuntimeDouble(events: PushableEvents): OpenCodeRuntimeShape {
 export const openCodeConformanceBinding: ConformanceBinding = {
   provider: "opencode",
   sendWhileRunning: "steer",
-  openSession: (script) =>
+  openSession: (script, options?: ConformanceOpenSessionOptions) =>
     Effect.gen(function* () {
       const events = new PushableEvents();
 
@@ -315,6 +320,9 @@ export const openCodeConformanceBinding: ConformanceBinding = {
         provider: ProviderDriverKind.make("opencode"),
         cwd: process.cwd(),
         runtimeMode: "full-access",
+        ...(options?.resumeCursor !== undefined
+          ? { resumeCursor: options.resumeCursor as never }
+          : {}),
       });
 
       let turnSeq = 0;
@@ -323,6 +331,17 @@ export const openCodeConformanceBinding: ConformanceBinding = {
         adapter: adapter as never,
         threadId: THREAD_ID,
         events: Ref.get(observed),
+        readResumeCursor: Effect.suspend(() =>
+          adapter
+            .listSessions()
+            .pipe(
+              Effect.map(
+                (sessions) =>
+                  sessions.find((entry) => String(entry.threadId) === String(THREAD_ID))
+                    ?.resumeCursor,
+              ),
+            ),
+        ),
         sendScriptedTurn: ({ text, script: turnScript }) =>
           Effect.gen(function* () {
             yield* adapter.sendTurn({

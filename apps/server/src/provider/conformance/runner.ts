@@ -44,10 +44,13 @@ const SECOND_TURN_OBSERVATION_MS = 2_000;
  * failure mode this contract exists to prevent. Removing an entry here is how
  * a case graduates.
  */
-const NOT_YET_IMPLEMENTED: ReadonlyArray<ConformanceCaseId> = ["resume-preserves-history"];
+/** Empty when every contract case is either asserted or waived. */
+const NOT_YET_IMPLEMENTED: ReadonlyArray<ConformanceCaseId> = [];
 
 const isTurnTerminal = isTurnTerminalRuntimeEvent;
 const isStopSettled = isStopSettledRuntimeEvent;
+
+const HISTORY_MARKER = "stored-history-marker-zebra-42";
 
 export function runCoreLoopConformance(binding: ConformanceBinding): void {
   describe(`core-loop conformance: ${binding.provider}`, () => {
@@ -352,6 +355,80 @@ export function runCoreLoopConformance(binding: ConformanceBinding): void {
             timeoutMs: STOP_SETTLE_BUDGET_MS,
             describe: "typed process/transport death",
           });
+        }),
+    );
+
+    caseFor(
+      "resume-preserves-history",
+      "stop + resume still allows a follow-up turn with a durable resume cursor",
+      () =>
+        Effect.gen(function* () {
+          // 1) Complete a turn that leaves a distinctive marker in the stream.
+          const firstScript = [
+            { kind: "assistant-text" as const, text: HISTORY_MARKER },
+            { kind: "complete" as const },
+          ];
+          const session = yield* binding.openSession(firstScript);
+          yield* session.sendScriptedTurn({
+            text: `please remember ${HISTORY_MARKER}`,
+            script: firstScript,
+          });
+          yield* session.awaitEvent(isTurnTerminal, {
+            timeoutMs: FIRST_EVENT_BUDGET_MS,
+            describe: "first turn terminal",
+          });
+
+          const firstEvents = yield* session.events;
+          const sawMarker = firstEvents.some((event) =>
+            JSON.stringify(event).includes(HISTORY_MARKER),
+          );
+          assert.isTrue(sawMarker, "first turn must surface the history marker in runtime events");
+
+          // 2) Provider must publish a resume handle before we stop.
+          const resumeCursor = yield* session.readResumeCursor;
+          assert.isTrue(
+            resumeCursor !== undefined && resumeCursor !== null,
+            "adapter must publish a resumeCursor after a completed turn",
+          );
+
+          yield* session.adapter.stopSession(session.threadId);
+
+          // 3) Reopen with that cursor and complete another turn. This is the
+          // contract that dogfood relies on: Stop (or process recycle) must
+          // not force a blank session with no way back.
+          const secondScript = [
+            { kind: "assistant-text" as const, text: "resumed-follow-up-ok" },
+            { kind: "complete" as const },
+          ];
+          const resumed = yield* binding.openSession(secondScript, { resumeCursor });
+          yield* resumed.sendScriptedTurn({
+            text: "continue after resume",
+            script: secondScript,
+          });
+
+          yield* resumed.awaitEvent((event) => event.type === "turn.started", {
+            timeoutMs: FIRST_EVENT_BUDGET_MS,
+            describe: "resumed session turn started",
+          });
+          yield* resumed.awaitEvent(isTurnTerminal, {
+            timeoutMs: FIRST_EVENT_BUDGET_MS,
+            describe: "resumed session turn terminal",
+          });
+
+          const resumeCursorAfter = yield* resumed.readResumeCursor;
+          assert.isTrue(
+            resumeCursorAfter !== undefined && resumeCursorAfter !== null,
+            "resumeCursor must remain available after a resumed follow-up turn",
+          );
+
+          const resumedEvents = yield* resumed.events;
+          const sawFollowUp = resumedEvents.some((event) =>
+            JSON.stringify(event).includes("resumed-follow-up-ok"),
+          );
+          assert.isTrue(
+            sawFollowUp,
+            "resumed session must surface follow-up assistant text in runtime events",
+          );
         }),
     );
   });

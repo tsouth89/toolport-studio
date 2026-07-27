@@ -34,7 +34,11 @@ import { ServerSettingsService } from "../../../serverSettings.ts";
 import { makeCursorAdapter } from "../../Layers/CursorAdapter.ts";
 import type { CursorAdapterShape } from "../../Services/CursorAdapter.ts";
 import { ConformanceHarnessError } from "../contract.ts";
-import type { ConformanceBinding, ConformanceSession } from "../contract.ts";
+import type {
+  ConformanceBinding,
+  ConformanceOpenSessionOptions,
+  ConformanceSession,
+} from "../contract.ts";
 import { scriptToAcpEnv } from "./grok.ts";
 
 const decodeCursorSettings = Schema.decodeSync(CursorSettings);
@@ -56,7 +60,7 @@ class CursorConformanceAdapter extends Context.Service<
 export const cursorConformanceBinding: ConformanceBinding = {
   provider: "cursor",
   sendWhileRunning: "steer",
-  openSession: (script) =>
+  openSession: (script, options?: ConformanceOpenSessionOptions) =>
     Effect.gen(function* () {
       const environment: NodeJS.ProcessEnv = {
         ...process.env,
@@ -90,12 +94,26 @@ export const cursorConformanceBinding: ConformanceBinding = {
         provider: ProviderDriverKind.make("cursor"),
         cwd: process.cwd(),
         runtimeMode: "full-access",
+        ...(options?.resumeCursor !== undefined
+          ? { resumeCursor: options.resumeCursor as never }
+          : {}),
       });
 
       const session: ConformanceSession = {
         adapter: adapter as never,
         threadId: THREAD_ID,
         events: Ref.get(observed),
+        readResumeCursor: Effect.suspend(() =>
+          adapter
+            .listSessions()
+            .pipe(
+              Effect.map(
+                (sessions) =>
+                  sessions.find((entry) => String(entry.threadId) === String(THREAD_ID))
+                    ?.resumeCursor,
+              ),
+            ),
+        ),
         // Forked: like Grok, a hanging ACP prompt means sendTurn never returns.
         sendScriptedTurn: ({ text }) =>
           adapter

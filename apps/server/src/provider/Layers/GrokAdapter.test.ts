@@ -32,6 +32,7 @@ import {
   buildGrokImagePromptPart,
   buildGrokSilentTurnStopMessage,
   canSteerGrokSendTurn,
+  resolveGrokSendDisposition,
   classifyGrokSilentTurn,
   formatGrokSilentTurnWorkSummary,
   grokPromptSettlementBelongsToContext,
@@ -252,6 +253,42 @@ it("refuses to steer into a cancelled/interrupted turn after Stop", () => {
       activeTurnId: undefined,
       interruptedTurnIds: new Set(),
     }),
+  );
+});
+
+it("resolveGrokSendDisposition steers a live turn and starts new when idle/interrupted", () => {
+  const liveTurn = TurnId.make("turn-live");
+  const cancelledTurn = TurnId.make("turn-cancelled");
+  const nextTurn = { id: "queued-1", text: "also do X", enqueuedAtMs: 1 };
+
+  assert.deepStrictEqual(
+    resolveGrokSendDisposition({
+      promptsInFlight: 1,
+      activeTurnId: liveTurn,
+      interruptedTurnIds: new Set(),
+      nextTurn,
+    }),
+    { _tag: "steer", turnId: String(liveTurn) },
+  );
+
+  assert.deepStrictEqual(
+    resolveGrokSendDisposition({
+      promptsInFlight: 1,
+      activeTurnId: cancelledTurn,
+      interruptedTurnIds: new Set([cancelledTurn]),
+      nextTurn,
+    }),
+    { _tag: "start-new" },
+  );
+
+  assert.deepStrictEqual(
+    resolveGrokSendDisposition({
+      promptsInFlight: 0,
+      activeTurnId: undefined,
+      interruptedTurnIds: new Set(),
+      nextTurn,
+    }),
+    { _tag: "start-new" },
   );
 });
 

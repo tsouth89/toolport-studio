@@ -120,6 +120,12 @@ export interface ConformanceSession {
   /** Runtime events observed so far, in emission order. */
   readonly events: Effect.Effect<ReadonlyArray<ProviderRuntimeEvent>>;
   /**
+   * Durable resume handle for this session, if the adapter has published one.
+   * Used by `resume-preserves-history` to stop and reopen without losing the
+   * provider's session identity.
+   */
+  readonly readResumeCursor: Effect.Effect<unknown | undefined>;
+  /**
    * Wait for the first event matching `predicate`, or fail once `timeoutMs`
    * elapses. Uses the real clock: these are latency assertions, and a
    * TestClock would make "no multi-minute blank window" vacuously true.
@@ -129,6 +135,11 @@ export interface ConformanceSession {
     options?: { readonly timeoutMs?: number; readonly describe?: string },
   ) => Effect.Effect<ProviderRuntimeEvent, ConformanceHarnessError>;
 }
+
+export type ConformanceOpenSessionOptions = {
+  /** When set, startSession should resume this provider session. */
+  readonly resumeCursor?: unknown;
+};
 
 export interface ConformanceBinding {
   /** Display name used in test output, e.g. "claude". */
@@ -148,9 +159,11 @@ export interface ConformanceBinding {
   /**
    * Open a scoped session with the fake provider backend primed for `script`.
    * The scope closes at end of test; bindings clean up processes there.
+   * Pass `resumeCursor` to exercise resume rather than a blank session/new.
    */
   readonly openSession: (
     script: ConformanceScript,
+    options?: ConformanceOpenSessionOptions,
   ) => Effect.Effect<ConformanceSession, ConformanceHarnessError, Scope.Scope>;
 }
 

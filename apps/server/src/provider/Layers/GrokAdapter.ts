@@ -85,10 +85,17 @@ import {
   type ConversationHistoryTurn,
 } from "../conversationRehydration.ts";
 import {
+  beginTurn,
   canSteerSendTurn,
+  disposeSendWhileRunning,
+  emptyTurnQueue,
   formatInterjectionText,
+  markTurnRunning,
+  PROVIDER_TURN_CAPABILITIES,
   shouldEmitSyntheticFollowUpChrome,
   shouldForceCloseOpenToolsOnSteer,
+  type QueuedTurnInput,
+  type SendDisposition,
 } from "../turnEngine/index.ts";
 
 const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.UnknownFromJsonString);
@@ -659,6 +666,37 @@ export function canSteerGrokSendTurn(input: {
     activeTurnInterrupted:
       input.activeTurnId !== undefined && input.interruptedTurnIds.has(input.activeTurnId),
   });
+}
+
+/**
+ * Engine-owned disposition for a Grok send that may land while a turn is live.
+ *
+ * Composes local steer eligibility (prompt slots + interrupted ids) with the
+ * shared TurnQueue + capability matrix. Grok currently declares
+ * `sendWhileRunning: "steer"`, so the live path is steer; `queued` is refused
+ * until drain is wired.
+ */
+export function resolveGrokSendDisposition(input: {
+  readonly promptsInFlight: number;
+  readonly activeTurnId: TurnId | undefined;
+  readonly interruptedTurnIds: ReadonlySet<TurnId>;
+  readonly nextTurn: QueuedTurnInput;
+}): SendDisposition {
+  const canSteer = canSteerGrokSendTurn({
+    promptsInFlight: input.promptsInFlight,
+    activeTurnId: input.activeTurnId,
+    interruptedTurnIds: input.interruptedTurnIds,
+  });
+  if (!canSteer || input.activeTurnId === undefined) {
+    return { _tag: "start-new" };
+  }
+
+  let queue = beginTurn(emptyTurnQueue(), String(input.activeTurnId));
+  queue = markTurnRunning(queue);
+  return disposeSendWhileRunning(queue, {
+    sendWhileRunning: PROVIDER_TURN_CAPABILITIES.grok.sendWhileRunning,
+    nextTurn: input.nextTurn,
+  }).disposition;
 }
 
 export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapterLiveOptions) {
@@ -2002,21 +2040,36 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             // steer: the agent folds the new prompt into the ongoing work.
             // Never reuse a turn that Stop/watchdog already cancelled — that is
             // the "next message after Stop always errors" race.
+            // Disposition is engine-owned (SOU-428 TurnQueue + capabilities).
             const liveActiveTurnId = ctx.activeTurnId ?? ctx.session.activeTurnId;
-            const steeringTurnId = canSteerGrokSendTurn({
+            const nextTurnId = TurnId.make(yield* randomUUIDv4);
+            const disposition = resolveGrokSendDisposition({
               promptsInFlight: ctx.promptsInFlight,
               activeTurnId: liveActiveTurnId,
               interruptedTurnIds: ctx.interruptedTurnIds,
-            })
-              ? liveActiveTurnId
-              : undefined;
+              nextTurn: {
+                id: String(nextTurnId),
+                text: typeof input.input === "string" ? input.input : "",
+                enqueuedAtMs: yield* Clock.currentTimeMillis,
+              },
+            });
+            if (disposition._tag === "queued") {
+              // Capability matrix must not declare queue until drain is wired.
+              return yield* new ProviderAdapterValidationError({
+                provider: PROVIDER,
+                operation: "sendTurn",
+                issue:
+                  "Grok turn queue drain is not implemented; sendWhileRunning must not be queue.",
+              });
+            }
+            const steeringTurnId = disposition._tag === "steer" ? liveActiveTurnId : undefined;
             if (steeringTurnId === undefined && (ctx.promptsInFlight > 0 || liveActiveTurnId)) {
               // Drop residual slots/ids from a cancelled or half-settled turn so
               // follow-up preparation starts clean.
               ctx.promptsInFlight = 0;
               ctx.activeTurnId = undefined;
             }
-            const turnId = steeringTurnId ?? TurnId.make(yield* randomUUIDv4);
+            const turnId = steeringTurnId ?? nextTurnId;
             // Count this prompt immediately so a superseded in-flight prompt
             // resolving from here on does not settle the turn; decremented on
             // preparation failure here, and after the prompt below otherwise.
