@@ -283,11 +283,9 @@ const SidebarRow = memo(function SidebarRow(props: {
   renamingTitle: string;
   onContextMenu: (threadRef: ScopedThreadRef, position: { x: number; y: number }) => void;
   onArchive: (threadRef: ScopedThreadRef) => void;
-  onChangeRequestState: (threadKey: string, state: "open" | "closed" | "merged" | null) => void;
 }) {
   const {
     isRenaming,
-    onChangeRequestState,
     onCancelRename,
     onCommitRename,
     onContextMenu,
@@ -370,13 +368,6 @@ const SidebarRow = memo(function SidebarRow(props: {
     hasDedicatedWorktree: thread.worktreePath !== null,
   });
   const prStatus = prStatusIndicator(pr, gitStatus.data?.sourceControlProvider);
-
-  // Report the PR state up (badges / future features). Merge/close no longer
-  // auto-settles; parent still accepts the signal for consistency.
-  const prState = pr?.state ?? null;
-  useEffect(() => {
-    onChangeRequestState(threadKey, prState);
-  }, [onChangeRequestState, prState, threadKey]);
 
   const modelInstanceId = thread.session?.providerInstanceId ?? thread.modelSelection.instanceId;
   const providerEntry = props.providerEntryByInstanceId.get(modelInstanceId) ?? null;
@@ -1743,7 +1734,6 @@ export default function Sidebar() {
                       renamingTitle={renamingThreadKey === threadKey ? renamingTitle : ""}
                       onContextMenu={handleThreadContextMenu}
                       onArchive={attemptArchive}
-                      onChangeRequestState={handleChangeRequestState}
                     />
                   );
                 };
