@@ -1486,6 +1486,93 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
     }),
   );
 
+  it.effect("recycles ACP when Toolport MCP injection is toggled mid-session", () =>
+    Effect.gen(function* () {
+      // Mutable env so the same adapter instance sees the Settings flip on the
+      // next sendTurn (production updates process.env via applyToolportMcpInjectionEnv).
+      const environment: NodeJS.ProcessEnv = {
+        TOOLPORT_STUDIO_TOOLPORT_MCP: "off",
+      };
+      const resolveSettings = yield* makeResolveCursorSettings;
+      const adapter = yield* makeCursorAdapter(decodeCursorSettings({}), {
+        resolveSettings,
+        environment,
+      });
+      const serverSettings = yield* ServerSettingsService;
+      const threadId = ThreadId.make("cursor-toolport-mcp-rebind");
+      const tempDir = yield* Effect.promise(() =>
+        NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "cursor-acp-")),
+      );
+      const requestLogPath = NodePath.join(tempDir, "requests.ndjson");
+      const argvLogPath = NodePath.join(tempDir, "argv.txt");
+      yield* Effect.promise(() => NodeFSP.writeFile(requestLogPath, "", "utf8"));
+      const wrapperPath = yield* Effect.promise(() =>
+        makeProbeWrapper(requestLogPath, argvLogPath),
+      );
+      yield* serverSettings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("cursor"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+      });
+
+      yield* adapter.sendTurn({
+        threadId,
+        input: "before toolport",
+        attachments: [],
+      });
+
+      const argvBefore = yield* Effect.promise(() => readArgvLog(argvLogPath));
+      assert.lengthOf(argvBefore, 1, "one ACP process before Toolport toggle");
+
+      const requestsBefore = yield* Effect.promise(() => readJsonLines(requestLogPath));
+      const sessionSetupsBefore = requestsBefore.filter(
+        (entry) => entry.method === "session/new" || entry.method === "session/load",
+      );
+      assert.isAbove(sessionSetupsBefore.length, 0);
+      for (const entry of sessionSetupsBefore) {
+        const params = entry.params as
+          | { mcpServers?: ReadonlyArray<{ name?: string }> }
+          | undefined;
+        const names = (params?.mcpServers ?? []).map((server) => server.name);
+        assert.notInclude(names, "toolport", "Toolport must not be injected while off");
+      }
+
+      environment.TOOLPORT_STUDIO_TOOLPORT_MCP = "on";
+      environment.TOOLPORT_STUDIO_MCP_URL = "https://toolport.example/mcp";
+
+      yield* adapter.sendTurn({
+        threadId,
+        input: "after toolport on",
+        attachments: [],
+      });
+
+      const argvAfter = yield* Effect.promise(() => readArgvLog(argvLogPath));
+      assert.lengthOf(argvAfter, 2, "Toolport toggle must recycle the ACP child");
+
+      const requestsAfter = yield* Effect.promise(() => readJsonLines(requestLogPath));
+      const sessionSetupsAfter = requestsAfter.filter(
+        (entry) => entry.method === "session/new" || entry.method === "session/load",
+      );
+      const withToolport = sessionSetupsAfter.filter((entry) => {
+        const params = entry.params as
+          | { mcpServers?: ReadonlyArray<{ name?: string }> }
+          | undefined;
+        return (params?.mcpServers ?? []).some((server) => server.name === "toolport");
+      });
+      assert.isAbove(
+        withToolport.length,
+        0,
+        "recycled session/new or session/load must include toolport MCP",
+      );
+
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
   it.effect("clears prior fast mode in-session when the next turn sets fastMode: false", () =>
     Effect.gen(function* () {
       const adapter = yield* CursorAdapter;
