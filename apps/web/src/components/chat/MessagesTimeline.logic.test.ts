@@ -1290,6 +1290,74 @@ describe("computeStableMessagesTimelineRows", () => {
     expect(rows.some((row) => row.kind === "working")).toBe(true);
   });
 
+  it("keeps Thought + tool narration stacks fully expanded mid-turn", () => {
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "work-thinking",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:05Z",
+          entry: {
+            id: "reasoning:1",
+            createdAt: "2026-01-01T00:00:05Z",
+            turnId: "turn-1" as never,
+            label: "Inspect the adapter",
+            toolTitle: "Thinking",
+            detail: "Inspect the adapter next.",
+            tone: "thinking",
+            sourceActivityKind: "task.progress",
+          },
+        },
+        {
+          id: "work-tool",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:08Z",
+          entry: {
+            id: "tool-1",
+            createdAt: "2026-01-01T00:00:08Z",
+            turnId: "turn-1" as never,
+            label: "Terminal",
+            toolTitle: "Terminal",
+            command: "git status",
+            itemType: "command_execution",
+            tone: "tool",
+            toolLifecycleStatus: "completed",
+          },
+        },
+        {
+          id: "work-thinking-2",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:12Z",
+          entry: {
+            id: "reasoning:2",
+            createdAt: "2026-01-01T00:00:12Z",
+            turnId: "turn-1" as never,
+            label: "Next steps",
+            toolTitle: "Thinking",
+            detail: "Next I should bump the alpha version.",
+            tone: "thinking",
+            sourceActivityKind: "task.progress",
+          },
+        },
+      ],
+      latestTurn: {
+        turnId: "turn-1" as never,
+        state: "running",
+        startedAt: "2026-01-01T00:00:00Z",
+        completedAt: null,
+      },
+      isWorking: true,
+      activeTurnStartedAt: "2026-01-01T00:00:00Z",
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    const work = rows.filter((row) => row.kind === "work");
+    expect(work).toHaveLength(1);
+    expect(work[0]?.kind === "work" && work[0].groupedEntries).toHaveLength(3);
+    expect(rows.some((row) => row.kind === "work-toggle")).toBe(false);
+  });
+
   it("falls back to the last completed tool when nothing is open (post-tool silence)", () => {
     expect(
       deriveActiveWorkingToolLabel({
@@ -1304,6 +1372,7 @@ describe("computeStableMessagesTimelineRows", () => {
               turnId: "turn-1" as never,
               label: "Ran command",
               toolTitle: "bash completed",
+              command: "git status",
               tone: "tool",
               toolLifecycleStatus: "completed",
             },
@@ -1311,7 +1380,7 @@ describe("computeStableMessagesTimelineRows", () => {
         ],
         unsettledTurnId: "turn-1" as never,
       }),
-    ).toBe("bash");
+    ).toBe("Run git status");
   });
 
   it("surfaces command context and long-running open tools on the Working row", () => {

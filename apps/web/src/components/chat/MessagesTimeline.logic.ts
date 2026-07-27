@@ -5,6 +5,7 @@ import {
   formatWorkLogToolLabel,
   workEntryIndicatesToolNeutralStatus,
   workEntryLooksLongRunning,
+  workLogEntryIsNarrationStackEntry,
   workLogEntryIsToolLike,
   type TimelineEntry,
   type WorkLogEntry,
@@ -650,10 +651,19 @@ export function deriveMessagesTimelineRows(input: {
         const onlyToolEntries = visibleGroupedEntries.every((entry) =>
           workLogEntryIsToolLike(entry),
         );
-        // SOU-386 PR3: pure tool runs stay one timeline row so the UI can
-        // render a mockup "Tool use · N steps" card (expand is local). Mixed
-        // work logs keep the overflow toggle for long non-tool spam.
-        if (onlyToolEntries || visibleGroupedEntries.length <= MAX_VISIBLE_WORK_LOG_ENTRIES) {
+        // Tool + thinking narration stays one expanded stack (Grok Build rail).
+        // Info/error spam still uses the overflow toggle.
+        const isNarrationStack = visibleGroupedEntries.every((entry) =>
+          workLogEntryIsNarrationStackEntry(entry),
+        );
+        // SOU-386 PR3: pure tool / narration runs stay one timeline row so the
+        // UI can render the full step rail (collapse is local for long tools).
+        // Mixed non-narration work logs keep the overflow toggle.
+        if (
+          onlyToolEntries ||
+          isNarrationStack ||
+          visibleGroupedEntries.length <= MAX_VISIBLE_WORK_LOG_ENTRIES
+        ) {
           nextRows.push({
             kind: "work",
             id: timelineEntry.id,

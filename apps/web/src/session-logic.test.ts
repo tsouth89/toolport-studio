@@ -16,6 +16,7 @@ import {
   deriveWorkLogEntries,
   findLatestProposedPlan,
   findSidebarProposedPlan,
+  formatWorkLogThoughtLine,
   formatWorkLogToolLabel,
   hasActionableProposedPlan,
   isLatestTurnSettled,
@@ -1941,5 +1942,26 @@ describe("formatWorkLogToolLabel", () => {
         }),
       ),
     ).toBe("Thought");
+  });
+
+  it("formats bash titles as Run lines", () => {
+    expect(
+      formatWorkLogToolLabel(
+        entry({
+          id: "bash",
+          label: "Bash",
+          toolTitle: "Bash",
+          itemType: "dynamic_tool_call",
+          command: "pnpm test",
+        }),
+      ),
+    ).toBe("Run pnpm test");
+  });
+});
+
+describe("formatWorkLogThoughtLine", () => {
+  it("includes duration when available", () => {
+    expect(formatWorkLogThoughtLine(null)).toBe("Thought");
+    expect(formatWorkLogThoughtLine("3.4s")).toBe("Thought for 3.4s");
   });
 });

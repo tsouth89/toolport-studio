@@ -31,11 +31,15 @@ import { LegendList, type LegendListRef } from "@legendapp/list/react";
 import { FileDiff } from "@pierre/diffs/react";
 import {
   deriveTimelineEntries,
+  formatElapsed,
+  formatWorkLogThoughtLine,
   formatWorkLogToolLabel,
   formatWorkLogTimelineLine,
+  isThinkingWorkLogEntry,
   workEntryIndicatesToolFailure,
   workEntryIndicatesToolNeutralStatus,
   workEntryIndicatesToolSuccess,
+  workLogEntryIsNarrationStackEntry,
   workLogEntryIsToolLike,
 } from "../../session-logic";
 import { type TurnDiffSummary } from "../../types";
@@ -1378,13 +1382,17 @@ const WorkGroupSection = memo(function WorkGroupSection({
   );
   const onlyToolEntries =
     nonEmptyEntries.length > 0 && nonEmptyEntries.every((entry) => workLogEntryIsToolLike(entry));
-  // SOU-386 PR3: pure tool stacks start expanded for small runs; long runs
-  // collapse under the card header so the center column stays scannable.
+  // Tool + Thought stacks share the Grok Build rail (not the info/error path).
+  const isNarrationStack =
+    nonEmptyEntries.length > 0 &&
+    nonEmptyEntries.every((entry) => workLogEntryIsNarrationStackEntry(entry));
+  // SOU-386 PR3: pure tool / narration stacks start expanded for small runs;
+  // long runs collapse under the card header so the center column stays scannable.
   const [cardExpanded, setCardExpanded] = useState(() => nonEmptyEntries.length <= 6);
 
   if (nonEmptyEntries.length === 0) return null;
 
-  if (onlyToolEntries) {
+  if (onlyToolEntries || isNarrationStack) {
     const stepCount = nonEmptyEntries.length;
     const groupLabel = `${stepCount} step${stepCount === 1 ? "" : "s"}`;
     const inProgressCount = nonEmptyEntries.filter(
@@ -1431,11 +1439,12 @@ const WorkGroupSection = memo(function WorkGroupSection({
         ) : null}
         {showBody ? (
           <div className="space-y-0.5">
-            {nonEmptyEntries.map((workEntry) => (
+            {nonEmptyEntries.map((workEntry, index) => (
               <SimpleWorkEntryRow
                 key={workEntry.id}
                 workEntry={workEntry}
                 workspaceRoot={workspaceRoot}
+                thoughtDurationLabel={thoughtDurationLabelForIndex(nonEmptyEntries, index)}
               />
             ))}
           </div>
@@ -1451,17 +1460,33 @@ const WorkGroupSection = memo(function WorkGroupSection({
         aria-hidden
       />
       <div className="space-y-0.5">
-        {nonEmptyEntries.map((workEntry) => (
+        {nonEmptyEntries.map((workEntry, index) => (
           <SimpleWorkEntryRow
             key={workEntry.id}
             workEntry={workEntry}
             workspaceRoot={workspaceRoot}
+            thoughtDurationLabel={thoughtDurationLabelForIndex(nonEmptyEntries, index)}
           />
         ))}
       </div>
     </section>
   );
 });
+
+function thoughtDurationLabelForIndex(
+  entries: ReadonlyArray<TimelineWorkEntry>,
+  index: number,
+): string | null {
+  const entry = entries[index];
+  if (!entry || !isThinkingWorkLogEntry(entry)) {
+    return null;
+  }
+  const next = entries[index + 1];
+  if (!next?.createdAt) {
+    return null;
+  }
+  return formatElapsed(entry.createdAt, next.createdAt);
+}
 
 function WorkGroupToggleTimelineRow({
   row,
@@ -2103,15 +2128,30 @@ function workEntryPreview(
   workEntry: Pick<TimelineWorkEntry, "detail" | "command" | "changedFiles">,
   workspaceRoot: string | undefined,
 ) {
-  if (workEntry.command) return workEntry.command;
-  if (workEntry.detail) return workEntry.detail;
-  if ((workEntry.changedFiles?.length ?? 0) === 0) return null;
-  const [firstPath] = workEntry.changedFiles ?? [];
-  if (!firstPath) return null;
-  const displayPath = formatWorkspaceRelativePath(firstPath, workspaceRoot);
-  return workEntry.changedFiles!.length === 1
-    ? displayPath
-    : `${displayPath} +${workEntry.changedFiles!.length - 1} more`;
+  // Prefer short path context over command/detail — the scannable headline
+  // already carries "Run …" / "Read …", so muted previews should not dump
+  // multi-line output or JSON blobs next to the title.
+  if ((workEntry.changedFiles?.length ?? 0) > 0) {
+    const [firstPath] = workEntry.changedFiles ?? [];
+    if (firstPath) {
+      const displayPath = formatWorkspaceRelativePath(firstPath, workspaceRoot);
+      return workEntry.changedFiles!.length === 1
+        ? displayPath
+        : `${displayPath} +${workEntry.changedFiles!.length - 1} more`;
+    }
+  }
+  if (workEntry.command?.trim()) {
+    const command = workEntry.command.replace(/\s+/g, " ").trim();
+    if (command.length <= 72 && !looksLikeJsonBlob(command)) {
+      return command;
+    }
+    return null;
+  }
+  const detail = workEntry.detail?.trim();
+  if (!detail || looksLikeJsonBlob(detail) || detail.includes("\n") || detail.length > 72) {
+    return null;
+  }
+  return detail;
 }
 
 function workEntryRawCommand(
@@ -2180,10 +2220,7 @@ function buildToolCallExpandedBody(
   workspaceRoot: string | undefined,
 ): string | null {
   const blocks: string[] = [];
-  const isThought =
-    workEntry.tone === "thinking" ||
-    (workEntry.toolTitle?.trim().toLowerCase() === "thinking" &&
-      workEntry.sourceActivityKind === "task.progress");
+  const isThought = isThinkingWorkLogEntry(workEntry);
 
   // Thoughts: show the actual reasoning prose, not machine labels.
   if (isThought) {
@@ -2268,16 +2305,14 @@ function workEntryIconName(workEntry: TimelineWorkEntry): WorkEntryIconName {
   return workToneIcon(workEntry.tone).iconName;
 }
 
-function capitalizePhrase(value: string): string {
-  const trimmed = value.trim();
-  if (trimmed.length === 0) {
-    return value;
+function toolWorkEntryHeading(
+  workEntry: TimelineWorkEntry,
+  thoughtDurationLabel?: string | null,
+): string {
+  // Grok Build-style scannable line: "Run …", "Read …", "Thought for 3.4s", etc.
+  if (isThinkingWorkLogEntry(workEntry)) {
+    return formatWorkLogThoughtLine(thoughtDurationLabel);
   }
-  return `${trimmed.charAt(0).toUpperCase()}${trimmed.slice(1)}`;
-}
-
-function toolWorkEntryHeading(workEntry: TimelineWorkEntry): string {
-  // Grok Build-style scannable line: "Run …", "Read …", "Thought", etc.
   return formatWorkLogTimelineLine(workEntry);
 }
 
@@ -2286,16 +2321,14 @@ const stopRowToggle = (e: { stopPropagation: () => void }) => e.stopPropagation(
 const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   workEntry: TimelineWorkEntry;
   workspaceRoot: string | undefined;
+  thoughtDurationLabel?: string | null;
 }) {
-  const { workEntry, workspaceRoot } = props;
+  const { workEntry, workspaceRoot, thoughtDurationLabel = null } = props;
   const activity = use(TimelineRowActivityCtx);
   const [expanded, setExpanded] = useState(false);
   const showWarningIndicator = workEntry.sourceActivityKind === "runtime.warning";
-  const isThought =
-    workEntry.tone === "thinking" ||
-    (workEntry.toolTitle?.trim().toLowerCase() === "thinking" &&
-      workEntry.sourceActivityKind === "task.progress");
-  const heading = toolWorkEntryHeading(workEntry);
+  const isThought = isThinkingWorkLogEntry(workEntry);
+  const heading = toolWorkEntryHeading(workEntry, thoughtDurationLabel);
   // Line already includes the scannable context (Run git status…); only show a
   // muted preview when it adds something the headline does not already say.
   const rawPreview = isThought ? null : workEntryPreview(workEntry, workspaceRoot);

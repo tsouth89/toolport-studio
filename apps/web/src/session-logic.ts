@@ -208,7 +208,7 @@ function truncateWorkLogContext(value: string, maxLength = 72): string {
   return `${normalized.slice(0, maxLength - 1).trimEnd()}…`;
 }
 
-function isThinkingWorkLogEntry(entry: WorkLogEntry): boolean {
+export function isThinkingWorkLogEntry(entry: WorkLogEntry): boolean {
   if (entry.tone === "thinking") {
     return true;
   }
@@ -217,8 +217,28 @@ function isThinkingWorkLogEntry(entry: WorkLogEntry): boolean {
 }
 
 /**
+ * Grok Build-style thought headline. When a duration is known (next activity
+ * timestamp), prefer "Thought for 3.4s"; otherwise plain "Thought".
+ */
+export function formatWorkLogThoughtLine(durationLabel?: string | null): string {
+  const duration = durationLabel?.trim();
+  if (duration && duration.length > 0) {
+    return `Thought for ${duration}`;
+  }
+  return "Thought";
+}
+
+/**
+ * Tool + thinking rows that form the live narration stack (Grok Build rail).
+ * Kept expanded together so mid-turn Thought / Run lines stay scannable.
+ */
+export function workLogEntryIsNarrationStackEntry(entry: WorkLogEntry): boolean {
+  return workLogEntryIsToolLike(entry) || isThinkingWorkLogEntry(entry);
+}
+
+/**
  * Timeline heading for work rows (Grok Build-style):
- * - Thinking → "Thought"
+ * - Thinking → "Thought" (callers may append duration via formatWorkLogThoughtLine)
  * - Tools → "Run …" / "Read …" / "Searched …" when metadata allows
  */
 export function formatWorkLogTimelineLine(entry: WorkLogEntry): string {
@@ -307,6 +327,7 @@ export function workEntryLooksLongRunning(entry: WorkLogEntry): boolean {
     /\bci\b/.test(label) ||
     /\bpoll\b/.test(label) ||
     label.startsWith("start monitor") ||
+    label.startsWith("run ") ||
     label.includes("ran command")
   );
 }

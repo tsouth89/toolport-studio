@@ -111,4 +111,49 @@ describe("toolActivity", () => {
       detail: "deriveThreadActivity",
     });
   });
+
+  it("classifies bash/shell titles as Run lines even without command_execution itemType", () => {
+    expect(
+      deriveToolActivityPresentation({
+        itemType: "dynamic_tool_call",
+        title: "Bash",
+        data: {
+          command: "git status --short",
+        },
+        fallbackSummary: "Bash",
+      }),
+    ).toEqual({
+      summary: "Run git status --short",
+      detail: "git status --short",
+    });
+  });
+
+  it("classifies Read/grep wire titles without relying on itemType alone", () => {
+    expect(
+      deriveToolActivityPresentation({
+        itemType: "dynamic_tool_call",
+        title: "read_file",
+        data: {
+          locations: [{ path: "apps/web/src/App.tsx" }],
+        },
+        fallbackSummary: "read_file",
+      }),
+    ).toEqual({
+      summary: "Read App.tsx",
+      detail: "apps/web/src/App.tsx",
+    });
+    expect(
+      deriveToolActivityPresentation({
+        itemType: "dynamic_tool_call",
+        title: "grep",
+        data: {
+          rawInput: { pattern: "formatWorkLogTimelineLine" },
+        },
+        fallbackSummary: "grep",
+      }),
+    ).toEqual({
+      summary: "Searched formatWorkLogTimelineLine",
+      detail: "formatWorkLogTimelineLine",
+    });
+  });
 });

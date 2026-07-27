@@ -277,6 +277,57 @@ function truncateToolHeadline(value: string, maxLength: number): string {
   return `${normalized.slice(0, Math.max(1, maxLength - 1)).trimEnd()}…`;
 }
 
+function looksLikeShellToolTitle(title: string | undefined): boolean {
+  if (!title) {
+    return false;
+  }
+  return (
+    title === "terminal" ||
+    title === "ran command" ||
+    title === "bash" ||
+    title === "shell" ||
+    title === "powershell" ||
+    title === "pwsh" ||
+    title === "cmd" ||
+    title === "zsh" ||
+    title === "sh" ||
+    title === "run command" ||
+    title === "execute"
+  );
+}
+
+function looksLikeReadToolTitle(title: string | undefined): boolean {
+  if (!title) {
+    return false;
+  }
+  return (
+    title === "read" ||
+    title === "read file" ||
+    title === "read files" ||
+    title === "read_file" ||
+    title === "readfile" ||
+    title === "view" ||
+    title === "view file" ||
+    title === "cat"
+  );
+}
+
+function looksLikeSearchToolTitle(title: string | undefined): boolean {
+  if (!title) {
+    return false;
+  }
+  return (
+    title === "find" ||
+    title === "grep" ||
+    title === "rg" ||
+    title === "glob" ||
+    title === "search" ||
+    title === "searched files" ||
+    title === "web search" ||
+    title === "web_search"
+  );
+}
+
 function classifyToolAction(input: {
   readonly itemType?: ToolLifecycleItemType | null | undefined;
   readonly title?: string | undefined;
@@ -285,15 +336,10 @@ function classifyToolAction(input: {
   const itemType = input.itemType ?? undefined;
   const kind = asTrimmedString(input.data?.kind)?.toLowerCase();
   const title = asTrimmedString(input.title)?.toLowerCase();
-  if (
-    itemType === "command_execution" ||
-    kind === "execute" ||
-    title === "terminal" ||
-    title === "ran command"
-  ) {
+  if (itemType === "command_execution" || kind === "execute" || looksLikeShellToolTitle(title)) {
     return "command";
   }
-  if (kind === "read" || title === "read file" || title === "read files") {
+  if (kind === "read" || looksLikeReadToolTitle(title)) {
     return "read";
   }
   if (
@@ -309,9 +355,7 @@ function classifyToolAction(input: {
     itemType === "web_search" ||
     kind === "search" ||
     kind === "fetch" ||
-    title === "find" ||
-    title === "grep" ||
-    title === "searched files"
+    looksLikeSearchToolTitle(title)
   ) {
     return "search";
   }
