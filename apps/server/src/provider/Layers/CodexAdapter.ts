@@ -123,6 +123,10 @@ export interface CodexAdapterLiveOptions {
   >;
   readonly nativeEventLogPath?: string;
   readonly nativeEventLogger?: EventNdjsonLogger;
+  /** Override pending permission auto-cancel (default 3 minutes). */
+  readonly pendingApprovalTimeoutMs?: number;
+  /** Override pending user-input auto-cancel (default 5 minutes). */
+  readonly pendingUserInputTimeoutMs?: number;
 }
 
 interface CodexAdapterSessionContext {
@@ -1462,6 +1466,12 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
             : {}),
           ...(serviceTier ? { serviceTier } : {}),
           ...(mcpLaunchOptions ?? {}),
+          ...(options?.pendingApprovalTimeoutMs !== undefined
+            ? { pendingApprovalTimeoutMs: options.pendingApprovalTimeoutMs }
+            : {}),
+          ...(options?.pendingUserInputTimeoutMs !== undefined
+            ? { pendingUserInputTimeoutMs: options.pendingUserInputTimeoutMs }
+            : {}),
         };
         const sessionScope = yield* Scope.make("sequential");
         let sessionScopeTransferred = false;

@@ -60,7 +60,7 @@ roadmap. Shell / Activity work is tracked under
 Windows alpha builds are published on the
 [GitHub Releases page](https://github.com/tsouth89/toolport-studio/releases).
 
-Latest prerelease pattern: `0.1.0-alpha.N` (e.g. **0.1.0-alpha.7**). Installers are
+Latest prerelease pattern: `0.1.0-alpha.N` (e.g. **0.1.0-alpha.9**). Installers are
 signed with Azure Artifact Signing when published through the `Release` workflow.
 SmartScreen may still warn on first run; prefer the SHA-256 listed in the release
 notes.
