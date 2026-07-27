@@ -26,6 +26,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
+import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
@@ -374,6 +375,64 @@ function buildCodexCollaborationMode(input: {
   };
 }
 
+/**
+ * Build the `input` array shared by `turn/start` and `turn/steer`.
+ */
+export function buildCodexTurnInput(input: {
+  readonly prompt?: string;
+  readonly attachments?: ReadonlyArray<{
+    readonly type: "image";
+    readonly url: string;
+  }>;
+}): Array<EffectCodexSchema.V2TurnStartParams__UserInput> {
+  const turnInput: Array<EffectCodexSchema.V2TurnStartParams__UserInput> = [];
+  if (input.prompt) {
+    turnInput.push({ type: "text", text: input.prompt });
+  }
+  for (const attachment of input.attachments ?? []) {
+    turnInput.push(attachment);
+  }
+  return turnInput;
+}
+
+/**
+ * Whether a new `sendTurn` should fold into the live turn via `turn/steer`
+ * instead of opening a new one with `turn/start`.
+ *
+ * Mirrors `canSteerGrokSendTurn`. Returns the turn id to steer, or undefined
+ * when there is nothing live to steer into.
+ */
+export function canSteerCodexSendTurn(input: {
+  readonly status: string;
+  readonly activeTurnId: TurnId | undefined;
+}): TurnId | undefined {
+  if (input.status !== "running") {
+    return undefined;
+  }
+  return input.activeTurnId;
+}
+
+/**
+ * Whether a `turn/steer` rejection means "this turn cannot be steered" rather
+ * than a transport failure.
+ *
+ * The app-server documents this case as: *"Returned when `turn/start` or
+ * `turn/steer` is submitted while the current active turn cannot accept
+ * same-turn steering, for example `/review` or manual `/compact`."* When it
+ * fires, the correct behaviour is to fall back to opening a new turn, not to
+ * surface an error — the user's message must never be dropped.
+ */
+export function isCodexTurnNotSteerable(cause: unknown): boolean {
+  const message = (cause instanceof Error ? cause.message : String(cause)).toLowerCase();
+  return (
+    message.includes("same-turn steering") ||
+    message.includes("cannot accept") ||
+    message.includes("not steerable") ||
+    // Precondition failure: expectedTurnId no longer matches the active turn.
+    message.includes("expectedturnid")
+  );
+}
+
 export function buildTurnStartParams(input: {
   readonly threadId: string;
   readonly runtimeMode: RuntimeMode;
@@ -390,16 +449,10 @@ export function buildTurnStartParams(input: {
   CodexTurnStartParamsWithCollaborationMode,
   CodexErrors.CodexAppServerProtocolParseError
 > {
-  const turnInput: Array<EffectCodexSchema.V2TurnStartParams__UserInput> = [];
-  if (input.prompt) {
-    turnInput.push({
-      type: "text",
-      text: input.prompt,
-    });
-  }
-  for (const attachment of input.attachments ?? []) {
-    turnInput.push(attachment);
-  }
+  const turnInput = buildCodexTurnInput({
+    ...(input.prompt ? { prompt: input.prompt } : {}),
+    ...(input.attachments ? { attachments: input.attachments } : {}),
+  });
 
   const config = runtimeModeToThreadConfig(input.runtimeMode);
   const collaborationMode = buildCodexCollaborationMode({
@@ -1510,6 +1563,48 @@ export const makeCodexSessionRuntime = (
               }
             }
             yield* Ref.set(needsContextRehydrationRef, false);
+          }
+
+          // Steer the live turn when one is active. Codex exposes a native
+          // `turn/steer`; without it a mid-turn send opened a second competing
+          // turn while the first was still running (SOU-421), which is not what
+          // the composer's "Following up" chrome promises.
+          const liveSession = yield* Ref.get(sessionRef);
+          const steerTargetTurnId = canSteerCodexSendTurn({
+            status: liveSession.status,
+            activeTurnId: liveSession.activeTurnId,
+          });
+          if (steerTargetTurnId) {
+            const steerInput = buildCodexTurnInput({
+              ...(promptText ? { prompt: promptText } : {}),
+              ...(input.attachments ? { attachments: input.attachments } : {}),
+            });
+            const steered = yield* client.raw
+              .request("turn/steer", {
+                threadId: providerThreadId,
+                expectedTurnId: String(steerTargetTurnId),
+                input: steerInput,
+              })
+              .pipe(
+                Effect.asSome,
+                Effect.catchCause(() => Effect.succeed(Option.none())),
+              );
+
+            if (Option.isSome(steered)) {
+              const resumedThreadId = currentProviderThreadId(yield* Ref.get(sessionRef));
+              return {
+                threadId: options.threadId,
+                // Same turn id: the message folded into the live turn.
+                turnId: steerTargetTurnId,
+                ...(resumedThreadId ? { resumeCursor: { threadId: resumedThreadId } } : {}),
+              } satisfies ProviderTurnStartResult;
+            }
+            // Steer rejected (turn not steerable, or the precondition no longer
+            // holds). Fall through to turn/start so the message is never lost.
+            yield* Effect.logInfo("Codex turn/steer rejected; opening a new turn instead", {
+              threadId: options.threadId,
+              expectedTurnId: String(steerTargetTurnId),
+            });
           }
 
           const params = yield* buildTurnStartParams({

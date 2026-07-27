@@ -4,7 +4,7 @@ import { it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { describe } from "vite-plus/test";
-import { DEFAULT_MODEL, ThreadId } from "@t3tools/contracts";
+import { DEFAULT_MODEL, ThreadId, TurnId } from "@t3tools/contracts";
 import * as CodexErrors from "effect-codex-app-server/errors";
 import * as CodexRpc from "effect-codex-app-server/rpc";
 
@@ -15,8 +15,11 @@ import {
 } from "../CodexDeveloperInstructions.ts";
 import { codexSessionAppServerArgs } from "./codexLaunchArgs.ts";
 import {
+  buildCodexTurnInput,
   buildTurnStartParams,
+  canSteerCodexSendTurn,
   hasConfiguredMcpServer,
+  isCodexTurnNotSteerable,
   isRecoverableThreadResumeError,
   openCodexThread,
 } from "./CodexSessionRuntime.ts";
@@ -504,4 +507,65 @@ describe("openCodexThread", () => {
       NodeAssert.equal(error.errorMessage, "timed out waiting for server");
     }),
   );
+});
+
+describe("canSteerCodexSendTurn", () => {
+  it("steers into the live turn while one is running", () => {
+    NodeAssert.equal(
+      canSteerCodexSendTurn({ status: "running", activeTurnId: TurnId.make("turn-1") }),
+      "turn-1",
+    );
+  });
+
+  it("opens a new turn when the session is idle", () => {
+    NodeAssert.equal(
+      canSteerCodexSendTurn({ status: "ready", activeTurnId: TurnId.make("turn-1") }),
+      undefined,
+    );
+  });
+
+  it("opens a new turn when running without a tracked turn id", () => {
+    NodeAssert.equal(
+      canSteerCodexSendTurn({ status: "running", activeTurnId: undefined }),
+      undefined,
+    );
+  });
+});
+
+describe("isCodexTurnNotSteerable", () => {
+  it("recognizes the app-server same-turn steering rejection", () => {
+    NodeAssert.equal(
+      isCodexTurnNotSteerable(
+        new Error("the current active turn cannot accept same-turn steering"),
+      ),
+      true,
+    );
+  });
+
+  it("recognizes an expectedTurnId precondition failure", () => {
+    NodeAssert.equal(isCodexTurnNotSteerable(new Error("expectedTurnId did not match")), true);
+  });
+
+  it("does not treat a transport failure as unsteerable", () => {
+    NodeAssert.equal(isCodexTurnNotSteerable(new Error("socket hang up")), false);
+  });
+});
+
+describe("buildCodexTurnInput", () => {
+  it("puts prompt text first, then attachments", () => {
+    NodeAssert.deepStrictEqual(
+      buildCodexTurnInput({
+        prompt: "hello",
+        attachments: [{ type: "image", url: "data:image/png;base64,AAA" }],
+      }),
+      [
+        { type: "text", text: "hello" },
+        { type: "image", url: "data:image/png;base64,AAA" },
+      ],
+    );
+  });
+
+  it("omits empty prompt text", () => {
+    NodeAssert.deepStrictEqual(buildCodexTurnInput({}), []);
+  });
 });
