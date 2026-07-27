@@ -1646,20 +1646,43 @@ export function makeOpenCodeAdapter(
     const interruptTurn: OpenCodeAdapterShape["interruptTurn"] = Effect.fn("interruptTurn")(
       function* (threadId, turnId) {
         const context = yield* ensureSessionContext(sessions, threadId);
+        const settleTurnId = turnId ?? context.activeTurnId;
+
+        // Drop pending interactive waits so Stop cannot leave the composer
+        // stuck on an approval/question while the turn settles (Cursor/Grok).
+        context.pendingPermissions.clear();
+        context.pendingQuestions.clear();
+
+        // Never block Stop on a wedged OpenCode server.
         yield* runOpenCodeSdk("session.abort", () =>
           context.client.session.abort({ sessionID: context.openCodeSessionId }),
-        ).pipe(Effect.mapError(toRequestError));
-        if (turnId ?? context.activeTurnId) {
+        ).pipe(Effect.timeout("2 seconds"), Effect.ignore);
+
+        // Force session ready even if OpenCode never emits session.status idle.
+        // Leaving activeTurnId set after Stop makes the next send look like a
+        // steer into a dead turn and breaks long multi-turn sessions.
+        context.activeTurnId = undefined;
+        context.activeAgent = undefined;
+        context.activeVariant = undefined;
+        yield* updateProviderSession(context, { status: "ready" }, { clearActiveTurnId: true });
+
+        if (settleTurnId) {
           yield* emit({
             ...(yield* buildEventBase({
               threadId,
-              turnId: turnId ?? context.activeTurnId,
+              turnId: settleTurnId,
             })),
-            type: "turn.aborted",
+            type: "turn.completed",
             payload: {
-              reason: "Interrupted by user.",
+              state: "cancelled",
+              stopReason: "cancelled",
             },
           });
+        } else if (
+          context.session.status === "running" ||
+          context.session.status === "connecting"
+        ) {
+          // Status already forced ready above; no terminal turn to emit.
         }
       },
     );
