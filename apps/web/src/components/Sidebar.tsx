@@ -538,46 +538,35 @@ const SidebarRow = memo(function SidebarRow(props: {
       onBlur={handleRenameBlur}
       onClick={(event) => event.stopPropagation()}
       onDoubleClick={(event) => event.stopPropagation()}
-      className="min-w-0 flex-1 rounded-sm border border-input bg-card px-1 text-sm font-medium text-card-foreground outline-none focus:border-foreground"
+      className="min-w-0 flex-1 rounded-sm border border-input bg-card px-1 text-[13px] font-medium text-card-foreground outline-none focus:border-foreground"
     />
   ) : (
     <span
       className={cn(
-        "min-w-0 flex-1 truncate text-sm",
-        shouldRecede ? "font-normal" : "font-medium",
+        "min-w-0 flex-1 truncate text-[13px] leading-5",
+        // Title is the row; keep weight light like Claude Desktop.
+        isUnread || props.isActive ? "font-medium" : "font-normal",
         isUnread
           ? "text-foreground"
           : shouldRecede
             ? "text-muted-foreground/80"
             : status === "failed"
               ? "text-foreground/95"
-              : "text-foreground/90",
+              : "text-sidebar-foreground/90",
       )}
     >
       {thread.title}
     </span>
   );
 
-  const prBadge =
-    prStatus && pr ? (
-      <button
-        type="button"
-        onClick={handlePrClick}
-        className={cn("shrink-0 font-mono text-xs hover:underline", prStatus.colorClass)}
-        aria-label={prStatus.tooltip}
-      >
-        #{pr.number}
-      </button>
-    ) : null;
-
-  const diff = latestTurnDiff(thread);
-
-  const showProjectTitle = !nestUnderProjectShelf && props.projectTitle != null;
+  // Nested project shelves already show the project; keep ungrouped rows a
+  // touch more informative with a tiny project mark when needed.
+  const showProjectFavicon = !nestUnderProjectShelf && props.projectCwd != null;
 
   return (
     <li
       data-thread-item
-      className="list-none py-0.5 [content-visibility:auto] [contain-intrinsic-size:auto_96px]"
+      className="list-none [content-visibility:auto] [contain-intrinsic-size:auto_28px]"
       draggable={!isRenaming && onDragStart != null}
       onDragStart={handleRowDragStart}
       onDragEnd={onDragEnd}
@@ -597,97 +586,89 @@ const SidebarRow = memo(function SidebarRow(props: {
             />
           }
         >
-          <div className="relative z-10 h-[4.875rem] px-2.5 py-2">
-            <div className="flex h-5 min-w-0 items-center gap-1.5">
+          {/* Claude Desktop density: one title line + compact trailing status */}
+          <div className="relative z-10 flex h-7 min-w-0 items-center gap-1.5 px-2">
+            {showProjectFavicon ? (
               <ProjectFavicon
                 environmentId={thread.environmentId}
                 cwd={props.projectCwd ?? ""}
-                className="size-4 shrink-0"
+                className="size-3.5 shrink-0 opacity-80"
               />
-              {showProjectTitle ? (
-                <span
-                  className={cn(
-                    "min-w-0 flex-1 truncate text-xs text-muted-foreground/85",
-                    shouldRecede ? "font-normal" : "font-medium",
-                  )}
-                >
-                  {props.projectTitle}
-                </span>
-              ) : (
-                <span className="flex-1" />
-              )}
-              <span className="relative ml-auto flex h-5 min-w-8 shrink-0 items-center justify-end pl-1 text-xs">
-                <span className="tabular-nums text-muted-foreground/65 transition-opacity group-hover/sidebar-row:opacity-0">
-                  {topStatus ? (
-                    <span
-                      className={cn(
-                        "inline-flex items-center gap-1 font-medium",
-                        topStatus.className,
-                      )}
-                    >
-                      {topStatus.icon === "working" ? (
-                        <CircleDashedIcon aria-hidden className="size-4 shrink-0" />
-                      ) : topStatus.icon === "done" ? (
-                        <CircleCheckIcon aria-hidden className="size-4 shrink-0" />
-                      ) : null}
-                      <span role="status">{topStatus.label}</span>
-                      {status === "working" ? (
-                        <span aria-hidden>
-                          <WorkingDuration startedAt={resolveWorkingStartedAt(thread)} />
-                        </span>
-                      ) : null}
+            ) : null}
+            {!nestUnderProjectShelf && props.projectTitle != null ? (
+              <span className="max-w-[28%] shrink truncate text-[11px] text-muted-foreground/70">
+                {props.projectTitle}
+              </span>
+            ) : null}
+            <div className="flex min-w-0 flex-1 items-center gap-1">{title}</div>
+            <span className="relative ml-auto flex h-5 min-w-0 shrink-0 items-center justify-end pl-1">
+              <span className="flex items-center gap-1 transition-opacity group-hover/sidebar-row:opacity-0">
+                {topStatus ? (
+                  <span
+                    className={cn(
+                      "inline-flex max-w-[5.5rem] items-center gap-0.5 truncate text-[11px] font-medium",
+                      topStatus.className,
+                    )}
+                  >
+                    {topStatus.icon === "working" ? (
+                      <CircleDashedIcon aria-hidden className="size-3 shrink-0" />
+                    ) : topStatus.icon === "done" ? (
+                      <CircleCheckIcon aria-hidden className="size-3 shrink-0" />
+                    ) : null}
+                    <span role="status" className="truncate">
+                      {topStatus.label}
                     </span>
-                  ) : (
-                    threadTimeLabel(thread)
-                  )}
-                </span>
-                <span className="absolute inset-y-0 right-0 flex items-stretch gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover/sidebar-row:opacity-100">
+                    {status === "working" ? (
+                      <span aria-hidden className="tabular-nums">
+                        <WorkingDuration startedAt={resolveWorkingStartedAt(thread)} />
+                      </span>
+                    ) : null}
+                  </span>
+                ) : (
+                  <span className="tabular-nums text-[11px] text-muted-foreground/55">
+                    {threadTimeLabel(thread)}
+                  </span>
+                )}
+                {prStatus && pr ? (
                   <button
                     type="button"
-                    aria-label="Archive chat"
-                    onClick={handleArchiveClick}
-                    className="inline-flex cursor-pointer items-center gap-1 rounded-md bg-transparent px-2 text-xs text-muted-foreground hover:text-foreground"
+                    onClick={handlePrClick}
+                    className={cn(
+                      "shrink-0 font-mono text-[10px] hover:underline",
+                      prStatus.colorClass,
+                    )}
+                    aria-label={prStatus.tooltip}
                   >
-                    <ArchiveIcon className="size-3" />
-                    Archive
+                    #{pr.number}
                   </button>
-                </span>
-              </span>
-            </div>
-            <div className="mt-1 flex min-w-0">{title}</div>
-            <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground/75">
-              {thread.branch ? (
-                <span className="min-w-0 flex-1 truncate whitespace-nowrap">{thread.branch}</span>
-              ) : (
-                <span className="flex-1" />
-              )}
-              {prBadge}
-              {diff ? (
-                <span className="shrink-0 font-mono">
-                  <span className="text-emerald-600 dark:text-emerald-400">+{diff.insertions}</span>{" "}
-                  <span className="text-red-600 dark:text-red-400">−{diff.deletions}</span>
-                </span>
-              ) : null}
-              <span
-                aria-hidden
-                className="pointer-events-none ml-auto inline-flex shrink-0 items-center gap-1"
-              >
+                ) : null}
                 {isRemote ? (
-                  <span className="inline-flex shrink-0 items-center text-sidebar-muted-foreground/70">
-                    <ServerIcon aria-hidden className="size-3.5" />
-                  </span>
+                  <ServerIcon
+                    aria-hidden
+                    className="size-3 shrink-0 text-sidebar-muted-foreground/65"
+                  />
                 ) : null}
                 {driverKind ? (
-                  <span className="inline-flex shrink-0 items-center opacity-60">
+                  <span className="inline-flex shrink-0 opacity-50">
                     <ProviderInstanceIcon
                       driverKind={driverKind}
                       displayName={thread.session?.providerName ?? modelInstanceId}
-                      iconClassName="size-3.5"
+                      iconClassName="size-3"
                     />
                   </span>
                 ) : null}
               </span>
-            </div>
+              <span className="absolute inset-y-0 right-0 flex items-center opacity-0 transition-opacity focus-within:opacity-100 group-hover/sidebar-row:opacity-100">
+                <button
+                  type="button"
+                  aria-label="Archive chat"
+                  onClick={handleArchiveClick}
+                  className="inline-flex size-6 cursor-pointer items-center justify-center rounded-md bg-transparent text-muted-foreground hover:bg-sidebar-row-hover hover:text-foreground"
+                >
+                  <ArchiveIcon className="size-3.5" />
+                </button>
+              </span>
+            </span>
           </div>
           {props.jumpLabel ? <JumpHintBadge label={props.jumpLabel} /> : null}
         </TooltipTrigger>
@@ -696,15 +677,6 @@ const SidebarRow = memo(function SidebarRow(props: {
     </li>
   );
 });
-
-function latestTurnDiff(
-  thread: SidebarThreadSummary,
-): { insertions: number; deletions: number } | null {
-  // Shells don't carry checkpoint summaries; diff stats render only when the
-  // shell projection grows them. Kept as a seam so the row layout is ready.
-  void thread;
-  return null;
-}
 
 export default function Sidebar() {
   const projects = useProjects();
@@ -2035,8 +2007,13 @@ export default function Sidebar() {
                 };
                 // Nest sessions under stable project shelves (manual + pin order).
                 // Cap at sidebarThreadPreviewCount (default 5) with Show more.
+                // Empty unpinned shelves stay hidden until a session drag so the
+                // list is not a wall of empty project folders.
                 const items: ReactNode[] = [];
                 for (const panel of activeProjectPanels) {
+                  if (panel.threads.length === 0 && !panel.isPinned && draggingThreadKey == null) {
+                    continue;
+                  }
                   const isDropTarget =
                     dragOverProjectKey === panel.projectKey &&
                     draggingProjectKey !== panel.projectKey;
@@ -2065,23 +2042,23 @@ export default function Sidebar() {
                       onDrop={(event) => handleProjectGroupDrop(event, panel.projectKey)}
                       onDragEnd={handleProjectGroupDragEnd}
                     >
-                      <div className="group/project-header mb-1 mt-3 flex w-full items-center gap-1 px-1.5 text-left first:mt-1">
+                      <div className="group/project-header mt-2 mb-0.5 flex h-6 w-full items-center gap-1 px-1.5 text-left first:mt-0.5">
                         <GripVerticalIcon
-                          className="size-3.5 shrink-0 cursor-grab text-muted-foreground/40 opacity-0 transition-opacity group-hover/project-header:opacity-100 active:cursor-grabbing"
+                          className="size-3 shrink-0 cursor-grab text-muted-foreground/40 opacity-0 transition-opacity group-hover/project-header:opacity-100 active:cursor-grabbing"
                           aria-hidden
                         />
                         <span
                           className={cn(
-                            "min-w-0 truncate text-xs font-medium",
+                            "min-w-0 truncate text-[11px] font-medium tracking-wide",
                             panel.isNoProject
                               ? "text-muted-foreground"
-                              : "text-sidebar-foreground/80",
+                              : "text-sidebar-muted-foreground",
                           )}
                           title={panel.displayName}
                         >
                           {panel.displayName}
                         </span>
-                        <span className="h-px flex-1 bg-sidebar-border/60" />
+                        <span className="h-px flex-1 bg-sidebar-border/50" />
                         <button
                           type="button"
                           data-testid="sidebar-project-pin"
@@ -2104,9 +2081,11 @@ export default function Sidebar() {
                         >
                           <PinIcon className={cn("size-3", panel.isPinned && "fill-current")} />
                         </button>
-                        <span className="shrink-0 font-mono text-[10px] text-muted-foreground/50">
-                          {panel.threads.length}
-                        </span>
+                        {panel.threads.length > 0 ? (
+                          <span className="shrink-0 font-mono text-[10px] text-muted-foreground/45">
+                            {panel.threads.length}
+                          </span>
+                        ) : null}
                       </div>
                     </li>,
                   );
@@ -2128,7 +2107,7 @@ export default function Sidebar() {
                         }
                         onDrop={(event) => handleProjectGroupDrop(event, panel.projectKey)}
                       >
-                        <div className="mb-0.5 px-5 py-1.5 font-mono text-[11px] text-muted-foreground/45">
+                        <div className="mb-0.5 px-5 py-0.5 font-mono text-[10px] text-muted-foreground/40">
                           {draggingThreadKey != null ? "Drop session here" : "Drag sessions here"}
                         </div>
                       </li>,
@@ -2149,7 +2128,7 @@ export default function Sidebar() {
                           type="button"
                           data-testid="sidebar-project-show-more"
                           onClick={() => toggleProjectThreadListExpanded(panel.projectKey)}
-                          className="mb-0.5 flex h-[26px] w-full items-center justify-center gap-1.5 rounded-md px-2 font-mono text-[11px] text-muted-foreground transition-colors hover:bg-sidebar-row-hover hover:text-foreground"
+                          className="mb-0.5 flex h-6 w-full items-center justify-start gap-1.5 rounded-md px-2 ps-5 font-mono text-[11px] text-muted-foreground transition-colors hover:bg-sidebar-row-hover hover:text-foreground"
                         >
                           {expanded ? "Show less" : `Show ${panel.hiddenCount} more`}
                         </button>
