@@ -21,6 +21,7 @@ import {
   type ThreadId,
   TurnId,
 } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Crypto from "effect/Crypto";
 import * as Deferred from "effect/Deferred";
@@ -88,6 +89,12 @@ const ACP_APPROVAL_MODE_ALIASES = ["ask"];
 
 /** Auto-cancel unanswered permission prompts so multi-session dogfood cannot hang forever. */
 const CURSOR_PENDING_APPROVAL_TIMEOUT_MS = 3 * 60_000;
+/**
+ * Cursor ACP (especially first prompt / slow models like Grok via Cursor) can
+ * sit on session/prompt with zero session/update traffic. Surface a warning so
+ * Working is not a silent black hole.
+ */
+const CURSOR_SILENT_PROMPT_WARNING_MS = 20_000;
 /** Slightly longer for multi-question forms. */
 const CURSOR_PENDING_USER_INPUT_TIMEOUT_MS = 5 * 60_000;
 
@@ -143,6 +150,16 @@ interface CursorSessionContext {
   readonly turns: Array<{ id: TurnId; items: Array<unknown> }>;
   lastPlanFingerprint: string | undefined;
   activeTurnId: TurnId | undefined;
+  /**
+   * Last turn that owned live ACP stream traffic. Survives force-settle so late
+   * session/update chunks after Stop still bind to a turn (otherwise content.delta
+   * arrives with no turnId and the UI looks empty while the agent was talking).
+   */
+  lastNotificationTurnId: TurnId | undefined;
+  /** Wall-clock ms of last visible stream activity (text/tools/plan/thought). */
+  lastVisibleActivityAtMs: number;
+  /** Turn id we already warned about for silent prompt (one warning per turn). */
+  silentPromptWarningTurnId: string | undefined;
   /** Number of sendTurn prompts currently in flight or being prepared.
    * >0 means a turn is actively running, so a new sendTurn is a steer that
    * continues it, and only the last remaining prompt settles the turn. */
@@ -159,6 +176,10 @@ interface CursorSessionContext {
   injectsToolportMcp: boolean;
   stopped: boolean;
 }
+
+/** Prefer the live turn; fall back to last bound turn for late ACP notifications. */
+const resolveCursorNotificationTurnId = (ctx: CursorSessionContext): TurnId | undefined =>
+  ctx.activeTurnId ?? ctx.lastNotificationTurnId;
 
 function settlePendingApprovalsAsCancelled(
   pendingApprovals: ReadonlyMap<ApprovalRequestId, PendingApproval>,
@@ -449,7 +470,8 @@ export function makeCursorAdapter(
       method: string,
     ) =>
       Effect.gen(function* () {
-        const fingerprint = `${ctx.activeTurnId ?? "no-turn"}:${encodeJsonStringForDiagnostics(payload) ?? "[unserializable payload]"}`;
+        const planTurnId = resolveCursorNotificationTurnId(ctx);
+        const fingerprint = `${planTurnId ?? "no-turn"}:${encodeJsonStringForDiagnostics(payload) ?? "[unserializable payload]"}`;
         if (ctx.lastPlanFingerprint === fingerprint) {
           return;
         }
@@ -459,7 +481,7 @@ export function makeCursorAdapter(
             stamp: yield* makeEventStamp(),
             provider: PROVIDER,
             threadId: ctx.threadId,
-            turnId: ctx.activeTurnId,
+            turnId: planTurnId,
             payload,
             source,
             method,
@@ -741,10 +763,16 @@ export function makeCursorAdapter(
         );
       });
 
+    const noteVisibleActivity = (ctx: CursorSessionContext) =>
+      Effect.gen(function* () {
+        ctx.lastVisibleActivityAtMs = yield* Clock.currentTimeMillis;
+      });
+
     const startNotificationFiber = (ctx: CursorSessionContext) =>
       Stream.runDrain(
         Stream.mapEffect(ctx.acp.getEvents(), (event) =>
           Effect.gen(function* () {
+            const notificationTurnId = resolveCursorNotificationTurnId(ctx);
             switch (event._tag) {
               case "EventStreamBarrier":
                 yield* Deferred.succeed(event.acknowledge, undefined);
@@ -752,30 +780,33 @@ export function makeCursorAdapter(
               case "ModeChanged":
                 return;
               case "AssistantItemStarted":
+                yield* noteVisibleActivity(ctx);
                 yield* offerRuntimeEvent(
                   makeAcpAssistantItemEvent({
                     stamp: yield* makeEventStamp(),
                     provider: PROVIDER,
                     threadId: ctx.threadId,
-                    turnId: ctx.activeTurnId,
+                    turnId: notificationTurnId,
                     itemId: event.itemId,
                     lifecycle: "item.started",
                   }),
                 );
                 return;
               case "AssistantItemCompleted":
+                yield* noteVisibleActivity(ctx);
                 yield* offerRuntimeEvent(
                   makeAcpAssistantItemEvent({
                     stamp: yield* makeEventStamp(),
                     provider: PROVIDER,
                     threadId: ctx.threadId,
-                    turnId: ctx.activeTurnId,
+                    turnId: notificationTurnId,
                     itemId: event.itemId,
                     lifecycle: "item.completed",
                   }),
                 );
                 return;
               case "PlanUpdated":
+                yield* noteVisibleActivity(ctx);
                 yield* logNative(ctx.threadId, "session/update", event.rawPayload, "acp.jsonrpc");
                 yield* emitPlanUpdate(
                   ctx,
@@ -786,13 +817,14 @@ export function makeCursorAdapter(
                 );
                 return;
               case "ToolCallUpdated":
+                yield* noteVisibleActivity(ctx);
                 yield* logNative(ctx.threadId, "session/update", event.rawPayload, "acp.jsonrpc");
                 yield* offerRuntimeEvent(
                   makeAcpToolCallEvent({
                     stamp: yield* makeEventStamp(),
                     provider: PROVIDER,
                     threadId: ctx.threadId,
-                    turnId: ctx.activeTurnId,
+                    turnId: notificationTurnId,
                     toolCall: event.toolCall,
                     rawPayload: event.rawPayload,
                   }),
@@ -800,12 +832,13 @@ export function makeCursorAdapter(
                 return;
               case "ContentDelta":
                 // Skip native log for high-frequency text deltas (SOU-400 host tax).
+                yield* noteVisibleActivity(ctx);
                 yield* offerRuntimeEvent(
                   makeAcpContentDeltaEvent({
                     stamp: yield* makeEventStamp(),
                     provider: PROVIDER,
                     threadId: ctx.threadId,
-                    turnId: ctx.activeTurnId,
+                    turnId: notificationTurnId,
                     ...(event.itemId ? { itemId: event.itemId } : {}),
                     text: event.text,
                     rawPayload: event.rawPayload,
@@ -813,8 +846,21 @@ export function makeCursorAdapter(
                 );
                 return;
               case "ThoughtDelta":
-                // Cursor path ignores reasoning stream for transcript; Grok
-                // uses it for stalled-turn liveness. No native log (host tax).
+                // Provider-authored thinking/progress (ACP agent_thought_chunk).
+                // Grok surfaces these as collapsible reasoning; Cursor previously
+                // dropped them, so long thinking looked like a dead Working state.
+                yield* noteVisibleActivity(ctx);
+                yield* offerRuntimeEvent(
+                  makeAcpContentDeltaEvent({
+                    stamp: yield* makeEventStamp(),
+                    provider: PROVIDER,
+                    threadId: ctx.threadId,
+                    turnId: notificationTurnId,
+                    text: event.text,
+                    streamKind: "reasoning_text",
+                    rawPayload: event.rawPayload,
+                  }),
+                );
                 return;
             }
           }),
@@ -1094,6 +1140,9 @@ export function makeCursorAdapter(
             turns: [],
             lastPlanFingerprint: undefined,
             activeTurnId: undefined,
+            lastNotificationTurnId: undefined,
+            lastVisibleActivityAtMs: yield* Clock.currentTimeMillis,
+            silentPromptWarningTurnId: undefined,
             promptsInFlight: 0,
             forceSettledTurnIds: new Set(),
             injectsToolportMcp,
@@ -1164,8 +1213,11 @@ export function makeCursorAdapter(
           // mode). Config can take seconds; delaying chrome left a blank hole
           // matching the pre-fix Claude path (Claude Desktop always shows live).
           ctx.activeTurnId = turnId;
+          ctx.lastNotificationTurnId = turnId;
+          ctx.lastVisibleActivityAtMs = yield* Clock.currentTimeMillis;
           if (steeringTurnId === undefined) {
             ctx.lastPlanFingerprint = undefined;
+            ctx.silentPromptWarningTurnId = undefined;
           }
           ctx.session = {
             ...ctx.session,
@@ -1185,6 +1237,40 @@ export function makeCursorAdapter(
               payload: { model: resolvedModel },
             });
           }
+
+          // Dogfood: Cursor often emits no session/update for tens of seconds on
+          // first prompt / slow models. Warn once so Working is not silent.
+          const silenceWatchTurnId = turnId;
+          const silenceWatchStartedAtMs = ctx.lastVisibleActivityAtMs;
+          yield* Effect.gen(function* () {
+            yield* Effect.sleep(`${CURSOR_SILENT_PROMPT_WARNING_MS} millis`);
+            if (ctx.stopped) {
+              return;
+            }
+            if (ctx.silentPromptWarningTurnId === String(silenceWatchTurnId)) {
+              return;
+            }
+            const stillThisTurn =
+              ctx.activeTurnId === silenceWatchTurnId ||
+              ctx.lastNotificationTurnId === silenceWatchTurnId;
+            const stillSilent = ctx.lastVisibleActivityAtMs <= silenceWatchStartedAtMs;
+            const stillInFlight = ctx.promptsInFlight > 0;
+            if (!stillThisTurn || !stillSilent || !stillInFlight) {
+              return;
+            }
+            ctx.silentPromptWarningTurnId = String(silenceWatchTurnId);
+            yield* offerRuntimeEvent({
+              type: "runtime.warning",
+              ...(yield* makeEventStamp()),
+              provider: PROVIDER,
+              threadId: input.threadId,
+              turnId: silenceWatchTurnId,
+              payload: {
+                message:
+                  "Cursor has not streamed any progress yet. The ACP agent may still be starting or thinking. Wait, or press Stop and send again.",
+              },
+            });
+          }).pipe(Effect.forkChild);
 
           yield* applyRequestedSessionConfiguration({
             runtime: ctx.acp,
@@ -1271,6 +1357,7 @@ export function makeCursorAdapter(
                   }
                   ctx.forceSettledTurnIds.add(String(turnId));
                   ctx.activeTurnId = undefined;
+                  ctx.lastNotificationTurnId = turnId;
                   const updatedAt = yield* nowIso;
                   const { activeTurnId: _cleared, ...readySession } = ctx.session;
                   ctx.session = {
@@ -1379,7 +1466,11 @@ export function makeCursorAdapter(
         // resolves the in-flight prompt (Claude/Grok parity).
         if (settleTurnId !== undefined && !ctx.forceSettledTurnIds.has(String(settleTurnId))) {
           ctx.forceSettledTurnIds.add(String(settleTurnId));
+          // Clear live turn for Working chrome, but keep lastNotificationTurnId
+          // so late ACP stream chunks after cancel still bind to this turn.
           ctx.activeTurnId = undefined;
+          ctx.lastNotificationTurnId = settleTurnId;
+          ctx.promptsInFlight = 0;
           const updatedAt = yield* nowIso;
           const { activeTurnId: _cleared, ...readySession } = ctx.session;
           ctx.session = {
@@ -1402,6 +1493,7 @@ export function makeCursorAdapter(
           settleTurnId === undefined &&
           (ctx.session.status === "running" || ctx.session.status === "connecting")
         ) {
+          ctx.promptsInFlight = 0;
           const updatedAt = yield* nowIso;
           const { activeTurnId: _cleared, ...readySession } = ctx.session;
           ctx.session = {
