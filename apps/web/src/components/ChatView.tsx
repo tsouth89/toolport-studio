@@ -518,14 +518,32 @@ function useLocalDispatchState(input: {
   activePendingUserInput: ApprovalRequestId | null;
   threadError: string | null | undefined;
 }) {
-  const [localDispatch, setLocalDispatch] = useState<LocalDispatchSnapshot | null>(null);
+  // Map of in-flight local dispatches by thread so multi-session Send does not
+  // share one busy flag across the active composer.
+  const [localDispatchByThreadId, setLocalDispatchByThreadId] = useState<
+    ReadonlyMap<string, LocalDispatchSnapshot>
+  >(() => new Map());
   const [dispatchClockMs, setDispatchClockMs] = useState(() => Date.now());
+  const activeThreadId = input.activeThread?.id ?? null;
+  const localDispatch =
+    activeThreadId !== null ? (localDispatchByThreadId.get(String(activeThreadId)) ?? null) : null;
   const latestUserMessageId =
     input.activeThread?.messages.findLast((message) => message.role === "user")?.id ?? null;
 
   const resetLocalDispatch = useCallback(() => {
-    setLocalDispatch(null);
-  }, []);
+    if (activeThreadId === null) {
+      return;
+    }
+    const key = String(activeThreadId);
+    setLocalDispatchByThreadId((current) => {
+      if (!current.has(key)) {
+        return current;
+      }
+      const next = new Map(current);
+      next.delete(key);
+      return next;
+    });
+  }, [activeThreadId]);
 
   const serverAcknowledgedLocalDispatch = useMemo(
     () =>
@@ -538,9 +556,11 @@ function useLocalDispatchState(input: {
         hasPendingApproval: input.activePendingApproval !== null,
         hasPendingUserInput: input.activePendingUserInput !== null,
         threadError: input.threadError,
+        activeThreadId,
         nowMs: dispatchClockMs,
       }),
     [
+      activeThreadId,
       dispatchClockMs,
       input.activeLatestTurn,
       input.activePendingApproval,
@@ -553,6 +573,22 @@ function useLocalDispatchState(input: {
     ],
   );
   const activeLocalDispatch = serverAcknowledgedLocalDispatch ? null : localDispatch;
+
+  // Drop acknowledged entries so the map does not grow with every send.
+  useEffect(() => {
+    if (!serverAcknowledgedLocalDispatch || localDispatch === null || activeThreadId === null) {
+      return;
+    }
+    const key = String(activeThreadId);
+    setLocalDispatchByThreadId((current) => {
+      if (!current.has(key)) {
+        return current;
+      }
+      const next = new Map(current);
+      next.delete(key);
+      return next;
+    });
+  }, [activeThreadId, localDispatch, serverAcknowledgedLocalDispatch]);
 
   // Re-evaluate stale "Sending" after LOCAL_DISPATCH_STALE_MS so the composer
   // cannot stay on a disabled spinner forever when projection never acks.
@@ -577,15 +613,26 @@ function useLocalDispatchState(input: {
   const beginLocalDispatch = useCallback(
     (options?: { preparingWorktree?: boolean }) => {
       const preparingWorktree = Boolean(options?.preparingWorktree);
+      const thread = input.activeThread;
+      if (!thread) {
+        return;
+      }
+      const key = String(thread.id);
       setDispatchClockMs(Date.now());
-      setLocalDispatch((current) => {
-        const active = serverAcknowledgedLocalDispatch ? null : current;
-        if (active) {
-          return active.preparingWorktree === preparingWorktree
+      setLocalDispatchByThreadId((current) => {
+        const existing = current.get(key) ?? null;
+        const active = serverAcknowledgedLocalDispatch ? null : existing;
+        const nextSnapshot = active
+          ? active.preparingWorktree === preparingWorktree
             ? active
-            : { ...active, preparingWorktree };
+            : { ...active, preparingWorktree }
+          : createLocalDispatchSnapshot(thread, options);
+        if (existing === nextSnapshot) {
+          return current;
         }
-        return createLocalDispatchSnapshot(input.activeThread, options);
+        const next = new Map(current);
+        next.set(key, nextSnapshot);
+        return next;
       });
     },
     [input.activeThread, serverAcknowledgedLocalDispatch],

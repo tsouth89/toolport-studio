@@ -544,6 +544,8 @@ export async function waitForStartedServerThread(
 }
 
 export interface LocalDispatchSnapshot {
+  /** Thread this Send belongs to — multi-session must not leak Working across switches. */
+  threadId: Thread["id"] | null;
   startedAt: string;
   preparingWorktree: boolean;
   latestUserMessageId: ChatMessage["id"] | null;
@@ -563,6 +565,7 @@ export function createLocalDispatchSnapshot(
   const session = activeThread?.session ?? null;
   const latestUserMessage = activeThread?.messages.findLast((message) => message.role === "user");
   return {
+    threadId: activeThread?.id ?? null,
     startedAt: new Date().toISOString(),
     preparingWorktree: Boolean(options?.preparingWorktree),
     latestUserMessageId: latestUserMessage?.id ?? null,
@@ -587,11 +590,22 @@ export function hasServerAcknowledgedLocalDispatch(input: {
   hasPendingApproval: boolean;
   hasPendingUserInput: boolean;
   threadError: string | null | undefined;
+  /** Active thread id; dispatch for another thread must not drive this composer. */
+  activeThreadId?: Thread["id"] | null;
   /** Wall clock for stale-dispatch safety; defaults to Date.now(). */
   nowMs?: number;
 }): boolean {
   if (!input.localDispatch) {
     return false;
+  }
+  // Dispatch is per-thread: switching sessions must not keep the other
+  // thread's "Sending" busy state on this composer.
+  if (
+    input.activeThreadId !== undefined &&
+    input.localDispatch.threadId !== null &&
+    input.localDispatch.threadId !== input.activeThreadId
+  ) {
+    return true;
   }
   if (input.hasPendingApproval || input.hasPendingUserInput || Boolean(input.threadError)) {
     return true;

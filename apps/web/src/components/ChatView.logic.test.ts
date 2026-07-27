@@ -576,6 +576,42 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
     ).toBe(false);
   });
 
+  it("treats dispatch from another thread as not active for this composer", () => {
+    const threadA = makeThread({ id: ThreadId.make("thread-a") });
+    const threadB = makeThread({ id: ThreadId.make("thread-b") });
+    const localDispatch = createLocalDispatchSnapshot(threadA);
+
+    expect(localDispatch.threadId).toBe(threadA.id);
+    // Active on B: suppress A's busy state so multi-session switch stays clean.
+    expect(
+      hasServerAcknowledgedLocalDispatch({
+        localDispatch,
+        phase: "ready",
+        latestTurn: null,
+        latestUserMessageId: null,
+        session: null,
+        hasPendingApproval: false,
+        hasPendingUserInput: false,
+        threadError: null,
+        activeThreadId: threadB.id,
+      }),
+    ).toBe(true);
+    // Still on A with no server progress: keep local Working.
+    expect(
+      hasServerAcknowledgedLocalDispatch({
+        localDispatch,
+        phase: "ready",
+        latestTurn: null,
+        latestUserMessageId: null,
+        session: null,
+        hasPendingApproval: false,
+        hasPendingUserInput: false,
+        threadError: null,
+        activeThreadId: threadA.id,
+      }),
+    ).toBe(false);
+  });
+
   it("acknowledges a settled newer turn", () => {
     const localDispatch = createLocalDispatchSnapshot(
       makeThread({ latestTurn: completedTurn, session: readySession }),
