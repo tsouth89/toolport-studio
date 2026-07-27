@@ -1,10 +1,6 @@
 "use client";
 
-import {
-  scopedProjectKey,
-  scopeProjectRef,
-  scopeThreadRef,
-} from "@t3tools/client-runtime/environment";
+import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
   isAtomCommandInterrupted,
   settlePromise,
@@ -65,8 +61,7 @@ import { useAtomQueryRunner } from "../state/use-atom-query-runner";
 import { useEnvironments, usePrimaryEnvironmentId } from "../state/environments";
 import { useProjects, useThreadShells } from "../state/entities";
 import { resolveThreadActionProjectRef, startNewThreadFromContext } from "../lib/chatThreadActions";
-import { useComposerDraftStore } from "../composerDraftStore";
-import { deriveLogicalProjectKeyFromSettings } from "../logicalProject";
+import { attachSessionToProject } from "../lib/attachSessionToProject";
 import {
   appendBrowsePathSegment,
   canNavigateUp,
@@ -863,61 +858,48 @@ function OpenCommandPaletteDialog(props: {
 
   const attachCurrentThreadToProject = useCallback(
     async (project: Pick<(typeof projects)[number], "environmentId" | "id">) => {
-      if (activeThread) {
-        if (activeThread.environmentId !== project.environmentId) {
+      const result = await attachSessionToProject({
+        project,
+        activeThread: activeThread
+          ? { environmentId: activeThread.environmentId, id: activeThread.id }
+          : null,
+        activeDraftId,
+        activeDraftThread,
+        projects,
+        projectGroupingSettings,
+        updateServerThreadProject: async ({ environmentId, threadId, projectId }) => {
+          const commandResult = await updateThreadMetadata({
+            environmentId,
+            input: {
+              threadId,
+              projectId,
+              branch: null,
+              worktreePath: null,
+            },
+          });
+          if (commandResult._tag === "Failure") {
+            if (isAtomCommandInterrupted(commandResult)) {
+              return { ok: false, interrupted: true };
+            }
+            const error = squashAtomCommandFailure(commandResult);
+            return {
+              ok: false,
+              message: error instanceof Error ? error.message : "An error occurred.",
+            };
+          }
+          return { ok: true };
+        },
+      });
+      if (!result.ok) {
+        if (result.description !== "Attachment was interrupted.") {
           toastManager.add(
             stackedThreadToast({
               type: "error",
-              title: "Couldn’t attach folder",
-              description: "A conversation can only move within its current environment.",
+              title: result.title,
+              description: result.description,
             }),
           );
-          return false;
         }
-        const result = await updateThreadMetadata({
-          environmentId: activeThread.environmentId,
-          input: {
-            threadId: activeThread.id,
-            projectId: project.id,
-            branch: null,
-            worktreePath: null,
-          },
-        });
-        if (result._tag === "Failure") {
-          if (!isAtomCommandInterrupted(result)) {
-            const error = squashAtomCommandFailure(result);
-            toastManager.add(
-              stackedThreadToast({
-                type: "error",
-                title: "Couldn’t attach folder",
-                description: error instanceof Error ? error.message : "An error occurred.",
-              }),
-            );
-          }
-          return false;
-        }
-      } else if (activeDraftThread && activeDraftId) {
-        const targetProject = projects.find(
-          (candidate) =>
-            candidate.environmentId === project.environmentId && candidate.id === project.id,
-        );
-        const targetProjectRef = scopeProjectRef(project.environmentId, project.id);
-        const logicalProjectKey = targetProject
-          ? deriveLogicalProjectKeyFromSettings(targetProject, projectGroupingSettings)
-          : scopedProjectKey(targetProjectRef);
-        useComposerDraftStore
-          .getState()
-          .setLogicalProjectDraftThreadId(logicalProjectKey, targetProjectRef, activeDraftId, {
-            threadId: activeDraftThread.threadId,
-            createdAt: activeDraftThread.createdAt,
-            runtimeMode: activeDraftThread.runtimeMode,
-            interactionMode: activeDraftThread.interactionMode,
-            branch: null,
-            worktreePath: null,
-            envMode: "local",
-            startFromOrigin: false,
-          });
-      } else {
         return false;
       }
       setOpen(false);
