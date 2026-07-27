@@ -84,6 +84,12 @@ import {
   DEFAULT_CONVERSATION_REHYDRATION_MAX_CHARS,
   type ConversationHistoryTurn,
 } from "../conversationRehydration.ts";
+import {
+  canSteerSendTurn,
+  formatInterjectionText,
+  shouldEmitSyntheticFollowUpChrome,
+  shouldForceCloseOpenToolsOnSteer,
+} from "../turnEngine/index.ts";
 
 const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.UnknownFromJsonString);
 
@@ -640,17 +646,19 @@ export function grokPromptSettlementBelongsToContext(input: {
 /**
  * Whether a new sendTurn should continue the current live turn (steer) vs open
  * a fresh turn id. Stop/watchdog must never leave a cancelled turn eligible.
+ * Delegates to the shared turn-engine steer policy (SOU-428).
  */
 export function canSteerGrokSendTurn(input: {
   readonly promptsInFlight: number;
   readonly activeTurnId: TurnId | undefined;
   readonly interruptedTurnIds: ReadonlySet<TurnId>;
 }): boolean {
-  return (
-    input.promptsInFlight > 0 &&
-    input.activeTurnId !== undefined &&
-    !input.interruptedTurnIds.has(input.activeTurnId)
-  );
+  return canSteerSendTurn({
+    promptsInFlight: input.promptsInFlight,
+    hasActiveTurnId: input.activeTurnId !== undefined,
+    activeTurnInterrupted:
+      input.activeTurnId !== undefined && input.interruptedTurnIds.has(input.activeTurnId),
+  });
 }
 
 export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapterLiveOptions) {
@@ -2121,14 +2129,16 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                     )
                   : undefined;
               const usesContextRehydration = rehydrationPrefix !== undefined;
-              // Mid-turn steers must not look like a soft queue of the old plan.
-              // Lead with an explicit interjection so the model pivots now.
-              const interjectionLeadIn =
-                steeringTurnId !== undefined
-                  ? "The user interjected while you were working. Stop the previous plan and prioritize this instruction:\n\n"
-                  : "";
+              // Mid-turn framing is decided once in the turn engine (SOU-428).
+              // Default is raw user text so additive constraints do not destroy
+              // long-running work.
               const steeredText =
-                text && interjectionLeadIn.length > 0 ? `${interjectionLeadIn}${text}` : text;
+                text !== undefined && text.length > 0
+                  ? formatInterjectionText({
+                      userText: text,
+                      isSteering: steeringTurnId !== undefined,
+                    })
+                  : text;
               const promptText =
                 steeredText && rehydrationPrefix
                   ? `${rehydrationPrefix}${steeredText}`
@@ -2219,23 +2229,26 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
 
         return yield* Effect.gen(function* () {
           // Reset activity clock at prompt start so prior turn silence cannot trip us.
-          // Force-close open tools BEFORE clearing tracking — otherwise ghost
-          // inProgress rows stay in the work log as eternal "Tool call" and
-          // forceClose on steer becomes a no-op (the bug behind opaque Working).
+          // Force-closing open tools on steer destroys real in-flight work to
+          // paper over projection ghosts (SOU-428). Only clear tool tracking on
+          // a brand-new turn, or when policy explicitly allows close-on-steer.
           const activityCtx = sessions.get(input.threadId);
           if (activityCtx) {
-            if (activityCtx.openToolCallIds.size > 0) {
+            const closeOpenTools = !prepared.isSteering || shouldForceCloseOpenToolsOnSteer();
+            if (closeOpenTools && activityCtx.openToolCallIds.size > 0) {
               yield* forceCloseOpenTools(activityCtx, input.threadId, prepared.turnId);
             }
             const activityNow = yield* Clock.currentTimeMillis;
             activityCtx.lastTurnActivityAtMs = activityNow;
             activityCtx.lastToolActivityAtMs = activityNow;
-            activityCtx.openToolCallIds = new Set();
-            activityCtx.openToolTitles = new Map();
-            activityCtx.openToolKinds = new Map();
-            activityCtx.hasObservedToolCall = false;
-            activityCtx.lastOpenToolTitle = undefined;
-            activityCtx.completedToolTitles = [];
+            if (closeOpenTools) {
+              activityCtx.openToolCallIds = new Set();
+              activityCtx.openToolTitles = new Map();
+              activityCtx.openToolKinds = new Map();
+              activityCtx.hasObservedToolCall = false;
+              activityCtx.lastOpenToolTitle = undefined;
+              activityCtx.completedToolTitles = [];
+            }
             activityCtx.silentTurnStopMessage = undefined;
           }
 
@@ -2306,10 +2319,10 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           });
 
           // Full interjection loop (not a soft queue):
-          // 1) Open tools already force-closed above (before tracking reset).
-          // 2) Preempt the in-flight session/prompt (ACP serializes prompts).
-          // 3) Tell the UI we heard the new message (Working chrome / work log).
-          // 4) Then send the new prompt on the same Studio turn.
+          // 1) Preempt the in-flight session/prompt (ACP serializes prompts).
+          // 2) Send the new prompt on the same Studio turn.
+          // Synthetic "Following up" chrome is intentionally not emitted —
+          // silence beats invention (turn-engine InterjectionPolicy).
           if (prepared.isSteering) {
             const liveForSteer = sessions.get(input.threadId);
             if (liveForSteer) {
@@ -2319,8 +2332,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               liveForSteer.turnVisibleUpdateCount += 1;
             }
             yield* prepared.acp.preemptActivePrompt;
-            // Preview from the real user text only (strip interjection lead-in).
-            const followUpPreview = (() => {
+            if (shouldEmitSyntheticFollowUpChrome()) {
               const textPart = prepared.promptParts.find(
                 (part) => part && typeof part === "object" && part.type === "text",
               );
@@ -2328,28 +2340,23 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 textPart && "text" in textPart && typeof textPart.text === "string"
                   ? textPart.text.trim()
                   : "";
-              const withoutLeadIn = raw
-                .replace(
-                  /^The user interjected while you were working\.\s*Stop the previous plan and prioritize this instruction:\s*/i,
-                  "",
-                )
-                .trim();
-              const preview = withoutLeadIn.length > 0 ? withoutLeadIn : raw;
-              if (preview.length === 0) {
-                return "new message";
-              }
-              return preview.length > 96 ? `${preview.slice(0, 95).trimEnd()}…` : preview;
-            })();
-            yield* offerRuntimeEvent({
-              type: "runtime.warning",
-              ...(yield* makeEventStamp()),
-              provider: PROVIDER,
-              threadId: input.threadId,
-              turnId: prepared.turnId,
-              payload: {
-                message: `Following up: ${followUpPreview}`,
-              },
-            });
+              const preview =
+                raw.length === 0
+                  ? "new message"
+                  : raw.length > 96
+                    ? `${raw.slice(0, 95).trimEnd()}…`
+                    : raw;
+              yield* offerRuntimeEvent({
+                type: "runtime.warning",
+                ...(yield* makeEventStamp()),
+                provider: PROVIDER,
+                threadId: input.threadId,
+                turnId: prepared.turnId,
+                payload: {
+                  message: `Following up: ${preview}`,
+                },
+              });
+            }
           }
 
           // When the silence watchdog wins, prefer a controlled settle over

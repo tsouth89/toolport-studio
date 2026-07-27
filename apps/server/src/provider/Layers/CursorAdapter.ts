@@ -75,6 +75,7 @@ import {
   extractTodosAsPlan,
 } from "../acp/CursorAcpExtension.ts";
 import { type CursorAdapterShape } from "../Services/CursorAdapter.ts";
+import { canSteerSendTurn } from "../turnEngine/index.ts";
 import { resolveCursorAcpBaseModelId } from "./CursorProvider.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.UnknownFromJsonString);
@@ -1139,8 +1140,14 @@ export function makeCursorAdapter(
         yield* rebindCursorToolportMcpIfNeeded(ctx);
         // A sendTurn while a prompt is in flight is a steer: the agent folds
         // the new prompt into the ongoing work, so the active turn id is
-        // reused instead of opening a new turn.
-        const steeringTurnId = ctx.promptsInFlight > 0 ? ctx.activeTurnId : undefined;
+        // reused instead of opening a new turn (shared steer policy, SOU-428).
+        const steeringTurnId = canSteerSendTurn({
+          promptsInFlight: ctx.promptsInFlight,
+          hasActiveTurnId: ctx.activeTurnId !== undefined,
+          activeTurnInterrupted: false,
+        })
+          ? ctx.activeTurnId
+          : undefined;
         const turnId = steeringTurnId ?? TurnId.make(yield* randomUUIDv4);
         // Count this prompt immediately so a superseded in-flight prompt
         // resolving from here on does not settle the turn; the matching

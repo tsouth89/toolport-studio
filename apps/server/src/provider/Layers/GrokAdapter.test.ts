@@ -1393,15 +1393,18 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
       // Steer keeps one turn; hang fiber should also release after preempt.
       yield* Fiber.join(hangFiber).pipe(Effect.timeout("8 seconds"), Effect.ignore);
 
-      // UI must learn the interjection immediately (not only when tools finish).
+      // Product default: no synthetic "Following up" runtime.warning (turn engine).
+      // Turn identity reuse + completion is the authoritative signal.
       const followingUp = runtimeEvents.find(
         (event) =>
           event.type === "runtime.warning" &&
           typeof event.payload?.message === "string" &&
-          event.payload.message.includes("Following up:") &&
-          event.payload.message.includes("stop and do this instead"),
+          event.payload.message.includes("Following up:"),
       );
-      assert.ok(followingUp, "steer must emit a Following up runtime.warning");
+      assert.isUndefined(
+        followingUp,
+        "steer must not invent Following up chrome; silence beats fabrication",
+      );
 
       const sessions = yield* adapter.listSessions();
       const session = sessions.find((entry) => entry.threadId === threadId);
