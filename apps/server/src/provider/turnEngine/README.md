@@ -4,7 +4,7 @@ Shared **turn policy and lifecycle semantics** for all providers.
 
 Adapters still own protocol/transport. This package owns decisions that used to
 be reimplemented five times (steer eligibility, interjection framing, phase
-model, capability matrix).
+model, capability matrix, stop settle rules).
 
 ## What lives here
 
@@ -14,6 +14,7 @@ model, capability matrix).
 | `TurnPhase`          | Authoritative phase machine (`idle` → `preparing` → `running` → …) |
 | `InterjectionPolicy` | How mid-turn text is framed; product default is raw pass-through   |
 | `SteerPolicy`        | Whether a send continues the live turn                             |
+| `StopPolicy`         | Stop settle order + terminal/settled event classification          |
 
 ## Product defaults (dogfood lessons)
 
@@ -22,16 +23,18 @@ model, capability matrix).
 - **No synthetic “Following up”** `runtime.warning`. Silence beats invention.
 - **No force-close open tools on steer.** Ghost tool rows are a projection
   problem; killing real tools is not the fix.
+- **Force-close open tools on Stop.** Settlement must not wait on wedged tools.
 
 ## Wiring status
 
-- Grok: uses `formatInterjectionText`, `canSteerSendTurn`, force-close/chrome
-  policy flags.
-- Cursor: uses `canSteerSendTurn` for mid-turn id reuse.
-- Claude / Codex / OpenCode: capability matrix only so far; next extraction.
+- **Grok:** interjection + steer + force-close/chrome policy flags
+- **Cursor / Claude / OpenCode:** `canSteerSendTurn`
+- **Codex:** `canSteerCodexSendTurn` → shared `canSteerSendTurn`
+- Conformance: `stop-mid-tool-terminalizes` + `post-stop-follow-up-runs` active
 
 ## Tests
 
 ```bash
 vp test run apps/server/src/provider/turnEngine
+vp test run apps/server/src/provider/conformance/coreLoop.conformance.test.ts
 ```
