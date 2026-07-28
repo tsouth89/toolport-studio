@@ -41,6 +41,13 @@ const GROK_PRESENTATION = {
   requiresNewThreadForModelChange: true,
 } as const;
 
+/**
+ * Grok agent reports live fill via `_meta.totalTokens` but not window size.
+ * Grok 4.5 API class is 500k context (xAI docs); use that so the composer ring
+ * can fill until/unless the agent starts reporting an explicit max.
+ */
+export const GROK_ASSUMED_CONTEXT_WINDOW_TOKENS = 500_000;
+
 /** Matches Grok Build TUI / CLI: high | medium | low (default high). */
 export const GROK_REASONING_EFFORT_LEVELS = ["high", "medium", "low"] as const;
 export type GrokReasoningEffort = (typeof GROK_REASONING_EFFORT_LEVELS)[number];

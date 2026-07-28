@@ -214,10 +214,10 @@ describe("AcpCoreRuntimeEvents", () => {
         threadId: "thread-1" as never,
         turnId,
         usedTokens: 31_251,
-        maxTokens: 200_000,
+        maxTokens: 500_000,
         rawPayload: {
           sessionUpdate: "usage_update",
-          size: 200_000,
+          size: 500_000,
           used: 31_251,
         },
       }),
@@ -226,8 +226,28 @@ describe("AcpCoreRuntimeEvents", () => {
       payload: {
         usage: {
           usedTokens: 31_251,
-          maxTokens: 200_000,
+          maxTokens: 500_000,
           lastUsedTokens: 31_251,
+        },
+      },
+    });
+
+    // Used may exceed a soft assumed max; keep the true used count.
+    expect(
+      makeAcpTokenUsageUpdatedEvent({
+        stamp,
+        provider: ProviderDriverKind.make("grok"),
+        threadId: "thread-1" as never,
+        turnId,
+        usedTokens: 520_000,
+        maxTokens: 500_000,
+        rawPayload: { sessionUpdate: "usage_update" },
+      }),
+    ).toMatchObject({
+      payload: {
+        usage: {
+          usedTokens: 520_000,
+          maxTokens: 500_000,
         },
       },
     });

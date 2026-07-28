@@ -300,10 +300,11 @@ export function makeAcpTokenUsageUpdatedEvent(input: {
   if (usedTokens <= 0) {
     return null;
   }
-  const cappedUsed = maxTokens > 0 ? Math.min(usedTokens, maxTokens) : usedTokens;
+  // Keep true used even when it exceeds max so the label stays honest; the
+  // meter UI clamps fill percentage at 100%.
   const usage: ThreadTokenUsageSnapshot = {
-    usedTokens: cappedUsed,
-    lastUsedTokens: cappedUsed,
+    usedTokens,
+    lastUsedTokens: usedTokens,
     ...(maxTokens > 0 ? { maxTokens } : {}),
   };
   return {

@@ -67,7 +67,11 @@ import {
   makeGrokAcpRuntime,
   resolveGrokAcpBaseModelId,
 } from "../acp/GrokAcpSupport.ts";
-import { type GrokReasoningEffort, resolveGrokReasoningEffort } from "./GrokProvider.ts";
+import {
+  GROK_ASSUMED_CONTEXT_WINDOW_TOKENS,
+  type GrokReasoningEffort,
+  resolveGrokReasoningEffort,
+} from "./GrokProvider.ts";
 import {
   extractXAiAskUserQuestions,
   makeXAiAskUserQuestionCancelledResponse,
@@ -1558,13 +1562,16 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 return;
               }
               const stamp = yield* makeEventStamp();
+              // Agent rarely sends window size; without a max the UI ring stays empty.
+              const maxTokens =
+                event.maxTokens > 0 ? event.maxTokens : GROK_ASSUMED_CONTEXT_WINDOW_TOKENS;
               const usageEvent = makeAcpTokenUsageUpdatedEvent({
                 stamp,
                 provider: PROVIDER,
                 threadId: ctx.threadId,
                 turnId: resolveNotificationTurnId(ctx),
                 usedTokens: event.usedTokens,
-                maxTokens: event.maxTokens,
+                maxTokens,
                 rawPayload: event.rawPayload,
               });
               if (usageEvent) {
