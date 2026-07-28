@@ -236,6 +236,9 @@ describe("toolActivity", () => {
 
   it("humanizes MCP inspect headlines and bodies for Toolport routes", () => {
     expect(formatMcpServerDisplayName("linear_2")).toBe("Linear");
+    // Registry/branded labels keep their casing (GitHub, not Github).
+    expect(formatMcpServerDisplayName("GitHub")).toBe("GitHub");
+    expect(formatMcpServerDisplayName("OpenAI")).toBe("OpenAI");
     expect(
       formatMcpToolInspectHeadline({
         arguments: { name: "linear_2__save_comment", body: "hi" },

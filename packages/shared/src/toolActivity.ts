@@ -493,15 +493,24 @@ function isGenericToolTitle(value: string | undefined): boolean {
 }
 
 function humanizeServerSegment(server: string): string {
-  // linear_2 / linear-2 → Linear
-  const base = server
-    .trim()
-    .replace(/[_-]+\d+$/u, "")
-    .replace(/[_-]+/gu, " ")
-    .replace(/\s+/gu, " ")
-    .trim();
+  const trimmed = server.trim();
+  if (trimmed.length === 0) {
+    return trimmed;
+  }
+  // linear_2 / linear-2 → Linear (strip trailing instance suffixes first).
+  const withoutInstance = trimmed.replace(/[_-]+\d+$/u, "");
+  // Preserve already-branded registry labels (GitHub, OpenAI) — do not
+  // force Titlecase that would turn GitHub into Github.
+  if (
+    !/[_-]/u.test(withoutInstance) &&
+    /[a-z]/u.test(withoutInstance) &&
+    /[A-Z]/u.test(withoutInstance.slice(1))
+  ) {
+    return withoutInstance;
+  }
+  const base = withoutInstance.replace(/[_-]+/gu, " ").replace(/\s+/gu, " ").trim();
   if (base.length === 0) {
-    return server.trim();
+    return trimmed;
   }
   return base.charAt(0).toUpperCase() + base.slice(1).toLowerCase();
 }

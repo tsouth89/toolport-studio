@@ -124,8 +124,6 @@ export function ThisTurnCard({
         "pointer-events-auto w-[min(18rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-border/60 bg-[color-mix(in_srgb,var(--shell-surface,var(--background))_94%,transparent)] shadow-lg backdrop-blur-md",
         className,
       )}
-      role="status"
-      aria-live="polite"
     >
       <div className="flex items-center gap-1 border-b border-border/50 px-2 py-1.5">
         <button

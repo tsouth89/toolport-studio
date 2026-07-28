@@ -3237,14 +3237,18 @@ function ChatViewContent(props: ChatViewProps) {
   }, []);
   // Codex-style This-turn card: show while work is interesting; hide when
   // docked Activity is open (duplicate) or the user dismisses for this turn key.
+  // Prefer the in-flight local send key while busy so dismiss does not stick to
+  // the previous turnId and re-open when the new latestTurn arrives.
   const thisTurnCardKey =
-    activeLatestTurn?.turnId != null
-      ? String(activeLatestTurn.turnId)
-      : localDispatchStartedAt != null
-        ? `send:${localDispatchStartedAt}`
-        : activeThreadKey != null
-          ? `thread:${activeThreadKey}`
-          : "none";
+    isSendBusy && localDispatchStartedAt != null
+      ? `send:${localDispatchStartedAt}`
+      : activeLatestTurn?.turnId != null
+        ? String(activeLatestTurn.turnId)
+        : localDispatchStartedAt != null
+          ? `send:${localDispatchStartedAt}`
+          : activeThreadKey != null
+            ? `thread:${activeThreadKey}`
+            : "none";
   const [thisTurnCardDismissedKey, setThisTurnCardDismissedKey] = useState<string | null>(null);
   const [thisTurnCardForcedOpen, setThisTurnCardForcedOpen] = useState(false);
   useEffect(() => {
