@@ -62,18 +62,30 @@ function decodeHtmlEntities(input: string): string {
  * after the stripper had already run, so the "plain text" result could still
  * carry markup into whatever renders it.
  *
- * Removing `<…>` only handles *closed* tags, so an unterminated `<script`
- * would survive to the output. Any leftover tag opening is dropped as well,
- * which leaves prose comparisons like `if x < y` alone because those are not
- * followed by a name character.
+ * Tag removal runs to a fixpoint. A single pass is not enough on its own:
+ * `<[^>]*>` only matches a *closed* tag, so an unterminated `<script` would
+ * survive, and removing one span can leave its neighbours adjacent. Repeating
+ * until the string stops changing makes the result independent of how the
+ * input was chopped up. Prose comparisons like `if x < y` are left alone,
+ * because a bare `<` is only dropped when a tag name follows it.
  */
+function stripHtmlMarkup(input: string): string {
+  let current = input;
+  for (;;) {
+    const next = current.replace(/<[^>]*>/g, "").replace(/<[/!?]?[a-zA-Z][^\s>]*/g, "");
+    if (next === current) {
+      return current;
+    }
+    current = next;
+  }
+}
+
 function stripMarkup(input: string): string {
-  return decodeHtmlEntities(input)
+  const withLineBreaks = decodeHtmlEntities(input)
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/<li\b[^>]*>/gi, "\n- ")
-    .replace(/<\/(?:p|div|li|h[1-6]|ul|ol|blockquote)>/gi, "\n")
-    .replace(/<[^>]*>/g, "")
-    .replace(/<[/!?]?[a-zA-Z][^\s>]*/g, "")
+    .replace(/<\/(?:p|div|li|h[1-6]|ul|ol|blockquote)>/gi, "\n");
+  return stripHtmlMarkup(withLineBreaks)
     .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
     .replace(/\*\*([^*]+)\*\*/g, "$1");
 }
