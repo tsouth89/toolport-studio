@@ -9,6 +9,7 @@ import {
   deriveActivityChangedFiles,
   deriveActivityMcpStatus,
   deriveThreadActivityViewModel,
+  displayPathForActivity,
   isActivityRecentMilestone,
   type ThreadActivityStep,
 } from "./threadActivityViewModel";
@@ -112,10 +113,50 @@ describe("deriveThreadActivityViewModel", () => {
       ]),
     });
 
-    expect(model.current).toBeNull();
+    // Settled turns keep the last milestone as Last step (not a blank shell).
+    expect(model.current?.source).toBe("settled");
+    expect(model.current?.label).toMatch(/test|Run/i);
+    expect(model.statusBadge.kind).toBe("done");
     expect(model.recentSteps.map((step) => step.status)).toEqual(["completed", "failed"]);
     expect(model.recentSteps[0]?.detail).toBeUndefined();
     expect(model.recentSteps[1]?.detail).toBe("exit code 1");
+  });
+
+  it("shows Done · duration after a settled turn with turn timestamps", () => {
+    const turnId = TurnId.make("turn-done");
+    const model = deriveThreadActivityViewModel({
+      isWorking: false,
+      activeTurnStartedAt: null,
+      latestTurnId: turnId,
+      latestTurnStartedAt: "2026-07-26T12:00:00.000Z",
+      latestTurnCompletedAt: "2026-07-26T12:03:10.000Z",
+      timelineEntries: workTimeline([
+        workEntry({
+          id: "r1",
+          label: "Read file",
+          toolTitle: "Read file",
+          turnId,
+          toolLifecycleStatus: "completed",
+          detail: "C:\\projects\\personal\\toolport-studio\\apps\\web\\src\\session-logic.ts",
+          createdAt: "2026-07-26T12:01:00.000Z",
+        }),
+      ]),
+      workspaceRoot: "C:\\projects\\personal\\toolport-studio",
+    });
+
+    expect(model.statusBadge).toEqual({ kind: "done", durationLabel: "3m 10s" });
+    expect(model.current?.source).toBe("settled");
+    expect(model.recentSteps[0]?.detail).toBe("apps/web/src/session-logic.ts");
+  });
+
+  it("stays idle with no empty-step history", () => {
+    const model = deriveThreadActivityViewModel({
+      isWorking: false,
+      activeTurnStartedAt: null,
+      timelineEntries: [],
+    });
+    expect(model.statusBadge).toEqual({ kind: "idle" });
+    expect(model.current).toBeNull();
   });
 
   it("filters thinking and plan noise out of recent steps", () => {
@@ -328,7 +369,10 @@ describe("deriveThreadActivityViewModel", () => {
       ]),
     });
 
-    expect(model.current).toBeNull();
+    // Sticky inProgress is demoted to completed in recent steps; Current may
+    // still show that last milestone as settled (not a live spinner).
+    expect(model.isWorking).toBe(false);
+    expect(model.current?.source).toBe("settled");
     expect(model.recentSteps[0]?.status).toBe("completed");
   });
 
@@ -531,6 +575,25 @@ describe("deriveThreadActivityViewModel", () => {
       "docs/COMPETITIVE.md",
       "apps/web/src/real-file.ts",
     ]);
+  });
+});
+
+describe("displayPathForActivity", () => {
+  it("strips the workspace root from absolute Windows paths", () => {
+    expect(
+      displayPathForActivity(
+        "C:\\projects\\personal\\toolport-studio\\apps\\web\\src\\foo.ts",
+        "C:\\projects\\personal\\toolport-studio",
+      ),
+    ).toBe("apps/web/src/foo.ts");
+  });
+
+  it("strips a known repo leaf without an explicit workspace root", () => {
+    expect(
+      displayPathForActivity(
+        "C:\\projects\\personal\\toolport-studio\\apps\\web\\src\\components\\chat\\MessagesTimeline.tsx",
+      ),
+    ).toBe("apps/web/src/components/chat/MessagesTimeline.tsx");
   });
 });
 

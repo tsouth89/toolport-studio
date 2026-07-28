@@ -145,6 +145,7 @@ import PlanSidebar from "./PlanSidebar";
 import { ActivityPanel } from "./ActivityPanel";
 import ThreadTerminalDrawer from "./ThreadTerminalDrawer";
 import { deriveThreadActivityViewModel } from "../threadActivityViewModel";
+import { openToolportApp } from "../lib/openToolport";
 import { ChevronDownIcon, GitBranchIcon, TriangleAlertIcon, WifiOffIcon } from "lucide-react";
 import { cn, randomHex } from "~/lib/utils";
 import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "~/workspaceTitlebar";
@@ -2441,6 +2442,7 @@ function ChatViewContent(props: ChatViewProps) {
     useTurnDiffSummaries(activeThread);
   const activityViewModel = useMemo(() => {
     const unsettledTurnId = !latestTurnSettled ? (activeLatestTurn?.turnId ?? null) : null;
+    const workspaceRoot = activeThread?.worktreePath ?? activeProject?.workspaceRoot ?? null;
     return deriveThreadActivityViewModel({
       timelineEntries,
       isWorking,
@@ -2455,12 +2457,20 @@ function ChatViewContent(props: ChatViewProps) {
       threadError,
       turnDiffSummaries,
       latestTurnId: activeLatestTurn?.turnId ?? null,
+      latestTurnStartedAt: activeLatestTurn?.startedAt ?? activeLatestTurn?.requestedAt ?? null,
+      latestTurnCompletedAt: activeLatestTurn?.completedAt ?? null,
       proposedPlans: activeThread?.proposedPlans ?? [],
       mcpStatus: serverConfig?.mcpStatus ?? null,
+      workspaceRoot,
     });
   }, [
+    activeLatestTurn?.completedAt,
+    activeLatestTurn?.requestedAt,
+    activeLatestTurn?.startedAt,
     activeLatestTurn?.turnId,
+    activeProject?.workspaceRoot,
     activeThread?.proposedPlans,
+    activeThread?.worktreePath,
     activeWorkStartedAt,
     isWorking,
     latestTurnSettled,
@@ -3216,11 +3226,8 @@ function ChatViewContent(props: ChatViewProps) {
     useRightPanelStore.getState().open(activeThreadRef, "plan");
   }, [activeThreadRef]);
   const openToolportMcp = useCallback(() => {
-    // Toolport owns the full MCP catalog/control plane (product vision).
-    const api = readLocalApi() ?? ensureLocalApi();
-    void api.shell.openExternal("https://toolport.app").catch(() => {
-      /* best-effort View all */
-    });
+    // Prefer installed Toolport app (toolport://); fall back to web catalog.
+    void openToolportApp();
   }, []);
   const openFileSurface = useCallback(
     (relativePath: string) => {

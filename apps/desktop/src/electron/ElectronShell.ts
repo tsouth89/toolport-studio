@@ -5,7 +5,9 @@ import * as Option from "effect/Option";
 
 import * as Electron from "electron";
 
-const SAFE_EXTERNAL_PROTOCOLS = new Set(["http:", "https:"]);
+// http(s) for the web; toolport/conduit launch the installed Toolport app
+// (registered desktop deep-link schemes; conduit is the pre-rename alias).
+const SAFE_EXTERNAL_PROTOCOLS = new Set(["http:", "https:", "toolport:", "conduit:"]);
 
 export function parseSafeExternalUrl(rawUrl: unknown): Option.Option<string> {
   if (typeof rawUrl !== "string") {

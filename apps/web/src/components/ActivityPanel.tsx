@@ -247,8 +247,7 @@ function McpServersSection({
             className="inline-flex items-center gap-1 text-[11.5px] font-medium text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             onClick={onViewAllMcp}
           >
-            View all
-            <ExternalLink className="size-3 shrink-0" aria-hidden />
+            Open in Toolport
           </button>
         ) : null}
       </div>
@@ -338,6 +337,30 @@ function ChangedFilesSection({
   );
 }
 
+function ActivityStatusBadge({
+  model,
+  liveElapsed,
+}: {
+  model: ThreadActivityViewModel;
+  liveElapsed: string | null;
+}) {
+  if (model.statusBadge.kind === "elapsed" && liveElapsed) {
+    return (
+      <span className="shrink-0 rounded-md bg-muted/50 px-1.5 py-0.5 tabular-nums text-[11px] text-muted-foreground">
+        Elapsed {liveElapsed}
+      </span>
+    );
+  }
+  if (model.statusBadge.kind === "done") {
+    return (
+      <span className="shrink-0 rounded-md bg-muted/50 px-1.5 py-0.5 tabular-nums text-[11px] text-muted-foreground">
+        {model.statusBadge.durationLabel ? `Done · ${model.statusBadge.durationLabel}` : "Done"}
+      </span>
+    );
+  }
+  return <span className="shrink-0 text-[11px] text-muted-foreground/65">Idle</span>;
+}
+
 export function ActivityPanel({
   model,
   onOpenTurnDiff,
@@ -350,9 +373,14 @@ export function ActivityPanel({
   onViewAllMcp?: (() => void) | undefined;
 }) {
   const elapsed = useElapsedLabel(model.elapsedStartedAt, model.isWorking);
-  const currentElapsed = useElapsedLabel(model.current?.startedAt ?? null, model.isWorking);
+  const currentElapsed = useElapsedLabel(
+    model.current?.startedAt ?? null,
+    model.isWorking && model.current?.source !== "settled",
+  );
   // Newest first for instrument readout.
   const recent = model.recentSteps.toReversed();
+  const currentSectionLabel =
+    model.isWorking || model.current?.source !== "settled" ? "Current step" : "Last step";
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-[var(--shell-surface,var(--background))] text-foreground">
@@ -361,13 +389,7 @@ export function ActivityPanel({
           <Activity className="size-3.5 shrink-0 text-primary" aria-hidden />
           <h2 className="truncate text-[13px] font-semibold tracking-tight">Activity</h2>
         </div>
-        {elapsed ? (
-          <span className="shrink-0 rounded-md bg-muted/50 px-1.5 py-0.5 tabular-nums text-[11px] text-muted-foreground">
-            Elapsed {elapsed}
-          </span>
-        ) : (
-          <span className="shrink-0 text-[11px] text-muted-foreground/65">Idle</span>
-        )}
+        <ActivityStatusBadge model={model} liveElapsed={elapsed} />
       </header>
 
       <ScrollArea className="min-h-0 min-w-0 flex-1">
@@ -389,9 +411,16 @@ export function ActivityPanel({
           ) : null}
 
           <section className="min-w-0 space-y-1.5">
-            <SectionLabel>Current step</SectionLabel>
+            <SectionLabel>{currentSectionLabel}</SectionLabel>
             {model.current ? (
-              <div className="min-w-0 overflow-hidden rounded-xl border border-primary/35 bg-primary/10 px-2.5 py-2.5 shadow-sm ring-1 ring-primary/10">
+              <div
+                className={cn(
+                  "min-w-0 overflow-hidden rounded-xl border px-2.5 py-2.5 shadow-sm",
+                  model.current.source === "settled"
+                    ? "border-border/55 bg-card/40"
+                    : "border-primary/35 bg-primary/10 ring-1 ring-primary/10",
+                )}
+              >
                 <div className="flex min-w-0 items-start gap-2">
                   {model.isWorking ? (
                     <Loader2 className="mt-0.5 size-3.5 shrink-0 animate-spin text-primary" />
@@ -419,7 +448,9 @@ export function ActivityPanel({
               </div>
             ) : (
               <p className="rounded-xl border border-border/55 bg-card/35 px-2.5 py-3 text-[12px] text-muted-foreground">
-                No active step. Start a turn to see live work here.
+                {recent.length > 0
+                  ? "Turn complete."
+                  : "No active step. Start a turn to see live work here."}
               </p>
             )}
           </section>

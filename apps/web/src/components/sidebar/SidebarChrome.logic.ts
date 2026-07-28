@@ -2,16 +2,19 @@
 
 export type SidebarChromeNavId = "providers" | "mcp" | "settings" | "help";
 
+export type SidebarChromeNavKind = "route" | "external" | "toolport";
+
 export type SidebarChromeNavItem = {
   readonly id: SidebarChromeNavId;
   readonly label: string;
-  readonly kind: "route" | "external";
+  readonly kind: SidebarChromeNavKind;
   readonly target: string;
 };
 
 /**
  * Mockup-shaped left-rail bottom stack: providers / MCP / settings / help.
- * Routes stay in-app; MCP + Help open the Toolport product surfaces.
+ * Routes stay in-app; MCP launches the installed Toolport app (web fallback);
+ * Help opens the Studio site for now.
  */
 export function resolveSidebarChromeNavItems(): ReadonlyArray<SidebarChromeNavItem> {
   return [
@@ -24,8 +27,9 @@ export function resolveSidebarChromeNavItems(): ReadonlyArray<SidebarChromeNavIt
     {
       id: "mcp",
       label: "MCP servers",
-      kind: "external",
-      target: "https://toolport.app",
+      kind: "toolport",
+      // Deep link handled by openToolportApp; target is documentation only.
+      target: "toolport://",
     },
     {
       id: "settings",
@@ -42,6 +46,9 @@ export function resolveSidebarChromeNavItems(): ReadonlyArray<SidebarChromeNavIt
   ];
 }
 
-export function formatSidebarChromeNavAriaLabel(label: string, kind: "route" | "external"): string {
+export function formatSidebarChromeNavAriaLabel(label: string, kind: SidebarChromeNavKind): string {
+  if (kind === "toolport") {
+    return `${label} (opens Toolport)`;
+  }
   return kind === "external" ? `${label} (opens externally)` : label;
 }
