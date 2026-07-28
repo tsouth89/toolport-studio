@@ -6,10 +6,14 @@ import type { TurnId } from "@t3tools/contracts";
 import { CheckCircle2, ChevronDown, ChevronUp, ExternalLink, Loader2, X } from "lucide-react";
 import { useEffect, useState } from "react";
 
+import { formatMcpServerDisplayName } from "@t3tools/shared/toolActivity";
 import { formatDuration } from "../session-logic";
 import type { ThreadActivityViewModel } from "../threadActivityViewModel";
 import { cn } from "../lib/utils";
 import { DiffStatLabel, hasNonZeroStat } from "./chat/DiffStatLabel";
+
+/** After this long while working, collapse to a pill so chat stays primary. */
+const THIS_TURN_AUTO_COLLAPSE_MS = 12_000;
 
 function useElapsedLabel(startedAt: string | null, active: boolean): string | null {
   const [now, setNow] = useState(() => Date.now());
@@ -51,17 +55,39 @@ export function ThisTurnCard({
   className?: string;
 }) {
   const [expanded, setExpanded] = useState(true);
+  const [userPinnedExpanded, setUserPinnedExpanded] = useState(false);
   const liveElapsed = useElapsedLabel(model.elapsedStartedAt, model.isWorking);
   const title = statusTitle(model, liveElapsed);
   const current = model.current;
   const files = model.changedFiles;
   const usedMcp = model.mcp?.usedThisTurn ?? [];
-  const usedLabel = usedMcp.length > 0 ? usedMcp.map((server) => server.name).join(" · ") : null;
+  const usedLabel =
+    usedMcp.length > 0
+      ? usedMcp.map((server) => formatMcpServerDisplayName(server.name)).join(" · ")
+      : null;
   const hasBody =
     current !== null ||
     (files !== null && files.fileCount > 0) ||
     usedLabel !== null ||
     model.attention !== null;
+
+  // Long healthy turns: collapse to a pill so the chat stays Claude-clean.
+  // Attention keeps the card open; user expand pins it.
+  useEffect(() => {
+    if (!model.isWorking || userPinnedExpanded || model.attention !== null) {
+      return;
+    }
+    const id = window.setTimeout(() => {
+      setExpanded(false);
+    }, THIS_TURN_AUTO_COLLAPSE_MS);
+    return () => window.clearTimeout(id);
+  }, [model.attention, model.isWorking, model.elapsedStartedAt, userPinnedExpanded]);
+
+  useEffect(() => {
+    // Fresh turn re-opens expanded once.
+    setExpanded(true);
+    setUserPinnedExpanded(false);
+  }, [model.elapsedStartedAt]);
 
   if (!expanded) {
     return (
@@ -74,7 +100,10 @@ export function ThisTurnCard({
         <button
           type="button"
           className="flex w-full items-center gap-2 px-2.5 py-2 text-left text-[12px] font-medium text-foreground/90 hover:bg-accent/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          onClick={() => setExpanded(true)}
+          onClick={() => {
+            setExpanded(true);
+            setUserPinnedExpanded(true);
+          }}
           aria-expanded={false}
         >
           {model.isWorking ? (
@@ -102,7 +131,10 @@ export function ThisTurnCard({
         <button
           type="button"
           className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-0.5 py-0.5 text-left hover:bg-accent/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          onClick={() => setExpanded(false)}
+          onClick={() => {
+            setExpanded(false);
+            setUserPinnedExpanded(false);
+          }}
           aria-expanded
           aria-label="Collapse this turn card"
         >

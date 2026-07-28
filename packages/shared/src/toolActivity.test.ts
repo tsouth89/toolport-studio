@@ -2,6 +2,9 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   deriveToolActivityPresentation,
+  formatMcpServerDisplayName,
+  formatMcpToolInspectBody,
+  formatMcpToolInspectHeadline,
   formatShellCommandHeadline,
   humanizeToolDisplayName,
   looksLikeWireToolName,
@@ -229,6 +232,21 @@ describe("toolActivity", () => {
     ).toEqual({
       summary: "Called a tool via Toolport",
     });
+  });
+
+  it("humanizes MCP inspect headlines and bodies for Toolport routes", () => {
+    expect(formatMcpServerDisplayName("linear_2")).toBe("Linear");
+    expect(
+      formatMcpToolInspectHeadline({
+        arguments: { name: "linear_2__save_comment", body: "hi" },
+      }),
+    ).toBe("Linear · save comment");
+    const body = formatMcpToolInspectBody({
+      arguments: { name: "linear_2__save_comment", body: "hi" },
+    });
+    expect(body).toContain("Linear · save comment");
+    expect(body).toContain('"body": "hi"');
+    expect(body).not.toContain("toolport__");
   });
 
   it("falls back to itemType labels when title is generic", () => {

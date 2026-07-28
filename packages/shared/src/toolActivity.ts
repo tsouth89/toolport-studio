@@ -628,9 +628,119 @@ export function looksLikeWireToolName(value: string): boolean {
 export function humanizeToolDisplayName(value: string): string {
   const trimmed = value.trim();
   if (!looksLikeWireToolName(trimmed)) {
+    // Still normalize short server ids (linear_2 → Linear) for chips/lists.
+    if (/^[a-z][a-z0-9]*(?:[_-][a-z0-9]+)+$/iu.test(trimmed) && trimmed.length <= 32) {
+      return humanizeServerSegment(trimmed);
+    }
     return trimmed;
   }
   return humanizeStructuredToolName(trimmed);
+}
+
+/** Display name for an MCP server id/label (linear_2 → Linear). */
+export function formatMcpServerDisplayName(server: string): string {
+  return humanizeServerSegment(server);
+}
+
+/**
+ * One-line headline for expanded MCP tool rows / inspect panels.
+ * Prefers routed Toolport tools over gateway meta noise.
+ */
+export function formatMcpToolInspectHeadline(toolData: unknown): string | null {
+  if (toolData === null || typeof toolData !== "object") {
+    return null;
+  }
+  const record = toolData as Record<string, unknown>;
+  const asData: Record<string, unknown> = {
+    item: record,
+    rawInput: asRecord(record.rawInput) ?? record,
+    arguments: record.arguments,
+    input: record.input,
+    server: record.server,
+    tool: record.tool,
+  };
+  const routed = extractToolportRoutedToolName(asData);
+  if (routed) {
+    return routed;
+  }
+  const server = asTrimmedString(record.server);
+  const tool = asTrimmedString(record.tool);
+  if (server && tool && !isToolportGatewayMetaToolName(tool)) {
+    return `${humanizeServerSegment(server)} · ${humanizeToolSegment(tool)}`;
+  }
+  if (tool && !isToolportGatewayMetaToolName(tool)) {
+    return humanizeStructuredToolName(tool);
+  }
+  if (server) {
+    return humanizeServerSegment(server);
+  }
+  return null;
+}
+
+/**
+ * Expanded MCP body for timeline/tool inspect. Humanized headline first;
+ * arguments/result as pretty JSON without restating the gateway wire id.
+ */
+export function formatMcpToolInspectBody(toolData: unknown): string | null {
+  if (toolData === null || typeof toolData !== "object") {
+    return null;
+  }
+  const record = toolData as Record<string, unknown>;
+  const lines: string[] = [];
+  const headline = formatMcpToolInspectHeadline(toolData);
+  if (headline) {
+    lines.push(headline);
+  }
+
+  const args = record.arguments ?? record.input ?? asRecord(record.rawInput)?.arguments;
+  if (args !== undefined && args !== null) {
+    if (typeof args === "string" && args.trim()) {
+      const text = args.trim();
+      // Skip pure wire names that only restate the headline.
+      if (!looksLikeWireToolName(text) && text.toLowerCase() !== headline?.toLowerCase()) {
+        lines.push(text.length > 1200 ? `${text.slice(0, 1199)}…` : text);
+      }
+    } else if (typeof args === "object") {
+      const bag = args as Record<string, unknown>;
+      // Prefer a short "name + other fields" view for toolport_call_tool payloads.
+      const nestedName = asTrimmedString(bag.name) ?? asTrimmedString(bag.tool);
+      const rest: Record<string, unknown> = { ...bag };
+      if (nestedName) {
+        delete rest.name;
+        delete rest.tool;
+      }
+      const restKeys = Object.keys(rest);
+      if (nestedName && restKeys.length === 0) {
+        // Headline already carries the routed tool; skip empty args.
+      } else {
+        try {
+          const pretty = JSON.stringify(restKeys.length > 0 ? rest : bag, null, 2);
+          if (pretty.length > 0 && pretty !== "{}" && pretty !== "[]") {
+            lines.push(pretty.length > 1200 ? `${pretty.slice(0, 1199)}…` : pretty);
+          }
+        } catch {
+          // ignore
+        }
+      }
+    }
+  }
+
+  const result = record.result ?? record.output ?? record.content;
+  if (typeof result === "string" && result.trim()) {
+    const text = result.trim();
+    lines.push(text.length > 2000 ? `${text.slice(0, 1999)}…` : text);
+  } else if (result && typeof result === "object") {
+    try {
+      const pretty = JSON.stringify(result, null, 2);
+      if (pretty.length > 0 && pretty !== "{}" && pretty !== "[]") {
+        lines.push(pretty.length > 1200 ? `${pretty.slice(0, 1199)}…` : pretty);
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  return lines.length > 0 ? lines.join("\n\n") : null;
 }
 
 /**

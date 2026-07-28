@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 
+import { formatMcpServerDisplayName } from "@t3tools/shared/toolActivity";
 import { formatDuration } from "../session-logic";
 import type {
   ThreadActivityArtifact,
@@ -179,7 +180,10 @@ function ToolportMcpStrip({
   onViewAllMcp?: (() => void) | undefined;
 }) {
   const used = model.usedThisTurn;
-  const usedLabel = used.length > 0 ? used.map((server) => server.name).join(" · ") : null;
+  const usedLabel =
+    used.length > 0
+      ? used.map((server) => formatMcpServerDisplayName(server.name)).join(" · ")
+      : null;
   return (
     <section className="min-w-0 space-y-1.5">
       <SectionLabel>Toolport</SectionLabel>
