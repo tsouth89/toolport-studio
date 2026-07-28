@@ -302,11 +302,24 @@ export function resolveQuickAction(
   }
 
   return {
-    label: "Commit",
+    label: "Git",
     disabled: true,
     kind: "show_hint",
     hint: "Branch is up to date. No action needed.",
   };
+}
+
+/**
+ * Clean, synced branch: no primary CTA — header should only expose a quiet
+ * Git menu so chat chrome stays calm (Claude/Codex style).
+ */
+export function isQuietGitIdleQuickAction(action: GitQuickAction): boolean {
+  return (
+    action.disabled === true &&
+    action.kind === "show_hint" &&
+    typeof action.hint === "string" &&
+    (action.hint.includes("up to date") || action.hint.includes("No action needed"))
+  );
 }
 
 export function requiresDefaultBranchConfirmation(

@@ -42,6 +42,7 @@ import {
   type GitActionMenuItem,
   type GitQuickAction,
   type DefaultBranchConfirmableAction,
+  isQuietGitIdleQuickAction,
   requiresDefaultBranchConfirmation,
   resolveDefaultBranchActionDialogCopy,
   resolveLiveThreadBranchUpdate,
@@ -360,7 +361,9 @@ function GitQuickActionIcon({
     }
     return <SourceControlIcon className={iconClassName} />;
   }
-  if (quickAction.label === "Commit") return <GitCommitIcon className={iconClassName} />;
+  if (quickAction.label === "Commit" || quickAction.label === "Git") {
+    return <GitCommitIcon className={iconClassName} />;
+  }
   return <InfoIcon className={iconClassName} />;
 }
 
@@ -1649,6 +1652,7 @@ export default function GitActionsControl({
   );
 
   const canPublishRepository = isRepo && gitStatusForActions !== null && !hasPrimaryRemote;
+  const quietGitIdle = isQuietGitIdleQuickAction(quickAction);
 
   if (!gitCwd) return null;
 
@@ -1682,6 +1686,71 @@ export default function GitActionsControl({
             {initAction.isPending ? "Initializing..." : "Initialize Git"}
           </span>
         </Button>
+      ) : quietGitIdle ? (
+        // Clean/synced: no disabled "Commit" CTA — just a quiet Git menu.
+        <Menu
+          onOpenChange={(open) => {
+            if (open) {
+              requestVcsStatusRefresh(refreshVcsStatus, activeEnvironmentId, gitCwd);
+            }
+          }}
+        >
+          <MenuTrigger
+            render={
+              <Button
+                aria-label="Git actions"
+                size="icon-xs"
+                variant="ghost"
+                className="text-muted-foreground/65 hover:text-foreground"
+                disabled={isGitActionRunning}
+              />
+            }
+          >
+            <SourceControlIcon className="size-3.5" aria-hidden />
+          </MenuTrigger>
+          <MenuPopup align="end" className="w-full">
+            <div className="px-2 py-1.5 text-[11px] text-muted-foreground">
+              Branch is up to date
+            </div>
+            {gitActionMenuItems.map((item) => {
+              const disabledReason = getMenuActionDisabledReason({
+                item,
+                gitStatus: gitStatusForActions,
+                isBusy: isGitActionRunning,
+                hasPrimaryRemote,
+              });
+              if (item.disabled && disabledReason) {
+                return (
+                  <Popover key={`${item.id}-${item.label}`}>
+                    <PopoverTrigger
+                      openOnHover
+                      nativeButton={false}
+                      render={<span className="block w-max cursor-not-allowed" />}
+                    >
+                      <MenuItem className="w-full" disabled>
+                        <GitActionItemIcon icon={item.icon} SourceControlIcon={SourceControlIcon} />
+                        {item.label}
+                      </MenuItem>
+                    </PopoverTrigger>
+                    <PopoverPopup tooltipStyle side="left" align="start">
+                      {disabledReason}
+                    </PopoverPopup>
+                  </Popover>
+                );
+              }
+              return (
+                <MenuItem
+                  key={`${item.id}-${item.label}`}
+                  disabled={item.disabled}
+                  onClick={() => openDialogForMenuItem(item)}
+                >
+                  <GitActionItemIcon icon={item.icon} SourceControlIcon={SourceControlIcon} />
+                  {item.label}
+                </MenuItem>
+              );
+            })}
+          </MenuPopup>
+        </Menu>
       ) : (
         <Group aria-label="Git actions" className="shrink-0">
           {quickActionDisabledReason ? (
