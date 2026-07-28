@@ -10,6 +10,7 @@ import {
   deriveActivityMcpStatus,
   deriveThreadActivityViewModel,
   displayPathForActivity,
+  formatActivityMcpInjectionLabel,
   isActivityRecentMilestone,
   type ThreadActivityStep,
 } from "./threadActivityViewModel";
@@ -609,6 +610,9 @@ describe("deriveActivityMcpStatus", () => {
           { id: "github", name: "GitHub", enabled: true, transport: "http" },
           { id: "linear-2", name: "Linear", enabled: true, transport: "http" },
         ],
+        injectionEnabled: true,
+        injectionReady: true,
+        injectionReason: "ready",
       },
       timelineEntries: workTimeline([
         workEntry({
@@ -631,6 +635,7 @@ describe("deriveActivityMcpStatus", () => {
     });
 
     expect(status?.gatewayAvailable).toBe(true);
+    expect(status?.injectionReady).toBe(true);
     expect(status?.servers[0]?.name).toBe("Linear");
     expect(status?.servers[0]?.useCount).toBe(2);
     expect(status?.servers[0]?.health).toBe("ready");
@@ -640,8 +645,87 @@ describe("deriveActivityMcpStatus", () => {
     expect(status?.usedThisTurn.map((server) => server.name)).toEqual(["Linear"]);
   });
 
+  it("surfaces inject-only status when registry has no servers", () => {
+    const status = deriveActivityMcpStatus({
+      mcpStatus: {
+        gatewayAvailable: false,
+        activeProfileId: null,
+        activeProfileName: null,
+        servers: [],
+        injectionEnabled: true,
+        injectionReady: false,
+        injectionReason: "gateway_not_found",
+      },
+      timelineEntries: [],
+    });
+    expect(status).toMatchObject({
+      injectionEnabled: true,
+      injectionReady: false,
+      injectionReason: "gateway_not_found",
+      totalServerCount: 0,
+    });
+  });
+
   it("returns null without Toolport registry status", () => {
     expect(deriveActivityMcpStatus({ mcpStatus: null, timelineEntries: [] })).toBeNull();
+  });
+
+  it("returns null when inject is off and registry is empty", () => {
+    expect(
+      deriveActivityMcpStatus({
+        mcpStatus: {
+          gatewayAvailable: false,
+          activeProfileId: null,
+          activeProfileName: null,
+          servers: [],
+          injectionEnabled: false,
+          injectionReady: false,
+          injectionReason: "disabled",
+        },
+        timelineEntries: [],
+      }),
+    ).toBeNull();
+  });
+});
+
+describe("formatActivityMcpInjectionLabel", () => {
+  it("maps inject reasons to short labels", () => {
+    expect(
+      formatActivityMcpInjectionLabel({
+        gatewayAvailable: true,
+        activeProfileName: null,
+        usedThisTurn: [],
+        servers: [],
+        totalServerCount: 0,
+        injectionEnabled: true,
+        injectionReady: true,
+        injectionReason: "ready",
+      }),
+    ).toBe("Studio inject ready");
+    expect(
+      formatActivityMcpInjectionLabel({
+        gatewayAvailable: false,
+        activeProfileName: null,
+        usedThisTurn: [],
+        servers: [],
+        totalServerCount: 0,
+        injectionEnabled: true,
+        injectionReady: false,
+        injectionReason: "gateway_not_found",
+      }),
+    ).toBe("Gateway not found");
+    expect(
+      formatActivityMcpInjectionLabel({
+        gatewayAvailable: false,
+        activeProfileName: null,
+        usedThisTurn: [],
+        servers: [],
+        totalServerCount: 0,
+        injectionEnabled: false,
+        injectionReady: false,
+        injectionReason: "disabled",
+      }),
+    ).toBe("Studio inject off");
   });
 });
 

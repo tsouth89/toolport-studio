@@ -13,13 +13,14 @@ import { useEffect, useState, type ReactNode } from "react";
 
 import { formatMcpServerDisplayName } from "@t3tools/shared/toolActivity";
 import { formatDuration } from "../session-logic";
-import type {
-  ThreadActivityArtifact,
-  ThreadActivityChangedFiles,
-  ThreadActivityMcpStatus,
-  ThreadActivityStep,
-  ThreadActivityStepStatus,
-  ThreadActivityViewModel,
+import {
+  formatActivityMcpInjectionLabel,
+  type ThreadActivityArtifact,
+  type ThreadActivityChangedFiles,
+  type ThreadActivityMcpStatus,
+  type ThreadActivityStep,
+  type ThreadActivityStepStatus,
+  type ThreadActivityViewModel,
 } from "../threadActivityViewModel";
 import { cn } from "../lib/utils";
 import { DiffStatLabel, hasNonZeroStat } from "./chat/DiffStatLabel";
@@ -169,8 +170,8 @@ function ArtifactsSection({
 }
 
 /**
- * Compact Toolport strip — not a dead registry inventory. Show what this turn
- * actually used, gateway health, and a single open affordance.
+ * Compact Toolport strip — not a dead registry inventory. Show inject readiness,
+ * what this turn used, gateway health, and a single open affordance.
  */
 function ToolportMcpStrip({
   model,
@@ -184,6 +185,20 @@ function ToolportMcpStrip({
     used.length > 0
       ? used.map((server) => formatMcpServerDisplayName(server.name)).join(" · ")
       : null;
+  const injectLabel = formatActivityMcpInjectionLabel(model);
+  const injectWarn =
+    model.injectionEnabled && !model.injectionReady
+      ? model.injectionReason === "configured_path_missing"
+        ? "TOOLPORT_GATEWAY_PATH points to a missing file."
+        : "Install Toolport or set TOOLPORT_GATEWAY_PATH."
+      : null;
+  const titleLine = !model.gatewayAvailable
+    ? "Gateway offline"
+    : model.totalServerCount > 0
+      ? `${model.totalServerCount} server${model.totalServerCount === 1 ? "" : "s"}`
+      : model.injectionReady
+        ? "Gateway ready"
+        : "Toolport";
   return (
     <section className="min-w-0 space-y-1.5">
       <SectionLabel>Toolport</SectionLabel>
@@ -191,9 +206,7 @@ function ToolportMcpStrip({
         <div className="flex min-w-0 items-start justify-between gap-2">
           <div className="min-w-0 space-y-0.5">
             <p className="text-[12px] font-medium text-foreground/90">
-              {model.gatewayAvailable
-                ? `${model.totalServerCount} server${model.totalServerCount === 1 ? "" : "s"}`
-                : "Gateway offline"}
+              {titleLine}
               {model.activeProfileName ? (
                 <span className="font-normal text-muted-foreground">
                   {" "}
@@ -201,10 +214,28 @@ function ToolportMcpStrip({
                 </span>
               ) : null}
             </p>
+            <p
+              className={cn(
+                "text-[11px]",
+                injectWarn ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground",
+              )}
+              title={injectWarn ?? injectLabel}
+            >
+              {injectWarn ? (
+                <span className="inline-flex items-center gap-1">
+                  <AlertTriangle className="size-3 shrink-0" aria-hidden />
+                  {injectLabel}
+                </span>
+              ) : (
+                injectLabel
+              )}
+            </p>
             {usedLabel ? (
               <p className="truncate text-[11px] text-muted-foreground" title={usedLabel}>
                 Used this turn · {usedLabel}
               </p>
+            ) : injectWarn ? (
+              <p className="text-[11px] text-muted-foreground/80">{injectWarn}</p>
             ) : (
               <p className="text-[11px] text-muted-foreground/80">
                 {model.gatewayAvailable

@@ -8,7 +8,10 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as Schema from "effect/Schema";
 
-import { resolveToolportGatewayPath } from "./McpProviderSession.ts";
+import {
+  describeToolportGatewayResolution,
+  resolveToolportGatewayPath,
+} from "./McpProviderSession.ts";
 
 const decodeRegistry = Schema.decodeUnknownOption(
   Schema.Struct({
@@ -44,13 +47,25 @@ export type ToolportMcpServerSnapshot = {
   readonly source?: string;
 };
 
+export type ToolportMcpInjectionReason =
+  | "disabled"
+  | "ready"
+  | "gateway_not_found"
+  | "configured_path_missing";
+
 export type ToolportMcpStatusSnapshot = {
-  /** Registry file was found and parsed — safe to show in Activity. */
-  readonly authoritative: true;
+  /**
+   * Registry file was found and parsed. When false, servers are empty and the
+   * snapshot only carries Studio inject / gateway readiness.
+   */
+  readonly authoritative: boolean;
   readonly gatewayAvailable: boolean;
   readonly activeProfileId: string | null;
   readonly activeProfileName: string | null;
   readonly servers: ReadonlyArray<ToolportMcpServerSnapshot>;
+  readonly injectionEnabled: boolean;
+  readonly injectionReady: boolean;
+  readonly injectionReason: ToolportMcpInjectionReason;
 };
 
 function nonEmpty(value: string | undefined): string | undefined {
@@ -102,17 +117,17 @@ function normalizeTransport(value: string | undefined): "http" | "stdio" | "unkn
   return "unknown";
 }
 
-/**
- * Authoritative MCP inventory for Activity: Toolport registry servers + active
- * profile enablement + whether the gateway binary is present.
- * Returns null when no registry is found (section stays hidden).
- */
-export function readToolportMcpStatusSnapshot(
-  environment: NodeJS.ProcessEnv = process.env,
-  // oxlint-disable-next-line t3code/no-global-process-runtime
-  platform: NodeJS.Platform = process.platform,
-  homeDirectory = NodeOS.homedir(),
-): ToolportMcpStatusSnapshot | null {
+type RegistryProjection = {
+  readonly activeProfileId: string | null;
+  readonly activeProfileName: string | null;
+  readonly servers: ReadonlyArray<ToolportMcpServerSnapshot>;
+};
+
+function readRegistryProjection(
+  environment: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform,
+  homeDirectory: string,
+): RegistryProjection | null {
   for (const dataDirectory of toolportDataDirectories(environment, platform, homeDirectory)) {
     const registryPath = NodePath.join(dataDirectory, "registry.json");
     if (!NodeFS.existsSync(registryPath)) {
@@ -132,8 +147,6 @@ export function readToolportMcpStatusSnapshot(
       const enabledIds = new Set(
         (activeProfile?.enabledServerIds ?? []).map((id) => id.trim().toLowerCase()),
       );
-      const gatewayAvailable =
-        resolveToolportGatewayPath(environment, platform, homeDirectory) != null;
 
       const servers: ToolportMcpServerSnapshot[] = registry.servers
         .map((server) => {
@@ -155,8 +168,6 @@ export function readToolportMcpStatusSnapshot(
         .filter((server): server is ToolportMcpServerSnapshot => server !== null);
 
       return {
-        authoritative: true,
-        gatewayAvailable,
         activeProfileId: activeProfile?.id ?? activeProfileId,
         activeProfileName: activeProfile?.name ?? null,
         servers,
@@ -167,4 +178,36 @@ export function readToolportMcpStatusSnapshot(
   }
 
   return null;
+}
+
+/**
+ * Activity MCP status: registry inventory (when present) plus Studio inject /
+ * gateway readiness. Returns null only when inject is off and no registry exists
+ * (nothing useful to show). Inject-on without a registry still surfaces so the
+ * user can see gateway-missing vs ready.
+ */
+export function readToolportMcpStatusSnapshot(
+  environment: NodeJS.ProcessEnv = process.env,
+  // oxlint-disable-next-line t3code/no-global-process-runtime
+  platform: NodeJS.Platform = process.platform,
+  homeDirectory = NodeOS.homedir(),
+): ToolportMcpStatusSnapshot | null {
+  const resolution = describeToolportGatewayResolution(environment, platform, homeDirectory);
+  const registry = readRegistryProjection(environment, platform, homeDirectory);
+  if (!resolution.injectionEnabled && registry === null) {
+    return null;
+  }
+
+  const gatewayAvailable = resolveToolportGatewayPath(environment, platform, homeDirectory) != null;
+
+  return {
+    authoritative: registry !== null,
+    gatewayAvailable,
+    activeProfileId: registry?.activeProfileId ?? null,
+    activeProfileName: registry?.activeProfileName ?? null,
+    servers: registry?.servers ?? [],
+    injectionEnabled: resolution.injectionEnabled,
+    injectionReady: resolution.ready,
+    injectionReason: resolution.reason,
+  };
 }

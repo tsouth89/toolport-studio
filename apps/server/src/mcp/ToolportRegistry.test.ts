@@ -22,19 +22,45 @@ function writeRegistry(home: string, body: unknown, leaf = "Toolport") {
 }
 
 describe("readToolportMcpStatusSnapshot", () => {
-  it("returns null when no registry exists", () => {
+  it("returns null when inject is off and no registry exists", () => {
     const home = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "toolport-reg-empty-"));
     tempRoots.push(home);
     expect(
       readToolportMcpStatusSnapshot(
-        { TOOLPORT_DATA_DIR: NodePath.join(home, "missing") },
+        {
+          TOOLPORT_DATA_DIR: NodePath.join(home, "missing"),
+          TOOLPORT_STUDIO_TOOLPORT_MCP: "off",
+          PATH: "",
+        },
         "win32",
         home,
       ),
     ).toBeNull();
   });
 
-  it("projects enabled servers for the active profile", () => {
+  it("returns inject-only status when inject is on without a registry", () => {
+    const home = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "toolport-reg-inject-only-"));
+    tempRoots.push(home);
+    const snapshot = readToolportMcpStatusSnapshot(
+      {
+        TOOLPORT_DATA_DIR: NodePath.join(home, "missing"),
+        TOOLPORT_STUDIO_TOOLPORT_MCP: "on",
+        PATH: "",
+      },
+      "win32",
+      home,
+    );
+    expect(snapshot).toMatchObject({
+      authoritative: false,
+      gatewayAvailable: false,
+      servers: [],
+      injectionEnabled: true,
+      injectionReady: false,
+      injectionReason: "gateway_not_found",
+    });
+  });
+
+  it("projects enabled servers for the active profile with inject readiness", () => {
     const home = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "toolport-reg-"));
     tempRoots.push(home);
     const dataDir = writeRegistry(home, {
@@ -57,7 +83,11 @@ describe("readToolportMcpStatusSnapshot", () => {
     NodeFS.writeFileSync(gateway, "");
 
     const snapshot = readToolportMcpStatusSnapshot(
-      { TOOLPORT_DATA_DIR: dataDir, TOOLPORT_GATEWAY_PATH: gateway },
+      {
+        TOOLPORT_DATA_DIR: dataDir,
+        TOOLPORT_GATEWAY_PATH: gateway,
+        TOOLPORT_STUDIO_TOOLPORT_MCP: "on",
+      },
       "win32",
       home,
     );
@@ -66,6 +96,9 @@ describe("readToolportMcpStatusSnapshot", () => {
       authoritative: true,
       gatewayAvailable: true,
       activeProfileName: "Default",
+      injectionEnabled: true,
+      injectionReady: true,
+      injectionReason: "ready",
     });
     expect(snapshot?.servers).toEqual(
       expect.arrayContaining([

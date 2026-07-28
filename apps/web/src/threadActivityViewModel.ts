@@ -103,6 +103,12 @@ export interface ThreadActivityMcpServer {
   readonly useCount: number;
 }
 
+export type ThreadActivityMcpInjectionReason =
+  | "disabled"
+  | "ready"
+  | "gateway_not_found"
+  | "configured_path_missing";
+
 export interface ThreadActivityMcpStatus {
   readonly gatewayAvailable: boolean;
   readonly activeProfileName: string | null;
@@ -118,6 +124,11 @@ export interface ThreadActivityMcpStatus {
   readonly servers: ReadonlyArray<ThreadActivityMcpServer>;
   /** Total servers in Toolport registry (for Open in Toolport copy). */
   readonly totalServerCount: number;
+  /** Studio inject toggle (settings / env). */
+  readonly injectionEnabled: boolean;
+  /** Inject on and gateway binary resolved for provider sessions. */
+  readonly injectionReady: boolean;
+  readonly injectionReason: ThreadActivityMcpInjectionReason;
 }
 
 /** Max MCP names to surface as "used this turn" chips. */
@@ -573,9 +584,17 @@ export function deriveActivityMcpStatus(input: {
   readonly preferredTurnId?: TurnId | null;
 }): ThreadActivityMcpStatus | null {
   const status = input.mcpStatus;
-  if (!status || status.servers.length === 0) {
+  // Show when registry has servers and/or Studio inject is configured to run.
+  if (!status) {
     return null;
   }
+  if (status.servers.length === 0 && !status.injectionEnabled) {
+    return null;
+  }
+
+  const injectionEnabled = status.injectionEnabled;
+  const injectionReady = status.injectionReady;
+  const injectionReason = status.injectionReason;
 
   const useCounts = new Map<string, number>();
   const preferredTurnId = input.preferredTurnId ?? null;
@@ -650,7 +669,24 @@ export function deriveActivityMcpStatus(input: {
     usedThisTurn,
     servers: scored.slice(0, MAX_ACTIVITY_MCP_SERVERS),
     totalServerCount: status.servers.length,
+    injectionEnabled,
+    injectionReady,
+    injectionReason,
   };
+}
+
+/** One-line inject state for Activity (gateway spawn into providers). */
+export function formatActivityMcpInjectionLabel(model: ThreadActivityMcpStatus): string {
+  if (!model.injectionEnabled) {
+    return "Studio inject off";
+  }
+  if (model.injectionReady) {
+    return "Studio inject ready";
+  }
+  if (model.injectionReason === "configured_path_missing") {
+    return "Gateway path missing";
+  }
+  return "Gateway not found";
 }
 
 export function deriveActivityArtifacts(input: {
