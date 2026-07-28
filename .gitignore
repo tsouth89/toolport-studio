@@ -35,3 +35,9 @@ node_modules/
 *.log
 .env*
 !.env.example
+
+# Claude Code local working state. These are per-machine and can contain
+# conversation transcripts, so they must never be committed.
+.claude-work-test/
+.claude.json
+.claude.json.backup*
