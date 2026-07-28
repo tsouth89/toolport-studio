@@ -36,6 +36,62 @@ export function sharedToolLabelForWorkEntries(entries: ReadonlyArray<WorkLogEntr
   }
   return labels.every((label) => label === first) ? first : null;
 }
+
+/**
+ * Collapse consecutive completed tools that share the same display label
+ * (`Read MessagesTimeline.tsx` × 3). Live in-progress tools and thoughts stay
+ * individual so the rail still reads as a live progression.
+ */
+export type CollapsedTimelineWorkItem = {
+  readonly entry: WorkLogEntry;
+  readonly count: number;
+  readonly firstCreatedAt: string;
+};
+
+function timelineWorkCollapseKey(entry: WorkLogEntry): string | null {
+  if (isThinkingWorkLogEntry(entry)) {
+    return null;
+  }
+  if (!workLogEntryIsToolLike(entry)) {
+    return null;
+  }
+  if (entry.toolLifecycleStatus === "inProgress") {
+    return null;
+  }
+  const label = formatWorkLogToolLabel(entry, "past").trim();
+  return label.length > 0 ? label : null;
+}
+
+export function collapseConsecutiveTimelineWorkEntries(
+  entries: ReadonlyArray<WorkLogEntry>,
+): CollapsedTimelineWorkItem[] {
+  const collapsed: CollapsedTimelineWorkItem[] = [];
+  for (const entry of entries) {
+    const key = timelineWorkCollapseKey(entry);
+    const prev = collapsed[collapsed.length - 1];
+    const prevKey = prev ? timelineWorkCollapseKey(prev.entry) : null;
+    if (key !== null && prev && prevKey === key) {
+      collapsed[collapsed.length - 1] = {
+        entry,
+        count: prev.count + 1,
+        firstCreatedAt: prev.firstCreatedAt,
+      };
+      continue;
+    }
+    collapsed.push({
+      entry,
+      count: 1,
+      firstCreatedAt: entry.createdAt,
+    });
+  }
+  return collapsed;
+}
+
+/** Step card collapses once the densified rail grows past this many rows. */
+export const WORK_RAIL_COLLAPSE_AT = 6;
+/** When collapsed, still pin the latest densified row so progress stays visible. */
+export const WORK_RAIL_COLLAPSED_TAIL = 1;
+
 export const TIMELINE_MINIMAP_MIN_ITEMS = 2;
 export const TIMELINE_MINIMAP_MAX_HEIGHT_CSS = "calc(100vh - 18rem)";
 export const TIMELINE_CONTENT_MAX_WIDTH = 768;

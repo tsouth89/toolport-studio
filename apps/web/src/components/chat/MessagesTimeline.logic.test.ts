@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
+  collapseConsecutiveTimelineWorkEntries,
   computeStableMessagesTimelineRows,
   computeMessageDurationStart,
   deriveActiveWorkingFollowUpIntent,
@@ -1043,6 +1044,93 @@ describe("deriveMessagesTimelineRows", () => {
     expect(sharedToolLabelForWorkEntries(timelineEntries.map((entry) => entry.entry))).toBe(
       "Read a file",
     );
+  });
+});
+
+describe("collapseConsecutiveTimelineWorkEntries", () => {
+  it("merges consecutive completed tools with the same label", () => {
+    const collapsed = collapseConsecutiveTimelineWorkEntries([
+      {
+        id: "r1",
+        createdAt: "2026-01-01T00:00:01Z",
+        label: "Read file",
+        toolTitle: "Read file",
+        detail: "MessagesTimeline.tsx",
+        itemType: "dynamic_tool_call",
+        toolLifecycleStatus: "completed",
+        tone: "tool",
+      },
+      {
+        id: "r2",
+        createdAt: "2026-01-01T00:00:02Z",
+        label: "Read file",
+        toolTitle: "Read file",
+        detail: "MessagesTimeline.tsx",
+        itemType: "dynamic_tool_call",
+        toolLifecycleStatus: "completed",
+        tone: "tool",
+      },
+      {
+        id: "r3",
+        createdAt: "2026-01-01T00:00:03Z",
+        label: "Read file",
+        toolTitle: "Read file",
+        detail: "MessagesTimeline.tsx",
+        itemType: "dynamic_tool_call",
+        toolLifecycleStatus: "completed",
+        tone: "tool",
+      },
+      {
+        id: "s1",
+        createdAt: "2026-01-01T00:00:04Z",
+        label: "Search",
+        toolTitle: "Search",
+        detail: "WorkingTimer",
+        itemType: "dynamic_tool_call",
+        toolLifecycleStatus: "completed",
+        tone: "tool",
+      },
+    ]);
+
+    expect(collapsed).toHaveLength(2);
+    expect(collapsed[0]).toMatchObject({ count: 3, entry: { id: "r3" } });
+    expect(collapsed[1]).toMatchObject({ count: 1, entry: { id: "s1" } });
+  });
+
+  it("does not merge in-progress tools or thoughts into tool runs", () => {
+    const collapsed = collapseConsecutiveTimelineWorkEntries([
+      {
+        id: "t1",
+        createdAt: "2026-01-01T00:00:01Z",
+        label: "Planning",
+        toolTitle: "Thinking",
+        tone: "thinking",
+      },
+      {
+        id: "r1",
+        createdAt: "2026-01-01T00:00:02Z",
+        label: "Read file",
+        toolTitle: "Read file",
+        itemType: "dynamic_tool_call",
+        toolLifecycleStatus: "completed",
+        tone: "tool",
+      },
+      {
+        id: "r2",
+        createdAt: "2026-01-01T00:00:03Z",
+        label: "Read file",
+        toolTitle: "Read file",
+        itemType: "dynamic_tool_call",
+        toolLifecycleStatus: "inProgress",
+        tone: "tool",
+      },
+    ]);
+
+    expect(collapsed.map((item) => ({ id: item.entry.id, count: item.count }))).toEqual([
+      { id: "t1", count: 1 },
+      { id: "r1", count: 1 },
+      { id: "r2", count: 1 },
+    ]);
   });
 });
 
