@@ -48,7 +48,7 @@ export type RightPanelSurface =
     }
   | { id: "plan"; kind: "plan" };
 
-const RIGHT_PANEL_STORAGE_KEY = "t3code:right-panel-state:v2";
+const RIGHT_PANEL_STORAGE_KEY = "toolport-studio:right-panel-state:v2";
 const RIGHT_PANEL_STORAGE_VERSION = 8;
 
 export interface ThreadRightPanelState {

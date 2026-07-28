@@ -13,11 +13,37 @@
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <script>
       (() => {
+        // Rename pre-rename storage keys before anything reads them. This has
+        // to happen here rather than in app code: the theme is read below to
+        // paint the correct background before hydration, so a migration that
+        // ran later would flash the wrong theme on the first load after
+        // upgrading. Once renamed no legacy keys remain, so this is a no-op
+        // from then on.
+        try {
+          const storage = window.localStorage;
+          for (const legacyKey of Object.keys(storage)) {
+            const renamed = legacyKey.startsWith("t3code:")
+              ? `toolport-studio:${legacyKey.slice("t3code:".length)}`
+              : legacyKey.startsWith("t3code.")
+                ? `toolport-studio.${legacyKey.slice("t3code.".length)}`
+                : null;
+            // Never clobber a value already stored under the new name.
+            if (renamed !== null && storage.getItem(renamed) === null) {
+              const value = storage.getItem(legacyKey);
+              if (value !== null) storage.setItem(renamed, value);
+            }
+            if (renamed !== null) storage.removeItem(legacyKey);
+          }
+        } catch {
+          // Storage can be unavailable or full; the app still works, it just
+          // starts from defaults.
+        }
+
         const LIGHT_BACKGROUND = "#ffffff";
         const DARK_BACKGROUND = "#161616";
         const themeColorMeta = document.querySelector('meta[name="theme-color"]');
         try {
-          const storedTheme = window.localStorage.getItem("t3code:theme");
+          const storedTheme = window.localStorage.getItem("toolport-studio:theme");
           const theme =
             storedTheme === "light" || storedTheme === "dark" || storedTheme === "system"
               ? storedTheme

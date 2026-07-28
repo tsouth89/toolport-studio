@@ -9,7 +9,7 @@ export interface PierreIconResolution {
   token?: string;
 }
 
-const PIERRE_ICON_SPRITE_ID = "t3code-pierre-file-icon-sprite";
+const PIERRE_ICON_SPRITE_ID = "toolport-studio-pierre-file-icon-sprite";
 
 const TOOLPORT_STUDIO_FILE_ICON_SPRITE = `
 <svg xmlns="http://www.w3.org/2000/svg" width="0" height="0" aria-hidden="true">
