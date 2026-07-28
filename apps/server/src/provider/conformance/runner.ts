@@ -383,7 +383,7 @@ export function runCoreLoopConformance(binding: ConformanceBinding): void {
           assert.deepEqual(
             degraded,
             [],
-            `tool title degraded to a generic placeholder: ${JSON.stringify(titles)}`,
+            `tool title degraded to a generic placeholder; saw: ${titles.join(" | ")}`,
           );
         }),
     );
@@ -400,13 +400,11 @@ export function runCoreLoopConformance(binding: ConformanceBinding): void {
         const session = yield* binding.openSession(script);
         const promptsReceived = session.promptsReceived;
         if (promptsReceived === undefined) {
-          return yield* Effect.fail(
-            new ConformanceHarnessErrorClass({
-              provider: binding.provider,
-              detail:
-                "binding exposes no promptsReceived hook; waive this case explicitly instead of leaving it unasserted",
-            }),
-          );
+          return yield* new ConformanceHarnessErrorClass({
+            provider: binding.provider,
+            detail:
+              "binding exposes no promptsReceived hook; waive this case explicitly instead of leaving it unasserted",
+          });
         }
         yield* session.sendScriptedTurn({ text: "first", script });
         yield* session.awaitEvent((event) => event.type === "turn.started", {

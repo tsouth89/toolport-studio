@@ -129,9 +129,11 @@ export const grokConformanceBinding: ConformanceBinding = {
     Effect.gen(function* () {
       // Raw inbound JSON-RPC log — the only way to prove a mid-turn follow-up
       // actually reached the agent rather than being dropped in the adapter.
+      // mkdtemp gives a collision-free directory without reaching for a clock or
+      // a random source, both of which belong to Effect services in this codebase.
       const requestLogPath = NodePath.join(
-        NodeOS.tmpdir(),
-        `t3-conformance-grok-${process.pid}-${Date.now()}-${Math.floor(Math.random() * 1e6)}.log`,
+        NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-conformance-grok-")),
+        "requests.log",
       );
       const environment: NodeJS.ProcessEnv = {
         ...process.env,

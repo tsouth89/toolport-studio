@@ -32,10 +32,10 @@ export interface ThreadActivityStep {
   readonly id: string;
   readonly label: string;
   /** Short subtitle only when useful (failures). Prefer empty for quiet mockup rows. */
-  readonly detail?: string;
+  readonly detail?: string | undefined;
   readonly status: ThreadActivityStepStatus;
   readonly createdAt: string;
-  readonly turnId?: TurnId | null;
+  readonly turnId?: TurnId | null | undefined;
   readonly tone: WorkLogEntry["tone"];
   readonly isToolLike: boolean;
 }

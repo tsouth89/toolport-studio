@@ -240,6 +240,7 @@ describe("buildThreadTurnInterruptInput", () => {
             requestedAt: now,
             startedAt: now,
             completedAt: null,
+            assistantMessageId: null,
           },
         }),
       ),

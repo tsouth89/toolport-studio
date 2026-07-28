@@ -14,6 +14,6 @@ describe("ThreadArchiveBlockedError", () => {
       environmentId: "environment-1",
       threadId: "thread-1",
     });
-    expect(error.message).toBe("Cannot archive a running thread.");
+    expect(error.message).toBe("Stop the running turn before archiving this chat.");
   });
 });

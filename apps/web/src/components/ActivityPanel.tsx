@@ -111,7 +111,7 @@ function ArtifactsSection({
   onOpenPlan,
 }: {
   artifacts: ReadonlyArray<ThreadActivityArtifact>;
-  onOpenPlan?: () => void;
+  onOpenPlan?: (() => void) | undefined;
 }) {
   return (
     <section className="min-w-0 space-y-1.5">
@@ -185,7 +185,7 @@ function McpServersSection({
   onViewAllMcp,
 }: {
   model: ThreadActivityMcpStatus;
-  onViewAllMcp?: () => void;
+  onViewAllMcp?: (() => void) | undefined;
 }) {
   const remaining = model.totalServerCount - model.servers.length;
   return (
@@ -261,7 +261,7 @@ function ChangedFilesSection({
   onOpenTurnDiff,
 }: {
   model: ThreadActivityChangedFiles;
-  onOpenTurnDiff?: (turnId: TurnId, filePath?: string) => void;
+  onOpenTurnDiff?: ((turnId: TurnId, filePath?: string) => void) | undefined;
 }) {
   const remaining = model.fileCount - model.files.length;
   return (
@@ -345,9 +345,9 @@ export function ActivityPanel({
   onViewAllMcp,
 }: {
   model: ThreadActivityViewModel;
-  onOpenTurnDiff?: (turnId: TurnId, filePath?: string) => void;
-  onOpenPlan?: () => void;
-  onViewAllMcp?: () => void;
+  onOpenTurnDiff?: ((turnId: TurnId, filePath?: string) => void) | undefined;
+  onOpenPlan?: (() => void) | undefined;
+  onViewAllMcp?: (() => void) | undefined;
 }) {
   const elapsed = useElapsedLabel(model.elapsedStartedAt, model.isWorking);
   const currentElapsed = useElapsedLabel(model.current?.startedAt ?? null, model.isWorking);
