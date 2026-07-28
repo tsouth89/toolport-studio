@@ -92,13 +92,13 @@ describe("ssh tunnel scripts", () => {
   it("builds the remote t3 runner with npx and npm fallbacks", () => {
     const script = buildRemoteT3RunnerScript({ nodeEngineRange: TEST_NODE_ENGINE_RANGE });
 
-    assert.include(script, "T3_NODE_SCRIPT_PATH=''");
+    assert.include(script, "TOOLPORT_STUDIO_NODE_SCRIPT_PATH=''");
     assert.include(script, 'exec t3 "$@"');
     assert.include(script, "exec npx --yes 't3@latest' \"$@\"");
     assert.include(script, "exec npm exec --yes 't3@latest' -- \"$@\"");
     assert.include(script, "could not install 't3@latest'");
     assert.include(script, 'prepend_path_if_dir "$HOME/.local/bin"');
-    assert.include(script, `T3_NODE_ENGINE_RANGE='${TEST_NODE_ENGINE_RANGE}'`);
+    assert.include(script, `TOOLPORT_STUDIO_NODE_ENGINE_RANGE='${TEST_NODE_ENGINE_RANGE}'`);
     assert.include(script, "remote_node_satisfies_engine()");
     assert.include(script, "function satisfiesSemverRange");
     assert.include(script, "satisfiesSemverRange(rawVersion, range)");
@@ -111,14 +111,14 @@ describe("ssh tunnel scripts", () => {
     assert.include(script, 'prepend_path_if_dir "$HOME/.nodenv/shims"');
     assert.include(script, 'NVM_DIR="$HOME/.nvm"');
     assert.include(script, "nvm use --silent default");
-    assert.include(script, 'for T3_NODE_BIN in "$NVM_DIR"/versions/node/*/bin');
+    assert.include(script, 'for TOOLPORT_STUDIO_NODE_BIN in "$NVM_DIR"/versions/node/*/bin');
     assert.notInclude(script, "ensure $NVM_DIR/nvm.sh is available");
   });
 
   it("does not hard-code a remote node engine range", () => {
     const script = buildRemoteT3RunnerScript();
 
-    assert.include(script, "T3_NODE_ENGINE_RANGE=''");
+    assert.include(script, "TOOLPORT_STUDIO_NODE_ENGINE_RANGE=''");
     assert.notInclude(script, TEST_NODE_ENGINE_RANGE);
   });
 
@@ -139,9 +139,9 @@ describe("ssh tunnel scripts", () => {
 
     assert.include(
       script,
-      "T3_NODE_SCRIPT_PATH='/Users/julius/Development/Work/codething-mvp/apps/server/dist/bin.mjs'",
+      "TOOLPORT_STUDIO_NODE_SCRIPT_PATH='/Users/julius/Development/Work/codething-mvp/apps/server/dist/bin.mjs'",
     );
-    assert.include(script, 'exec node "$T3_NODE_SCRIPT_PATH" "$@"');
+    assert.include(script, 'exec node "$TOOLPORT_STUDIO_NODE_SCRIPT_PATH" "$@"');
   });
 
   it("uses the remote t3 runner for launch and pairing scripts", () => {
@@ -161,7 +161,7 @@ describe("ssh tunnel scripts", () => {
     assert.include(buildRemoteLaunchScript(), "if ! ensure_remote_node_path; then");
     assert.include(
       buildRemoteLaunchScript({ nodeEngineRange: TEST_NODE_ENGINE_RANGE }),
-      `T3_NODE_ENGINE_RANGE='${TEST_NODE_ENGINE_RANGE}'`,
+      `TOOLPORT_STUDIO_NODE_ENGINE_RANGE='${TEST_NODE_ENGINE_RANGE}'`,
     );
     assert.include(
       buildRemoteLaunchScript({ nodeEngineRange: TEST_NODE_ENGINE_RANGE }),

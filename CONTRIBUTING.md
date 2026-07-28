@@ -25,7 +25,7 @@ Toolport Studio is early, but thoughtful contributions are welcome.
 Explain what changed, why it matters, and how you verified it. Include
 screenshots or a short recording for visible interface changes.
 
-Toolport Studio still uses some inherited `@toolport-studio/*`, `T3CODE_*`, and `t3`
+Toolport Studio still uses some inherited `@toolport-studio/*`, `TOOLPORT_STUDIO_*`, and `t3`
 identifiers for technical continuity. Do not rename those mechanically across
 the repository; migrations need to preserve existing user state and release
 paths.

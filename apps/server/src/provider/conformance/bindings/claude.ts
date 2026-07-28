@@ -7,7 +7,7 @@
  * same shape (`runtimeFactory` / injected client) and will bind the same way.
  *
  * The other family is the ACP subprocess (Cursor, Grok), which spawns
- * `scripts/acp-mock-agent.ts` and is scripted through `T3_ACP_*` env at spawn
+ * `scripts/acp-mock-agent.ts` and is scripted through `TOOLPORT_STUDIO_ACP_*` env at spawn
  * time. That is why `openSession` takes the script up front — it is the only
  * signature both families can honour.
  */

@@ -29,12 +29,12 @@ import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 const DEFAULT_API_BASE_URL = "https://api.bitbucket.org/2.0";
 
 const BitbucketApiEnvConfig = Config.all({
-  baseUrl: Config.string("T3CODE_BITBUCKET_API_BASE_URL").pipe(
+  baseUrl: Config.string("TOOLPORT_STUDIO_BITBUCKET_API_BASE_URL").pipe(
     Config.withDefault(DEFAULT_API_BASE_URL),
   ),
-  accessToken: Config.string("T3CODE_BITBUCKET_ACCESS_TOKEN").pipe(Config.option),
-  email: Config.string("T3CODE_BITBUCKET_EMAIL").pipe(Config.option),
-  apiToken: Config.string("T3CODE_BITBUCKET_API_TOKEN").pipe(Config.option),
+  accessToken: Config.string("TOOLPORT_STUDIO_BITBUCKET_ACCESS_TOKEN").pipe(Config.option),
+  email: Config.string("TOOLPORT_STUDIO_BITBUCKET_EMAIL").pipe(Config.option),
+  apiToken: Config.string("TOOLPORT_STUDIO_BITBUCKET_API_TOKEN").pipe(Config.option),
 });
 
 const BitbucketApiOperation = Schema.Literals([
@@ -468,7 +468,7 @@ function authFromConfig(
     account: Option.none(),
     host: Option.some("bitbucket.org"),
     detail: Option.some(
-      "Set T3CODE_BITBUCKET_EMAIL and T3CODE_BITBUCKET_API_TOKEN, or T3CODE_BITBUCKET_ACCESS_TOKEN.",
+      "Set TOOLPORT_STUDIO_BITBUCKET_EMAIL and TOOLPORT_STUDIO_BITBUCKET_API_TOKEN, or TOOLPORT_STUDIO_BITBUCKET_ACCESS_TOKEN.",
     ),
   };
 }

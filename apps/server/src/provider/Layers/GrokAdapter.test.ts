@@ -548,7 +548,7 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
       const exitLogPath = NodePath.join(tempDir, "exit.log");
 
       const adapter = yield* makeMockTestAdapter({
-        T3_ACP_EXIT_LOG_PATH: exitLogPath,
+        TOOLPORT_STUDIO_ACP_EXIT_LOG_PATH: exitLogPath,
       });
 
       yield* adapter.startSession({
@@ -574,7 +574,7 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
     Effect.gen(function* () {
       const threadId = ThreadId.make("grok-session-ready-after-prompt");
       const adapter = yield* makeMockTestAdapter({
-        T3_ACP_EMIT_TOOL_CALLS: "1",
+        TOOLPORT_STUDIO_ACP_EMIT_TOOL_CALLS: "1",
       });
       const requestOpened =
         yield* Deferred.make<Extract<ProviderRuntimeEvent, { type: "request.opened" }>>();
@@ -624,7 +624,7 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
       const threadId = ThreadId.make("grok-approval-timeout");
       const adapter = yield* makeMockTestAdapter(
         {
-          T3_ACP_EMIT_TOOL_CALLS: "1",
+          TOOLPORT_STUDIO_ACP_EMIT_TOOL_CALLS: "1",
         },
         {
           // Short timeout so the test does not wait minutes.
@@ -759,8 +759,8 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
     Effect.gen(function* () {
       const threadId = ThreadId.make("grok-xai-prompt-complete-fallback");
       const adapter = yield* makeMockTestAdapter({
-        T3_ACP_EMIT_XAI_PROMPT_COMPLETE_THEN_HANG: "1",
-        T3_ACP_EMIT_FOREIGN_SESSION_UPDATES: "1",
+        TOOLPORT_STUDIO_ACP_EMIT_XAI_PROMPT_COMPLETE_THEN_HANG: "1",
+        TOOLPORT_STUDIO_ACP_EMIT_FOREIGN_SESSION_UPDATES: "1",
       });
 
       const runtimeEvents: ProviderRuntimeEvent[] = [];
@@ -856,7 +856,7 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
     Effect.gen(function* () {
       const threadId = ThreadId.make("grok-send-turn-interrupt-after-prompt");
       const adapter = yield* makeMockTestAdapter({
-        T3_ACP_EMIT_XAI_PROMPT_COMPLETE_THEN_HANG: "1",
+        TOOLPORT_STUDIO_ACP_EMIT_XAI_PROMPT_COMPLETE_THEN_HANG: "1",
       });
       const contentDelta = yield* Deferred.make<void>();
       const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
@@ -901,8 +901,8 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
     Effect.gen(function* () {
       const threadId = ThreadId.make("grok-xai-prompt-complete-missing-stop-reason");
       const adapter = yield* makeMockTestAdapter({
-        T3_ACP_EMIT_XAI_PROMPT_COMPLETE_THEN_HANG: "1",
-        T3_ACP_OMIT_XAI_PROMPT_COMPLETE_STOP_REASON: "1",
+        TOOLPORT_STUDIO_ACP_EMIT_XAI_PROMPT_COMPLETE_THEN_HANG: "1",
+        TOOLPORT_STUDIO_ACP_OMIT_XAI_PROMPT_COMPLETE_STOP_REASON: "1",
       });
 
       const runtimeEvents: ProviderRuntimeEvent[] = [];
@@ -957,8 +957,8 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
       // Only the intentional hang prompt blocks; after Stop the adapter recycles
       // the ACP process, so HANG_FIRST would re-hang the follow-up on a new process.
       const adapter = yield* makeMockTestAdapter({
-        T3_ACP_HANG_PROMPT_TEXT: "hang forever",
-        T3_ACP_REQUEST_LOG_PATH: requestLogPath,
+        TOOLPORT_STUDIO_ACP_HANG_PROMPT_TEXT: "hang forever",
+        TOOLPORT_STUDIO_ACP_REQUEST_LOG_PATH: requestLogPath,
       });
 
       const runtimeEvents: ProviderRuntimeEvent[] = [];
@@ -1089,7 +1089,7 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
       const threadId = ThreadId.make("grok-open-tool-no-auto-kill");
       const adapter = yield* makeMockTestAdapter(
         {
-          T3_ACP_EMIT_TOOL_START_THEN_HANG: "1",
+          TOOLPORT_STUDIO_ACP_EMIT_TOOL_START_THEN_HANG: "1",
         },
         {
           silentTurnWatchdog: {
@@ -1207,7 +1207,7 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
       const threadId = ThreadId.make("grok-open-tool-stuck-watchdog");
       const adapter = yield* makeMockTestAdapter(
         {
-          T3_ACP_EMIT_TOOL_START_THEN_HANG: "1",
+          TOOLPORT_STUDIO_ACP_EMIT_TOOL_START_THEN_HANG: "1",
         },
         {
           silentTurnWatchdog: {
@@ -1306,7 +1306,7 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
         const threadId = ThreadId.make("grok-post-tool-silence-watchdog");
         const adapter = yield* makeMockTestAdapter(
           {
-            T3_ACP_EMIT_TOOL_THEN_HANG: "1",
+            TOOLPORT_STUDIO_ACP_EMIT_TOOL_THEN_HANG: "1",
           },
           {
             silentTurnWatchdog: {
@@ -1408,9 +1408,9 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
       // First prompt hangs until cancel. Steer must land as a concurrent
       // session/prompt without session/cancel (no tool kill).
       const adapter = yield* makeMockTestAdapter({
-        T3_ACP_HANG_PROMPT_TEXT: "work forever",
-        T3_ACP_PROMPT_RESPONSE_TEXT: "steered reply",
-        T3_ACP_REQUEST_LOG_PATH: requestLogPath,
+        TOOLPORT_STUDIO_ACP_HANG_PROMPT_TEXT: "work forever",
+        TOOLPORT_STUDIO_ACP_PROMPT_RESPONSE_TEXT: "steered reply",
+        TOOLPORT_STUDIO_ACP_REQUEST_LOG_PATH: requestLogPath,
       });
 
       const firstTurnStarted = yield* Deferred.make<TurnId>();
@@ -1510,8 +1510,8 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
         );
         const requestLogPath = NodePath.join(tempDir, "requests.ndjson");
         const adapter = yield* makeMockTestAdapter({
-          T3_ACP_REQUEST_LOG_PATH: requestLogPath,
-          T3_ACP_HANG_PROMPT: "1",
+          TOOLPORT_STUDIO_ACP_REQUEST_LOG_PATH: requestLogPath,
+          TOOLPORT_STUDIO_ACP_HANG_PROMPT: "1",
         });
 
         const runtimeEvents: ProviderRuntimeEvent[] = [];
@@ -1587,7 +1587,7 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
     Effect.gen(function* () {
       const threadId = ThreadId.make("grok-silent-empty-end-turn");
       const adapter = yield* makeMockTestAdapter({
-        T3_ACP_EMPTY_PROMPT_RESPONSE: "1",
+        TOOLPORT_STUDIO_ACP_EMPTY_PROMPT_RESPONSE: "1",
       });
 
       const runtimeEvents: ProviderRuntimeEvent[] = [];
@@ -1656,8 +1656,8 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
       );
       const requestLogPath = NodePath.join(tempDir, "requests.ndjson");
       const adapter = yield* makeMockTestAdapter({
-        T3_ACP_HANG_PROMPT_TEXT: "cancel this prompt",
-        T3_ACP_REQUEST_LOG_PATH: requestLogPath,
+        TOOLPORT_STUDIO_ACP_HANG_PROMPT_TEXT: "cancel this prompt",
+        TOOLPORT_STUDIO_ACP_REQUEST_LOG_PATH: requestLogPath,
       });
 
       const runtimeEvents: ProviderRuntimeEvent[] = [];
@@ -1735,7 +1735,7 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
       // ignored on that mismatch, leaving the session unstoppable.
       const threadId = ThreadId.make("grok-stop-stale-turn-id");
       const adapter = yield* makeMockTestAdapter({
-        T3_ACP_HANG_PROMPT_FOREVER: "1",
+        TOOLPORT_STUDIO_ACP_HANG_PROMPT_FOREVER: "1",
       });
 
       const turnStarted = yield* Deferred.make<TurnId>();
@@ -1782,8 +1782,8 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
       // Wait for the mock's post-cancel late update via wall clock, then assert
       // it never became a runtime content event.
       const adapter = yield* makeMockTestAdapter({
-        T3_ACP_HANG_PROMPT_FOREVER: "1",
-        T3_ACP_EMIT_LATE_UPDATE_AFTER_CANCEL: "1",
+        TOOLPORT_STUDIO_ACP_HANG_PROMPT_FOREVER: "1",
+        TOOLPORT_STUDIO_ACP_EMIT_LATE_UPDATE_AFTER_CANCEL: "1",
       });
 
       const runtimeEvents: ProviderRuntimeEvent[] = [];
@@ -1857,7 +1857,7 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
     Effect.gen(function* () {
       const threadId = ThreadId.make("grok-stop-during-completion-drain");
       const adapter = yield* makeMockTestAdapter({
-        T3_ACP_EMIT_XAI_PROMPT_COMPLETE_THEN_HANG: "1",
+        TOOLPORT_STUDIO_ACP_EMIT_XAI_PROMPT_COMPLETE_THEN_HANG: "1",
       });
 
       const runtimeEvents: ProviderRuntimeEvent[] = [];
@@ -1986,7 +1986,7 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
     Effect.gen(function* () {
       const threadId = ThreadId.make("grok-prompt-failure-ready");
       const adapter = yield* makeMockTestAdapter({
-        T3_ACP_FAIL_PROMPT: "1",
+        TOOLPORT_STUDIO_ACP_FAIL_PROMPT: "1",
       });
       const runtimeEvents: ProviderRuntimeEvent[] = [];
       const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
@@ -2034,7 +2034,7 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
     Effect.gen(function* () {
       const threadId = ThreadId.make("grok-load-replay-filter");
       const adapter = yield* makeMockTestAdapter({
-        T3_ACP_EMIT_LOAD_REPLAY: "1",
+        TOOLPORT_STUDIO_ACP_EMIT_LOAD_REPLAY: "1",
       });
       const runtimeEvents: ProviderRuntimeEvent[] = [];
       const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
@@ -2083,7 +2083,7 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
     Effect.gen(function* () {
       const threadId = ThreadId.make("grok-stale-resume-path");
       const adapter = yield* makeMockTestAdapter({
-        T3_ACP_FAIL_LOAD_SESSION_NOT_FOUND: "1",
+        TOOLPORT_STUDIO_ACP_FAIL_LOAD_SESSION_NOT_FOUND: "1",
       });
 
       const session = yield* adapter.startSession({
@@ -2124,10 +2124,10 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
       const requestLogPath = NodePath.join(tempDir, "requests.ndjson");
       // Load always fails after recycle → blank session/new → must rehydrate.
       const adapter = yield* makeMockTestAdapter({
-        T3_ACP_HANG_PROMPT_TEXT: "hang forever",
-        T3_ACP_HANG_PROMPT_TEXT_EXACT: "1",
-        T3_ACP_FAIL_LOAD_SESSION_NOT_FOUND: "1",
-        T3_ACP_REQUEST_LOG_PATH: requestLogPath,
+        TOOLPORT_STUDIO_ACP_HANG_PROMPT_TEXT: "hang forever",
+        TOOLPORT_STUDIO_ACP_HANG_PROMPT_TEXT_EXACT: "1",
+        TOOLPORT_STUDIO_ACP_FAIL_LOAD_SESSION_NOT_FOUND: "1",
+        TOOLPORT_STUDIO_ACP_REQUEST_LOG_PATH: requestLogPath,
       });
 
       const runtimeEvents: ProviderRuntimeEvent[] = [];
@@ -2233,7 +2233,7 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
       );
       const requestLogPath = NodePath.join(tempDir, "requests.ndjson");
       const adapter = yield* makeMockTestAdapter({
-        T3_ACP_REQUEST_LOG_PATH: requestLogPath,
+        TOOLPORT_STUDIO_ACP_REQUEST_LOG_PATH: requestLogPath,
       });
 
       yield* adapter.startSession({
@@ -2332,9 +2332,9 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
       );
       const requestLogPath = NodePath.join(tempDir, "requests.ndjson");
       const adapter = yield* makeMockTestAdapter({
-        T3_ACP_REQUEST_LOG_PATH: requestLogPath,
-        T3_ACP_EMIT_TOOL_CALLS: "1",
-        T3_ACP_ALLOW_ONCE_OPTION_ID: "agent-defined-approval-id",
+        TOOLPORT_STUDIO_ACP_REQUEST_LOG_PATH: requestLogPath,
+        TOOLPORT_STUDIO_ACP_EMIT_TOOL_CALLS: "1",
+        TOOLPORT_STUDIO_ACP_ALLOW_ONCE_OPTION_ID: "agent-defined-approval-id",
       });
       const eventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
         event.type === "request.opened"
@@ -2377,7 +2377,9 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
   it.effect("handles xAI ask_user_question extension requests", () =>
     Effect.gen(function* () {
       const threadId = ThreadId.make("grok-xai-ask-user-question");
-      const adapter = yield* makeMockTestAdapter({ T3_ACP_EMIT_XAI_ASK_USER_QUESTION: "1" });
+      const adapter = yield* makeMockTestAdapter({
+        TOOLPORT_STUDIO_ACP_EMIT_XAI_ASK_USER_QUESTION: "1",
+      });
       const requested =
         yield* Deferred.make<Extract<ProviderRuntimeEvent, { type: "user-input.requested" }>>();
       const resolved =

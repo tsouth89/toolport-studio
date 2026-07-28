@@ -45,7 +45,7 @@ Treat pairing URLs as secrets. Do not copy them into final responses, screenshot
 Create another token against the same database and web URL as the running dev server:
 
 ```bash
-T3CODE_PORT=<server-port> node apps/server/src/bin.ts auth pairing create \
+TOOLPORT_STUDIO_PORT=<server-port> node apps/server/src/bin.ts auth pairing create \
   --base-dir <base-dir> \
   --dev-url <web-url> \
   --base-url <web-url> \
@@ -53,7 +53,7 @@ T3CODE_PORT=<server-port> node apps/server/src/bin.ts auth pairing create \
   --label agent-ui-test
 ```
 
-Use the `Pair URL` from this command once. Derive `<server-port>` and `<web-url>` from the current dev-runner output, including any automatically selected port offset. Setting `T3CODE_PORT` keeps the administrative CLI from probing for an unrelated free port.
+Use the `Pair URL` from this command once. Derive `<server-port>` and `<web-url>` from the current dev-runner output, including any automatically selected port offset. Setting `TOOLPORT_STUDIO_PORT` keeps the administrative CLI from probing for an unrelated free port.
 
 Always pass `--dev-url` for a dev-runner environment so the generated pairing URL uses the current web origin. An explicit base directory stores runtime state in `<base-dir>/userdata`; the `<base-dir>/dev` fallback is only used by an implicit dev home. Use `auth pairing list` to inspect active token metadata; it intentionally cannot reveal token secrets.
 

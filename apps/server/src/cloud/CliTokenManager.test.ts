@@ -19,9 +19,9 @@ import type { OutOfBandOAuthPromptInput } from "./CliTokenManager.ts";
 
 // pk_test_<base64 of "clerk.example.test$">
 const TEST_ENV = {
-  T3CODE_CLERK_PUBLISHABLE_KEY: "pk_test_Y2xlcmsuZXhhbXBsZS50ZXN0JA==",
-  T3CODE_CLERK_CLI_OAUTH_CLIENT_ID: "oauth_client_test",
-  T3CODE_HOSTED_APP_URL: "https://hosted.example.test",
+  TOOLPORT_STUDIO_CLERK_PUBLISHABLE_KEY: "pk_test_Y2xlcmsuZXhhbXBsZS50ZXN0JA==",
+  TOOLPORT_STUDIO_CLERK_CLI_OAUTH_CLIENT_ID: "oauth_client_test",
+  TOOLPORT_STUDIO_HOSTED_APP_URL: "https://hosted.example.test",
 };
 
 interface RecordedTokenRequest {

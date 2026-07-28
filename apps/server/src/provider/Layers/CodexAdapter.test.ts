@@ -431,14 +431,16 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
     }).pipe(Effect.provide(layer));
   });
 
-  it.effect("uses T3CODE_CODEX_LAUNCH_ARGS for the session runtime", () => {
+  it.effect("uses TOOLPORT_STUDIO_CODEX_LAUNCH_ARGS for the session runtime", () => {
     const runtimeFactory = makeRuntimeFactory();
     const layer = Layer.effect(
       CodexAdapter,
       Effect.gen(function* () {
         const codexConfig = decodeCodexSettings({ launchArgs: "--enable settings-feature" });
         return yield* makeCodexAdapter(codexConfig, {
-          environment: { T3CODE_CODEX_LAUNCH_ARGS: " --strict-config --enable env-feature " },
+          environment: {
+            TOOLPORT_STUDIO_CODEX_LAUNCH_ARGS: " --strict-config --enable env-feature ",
+          },
           makeRuntime: runtimeFactory.factory,
         });
       }),

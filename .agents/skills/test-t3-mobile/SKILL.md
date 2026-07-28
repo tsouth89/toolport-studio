@@ -128,14 +128,14 @@ Do not start, stop, erase, or reconfigure an emulator owned by another task. Tra
 Issue a fresh credential against the running backend's exact base directory:
 
 ```bash
-T3CODE_PORT=<server-port> node apps/server/src/bin.ts auth pairing create \
+TOOLPORT_STUDIO_PORT=<server-port> node apps/server/src/bin.ts auth pairing create \
   --base-dir <base-dir> \
   --base-url <mobile-origin> \
   --ttl 15m \
   --label agent-mobile-<short-device-id>
 ```
 
-In PowerShell, set `$env:T3CODE_PORT = "<server-port>"` first and run the `node ... auth pairing create` command without the leading assignment.
+In PowerShell, set `$env:TOOLPORT_STUDIO_PORT = "<server-port>"` first and run the `node ... auth pairing create` command without the leading assignment.
 
 If the visible Add Environment action is not exposed as a semantic target, open the app's registered route instead of guessing coordinates:
 
