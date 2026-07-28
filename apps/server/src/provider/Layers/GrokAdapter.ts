@@ -447,6 +447,8 @@ interface GrokSessionContext {
   injectsToolportMcp: boolean;
   /** MCP server name fingerprint at last ACP spawn (recycle when catalog changes). */
   mcpBindingCatalog: string;
+  /** Last context-fill token count emitted to the UI (throttle _meta.totalTokens). */
+  lastEmittedUsageTokens: number | undefined;
   /**
    * Visible assistant/tool stream events observed for the active turn. Used to
    * detect silent end_turn completions that leave the session looking dead.
@@ -1544,9 +1546,17 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               return;
             }
 
-            // Context usage can arrive without a live turn binding; still surface
-            // it for the composer meter (Claude/Codex parity).
+            // Context fill: Grok stamps `_meta.totalTokens` on most session/updates
+            // (not ACP usage_update). Throttle so every message chunk is not a
+            // context-window activity row.
             if (event._tag === "UsageUpdated") {
+              const previous = ctx.lastEmittedUsageTokens;
+              if (previous === event.usedTokens) {
+                return;
+              }
+              if (previous !== undefined && Math.abs(event.usedTokens - previous) < 1_000) {
+                return;
+              }
               const stamp = yield* makeEventStamp();
               const usageEvent = makeAcpTokenUsageUpdatedEvent({
                 stamp,
@@ -1558,6 +1568,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 rawPayload: event.rawPayload,
               });
               if (usageEvent) {
+                ctx.lastEmittedUsageTokens = event.usedTokens;
                 yield* offerRuntimeEvent(usageEvent);
               }
               return;
@@ -1918,6 +1929,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         ctx.acpCompromised = false;
         ctx.injectsToolportMcp = injectsToolportGateway;
         ctx.mcpBindingCatalog = McpProviderSession.mcpBindingCatalogKey(mcpBindings);
+        ctx.lastEmittedUsageTokens = undefined;
         // Fresh ACP process: drop residual Stop/watchdog interrupt bookkeeping so
         // the next user message cannot steer into a cancelled turn id and fail
         // preparation with "Grok prompt was interrupted during preparation."
@@ -2079,6 +2091,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             acpCompromised: false,
             injectsToolportMcp: injectsToolportGateway,
             mcpBindingCatalog: McpProviderSession.mcpBindingCatalogKey(mcpBindings),
+            lastEmittedUsageTokens: undefined,
             turnVisibleUpdateCount: 0,
             lastTurnActivityAtMs: yield* Clock.currentTimeMillis,
             lastToolActivityAtMs: yield* Clock.currentTimeMillis,

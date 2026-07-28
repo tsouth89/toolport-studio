@@ -452,6 +452,26 @@ describe("AcpRuntimeModel", () => {
         },
       },
     ]);
+
+    // Grok Build: totalTokens on notification _meta (not usage_update).
+    const grokMetaUsage = parseSessionUpdateEvent({
+      sessionId: "session-1",
+      _meta: { totalTokens: 300_143 },
+      update: {
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "hi" },
+      },
+    } satisfies EffectAcpSchema.SessionNotification);
+
+    expect(grokMetaUsage.events).toContainEqual({
+      _tag: "UsageUpdated",
+      usedTokens: 300_143,
+      maxTokens: 0,
+      rawPayload: expect.objectContaining({
+        _meta: { totalTokens: 300_143 },
+      }),
+    });
+    expect(grokMetaUsage.events.some((event) => event._tag === "ContentDelta")).toBe(true);
   });
 
   it("keeps permission request parsing compatible with loose extension payloads", () => {
