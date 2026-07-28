@@ -143,6 +143,7 @@ import { BranchToolbar } from "./BranchToolbar";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
 import PlanSidebar from "./PlanSidebar";
 import { ActivityPanel } from "./ActivityPanel";
+import { shouldShowThisTurnCard, ThisTurnCard } from "./ThisTurnCard";
 import ThreadTerminalDrawer from "./ThreadTerminalDrawer";
 import { deriveThreadActivityViewModel } from "../threadActivityViewModel";
 import { openToolportApp } from "../lib/openToolport";
@@ -3234,6 +3235,38 @@ function ChatViewContent(props: ChatViewProps) {
     // Prefer installed Toolport app (toolport://); fall back to web catalog.
     void openToolportApp();
   }, []);
+  // Codex-style This-turn card: show while work is interesting; hide when
+  // docked Activity is open (duplicate) or the user dismisses for this turn key.
+  const thisTurnCardKey =
+    activeLatestTurn?.turnId != null
+      ? String(activeLatestTurn.turnId)
+      : localDispatchStartedAt != null
+        ? `send:${localDispatchStartedAt}`
+        : activeThreadKey != null
+          ? `thread:${activeThreadKey}`
+          : "none";
+  const [thisTurnCardDismissedKey, setThisTurnCardDismissedKey] = useState<string | null>(null);
+  const [thisTurnCardForcedOpen, setThisTurnCardForcedOpen] = useState(false);
+  useEffect(() => {
+    // New turn / send re-enables the card after a prior dismiss.
+    setThisTurnCardDismissedKey((previous) =>
+      previous !== null && previous !== thisTurnCardKey ? null : previous,
+    );
+    setThisTurnCardForcedOpen(false);
+  }, [thisTurnCardKey]);
+  const dockedActivityOpen = rightPanelOpen && activeRightPanelKind === "activity";
+  const thisTurnCardVisible =
+    !dockedActivityOpen &&
+    thisTurnCardDismissedKey !== thisTurnCardKey &&
+    (thisTurnCardForcedOpen || shouldShowThisTurnCard(activityViewModel));
+  const openThisTurnCard = useCallback(() => {
+    setThisTurnCardDismissedKey(null);
+    setThisTurnCardForcedOpen(true);
+  }, []);
+  const dismissThisTurnCard = useCallback(() => {
+    setThisTurnCardDismissedKey(thisTurnCardKey);
+    setThisTurnCardForcedOpen(false);
+  }, [thisTurnCardKey]);
   const openFileSurface = useCallback(
     (relativePath: string) => {
       if (!activeThreadRef || !activeProject) return;
@@ -6070,7 +6103,7 @@ function ChatViewContent(props: ChatViewProps) {
                 isRevertingCheckpoint={isRevertingCheckpoint}
                 onImageExpand={onExpandTimelineImage}
                 onInterrupt={onInterrupt}
-                onOpenActivity={addActivitySurface}
+                onOpenActivity={openThisTurnCard}
                 markdownCwd={gitCwd ?? undefined}
                 resolvedTheme={resolvedTheme}
                 timestampFormat={timestampFormat}
@@ -6104,6 +6137,22 @@ function ChatViewContent(props: ChatViewProps) {
                   </button>
                 </div>
               )}
+
+              {/* Codex-style this-turn inspect card (not a docked Activity column). */}
+              {thisTurnCardVisible ? (
+                <div
+                  className="pointer-events-none absolute right-2 z-30 sm:right-3"
+                  style={{ top: 8 }}
+                >
+                  <ThisTurnCard
+                    model={activityViewModel}
+                    onDismiss={dismissThisTurnCard}
+                    onOpenTurnDiff={isServerThread ? onOpenTurnDiff : undefined}
+                    onOpenToolport={openToolportMcp}
+                    onOpenDockedActivity={addActivitySurface}
+                  />
+                </div>
+              ) : null}
             </div>
 
             {/* Input bar — centered hero while a draft has no messages, docked at the bottom otherwise */}

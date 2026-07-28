@@ -1142,8 +1142,7 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
   const onOpenActivity = activity.onOpenActivity;
   const onInterrupt = activity.onInterrupt;
   const showRecoveryStop = quiet.isQuiet && onInterrupt !== null;
-  // Keep Activity link for recovery/quiet only — constant "View in Activity"
-  // next to every Working line is noise during a healthy turn.
+  // Quiet recovery only — opens the This-turn card (Codex-style), not a dock.
   const showActivityLink = quiet.isQuiet && onOpenActivity !== null;
 
   return (
@@ -1259,7 +1258,7 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
               className="font-medium text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               onClick={onOpenActivity}
             >
-              View in Activity
+              This turn
             </button>
           </>
         ) : null}

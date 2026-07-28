@@ -106,10 +106,22 @@ export interface ThreadActivityMcpServer {
 export interface ThreadActivityMcpStatus {
   readonly gatewayAvailable: boolean;
   readonly activeProfileName: string | null;
+  /**
+   * Servers that actually ran tools this turn (ranked by use). Empty when the
+   * turn has not touched MCP yet — never a full registry dump.
+   */
+  readonly usedThisTurn: ReadonlyArray<ThreadActivityMcpServer>;
+  /**
+   * Full ranked preview kept for optional deep inspect. Prefer usedThisTurn in
+   * chat surfaces; do not render as a dead inventory list.
+   */
   readonly servers: ReadonlyArray<ThreadActivityMcpServer>;
-  /** Total servers in Toolport registry (for View all copy). */
+  /** Total servers in Toolport registry (for Open in Toolport copy). */
   readonly totalServerCount: number;
 }
+
+/** Max MCP names to surface as "used this turn" chips. */
+const MAX_MCP_USED_THIS_TURN = 4;
 
 export interface ThreadActivityViewModel {
   readonly isWorking: boolean;
@@ -628,9 +640,14 @@ export function deriveActivityMcpStatus(input: {
     return left.name.localeCompare(right.name);
   });
 
+  const usedThisTurn = scored
+    .filter((server) => server.useCount > 0)
+    .slice(0, MAX_MCP_USED_THIS_TURN);
+
   return {
     gatewayAvailable: status.gatewayAvailable,
     activeProfileName: status.activeProfileName,
+    usedThisTurn,
     servers: scored.slice(0, MAX_ACTIVITY_MCP_SERVERS),
     totalServerCount: status.servers.length,
   };

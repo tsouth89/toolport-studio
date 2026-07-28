@@ -736,7 +736,7 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain('aria-label="Stop generation"');
   });
 
-  it("keeps View in Activity off the Working row during a healthy turn", () => {
+  it("keeps This turn off the Working row during a healthy turn", () => {
     const markup = renderToStaticMarkup(
       <MessagesTimeline
         {...buildProps()}
@@ -748,10 +748,10 @@ describe("MessagesTimeline", () => {
     );
 
     expect(markup).toContain("Working");
-    expect(markup).not.toContain("View in Activity");
+    expect(markup).not.toContain("This turn");
   });
 
-  it("surfaces View in Activity on the Working row when the turn goes quiet", () => {
+  it("surfaces This turn on the Working row when the turn goes quiet", () => {
     const lastStreamActivityAt = new Date(Date.now() - 120_000).toISOString();
     const markup = renderToStaticMarkup(
       <MessagesTimeline
@@ -765,7 +765,7 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).toContain("View in Activity");
+    expect(markup).toContain("This turn");
   });
 
   it("shows the open tool title on the Working row while a turn is running", () => {
