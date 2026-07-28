@@ -582,6 +582,11 @@ function normalizeMcpMatchKey(value: string): string {
     .replace(/[^a-z0-9]+/gu, "");
 }
 
+/** Drop trailing instance suffixes: linear2 / linear-2 → linear. */
+function baseMcpMatchKey(value: string): string {
+  return normalizeMcpMatchKey(value).replace(/\d+$/u, "");
+}
+
 function isNoiseMcpServerKey(value: string): boolean {
   const key = value.trim().toLowerCase();
   return (
@@ -612,7 +617,11 @@ function isToolportGatewayMetaWireName(value: string): boolean {
     normalized === "run_script" ||
     normalized === "toolport_run_script" ||
     normalized === "fetch_result" ||
-    normalized === "toolport_fetch_result"
+    normalized === "toolport_fetch_result" ||
+    normalized === "enable_server" ||
+    normalized === "toolport_enable_server" ||
+    normalized === "disable_server" ||
+    normalized === "toolport_disable_server"
   );
 }
 
@@ -648,6 +657,19 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   if (value !== null && typeof value === "object" && !Array.isArray(value)) {
     return value as Record<string, unknown>;
   }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+      try {
+        const parsed: unknown = JSON.parse(trimmed);
+        if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+          return parsed as Record<string, unknown>;
+        }
+      } catch {
+        // ignore non-JSON strings
+      }
+    }
+  }
   return null;
 }
 
@@ -657,62 +679,73 @@ function asTrimmedString(value: unknown): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
+function addServerAttributionKeys(keys: Set<string>, raw: string | undefined): void {
+  if (!raw || isNoiseMcpServerKey(raw)) return;
+  const lower = raw.trim().toLowerCase();
+  keys.add(lower);
+  const normalized = normalizeMcpMatchKey(lower);
+  if (normalized.length > 0) keys.add(normalized);
+  const base = baseMcpMatchKey(lower);
+  if (base.length > 0) keys.add(base);
+}
+
+function harvestWireFields(bag: Record<string, unknown>, keys: Set<string>): void {
+  for (const field of ["server", "serverName", "server_name", "serverId", "server_id"] as const) {
+    addServerAttributionKeys(keys, asTrimmedString(bag[field]));
+  }
+  for (const field of ["name", "tool", "tool_name", "toolName"] as const) {
+    const wire = asTrimmedString(bag[field]);
+    if (!wire) continue;
+    for (const key of serverKeysFromWireName(wire)) {
+      addServerAttributionKeys(keys, key);
+    }
+  }
+  const argBag = asRecord(bag.arguments) ?? asRecord(bag.input) ?? asRecord(bag.params);
+  if (argBag) {
+    harvestWireFields(argBag, keys);
+  }
+}
+
 /**
  * Keys that may match a registry server id/name (or the synthetic Toolport
  * gateway). Grok/ACP rarely sets `toolData.server`; wire names live in
  * rawInput / humanized titles instead.
+ *
+ * Prefer downstream MCP (Linear, GitHub, …). Gateway meta alone yields
+ * `toolport` so pure status/search still surfaces.
  */
 function collectActivityMcpUseKeys(entry: WorkLogEntry): Set<string> {
   const keys = new Set<string>();
-  const add = (raw: string | undefined) => {
-    if (!raw || isNoiseMcpServerKey(raw)) return;
-    const lower = raw.trim().toLowerCase();
-    keys.add(lower);
-    const normalized = normalizeMcpMatchKey(lower);
-    if (normalized.length > 0) keys.add(normalized);
-  };
 
   const toolData = asRecord(entry.toolData);
   if (toolData) {
-    add(asTrimmedString(toolData.server));
-
+    addServerAttributionKeys(keys, asTrimmedString(toolData.server));
     const bags: Array<Record<string, unknown> | null> = [
       toolData,
       asRecord(toolData.rawInput),
       asRecord(toolData.item),
+      asRecord(toolData.arguments),
+      asRecord(toolData.input),
     ];
     for (const bag of bags) {
-      if (!bag) continue;
-      for (const field of ["name", "tool", "tool_name", "toolName"] as const) {
-        const wire = asTrimmedString(bag[field]);
-        if (wire) {
-          for (const key of serverKeysFromWireName(wire)) add(key);
-        }
-      }
-      const argBag = asRecord(bag.arguments) ?? asRecord(bag.input);
-      if (argBag) {
-        for (const field of ["name", "tool", "tool_name", "toolName"] as const) {
-          const nested = asTrimmedString(argBag[field]);
-          if (nested) {
-            for (const key of serverKeysFromWireName(nested)) add(key);
-          }
-        }
-      }
+      if (bag) harvestWireFields(bag, keys);
     }
   }
 
   const title = (entry.toolTitle ?? entry.label).trim();
   if (title) {
-    // Humanized gateway lines: "Called a tool via Toolport", "Searched Toolport tools"
+    // Humanized pure-gateway lines (no nested target in the title).
     if (
       /\btoolport\b/iu.test(title) &&
       /via\s+toolport|toolport\s+tools|toolport\s+status|toolport\s+script|toolport\s+result|searching\s+toolport|checked\s+toolport|calling\s+a\s+tool\s+via|called\s+a\s+tool\s+via/iu.test(
         title,
       )
     ) {
-      add("toolport");
+      addServerAttributionKeys(keys, "toolport");
     }
-    for (const key of serverKeysFromWireName(title)) add(key);
+    for (const key of serverKeysFromWireName(title)) {
+      addServerAttributionKeys(keys, key);
+    }
 
     const withoutVerb = title
       .replace(
@@ -721,10 +754,28 @@ function collectActivityMcpUseKeys(entry: WorkLogEntry): Set<string> {
       )
       .replace(/\s+via\s+toolport\b/iu, "")
       .trim();
-    if (withoutVerb.includes("·")) {
-      add(withoutVerb.split("·")[0]?.trim());
-    } else if (withoutVerb.includes("__")) {
-      for (const key of serverKeysFromWireName(withoutVerb)) add(key);
+    // "Linear · list projects" / "Linear - list projects"
+    const serverFromTitle = withoutVerb.split(/\s*[·•|–—-]\s+/u)[0]?.trim();
+    if (
+      serverFromTitle &&
+      serverFromTitle.length > 0 &&
+      serverFromTitle.length < 48 &&
+      !/^a\s+tool$/iu.test(serverFromTitle) &&
+      !isToolportGatewayMetaWireName(serverFromTitle)
+    ) {
+      addServerAttributionKeys(keys, serverFromTitle);
+    }
+    if (withoutVerb.includes("__")) {
+      for (const key of serverKeysFromWireName(withoutVerb)) {
+        addServerAttributionKeys(keys, key);
+      }
+    }
+  }
+
+  const detail = entry.detail?.trim();
+  if (detail && detail.length < 200) {
+    for (const key of serverKeysFromWireName(detail)) {
+      addServerAttributionKeys(keys, key);
     }
   }
 
@@ -735,22 +786,33 @@ function useCountForRegistryServer(
   server: { readonly id: string; readonly name: string },
   useCounts: ReadonlyMap<string, number>,
 ): number {
-  const candidates = [
-    server.id.trim().toLowerCase(),
-    server.name.trim().toLowerCase(),
-    normalizeMcpMatchKey(server.id),
-    normalizeMcpMatchKey(server.name),
-  ];
+  const idNorm = normalizeMcpMatchKey(server.id);
+  const nameNorm = normalizeMcpMatchKey(server.name);
+  const idBase = baseMcpMatchKey(server.id);
+  const nameBase = baseMcpMatchKey(server.name);
+  const candidates = new Set(
+    [
+      server.id.trim().toLowerCase(),
+      server.name.trim().toLowerCase(),
+      idNorm,
+      nameNorm,
+      idBase,
+      nameBase,
+    ].filter((value) => value.length > 0),
+  );
   let max = 0;
   for (const candidate of candidates) {
-    if (!candidate) continue;
     max = Math.max(max, useCounts.get(candidate) ?? 0);
   }
-  const serverNorms = new Set(
-    [normalizeMcpMatchKey(server.id), normalizeMcpMatchKey(server.name)].filter(Boolean),
-  );
   for (const [key, count] of useCounts) {
-    if (serverNorms.has(normalizeMcpMatchKey(key))) {
+    if (key === "toolport" || normalizeMcpMatchKey(key) === "toolport") continue;
+    const keyNorm = normalizeMcpMatchKey(key);
+    const keyBase = baseMcpMatchKey(key);
+    if (
+      candidates.has(key) ||
+      candidates.has(keyNorm) ||
+      (keyBase.length >= 3 && (keyBase === idBase || keyBase === nameBase))
+    ) {
       max = Math.max(max, count);
     }
   }
@@ -837,28 +899,17 @@ export function deriveActivityMcpStatus(input: {
     useCounts.get("toolport") ?? 0,
     useCounts.get(normalizeMcpMatchKey("toolport")) ?? 0,
   );
-  const usedThisTurn: ThreadActivityMcpServer[] = [];
-  // Gateway meta tools (status / search / call) are not a registry row — surface
-  // a synthetic chip so Activity is not stuck on "no MCP tools used".
-  if (toolportUses > 0) {
-    const alreadyListed = usedFromRegistry.some(
-      (server) =>
-        normalizeMcpMatchKey(server.id) === "toolport" ||
-        normalizeMcpMatchKey(server.name) === "toolport",
-    );
-    if (!alreadyListed) {
-      usedThisTurn.push({
-        id: "toolport",
-        name: "Toolport",
-        health: status.gatewayAvailable ? "ready" : "offline",
-        transport: "stdio",
-        useCount: toolportUses,
-      });
-    }
-  }
-  for (const server of usedFromRegistry) {
-    if (usedThisTurn.length >= MAX_MCP_USED_THIS_TURN) break;
-    usedThisTurn.push(server);
+  // Prefer real MCP servers (Linear, GitHub, …). The gateway chip is a fallback
+  // for pure meta tools (status / bare search) — not a substitute for Linear.
+  const usedThisTurn: ThreadActivityMcpServer[] = usedFromRegistry.slice(0, MAX_MCP_USED_THIS_TURN);
+  if (usedThisTurn.length === 0 && toolportUses > 0) {
+    usedThisTurn.push({
+      id: "toolport",
+      name: "Toolport",
+      health: status.gatewayAvailable ? "ready" : "offline",
+      transport: "stdio",
+      useCount: toolportUses,
+    });
   }
 
   return {
