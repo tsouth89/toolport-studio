@@ -1,5 +1,5 @@
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import * as NodeFS from "node:fs";
+import * as NodeURL from "node:url";
 
 import { describe, expect, it } from "vite-plus/test";
 
@@ -10,8 +10,13 @@ import { describe, expect, it } from "vite-plus/test";
  * evaluates the real shipped source rather than a copy that could drift.
  */
 function runBootScript(initial: Record<string, string>): Record<string, string> {
-  const indexHtml = readFileSync(fileURLToPath(new URL("../index.html", import.meta.url)), "utf8");
-  const script = indexHtml.match(/<script>([\s\S]*?)<\/script>/)?.[1];
+  const indexHtml = NodeFS.readFileSync(
+    NodeURL.fileURLToPath(new URL("../index.html", import.meta.url)),
+    "utf8",
+  );
+  // Case-insensitive so this cannot silently stop matching if the tag is ever
+  // written differently — a lowercase-only tag match is its own CodeQL finding.
+  const script = indexHtml.match(/<script>([\s\S]*?)<\/script>/i)?.[1];
   if (!script || !script.includes("t3code:")) {
     throw new Error("Could not find the pre-hydration boot script in index.html.");
   }
