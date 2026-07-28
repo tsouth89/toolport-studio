@@ -91,7 +91,7 @@ async function makeProbeWrapper(
   const launcherPath = NodePath.join(dir, "fake-agent.mjs");
   const envEntries = Object.entries({
     T3_ACP_REQUEST_LOG_PATH: requestLogPath,
-    ...(extraEnv ?? {}),
+    ...extraEnv,
   })
     .map(([key, value]) => `process.env[${JSON.stringify(key)}] = ${JSON.stringify(value)};`)
     .join("\n");

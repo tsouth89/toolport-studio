@@ -640,14 +640,14 @@ export function deriveThreadActivityViewModel(input: {
 
   let current: ThreadActivityCurrentStep | null = null;
   if (input.isWorking) {
-    const runningTool = [...workEntries]
-      .reverse()
+    const runningTool = workEntries
+      .toReversed()
       .find((entry) => workLogEntryIsToolLike(entry) && entry.toolLifecycleStatus === "inProgress");
-    const thinking = [...workEntries]
-      .reverse()
+    const thinking = workEntries
+      .toReversed()
       .find((entry) => entry.tone === "thinking" || entry.sourceActivityKind === "task.progress");
-    const lastFinishedTool = [...workEntries]
-      .reverse()
+    const lastFinishedTool = workEntries
+      .toReversed()
       .find(
         (entry) =>
           workLogEntryIsToolLike(entry) &&

@@ -1053,7 +1053,6 @@ const make = Effect.gen(function* () {
         return;
       }
       const existing = yield* getReasoningStreamState(input.threadId, input.turnId);
-      const nowMs = yield* Clock.currentTimeMillis;
       let state: ReasoningStreamState;
       if (Option.isNone(existing)) {
         state = {

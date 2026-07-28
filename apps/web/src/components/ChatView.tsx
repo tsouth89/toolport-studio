@@ -145,13 +145,7 @@ import PlanSidebar from "./PlanSidebar";
 import { ActivityPanel } from "./ActivityPanel";
 import ThreadTerminalDrawer from "./ThreadTerminalDrawer";
 import { deriveThreadActivityViewModel } from "../threadActivityViewModel";
-import {
-  CheckCircle2Icon,
-  ChevronDownIcon,
-  GitBranchIcon,
-  TriangleAlertIcon,
-  WifiOffIcon,
-} from "lucide-react";
+import { ChevronDownIcon, GitBranchIcon, TriangleAlertIcon, WifiOffIcon } from "lucide-react";
 import { cn, randomHex } from "~/lib/utils";
 import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "~/workspaceTitlebar";
 import { stackedThreadToast, toastManager } from "./ui/toast";
@@ -166,7 +160,7 @@ import {
 import { newDraftId, newMessageId, newThreadId } from "~/lib/utils";
 import { getProviderModelCapabilities, resolveSelectableProvider } from "../providerModels";
 import { NO_PROVIDER_MODEL_SELECTION } from "../providerInstances";
-import { useClientSettings, useEnvironmentSettings } from "../hooks/useSettings";
+import { useEnvironmentSettings } from "../hooks/useSettings";
 import { resolveAppModelSelectionForInstance } from "../modelSelection";
 import { getTerminalFocusOwner } from "../lib/terminalFocus";
 import { resolveNewDraftStartFromOrigin } from "../lib/chatThreadActions";
@@ -215,7 +209,6 @@ import {
   useThread,
   useThreadProposedPlans,
   useThreadRefs,
-  useThreadShell,
 } from "../state/entities";
 import { environmentShell } from "../state/shell";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
@@ -238,7 +231,6 @@ import {
   shouldShowProviderStatusBanner,
 } from "./chat/ProviderStatusBanner";
 import { ThreadErrorBanner } from "./chat/ThreadErrorBanner";
-import { resolveThreadPr } from "./ThreadStatusIndicators";
 import { ComposerBannerStack, type ComposerBannerStackItem } from "./chat/ComposerBannerStack";
 import {
   DRAFT_HERO_TRANSITION_ANIMATION_ID,

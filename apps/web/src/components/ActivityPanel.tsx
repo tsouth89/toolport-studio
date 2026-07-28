@@ -352,7 +352,7 @@ export function ActivityPanel({
   const elapsed = useElapsedLabel(model.elapsedStartedAt, model.isWorking);
   const currentElapsed = useElapsedLabel(model.current?.startedAt ?? null, model.isWorking);
   // Newest first for instrument readout.
-  const recent = [...model.recentSteps].reverse();
+  const recent = model.recentSteps.toReversed();
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-[var(--shell-surface,var(--background))] text-foreground">

@@ -34,7 +34,7 @@ function setInternalPreviewSession(): void {
 }
 
 it.effect("returns the internal preview MCP binding without inventing a Toolport install", () =>
-  Effect.gen(function* () {
+  Effect.sync(() => {
     McpProviderSession.clearAllMcpProviderSessions();
     setInternalPreviewSession();
 
@@ -57,7 +57,7 @@ it.effect("returns the internal preview MCP binding without inventing a Toolport
 );
 
 it.effect("adds an explicitly configured Toolport stdio gateway with dual client ids", () =>
-  Effect.gen(function* () {
+  Effect.sync(() => {
     McpProviderSession.clearAllMcpProviderSessions();
     setInternalPreviewSession();
 
@@ -100,7 +100,7 @@ it.effect("adds an explicitly configured Toolport stdio gateway with dual client
 );
 
 it.effect("discovers Toolport's published Windows gateway under the Toolport data leaf", () =>
-  Effect.gen(function* () {
+  Effect.sync(() => {
     McpProviderSession.clearAllMcpProviderSessions();
     const homeDirectory = NodeFS.mkdtempSync(
       NodePath.join(NodeOS.tmpdir(), "toolport-studio-home-"),
@@ -121,7 +121,7 @@ it.effect("discovers Toolport's published Windows gateway under the Toolport dat
 );
 
 it.effect("falls back to the legacy Conduit data leaf when Toolport is absent", () =>
-  Effect.gen(function* () {
+  Effect.sync(() => {
     McpProviderSession.clearAllMcpProviderSessions();
     const homeDirectory = NodeFS.mkdtempSync(
       NodePath.join(NodeOS.tmpdir(), "toolport-studio-legacy-"),
@@ -158,7 +158,7 @@ it("treats unset env as off; explicit on/off/url control injection", () => {
 });
 
 it.effect("supports Toolport streamable HTTP and an explicit opt-out", () =>
-  Effect.gen(function* () {
+  Effect.sync(() => {
     McpProviderSession.clearAllMcpProviderSessions();
 
     expect(
@@ -195,7 +195,7 @@ it.effect("supports Toolport streamable HTTP and an explicit opt-out", () =>
 );
 
 it.effect("strips Toolport gateway tables from Grok config.toml", () =>
-  Effect.gen(function* () {
+  Effect.sync(() => {
     const input = `# comment
 model = "grok"
 
@@ -222,7 +222,7 @@ command = "conduit-gateway"
 );
 
 it.effect("points GROK_HOME at a filtered home when a global toolport entry exists", () =>
-  Effect.gen(function* () {
+  Effect.sync(() => {
     const homeDirectory = NodeFS.mkdtempSync(
       NodePath.join(NodeOS.tmpdir(), "toolport-studio-grok-home-"),
     );
@@ -301,7 +301,7 @@ command = "echo"
 );
 
 it.effect("recognizes gateway identity by name and command", () =>
-  Effect.gen(function* () {
+  Effect.sync(() => {
     expect(McpProviderSession.isToolportGatewayServerName("toolport")).toBe(true);
     expect(McpProviderSession.isToolportGatewayServerName("conduit")).toBe(true);
     expect(McpProviderSession.isToolportGatewayServerName("linear")).toBe(false);

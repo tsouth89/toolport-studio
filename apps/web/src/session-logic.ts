@@ -1027,7 +1027,7 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
     isGenericWorkLogToolLabel(displaySeed)
   ) {
     const presentationData: Record<string, unknown> = {
-      ...(payloadData ?? {}),
+      ...payloadData,
       ...(commandPreview.command ? { command: commandPreview.command } : {}),
       ...(changedFiles.length > 0 ? { locations: changedFiles.map((path) => ({ path })) } : {}),
     };

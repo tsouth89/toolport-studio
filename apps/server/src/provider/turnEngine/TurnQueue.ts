@@ -118,7 +118,9 @@ export function settleTurn(
   readonly state: TurnQueueState;
   readonly next: QueuedTurnInput | undefined;
 } {
-  const phase = transitionTurnPhase(state.phase, { _tag: "Settled", reason });
+  // Validate the phase machine transition even though the settled queue
+  // always resets phase below when dequeuing / going idle.
+  transitionTurnPhase(state.phase, { _tag: "Settled", reason });
   const [next, ...rest] = state.pending;
   if (next === undefined) {
     return {

@@ -66,11 +66,7 @@ import {
   makeGrokAcpRuntime,
   resolveGrokAcpBaseModelId,
 } from "../acp/GrokAcpSupport.ts";
-import {
-  GROK_DEFAULT_REASONING_EFFORT,
-  type GrokReasoningEffort,
-  resolveGrokReasoningEffort,
-} from "./GrokProvider.ts";
+import { type GrokReasoningEffort, resolveGrokReasoningEffort } from "./GrokProvider.ts";
 import {
   extractXAiAskUserQuestions,
   makeXAiAskUserQuestionCancelledResponse,
@@ -93,12 +89,9 @@ import {
 
 import {
   abandonTurnQueue,
-  canSteerSendTurn,
   disposeSendWhileRunning,
   emptyTurnQueue,
   formatInterjectionText,
-  markTurnRunning,
-  beginTurn,
   PROVIDER_TURN_CAPABILITIES,
   settleTurn,
   shouldEmitSyntheticFollowUpChrome,
@@ -874,7 +867,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           yield* Deferred.fail(pending.result, error).pipe(Effect.ignore);
         }
         // Defensive: clear any orphan waiters not in engine pending.
-        for (const [id, pending] of [...ctx.pendingSends.entries()]) {
+        for (const [id, pending] of Array.from(ctx.pendingSends.entries())) {
           ctx.pendingSends.delete(id);
           yield* Deferred.fail(pending.result, error).pipe(Effect.ignore);
         }

@@ -136,7 +136,7 @@ export function selectToolSummariesForRehydration(
     selected.push(summary);
     if (selected.length >= limit) break;
   }
-  return selected.reverse();
+  return selected.toReversed();
 }
 
 /** Merge consecutive same-role turns (streamed assistant deltas / multi-part user). */
