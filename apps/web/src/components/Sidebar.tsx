@@ -581,8 +581,8 @@ const SidebarRow = memo(function SidebarRow(props: {
             />
           }
         >
-          {/* One title line. State reads as a leading glyph so the right edge
-              stays empty — metadata is revealed on hover, not parsed at rest. */}
+          {/* Leading: status + provider + title. Trailing is a reserved slot so
+              hover actions never paint over the title (absolute overlay used to). */}
           <div
             className={cn(
               "relative z-10 flex h-7 min-w-0 items-center gap-1.5 px-2",
@@ -611,41 +611,53 @@ const SidebarRow = memo(function SidebarRow(props: {
                 />
               ) : null}
             </span>
-            {showProjectFavicon ? (
+            {driverKind ? (
+              <span
+                className="inline-flex shrink-0 text-sidebar-muted-foreground"
+                title={thread.session?.providerName ?? modelInstanceId}
+              >
+                <ProviderInstanceIcon
+                  driverKind={driverKind}
+                  displayName={thread.session?.providerName ?? modelInstanceId}
+                  iconClassName="size-3.5"
+                />
+              </span>
+            ) : showProjectFavicon ? (
               <ProjectFavicon
                 environmentId={thread.environmentId}
                 cwd={props.projectCwd ?? ""}
                 className="size-3.5 shrink-0 opacity-80"
               />
             ) : null}
-            {!nestUnderProjectShelf && props.projectTitle != null ? (
-              <span className="max-w-[28%] shrink truncate text-[11px] text-muted-foreground/70">
-                {props.projectTitle}
-              </span>
-            ) : null}
             <div className="flex min-w-0 flex-1 items-center gap-1">{title}</div>
-            <span className="relative ml-auto flex h-5 min-w-0 shrink-0 items-center justify-end pl-1">
-              {/* At rest only live work earns space here: elapsed time is
-                  changing information, everything else is lookup-on-demand. */}
-              <span className="flex items-center gap-1 transition-opacity group-hover/sidebar-row:opacity-0">
+            {/* Fixed-width trailing rail: title truncates against this edge at rest
+                and on hover, so actions never sit on top of the name. */}
+            <span className="relative ml-auto flex h-5 w-16 shrink-0 items-center justify-end">
+              <span
+                className={cn(
+                  "flex items-center justify-end transition-opacity group-hover/sidebar-row:pointer-events-none group-hover/sidebar-row:opacity-0",
+                  "group-focus-within/sidebar-row:pointer-events-none group-focus-within/sidebar-row:opacity-0",
+                )}
+              >
                 {status === "working" ? (
                   <span
                     className={cn(
-                      "inline-flex items-center gap-0.5 text-[11px]",
+                      "inline-flex items-center text-[11px] tabular-nums",
                       topStatus?.className,
                     )}
                     role="status"
                   >
-                    <span aria-hidden className="tabular-nums">
-                      <WorkingDuration startedAt={resolveWorkingStartedAt(thread)} />
-                    </span>
+                    <WorkingDuration startedAt={resolveWorkingStartedAt(thread)} />
                   </span>
                 ) : null}
               </span>
-              <span className="absolute inset-y-0 right-0 flex items-center gap-1 opacity-0 transition-opacity focus-within:opacity-100 group-hover/sidebar-row:opacity-100">
-                <span className="tabular-nums text-[11px] text-muted-foreground/55">
-                  {threadTimeLabel(thread)}
-                </span>
+              <span
+                className={cn(
+                  "absolute inset-y-0 right-0 flex items-center justify-end gap-0.5 opacity-0 transition-opacity",
+                  "pointer-events-none group-hover/sidebar-row:pointer-events-auto group-hover/sidebar-row:opacity-100",
+                  "group-focus-within/sidebar-row:pointer-events-auto group-focus-within/sidebar-row:opacity-100",
+                )}
+              >
                 {prStatus && pr ? (
                   <button
                     type="button"
@@ -658,21 +670,16 @@ const SidebarRow = memo(function SidebarRow(props: {
                   >
                     #{pr.number}
                   </button>
-                ) : null}
+                ) : (
+                  <span className="tabular-nums text-[11px] text-muted-foreground/55">
+                    {threadTimeLabel(thread)}
+                  </span>
+                )}
                 {isRemote ? (
                   <ServerIcon
                     aria-hidden
                     className="size-3 shrink-0 text-sidebar-muted-foreground/65"
                   />
-                ) : null}
-                {driverKind ? (
-                  <span className="inline-flex shrink-0 opacity-50">
-                    <ProviderInstanceIcon
-                      driverKind={driverKind}
-                      displayName={thread.session?.providerName ?? modelInstanceId}
-                      iconClassName="size-3"
-                    />
-                  </span>
                 ) : null}
                 <button
                   type="button"
