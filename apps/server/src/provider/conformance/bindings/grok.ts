@@ -14,8 +14,8 @@
  *
  * Cursor is the same family and will bind almost identically.
  */
-import * as NodeFs from "node:fs";
-import * as NodeOs from "node:os";
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 
@@ -130,7 +130,7 @@ export const grokConformanceBinding: ConformanceBinding = {
       // Raw inbound JSON-RPC log — the only way to prove a mid-turn follow-up
       // actually reached the agent rather than being dropped in the adapter.
       const requestLogPath = NodePath.join(
-        NodeOs.tmpdir(),
+        NodeOS.tmpdir(),
         `t3-conformance-grok-${process.pid}-${Date.now()}-${Math.floor(Math.random() * 1e6)}.log`,
       );
       const environment: NodeJS.ProcessEnv = {
@@ -196,10 +196,10 @@ export const grokConformanceBinding: ConformanceBinding = {
             .sendTurn({ threadId: THREAD_ID, input: text, attachments: [] })
             .pipe(Effect.forkScoped, Effect.asVoid) as never,
         promptsReceived: Effect.sync(() => {
-          if (!NodeFs.existsSync(requestLogPath)) {
+          if (!NodeFS.existsSync(requestLogPath)) {
             return [];
           }
-          return NodeFs.readFileSync(requestLogPath, "utf8")
+          return NodeFS.readFileSync(requestLogPath, "utf8")
             .split("\n")
             .filter((line) => line.includes("session/prompt"));
         }),
