@@ -1187,7 +1187,12 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
         <span className="min-w-0 font-medium">
           {row.createdAt ? (
             <>
-              Working for <WorkingTimer createdAt={row.createdAt} />
+              Working
+              <span className="font-normal text-muted-foreground" aria-hidden="true">
+                {" "}
+                ·{" "}
+              </span>
+              <WorkingTimer createdAt={row.createdAt} />
             </>
           ) : (
             "Working..."
@@ -1342,7 +1347,7 @@ function readQuietTurnIndicator(
 // does not create a React commit every second while a response is streaming.
 // ---------------------------------------------------------------------------
 
-/** Live "Working for Xs" label. */
+/** Live total turn runtime next to Working (e.g. "3m 42s"). */
 function WorkingTimer({ createdAt }: { createdAt: string }) {
   const textRef = useRef<HTMLSpanElement>(null);
   const initialText = formatWorkingTimerNow(createdAt);

@@ -731,7 +731,7 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).toMatch(/Working(\.\.\.| for)/);
+    expect(markup).toMatch(/Working(\.\.\.|[\s\S]*·)/);
     expect(markup).not.toContain("Quiet for");
     expect(markup).not.toContain('aria-label="Stop generation"');
   });
@@ -782,7 +782,9 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).toContain("Working for");
+    expect(markup).toContain("Working");
     expect(markup).toContain("linear_2 · list_issues");
+    // Total turn runtime sits next to Working (e.g. Working · 12s · tool).
+    expect(markup).toMatch(/Working[\s\S]*?·[\s\S]*?s/);
   });
 });
