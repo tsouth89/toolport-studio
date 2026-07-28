@@ -31,6 +31,14 @@ describe("normalizeDesktopUpdateReleaseNotes", () => {
     expect(notes).toEqual([{ version: "1.0.0", items: ["Fix & polish 😀"] }]);
   });
 
+  it("strips markup that entity decoding would otherwise reintroduce", () => {
+    const notes = normalizeDesktopUpdateReleaseNotes(
+      "- Fix &lt;script&gt;alert(1)&lt;/script&gt; handling",
+      "1.0.0",
+    );
+    expect(notes).toEqual([{ version: "1.0.0", items: ["Fix alert(1) handling"] }]);
+  });
+
   it("ignores malformed entries instead of throwing", () => {
     const notes = normalizeDesktopUpdateReleaseNotes(
       [

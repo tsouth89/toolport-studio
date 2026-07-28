@@ -54,16 +54,22 @@ function decodeHtmlEntities(input: string): string {
   );
 }
 
+/**
+ * Reduces release-note HTML/markdown to plain text for display.
+ *
+ * Entities are decoded *before* tags are stripped. Decoding last would let a
+ * note that escaped markup as `&lt;script&gt;` reassemble into a real tag
+ * after the stripper had already run, so the "plain text" result could still
+ * carry markup into whatever renders it.
+ */
 function stripMarkup(input: string): string {
-  return decodeHtmlEntities(
-    input
-      .replace(/<br\s*\/?>/gi, "\n")
-      .replace(/<li\b[^>]*>/gi, "\n- ")
-      .replace(/<\/(?:p|div|li|h[1-6]|ul|ol|blockquote)>/gi, "\n")
-      .replace(/<[^>]*>/g, "")
-      .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
-      .replace(/\*\*([^*]+)\*\*/g, "$1"),
-  );
+  return decodeHtmlEntities(input)
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<li\b[^>]*>/gi, "\n- ")
+    .replace(/<\/(?:p|div|li|h[1-6]|ul|ol|blockquote)>/gi, "\n")
+    .replace(/<[^>]*>/g, "")
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/\*\*([^*]+)\*\*/g, "$1");
 }
 
 function truncateReleaseNoteItem(item: string): string {
