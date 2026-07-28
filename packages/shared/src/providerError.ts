@@ -122,7 +122,9 @@ export function classifyProviderEmittedFailure(text: string): ProviderEmittedFai
     codeOnly("resource_exhausted") ||
     (errorFramed &&
       normalized.length <= 160 &&
-      (/\[?\s*resource_exhausted\s*\]?/.test(lower) ||
+      // Every part of the old /\[?\s*resource_exhausted\s*\]?/ around the
+      // literal was optional, so it matched exactly when the literal appeared.
+      (lower.includes("resource_exhausted") ||
         /\bresource\s+exhausted\b/.test(lower) ||
         /\bcapacity\s+exhausted\b/.test(lower)))
   ) {
