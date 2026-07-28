@@ -36,6 +36,9 @@ export function formatProviderDisplayName(provider: string | null | undefined): 
       return "Codex";
     case "cursor":
       return "Cursor";
+    case "grok":
+    case "grokAgent":
+      return "Grok";
     case "opencode":
       return "OpenCode";
     default: {

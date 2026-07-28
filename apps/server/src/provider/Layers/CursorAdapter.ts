@@ -63,6 +63,7 @@ import {
   makeAcpPlanUpdatedEvent,
   makeAcpRequestOpenedEvent,
   makeAcpRequestResolvedEvent,
+  makeAcpTokenUsageUpdatedEvent,
   makeAcpToolCallEvent,
 } from "../acp/AcpCoreRuntimeEvents.ts";
 import {
@@ -974,6 +975,21 @@ export function makeCursorAdapter(
                   }),
                 );
                 return;
+              case "UsageUpdated": {
+                const usageEvent = makeAcpTokenUsageUpdatedEvent({
+                  stamp: yield* makeEventStamp(),
+                  provider: PROVIDER,
+                  threadId: ctx.threadId,
+                  turnId: notificationTurnId,
+                  usedTokens: event.usedTokens,
+                  maxTokens: event.maxTokens,
+                  rawPayload: event.rawPayload,
+                });
+                if (usageEvent) {
+                  yield* offerRuntimeEvent(usageEvent);
+                }
+                return;
+              }
             }
           }),
         ),

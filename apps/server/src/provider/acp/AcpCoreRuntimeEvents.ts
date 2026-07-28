@@ -9,6 +9,7 @@ import {
   type ProviderRuntimeEvent,
   type RuntimeRequestId,
   type ThreadId,
+  type ThreadTokenUsageSnapshot,
   type ToolLifecycleItemType,
   type TurnId,
 } from "@t3tools/contracts";
@@ -272,6 +273,46 @@ export function makeAcpContentDeltaEvent(input: {
       streamKind: input.streamKind ?? "assistant_text",
       delta: input.text,
     },
+    raw: {
+      source: "acp.jsonrpc",
+      method: "session/update",
+      payload: input.rawPayload,
+    },
+  };
+}
+
+/**
+ * Map ACP `usage_update` (used/size) into the shared thread token-usage event
+ * that powers the composer ContextWindowMeter.
+ */
+export function makeAcpTokenUsageUpdatedEvent(input: {
+  readonly stamp: AcpEventStamp;
+  readonly provider: ProviderDriverKind;
+  readonly threadId: ThreadId;
+  readonly turnId: TurnId | undefined;
+  readonly usedTokens: number;
+  readonly maxTokens: number;
+  readonly rawPayload: unknown;
+}): ProviderRuntimeEvent | null {
+  const usedTokens = Math.max(0, Math.trunc(input.usedTokens));
+  const maxTokens = Math.max(0, Math.trunc(input.maxTokens));
+  // Ingestion ignores usedTokens <= 0; wait for a real fill signal.
+  if (usedTokens <= 0) {
+    return null;
+  }
+  const cappedUsed = maxTokens > 0 ? Math.min(usedTokens, maxTokens) : usedTokens;
+  const usage: ThreadTokenUsageSnapshot = {
+    usedTokens: cappedUsed,
+    lastUsedTokens: cappedUsed,
+    ...(maxTokens > 0 ? { maxTokens } : {}),
+  };
+  return {
+    type: "thread.token-usage.updated",
+    ...input.stamp,
+    provider: input.provider,
+    threadId: input.threadId,
+    turnId: input.turnId,
+    payload: { usage },
     raw: {
       source: "acp.jsonrpc",
       method: "session/update",

@@ -117,6 +117,13 @@ export type AcpParsedSessionEvent =
       readonly _tag: "ThoughtDelta";
       readonly text: string;
       readonly rawPayload: unknown;
+    }
+  | {
+      /** ACP usage_update — context window fill for the session (Claude-parity meter). */
+      readonly _tag: "UsageUpdated";
+      readonly usedTokens: number;
+      readonly maxTokens: number;
+      readonly rawPayload: unknown;
     };
 
 type AcpSessionSetupResponse =
@@ -607,6 +614,20 @@ export function parseSessionUpdateEvent(params: EffectAcpSchema.SessionNotificat
         events.push({
           _tag: "ThoughtDelta",
           text: upd.content.text,
+          rawPayload: params,
+        });
+      }
+      break;
+    }
+    case "usage_update": {
+      // UNSTABLE ACP field: size = window, used = tokens currently in context.
+      const usedTokens = Number.isFinite(upd.used) ? Math.max(0, Math.trunc(upd.used)) : 0;
+      const maxTokens = Number.isFinite(upd.size) ? Math.max(0, Math.trunc(upd.size)) : 0;
+      if (usedTokens > 0 || maxTokens > 0) {
+        events.push({
+          _tag: "UsageUpdated",
+          usedTokens,
+          maxTokens,
           rawPayload: params,
         });
       }

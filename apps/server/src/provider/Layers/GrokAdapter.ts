@@ -55,6 +55,7 @@ import {
   makeAcpPlanUpdatedEvent,
   makeAcpRequestOpenedEvent,
   makeAcpRequestResolvedEvent,
+  makeAcpTokenUsageUpdatedEvent,
   makeAcpToolCallEvent,
 } from "../acp/AcpCoreRuntimeEvents.ts";
 import { parsePermissionRequest } from "../acp/AcpRuntimeModel.ts";
@@ -1538,6 +1539,25 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             }
 
             if (event._tag === "ModeChanged") {
+              return;
+            }
+
+            // Context usage can arrive without a live turn binding; still surface
+            // it for the composer meter (Claude/Codex parity).
+            if (event._tag === "UsageUpdated") {
+              const stamp = yield* makeEventStamp();
+              const usageEvent = makeAcpTokenUsageUpdatedEvent({
+                stamp,
+                provider: PROVIDER,
+                threadId: ctx.threadId,
+                turnId: resolveNotificationTurnId(ctx),
+                usedTokens: event.usedTokens,
+                maxTokens: event.maxTokens,
+                rawPayload: event.rawPayload,
+              });
+              if (usageEvent) {
+                yield* offerRuntimeEvent(usageEvent);
+              }
               return;
             }
 
