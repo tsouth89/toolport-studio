@@ -108,13 +108,19 @@ function toolportDataDirectories(
 
   if (platform === "win32") {
     const roaming = NodePath.join(homeDirectory, "AppData", "Roaming");
+    const local = NodePath.join(homeDirectory, "AppData", "Local");
     // Prefer the post-rename leaf; keep legacy Conduit leaves as fallbacks so
-    // Studio still finds a gateway that has not migrated yet.
+    // Studio still finds a gateway that has not migrated yet. Local\Toolport is
+    // a common installer layout (gateway at the data-dir root, not under bin/).
     return [
       NodePath.join(roaming, "Toolport"),
+      NodePath.join(local, "Toolport"),
       NodePath.join(roaming, "Conduit"),
+      NodePath.join(local, "Conduit"),
       NodePath.join(roaming, "Toolport-dev"),
+      NodePath.join(local, "Toolport-dev"),
       NodePath.join(roaming, "Conduit-dev"),
+      NodePath.join(local, "Conduit-dev"),
     ];
   }
 
@@ -131,16 +137,96 @@ function toolportDataDirectories(
   ];
 }
 
+function isUsableGatewayFile(filePath: string): boolean {
+  try {
+    return NodeFS.existsSync(filePath) && NodeFS.statSync(filePath).isFile();
+  } catch {
+    return false;
+  }
+}
+
 function gatewayPathFromManifest(dataDirectory: string): string | undefined {
   const manifestPath = NodePath.join(dataDirectory, "bin", TOOLPORT_GATEWAY_MANIFEST);
   try {
     const parsed = decodeGatewayManifest(NodeFS.readFileSync(manifestPath, "utf8"));
     if (parsed._tag === "None") return undefined;
     const gatewayPath = nonEmpty(parsed.value.path);
-    return gatewayPath && NodeFS.existsSync(gatewayPath) ? gatewayPath : undefined;
+    return gatewayPath && isUsableGatewayFile(gatewayPath) ? gatewayPath : undefined;
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Pick an unversioned gateway, else the newest versioned binary in a bin/ leaf
+ * (toolport-gateway-1.9.7-rc.1.exe). Covers stale manifest paths after upgrade.
+ */
+function gatewayPathFromBinDirectory(binDirectory: string): string | undefined {
+  try {
+    if (!NodeFS.existsSync(binDirectory)) {
+      return undefined;
+    }
+    const preferredNames = [
+      "toolport-gateway.exe",
+      "toolport-gateway",
+      "conduit-gateway.exe",
+      "conduit-gateway",
+    ];
+    for (const name of preferredNames) {
+      const candidate = NodePath.join(binDirectory, name);
+      if (isUsableGatewayFile(candidate)) {
+        return candidate;
+      }
+    }
+
+    let best: { path: string; mtimeMs: number } | undefined;
+    for (const entry of NodeFS.readdirSync(binDirectory)) {
+      if (!/^(toolport|conduit)-gateway/i.test(entry)) {
+        continue;
+      }
+      // Skip non-binaries (manifests, text files).
+      if (/\.(json|log|txt|md|bak)$/i.test(entry)) {
+        continue;
+      }
+      const candidate = NodePath.join(binDirectory, entry);
+      try {
+        const stat = NodeFS.statSync(candidate);
+        if (!stat.isFile()) continue;
+        if (!best || stat.mtimeMs > best.mtimeMs) {
+          best = { path: candidate, mtimeMs: stat.mtimeMs };
+        }
+      } catch {
+        // ignore unreadable entries
+      }
+    }
+    return best?.path;
+  } catch {
+    return undefined;
+  }
+}
+
+function gatewayPathFromDataDirectory(
+  dataDirectory: string,
+  platform: NodeJS.Platform,
+): string | undefined {
+  const fromManifest = gatewayPathFromManifest(dataDirectory);
+  if (fromManifest) return fromManifest;
+
+  const fromBin = gatewayPathFromBinDirectory(NodePath.join(dataDirectory, "bin"));
+  if (fromBin) return fromBin;
+
+  // Installer root: Local\Toolport\toolport-gateway.exe
+  const rootNames =
+    platform === "win32"
+      ? ["toolport-gateway.exe", "conduit-gateway.exe"]
+      : ["toolport-gateway", "conduit-gateway"];
+  for (const name of rootNames) {
+    const candidate = NodePath.join(dataDirectory, name);
+    if (isUsableGatewayFile(candidate)) {
+      return candidate;
+    }
+  }
+  return undefined;
 }
 
 function gatewayPathFromSearchPath(
@@ -166,7 +252,7 @@ function gatewayPathFromSearchPath(
     if (!trimmedDirectory) continue;
     for (const executableName of executableNames) {
       const candidate = NodePath.join(trimmedDirectory, executableName);
-      if (NodeFS.existsSync(candidate)) return candidate;
+      if (isUsableGatewayFile(candidate)) return candidate;
     }
   }
   return undefined;
@@ -180,14 +266,69 @@ export function resolveToolportGatewayPath(
   homeDirectory = NodeOS.homedir(),
 ): string | undefined {
   const configured = nonEmpty(environment.TOOLPORT_GATEWAY_PATH);
-  if (configured) return configured;
+  // Prefer an explicit override when the file exists. A stale/missing override
+  // falls through to data-dir discovery so dogfood installs still inject.
+  if (configured && isUsableGatewayFile(configured)) {
+    return configured;
+  }
 
   for (const dataDirectory of toolportDataDirectories(environment, platform, homeDirectory)) {
-    const fromManifest = gatewayPathFromManifest(dataDirectory);
-    if (fromManifest) return fromManifest;
+    const resolved = gatewayPathFromDataDirectory(dataDirectory, platform);
+    if (resolved) return resolved;
   }
 
   return gatewayPathFromSearchPath(environment, platform);
+}
+
+/**
+ * Why inject is on but sessions may still lack a toolport binding.
+ * Used for boot logs and Activity diagnostics.
+ */
+export function describeToolportGatewayResolution(
+  environment: NodeJS.ProcessEnv = process.env,
+  // oxlint-disable-next-line t3code/no-global-process-runtime
+  platform: NodeJS.Platform = process.platform,
+  homeDirectory = NodeOS.homedir(),
+): {
+  readonly injectionEnabled: boolean;
+  readonly gatewayPath: string | null;
+  readonly configuredPath: string | null;
+  readonly ready: boolean;
+  readonly reason: "disabled" | "ready" | "gateway_not_found" | "configured_path_missing";
+} {
+  const injectionEnabled = isToolportMcpInjectionEnabled(environment);
+  const configuredPath = nonEmpty(environment.TOOLPORT_GATEWAY_PATH) ?? null;
+  if (!injectionEnabled) {
+    return {
+      injectionEnabled: false,
+      gatewayPath: null,
+      configuredPath,
+      ready: false,
+      reason: "disabled",
+    };
+  }
+  const gatewayPath = resolveToolportGatewayPath(environment, platform, homeDirectory) ?? null;
+  if (!gatewayPath) {
+    // Prefer a specific reason when the only signal is a dead override.
+    const reason =
+      configuredPath !== null && !isUsableGatewayFile(configuredPath)
+        ? "configured_path_missing"
+        : "gateway_not_found";
+    return {
+      injectionEnabled: true,
+      gatewayPath: null,
+      configuredPath,
+      ready: false,
+      reason,
+    };
+  }
+  return {
+    injectionEnabled: true,
+    gatewayPath,
+    configuredPath,
+    ready: true,
+    reason: "ready",
+  };
 }
 
 /**

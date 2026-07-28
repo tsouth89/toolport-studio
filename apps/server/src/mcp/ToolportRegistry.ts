@@ -69,11 +69,16 @@ function toolportDataDirectories(
 
   if (platform === "win32") {
     const roaming = NodePath.join(homeDirectory, "AppData", "Roaming");
+    const local = NodePath.join(homeDirectory, "AppData", "Local");
     return [
       NodePath.join(roaming, "Toolport"),
+      NodePath.join(local, "Toolport"),
       NodePath.join(roaming, "Conduit"),
+      NodePath.join(local, "Conduit"),
       NodePath.join(roaming, "Toolport-dev"),
+      NodePath.join(local, "Toolport-dev"),
       NodePath.join(roaming, "Conduit-dev"),
+      NodePath.join(local, "Conduit-dev"),
     ];
   }
 

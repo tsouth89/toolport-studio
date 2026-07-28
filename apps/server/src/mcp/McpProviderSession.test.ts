@@ -88,12 +88,19 @@ it.effect("adds an explicitly configured Toolport stdio gateway with dual client
     setInternalPreviewSession();
     McpProviderSession.armPreviewMcpForThread(threadId);
 
+    // Configured path must resolve to a real file (stale overrides no longer inject).
+    const gatewayPath = NodePath.join(
+      NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "toolport-studio-gateway-")),
+      "toolport-gateway.exe",
+    );
+    NodeFS.writeFileSync(gatewayPath, "");
+
     // Toolport needs explicit on (or settings default); env-only path needs flag.
     expect(
       McpProviderSession.readMcpProviderBindings(
         threadId,
         {
-          TOOLPORT_GATEWAY_PATH: "C:\\Program Files\\Toolport\\toolport-gateway.exe",
+          TOOLPORT_GATEWAY_PATH: gatewayPath,
         },
         "win32",
         "C:\\Users\\tester",
@@ -104,7 +111,7 @@ it.effect("adds an explicitly configured Toolport stdio gateway with dual client
       McpProviderSession.readMcpProviderBindings(
         threadId,
         {
-          TOOLPORT_GATEWAY_PATH: "C:\\Program Files\\Toolport\\toolport-gateway.exe",
+          TOOLPORT_GATEWAY_PATH: gatewayPath,
           TOOLPORT_STUDIO_TOOLPORT_MCP: "on",
         },
         "win32",
@@ -115,7 +122,7 @@ it.effect("adds an explicitly configured Toolport stdio gateway with dual client
       {
         name: "toolport",
         transport: "stdio",
-        command: "C:\\Program Files\\Toolport\\toolport-gateway.exe",
+        command: gatewayPath,
         args: [],
         env: {
           TOOLPORT_CLIENT_ID: "toolport-studio",
@@ -167,6 +174,101 @@ it.effect("falls back to the legacy Conduit data leaf when Toolport is absent", 
     );
   }).pipe(Effect.provide(NodeServices.layer)),
 );
+
+it.effect("falls back to versioned bin gateway when the manifest path is missing", () =>
+  Effect.sync(() => {
+    McpProviderSession.clearAllMcpProviderSessions();
+    const homeDirectory = NodeFS.mkdtempSync(
+      NodePath.join(NodeOS.tmpdir(), "toolport-studio-stale-manifest-"),
+    );
+    const binDirectory = NodePath.join(homeDirectory, "AppData", "Roaming", "Toolport", "bin");
+    NodeFS.mkdirSync(binDirectory, { recursive: true });
+    const stalePath = NodePath.join(binDirectory, "toolport-gateway-missing.exe");
+    const livePath = NodePath.join(binDirectory, "toolport-gateway-1.9.7-rc.1.exe");
+    NodeFS.writeFileSync(livePath, "");
+    NodeFS.writeFileSync(
+      NodePath.join(binDirectory, "gateway-manifest.json"),
+      encodeGatewayManifest({ version: "1.9.7-rc.1", path: stalePath, size: 0 }),
+    );
+
+    expect(McpProviderSession.resolveToolportGatewayPath({}, "win32", homeDirectory)).toBe(
+      livePath,
+    );
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect("finds gateway at Local\\Toolport installer root", () =>
+  Effect.sync(() => {
+    McpProviderSession.clearAllMcpProviderSessions();
+    const homeDirectory = NodeFS.mkdtempSync(
+      NodePath.join(NodeOS.tmpdir(), "toolport-studio-local-install-"),
+    );
+    const gatewayPath = NodePath.join(
+      homeDirectory,
+      "AppData",
+      "Local",
+      "Toolport",
+      "toolport-gateway.exe",
+    );
+    NodeFS.mkdirSync(NodePath.dirname(gatewayPath), { recursive: true });
+    NodeFS.writeFileSync(gatewayPath, "");
+
+    expect(McpProviderSession.resolveToolportGatewayPath({}, "win32", homeDirectory)).toBe(
+      gatewayPath,
+    );
+
+    // Stale TOOLPORT_GATEWAY_PATH must not block auto-discovery.
+    expect(
+      McpProviderSession.resolveToolportGatewayPath(
+        { TOOLPORT_GATEWAY_PATH: "C:\\missing\\toolport-gateway.exe" },
+        "win32",
+        homeDirectory,
+      ),
+    ).toBe(gatewayPath);
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it("describes injection readiness for diagnostics", () => {
+  expect(
+    McpProviderSession.describeToolportGatewayResolution({
+      TOOLPORT_STUDIO_TOOLPORT_MCP: "off",
+    }),
+  ).toMatchObject({ injectionEnabled: false, ready: false, reason: "disabled" });
+
+  // Hermetic home: no install leaves, so a dead override surfaces clearly.
+  expect(
+    McpProviderSession.describeToolportGatewayResolution(
+      {
+        TOOLPORT_STUDIO_TOOLPORT_MCP: "on",
+        TOOLPORT_GATEWAY_PATH: "C:\\missing\\toolport-gateway.exe",
+        PATH: "",
+      },
+      "win32",
+      "C:\\Users\\no-toolport-install",
+    ),
+  ).toMatchObject({
+    injectionEnabled: true,
+    ready: false,
+    reason: "configured_path_missing",
+    configuredPath: "C:\\missing\\toolport-gateway.exe",
+  });
+
+  // Inject on with empty PATH and no home install → not found (no false ready).
+  expect(
+    McpProviderSession.describeToolportGatewayResolution(
+      {
+        TOOLPORT_STUDIO_TOOLPORT_MCP: "on",
+        PATH: "",
+      },
+      "win32",
+      "C:\\Users\\no-toolport-install",
+    ),
+  ).toMatchObject({
+    injectionEnabled: true,
+    ready: false,
+    reason: "gateway_not_found",
+  });
+});
 
 it("treats unset env as off; explicit on/off/url control injection", () => {
   // Hermetic default: unset env → off (server settings write on/off at boot).

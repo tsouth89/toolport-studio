@@ -48,7 +48,10 @@ import * as ServerConfig from "./config.ts";
 import { type DeepPartial, deepMerge } from "@t3tools/shared/Struct";
 import { fromJsonStringPretty, fromLenientJson } from "@t3tools/shared/schemaJson";
 import { applyServerSettingsPatch } from "@t3tools/shared/serverSettings";
-import { applyToolportMcpInjectionEnv } from "./mcp/McpProviderSession.ts";
+import {
+  applyToolportMcpInjectionEnv,
+  describeToolportGatewayResolution,
+} from "./mcp/McpProviderSession.ts";
 import * as ServerSecretStore from "./auth/ServerSecretStore.ts";
 
 const encodeServerSettings = Schema.encodeEffect(ServerSettings);
@@ -536,6 +539,32 @@ const make = Effect.gen(function* () {
     );
   });
 
+  const logToolportInjectionStatus = Effect.fn("logToolportInjectionStatus")(function* () {
+    const resolution = describeToolportGatewayResolution();
+    if (
+      resolution.reason === "gateway_not_found" ||
+      resolution.reason === "configured_path_missing"
+    ) {
+      yield* Effect.logWarning(
+        "Toolport MCP inject is enabled but the gateway binary was not found",
+        {
+          reason: resolution.reason,
+          configuredPath: resolution.configuredPath,
+          hint:
+            resolution.reason === "configured_path_missing"
+              ? "TOOLPORT_GATEWAY_PATH points to a missing file; fix or unset it"
+              : "Install Toolport or set TOOLPORT_GATEWAY_PATH to toolport-gateway.exe",
+        },
+      );
+      return;
+    }
+    if (resolution.ready) {
+      yield* Effect.logInfo("Toolport MCP inject ready", {
+        gatewayPath: resolution.gatewayPath,
+      });
+    }
+  });
+
   const start = Effect.gen(function* () {
     const shouldStart = yield* Ref.modify(startedRef, (started) => [!started, true]);
     if (!shouldStart) {
@@ -547,6 +576,7 @@ const make = Effect.gen(function* () {
       yield* Cache.invalidate(settingsCache, cacheKey);
       const settings = yield* getSettingsFromCache;
       applyToolportMcpInjectionEnv(settings.injectToolportMcpInProviderSessions);
+      yield* logToolportInjectionStatus();
     });
 
     const startupExit = yield* Effect.exit(startup);
@@ -577,6 +607,7 @@ const make = Effect.gen(function* () {
           yield* writeSettingsAtomically(next);
           yield* Cache.set(settingsCache, cacheKey, next);
           applyToolportMcpInjectionEnv(next.injectToolportMcpInProviderSessions);
+          yield* logToolportInjectionStatus();
           yield* emitChange(next);
           const materialized = yield* materializeProviderEnvironmentSecrets(next);
           return resolveTextGenerationProvider(materialized);
