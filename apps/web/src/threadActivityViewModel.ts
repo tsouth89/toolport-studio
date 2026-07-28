@@ -574,6 +574,189 @@ export function deriveActivityChangedFiles(input: {
  * Proposed plans are the first real Activity artifact type. Prefer plans for
  * the active/preferred turn; otherwise surface recent unimplemented plans.
  */
+/** Collapse id/name variants: `linear-2`, `linear_2`, `Linear` → comparable keys. */
+function normalizeMcpMatchKey(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/gu, "");
+}
+
+function isNoiseMcpServerKey(value: string): boolean {
+  const key = value.trim().toLowerCase();
+  return (
+    key.length === 0 ||
+    key === "tool" ||
+    key === "tool call" ||
+    key === "a tool" ||
+    key === "mcp" ||
+    key === "unknown"
+  );
+}
+
+/** Gateway meta tools (`toolport_call_tool`, `toolport__toolport_status`, …). */
+function isToolportGatewayMetaWireName(value: string): boolean {
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/^(?:mcp__|toolport__)+/gu, "")
+    .replace(/__/gu, "_")
+    .replace(/^toolport_/u, "");
+  return (
+    normalized === "call_tool" ||
+    normalized === "toolport_call_tool" ||
+    normalized === "search_tools" ||
+    normalized === "toolport_search_tools" ||
+    normalized === "status" ||
+    normalized === "toolport_status" ||
+    normalized === "run_script" ||
+    normalized === "toolport_run_script" ||
+    normalized === "fetch_result" ||
+    normalized === "toolport_fetch_result"
+  );
+}
+
+/**
+ * Wire ids often look like `linear_2__list_projects` or
+ * `toolport__toolport_call_tool`. Return server-side attribution keys.
+ */
+function serverKeysFromWireName(wire: string): string[] {
+  const trimmed = wire.trim();
+  if (!trimmed) return [];
+  if (isToolportGatewayMetaWireName(trimmed)) {
+    return ["toolport"];
+  }
+  let name = trimmed.replace(/^(?:mcp__)+/iu, "");
+  // `toolport__linear__…` style (rare) vs `toolport__toolport_call_tool`
+  if (/^toolport__/iu.test(name) && isToolportGatewayMetaWireName(name)) {
+    return ["toolport"];
+  }
+  name = name.replace(/^toolport__/iu, "");
+  if (isToolportGatewayMetaWireName(name)) {
+    return ["toolport"];
+  }
+  if (name.includes("__")) {
+    const serverPart = name.split("__")[0]?.trim() ?? "";
+    if (serverPart && !isNoiseMcpServerKey(serverPart)) {
+      return [serverPart.toLowerCase()];
+    }
+  }
+  return [];
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  return null;
+}
+
+function asTrimmedString(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+/**
+ * Keys that may match a registry server id/name (or the synthetic Toolport
+ * gateway). Grok/ACP rarely sets `toolData.server`; wire names live in
+ * rawInput / humanized titles instead.
+ */
+function collectActivityMcpUseKeys(entry: WorkLogEntry): Set<string> {
+  const keys = new Set<string>();
+  const add = (raw: string | undefined) => {
+    if (!raw || isNoiseMcpServerKey(raw)) return;
+    const lower = raw.trim().toLowerCase();
+    keys.add(lower);
+    const normalized = normalizeMcpMatchKey(lower);
+    if (normalized.length > 0) keys.add(normalized);
+  };
+
+  const toolData = asRecord(entry.toolData);
+  if (toolData) {
+    add(asTrimmedString(toolData.server));
+
+    const bags: Array<Record<string, unknown> | null> = [
+      toolData,
+      asRecord(toolData.rawInput),
+      asRecord(toolData.item),
+    ];
+    for (const bag of bags) {
+      if (!bag) continue;
+      for (const field of ["name", "tool", "tool_name", "toolName"] as const) {
+        const wire = asTrimmedString(bag[field]);
+        if (wire) {
+          for (const key of serverKeysFromWireName(wire)) add(key);
+        }
+      }
+      const argBag = asRecord(bag.arguments) ?? asRecord(bag.input);
+      if (argBag) {
+        for (const field of ["name", "tool", "tool_name", "toolName"] as const) {
+          const nested = asTrimmedString(argBag[field]);
+          if (nested) {
+            for (const key of serverKeysFromWireName(nested)) add(key);
+          }
+        }
+      }
+    }
+  }
+
+  const title = (entry.toolTitle ?? entry.label).trim();
+  if (title) {
+    // Humanized gateway lines: "Called a tool via Toolport", "Searched Toolport tools"
+    if (
+      /\btoolport\b/iu.test(title) &&
+      /via\s+toolport|toolport\s+tools|toolport\s+status|toolport\s+script|toolport\s+result|searching\s+toolport|checked\s+toolport|calling\s+a\s+tool\s+via|called\s+a\s+tool\s+via/iu.test(
+        title,
+      )
+    ) {
+      add("toolport");
+    }
+    for (const key of serverKeysFromWireName(title)) add(key);
+
+    const withoutVerb = title
+      .replace(
+        /^(?:called|calling|searched|searching|checked|checking|ran|running|fetched|fetching|used)\s+/iu,
+        "",
+      )
+      .replace(/\s+via\s+toolport\b/iu, "")
+      .trim();
+    if (withoutVerb.includes("·")) {
+      add(withoutVerb.split("·")[0]?.trim());
+    } else if (withoutVerb.includes("__")) {
+      for (const key of serverKeysFromWireName(withoutVerb)) add(key);
+    }
+  }
+
+  return keys;
+}
+
+function useCountForRegistryServer(
+  server: { readonly id: string; readonly name: string },
+  useCounts: ReadonlyMap<string, number>,
+): number {
+  const candidates = [
+    server.id.trim().toLowerCase(),
+    server.name.trim().toLowerCase(),
+    normalizeMcpMatchKey(server.id),
+    normalizeMcpMatchKey(server.name),
+  ];
+  let max = 0;
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    max = Math.max(max, useCounts.get(candidate) ?? 0);
+  }
+  const serverNorms = new Set(
+    [normalizeMcpMatchKey(server.id), normalizeMcpMatchKey(server.name)].filter(Boolean),
+  );
+  for (const [key, count] of useCounts) {
+    if (serverNorms.has(normalizeMcpMatchKey(key))) {
+      max = Math.max(max, count);
+    }
+  }
+  return max;
+}
+
 /**
  * Rank Toolport servers for Activity: enabled + gateway first, then session
  * usage, then name. Preview caps at MAX_ACTIVITY_MCP_SERVERS.
@@ -604,23 +787,15 @@ export function deriveActivityMcpStatus(input: {
     if (preferredTurnId != null && entry.turnId != null && entry.turnId !== preferredTurnId) {
       continue;
     }
-    if (entry.itemType !== "mcp_tool_call" && entry.tone !== "tool") {
+    // Codex: mcp_tool_call. Grok/ACP: dynamic_tool_call with tone tool.
+    if (
+      entry.itemType !== "mcp_tool_call" &&
+      entry.itemType !== "dynamic_tool_call" &&
+      entry.tone !== "tool"
+    ) {
       continue;
     }
-    const fromData =
-      typeof entry.toolData === "object" &&
-      entry.toolData !== null &&
-      "server" in entry.toolData &&
-      typeof (entry.toolData as { server?: unknown }).server === "string"
-        ? (entry.toolData as { server: string }).server.trim().toLowerCase()
-        : "";
-    const fromTitle = (entry.toolTitle ?? entry.label).trim().toLowerCase();
-    const titleServer = fromTitle.includes("·") ? fromTitle.split("·")[0]!.trim() : fromTitle;
-    const keys = new Set<string>();
-    if (fromData && fromData !== "tool" && fromData !== "tool call") keys.add(fromData);
-    if (titleServer && titleServer !== "tool" && titleServer !== "tool call") {
-      keys.add(titleServer);
-    }
+    const keys = collectActivityMcpUseKeys(entry);
     if (keys.size === 0) continue;
     // One hit per tool call, attributed to every matching key (id and display name).
     for (const key of keys) {
@@ -629,9 +804,7 @@ export function deriveActivityMcpStatus(input: {
   }
 
   const scored = status.servers.map((server) => {
-    const idKey = server.id.trim().toLowerCase();
-    const nameKey = server.name.trim().toLowerCase();
-    const useCount = Math.max(useCounts.get(idKey) ?? 0, useCounts.get(nameKey) ?? 0);
+    const useCount = useCountForRegistryServer(server, useCounts);
     let health: ThreadActivityMcpHealth = "disabled";
     if (!server.enabled) {
       health = "disabled";
@@ -659,14 +832,39 @@ export function deriveActivityMcpStatus(input: {
     return left.name.localeCompare(right.name);
   });
 
-  const usedThisTurn = scored
-    .filter((server) => server.useCount > 0)
-    .slice(0, MAX_MCP_USED_THIS_TURN);
+  const usedFromRegistry = scored.filter((server) => server.useCount > 0);
+  const toolportUses = Math.max(
+    useCounts.get("toolport") ?? 0,
+    useCounts.get(normalizeMcpMatchKey("toolport")) ?? 0,
+  );
+  const usedThisTurn: ThreadActivityMcpServer[] = [];
+  // Gateway meta tools (status / search / call) are not a registry row — surface
+  // a synthetic chip so Activity is not stuck on "no MCP tools used".
+  if (toolportUses > 0) {
+    const alreadyListed = usedFromRegistry.some(
+      (server) =>
+        normalizeMcpMatchKey(server.id) === "toolport" ||
+        normalizeMcpMatchKey(server.name) === "toolport",
+    );
+    if (!alreadyListed) {
+      usedThisTurn.push({
+        id: "toolport",
+        name: "Toolport",
+        health: status.gatewayAvailable ? "ready" : "offline",
+        transport: "stdio",
+        useCount: toolportUses,
+      });
+    }
+  }
+  for (const server of usedFromRegistry) {
+    if (usedThisTurn.length >= MAX_MCP_USED_THIS_TURN) break;
+    usedThisTurn.push(server);
+  }
 
   return {
     gatewayAvailable: status.gatewayAvailable,
     activeProfileName: status.activeProfileName,
-    usedThisTurn,
+    usedThisTurn: usedThisTurn.slice(0, MAX_MCP_USED_THIS_TURN),
     servers: scored.slice(0, MAX_ACTIVITY_MCP_SERVERS),
     totalServerCount: status.servers.length,
     injectionEnabled,

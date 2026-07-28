@@ -645,6 +645,115 @@ describe("deriveActivityMcpStatus", () => {
     expect(status?.usedThisTurn.map((server) => server.name)).toEqual(["Linear"]);
   });
 
+  it("attributes Grok/ACP Toolport gateway calls (dynamic_tool_call + rawInput)", () => {
+    const status = deriveActivityMcpStatus({
+      mcpStatus: {
+        gatewayAvailable: true,
+        activeProfileId: "default",
+        activeProfileName: "Default",
+        servers: [
+          { id: "github", name: "GitHub", enabled: true, transport: "http" },
+          { id: "linear-2", name: "Linear", enabled: true, transport: "http" },
+        ],
+        injectionEnabled: true,
+        injectionReady: true,
+        injectionReason: "ready",
+      },
+      timelineEntries: workTimeline([
+        workEntry({
+          id: "tp-search",
+          label: "Searched Toolport tools",
+          toolTitle: "Searched Toolport tools",
+          itemType: "dynamic_tool_call",
+          toolLifecycleStatus: "completed",
+          toolData: {
+            toolCallId: "1",
+            rawInput: { query: "list projects", server: "linear" },
+          },
+        }),
+        workEntry({
+          id: "tp-call",
+          // Real Grok presentation when nested tool is known (outer wire name is gone).
+          label: "Called Linear · list projects",
+          toolTitle: "Called Linear · list projects",
+          itemType: "dynamic_tool_call",
+          toolLifecycleStatus: "completed",
+          toolData: {
+            toolCallId: "2",
+            rawInput: {
+              name: "linear_2__list_projects",
+              arguments: {},
+            },
+          },
+        }),
+      ]),
+    });
+
+    expect(status?.usedThisTurn.map((server) => server.name)).toEqual(["Toolport", "Linear"]);
+    expect(status?.servers.find((s) => s.id === "linear-2")?.useCount).toBe(1);
+  });
+
+  it("matches Studio Preview wire ids and humanized titles", () => {
+    const status = deriveActivityMcpStatus({
+      mcpStatus: {
+        gatewayAvailable: true,
+        activeProfileId: "default",
+        activeProfileName: "Default",
+        servers: [
+          {
+            id: "toolport-studio-preview",
+            name: "Studio Preview",
+            enabled: true,
+            transport: "http",
+          },
+        ],
+        injectionEnabled: false,
+        injectionReady: false,
+        injectionReason: "disabled",
+      },
+      timelineEntries: workTimeline([
+        workEntry({
+          id: "prev",
+          label: "Called Studio Preview · preview status",
+          toolTitle: "Called Studio Preview · preview status",
+          itemType: "dynamic_tool_call",
+          toolLifecycleStatus: "completed",
+          toolData: {
+            rawInput: {},
+          },
+        }),
+      ]),
+    });
+
+    expect(status?.usedThisTurn.map((server) => server.name)).toEqual(["Studio Preview"]);
+  });
+
+  it("surfaces synthetic Toolport when only gateway meta tools ran", () => {
+    const status = deriveActivityMcpStatus({
+      mcpStatus: {
+        gatewayAvailable: true,
+        activeProfileId: "default",
+        activeProfileName: "Default",
+        servers: [{ id: "github", name: "GitHub", enabled: true, transport: "http" }],
+        injectionEnabled: true,
+        injectionReady: true,
+        injectionReason: "ready",
+      },
+      timelineEntries: workTimeline([
+        workEntry({
+          id: "status",
+          label: "Checked Toolport status",
+          toolTitle: "Checked Toolport status",
+          itemType: "dynamic_tool_call",
+          toolLifecycleStatus: "completed",
+        }),
+      ]),
+    });
+
+    expect(status?.usedThisTurn.map((server) => server.name)).toEqual(["Toolport"]);
+    expect(status?.servers.find((s) => s.id === "github")?.useCount).toBe(0);
+  });
+
   it("surfaces inject-only status when registry has no servers", () => {
     const status = deriveActivityMcpStatus({
       mcpStatus: {

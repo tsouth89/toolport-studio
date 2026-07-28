@@ -1017,6 +1017,34 @@ describe("deriveWorkLogEntries", () => {
     expect(entry?.toolData).toEqual(item);
   });
 
+  it("preserves ACP dynamic tool data bags (Toolport gateway rawInput)", () => {
+    const data = {
+      toolCallId: "tc-1",
+      kind: "other",
+      rawInput: {
+        name: "linear_2__list_projects",
+        arguments: {},
+      },
+    };
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "acp-toolport-call",
+        kind: "tool.completed",
+        summary: "Called a tool via Toolport",
+        payload: {
+          itemType: "dynamic_tool_call",
+          title: "Called a tool via Toolport",
+          status: "completed",
+          data,
+        },
+      }),
+    ];
+
+    const [entry] = deriveWorkLogEntries(activities);
+    expect(entry?.itemType).toBe("dynamic_tool_call");
+    expect(entry?.toolData).toEqual(data);
+  });
+
   it("keeps MCP payloads while collapsing lifecycle updates", () => {
     const item = {
       type: "mcpToolCall",
