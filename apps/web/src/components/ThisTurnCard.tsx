@@ -65,6 +65,8 @@ export function ThisTurnCard({
   onOpenTurnDiff,
   onOpenToolport,
   onOpenDockedActivity,
+  /** Bump when the user explicitly opens the card (Working row) so it expands. */
+  expandRequestId = 0,
   className,
 }: {
   model: ThreadActivityViewModel;
@@ -73,6 +75,7 @@ export function ThisTurnCard({
   onOpenToolport?: (() => void) | undefined;
   /** Optional: expand into full docked Activity surface. */
   onOpenDockedActivity?: (() => void) | undefined;
+  expandRequestId?: number;
   className?: string;
 }) {
   const [expanded, setExpanded] = useState(true);
@@ -104,6 +107,14 @@ export function ThisTurnCard({
       setExpanded(true);
     }
   }, [model.attention]);
+
+  // Explicit open from Working "This turn" — expand and pin so it doesn't
+  // immediately re-collapse under the auto-pill timer.
+  useEffect(() => {
+    if (expandRequestId <= 0) return;
+    setExpanded(true);
+    setUserPinnedExpanded(true);
+  }, [expandRequestId]);
 
   useEffect(() => {
     if (!model.isWorking || userPinnedExpanded || model.attention !== null) {
