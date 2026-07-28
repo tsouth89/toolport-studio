@@ -65,6 +65,13 @@ it.effect("normalizes the hosted app URL to an absolute origin", () =>
   }),
 );
 
+it.effect("has no built-in hosted app URL, so Connect stays off until one is configured", () =>
+  Effect.gen(function* () {
+    const result = yield* hostedAppUrlConfig.pipe(provideEnv({}), Effect.result);
+    assert.isTrue(Result.isFailure(result));
+  }),
+);
+
 it.effect("rejects malformed or insecure hosted app URLs", () =>
   Effect.gen(function* () {
     for (const value of [

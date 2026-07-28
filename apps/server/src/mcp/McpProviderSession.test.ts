@@ -33,11 +33,21 @@ function setInternalPreviewSession(): void {
   });
 }
 
-it.effect("returns the internal preview MCP binding without inventing a Toolport install", () =>
+it.effect("omits preview MCP until the thread is armed (default)", () =>
   Effect.sync(() => {
     McpProviderSession.clearAllMcpProviderSessions();
     setInternalPreviewSession();
 
+    expect(
+      McpProviderSession.readMcpProviderBindings(
+        threadId,
+        { PATH: "" },
+        "win32",
+        "C:\\Users\\tester",
+      ),
+    ).toEqual([]);
+
+    McpProviderSession.armPreviewMcpForThread(threadId);
     expect(
       McpProviderSession.readMcpProviderBindings(
         threadId,
@@ -56,39 +66,146 @@ it.effect("returns the internal preview MCP binding without inventing a Toolport
   }).pipe(Effect.provide(NodeServices.layer)),
 );
 
-it.effect("adds an explicitly configured Toolport stdio gateway with dual client ids", () =>
+it.effect("force-injects preview MCP when TOOLPORT_STUDIO_PREVIEW_MCP=on", () =>
   Effect.sync(() => {
     McpProviderSession.clearAllMcpProviderSessions();
     setInternalPreviewSession();
 
-    // Discovery path requires explicit opt-in (SOU-402 default off).
+    expect(
+      McpProviderSession.readMcpProviderBindings(
+        threadId,
+        { PATH: "", TOOLPORT_STUDIO_PREVIEW_MCP: "on" },
+        "win32",
+        "C:\\Users\\tester",
+      ),
+    ).toEqual([expect.objectContaining({ name: "toolport-studio-preview", transport: "http" })]);
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect("adds an explicitly configured Toolport stdio gateway with dual client ids", () =>
+  Effect.sync(() => {
+    McpProviderSession.clearAllMcpProviderSessions();
+    setInternalPreviewSession();
+    McpProviderSession.armPreviewMcpForThread(threadId);
+
+    // Configured path must resolve to a real file (stale overrides no longer inject).
+    const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "toolport-studio-gateway-"));
+    const gatewayPath = NodePath.join(root, "toolport-gateway.exe");
+    NodeFS.writeFileSync(gatewayPath, "");
+    const overlayPath = NodePath.join(root, "overlay-registry.json");
+
+    // Toolport inject off → direct preview only (armed fallback).
     expect(
       McpProviderSession.readMcpProviderBindings(
         threadId,
         {
-          TOOLPORT_GATEWAY_PATH: "C:\\Program Files\\Toolport\\toolport-gateway.exe",
+          TOOLPORT_GATEWAY_PATH: gatewayPath,
         },
         "win32",
         "C:\\Users\\tester",
       ),
     ).toEqual([expect.objectContaining({ name: "toolport-studio-preview", transport: "http" })]);
 
+    // Toolport inject on → preview rides through gateway (no dual full-schema bind).
+    const withToolport = McpProviderSession.readMcpProviderBindings(
+      threadId,
+      {
+        TOOLPORT_GATEWAY_PATH: gatewayPath,
+        TOOLPORT_STUDIO_TOOLPORT_MCP: "on",
+        TOOLPORT_STUDIO_PREVIEW_REGISTRY: overlayPath,
+        TOOLPORT_DATA_DIR: NodePath.join(root, "missing-user-registry"),
+      },
+      "win32",
+      "C:\\Users\\tester",
+    );
+    expect(withToolport).toHaveLength(1);
+    expect(withToolport[0]).toMatchObject({
+      name: "toolport",
+      transport: "stdio",
+      command: gatewayPath,
+    });
+    expect(withToolport[0]?.transport).toBe("stdio");
+    if (withToolport[0]?.transport === "stdio") {
+      expect(withToolport[0].env).toMatchObject({
+        TOOLPORT_CLIENT_ID: "toolport-studio",
+        CONDUIT_CLIENT_ID: "toolport-studio",
+        TOOLPORT_REGISTRY: overlayPath,
+        TOOLPORT_SECRET_STUDIO_PREVIEW_BEARER: "preview-token",
+      });
+    }
+    expect(withToolport.some((b) => b.name === "toolport-studio-preview")).toBe(false);
     expect(
-      McpProviderSession.readMcpProviderBindings(
+      McpProviderSession.resolvePreviewMcpDeliveryMode(
         threadId,
         {
-          TOOLPORT_GATEWAY_PATH: "C:\\Program Files\\Toolport\\toolport-gateway.exe",
+          TOOLPORT_GATEWAY_PATH: gatewayPath,
           TOOLPORT_STUDIO_TOOLPORT_MCP: "on",
         },
         "win32",
         "C:\\Users\\tester",
       ),
-    ).toEqual([
-      expect.objectContaining({ name: "toolport-studio-preview", transport: "http" }),
+    ).toBe("via-toolport");
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect("via-toolport does not require arm; force-off disables preview entirely", () =>
+  Effect.sync(() => {
+    McpProviderSession.clearAllMcpProviderSessions();
+    setInternalPreviewSession();
+    // Not armed.
+
+    const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "toolport-via-preview-"));
+    const gatewayPath = NodePath.join(root, "toolport-gateway.exe");
+    NodeFS.writeFileSync(gatewayPath, "");
+    const overlayPath = NodePath.join(root, "overlay.json");
+
+    const via = McpProviderSession.readMcpProviderBindings(
+      threadId,
+      {
+        TOOLPORT_GATEWAY_PATH: gatewayPath,
+        TOOLPORT_STUDIO_TOOLPORT_MCP: "on",
+        TOOLPORT_STUDIO_PREVIEW_REGISTRY: overlayPath,
+        TOOLPORT_DATA_DIR: NodePath.join(root, "no-reg"),
+      },
+      "win32",
+      "C:\\Users\\tester",
+    );
+    expect(via).toHaveLength(1);
+    expect(via[0]?.name).toBe("toolport");
+    if (via[0]?.transport === "stdio") {
+      expect(via[0].env.TOOLPORT_SECRET_STUDIO_PREVIEW_BEARER).toBe("preview-token");
+    }
+    expect(
+      McpProviderSession.resolveEffectivePreviewMcpDelivery(
+        threadId,
+        {
+          TOOLPORT_GATEWAY_PATH: gatewayPath,
+          TOOLPORT_STUDIO_TOOLPORT_MCP: "on",
+          TOOLPORT_STUDIO_PREVIEW_REGISTRY: overlayPath,
+          TOOLPORT_DATA_DIR: NodePath.join(root, "no-reg"),
+        },
+        "win32",
+        "C:\\Users\\tester",
+      ),
+    ).toBe("via-toolport");
+    expect(McpProviderSession.mcpBindingCatalogKey(via)).toContain("preview:via");
+
+    const off = McpProviderSession.readMcpProviderBindings(
+      threadId,
+      {
+        TOOLPORT_GATEWAY_PATH: gatewayPath,
+        TOOLPORT_STUDIO_TOOLPORT_MCP: "on",
+        TOOLPORT_STUDIO_PREVIEW_MCP: "off",
+        TOOLPORT_STUDIO_PREVIEW_REGISTRY: overlayPath,
+      },
+      "win32",
+      "C:\\Users\\tester",
+    );
+    expect(off).toEqual([
       {
         name: "toolport",
         transport: "stdio",
-        command: "C:\\Program Files\\Toolport\\toolport-gateway.exe",
+        command: gatewayPath,
         args: [],
         env: {
           TOOLPORT_CLIENT_ID: "toolport-studio",
@@ -96,6 +213,50 @@ it.effect("adds an explicitly configured Toolport stdio gateway with dual client
         },
       },
     ]);
+    expect(McpProviderSession.mcpBindingCatalogKey(off)).toContain("preview:none");
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect("falls back to direct preview when via-toolport overlay cannot be written", () =>
+  Effect.sync(() => {
+    McpProviderSession.clearAllMcpProviderSessions();
+    setInternalPreviewSession();
+
+    const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "toolport-via-fallback-"));
+    const gatewayPath = NodePath.join(root, "toolport-gateway.exe");
+    NodeFS.writeFileSync(gatewayPath, "");
+    // Point overlay at a path under a file (not a directory) so write fails.
+    const notADir = NodePath.join(root, "blocked-as-file");
+    NodeFS.writeFileSync(notADir, "x");
+    const badOverlay = NodePath.join(notADir, "overlay.json");
+
+    const bindings = McpProviderSession.readMcpProviderBindings(
+      threadId,
+      {
+        TOOLPORT_GATEWAY_PATH: gatewayPath,
+        TOOLPORT_STUDIO_TOOLPORT_MCP: "on",
+        TOOLPORT_STUDIO_PREVIEW_REGISTRY: badOverlay,
+        TOOLPORT_DATA_DIR: NodePath.join(root, "no-reg"),
+      },
+      "win32",
+      "C:\\Users\\tester",
+    );
+
+    expect(bindings.map((b) => b.name).toSorted()).toEqual(["toolport", "toolport-studio-preview"]);
+    expect(McpProviderSession.mcpBindingCatalogKey(bindings)).toContain("preview:direct");
+    expect(
+      McpProviderSession.resolveEffectivePreviewMcpDelivery(
+        threadId,
+        {
+          TOOLPORT_GATEWAY_PATH: gatewayPath,
+          TOOLPORT_STUDIO_TOOLPORT_MCP: "on",
+          TOOLPORT_STUDIO_PREVIEW_REGISTRY: badOverlay,
+          TOOLPORT_DATA_DIR: NodePath.join(root, "no-reg"),
+        },
+        "win32",
+        "C:\\Users\\tester",
+      ),
+    ).toBe("direct");
   }).pipe(Effect.provide(NodeServices.layer)),
 );
 
@@ -140,6 +301,101 @@ it.effect("falls back to the legacy Conduit data leaf when Toolport is absent", 
     );
   }).pipe(Effect.provide(NodeServices.layer)),
 );
+
+it.effect("falls back to versioned bin gateway when the manifest path is missing", () =>
+  Effect.sync(() => {
+    McpProviderSession.clearAllMcpProviderSessions();
+    const homeDirectory = NodeFS.mkdtempSync(
+      NodePath.join(NodeOS.tmpdir(), "toolport-studio-stale-manifest-"),
+    );
+    const binDirectory = NodePath.join(homeDirectory, "AppData", "Roaming", "Toolport", "bin");
+    NodeFS.mkdirSync(binDirectory, { recursive: true });
+    const stalePath = NodePath.join(binDirectory, "toolport-gateway-missing.exe");
+    const livePath = NodePath.join(binDirectory, "toolport-gateway-1.9.7-rc.1.exe");
+    NodeFS.writeFileSync(livePath, "");
+    NodeFS.writeFileSync(
+      NodePath.join(binDirectory, "gateway-manifest.json"),
+      encodeGatewayManifest({ version: "1.9.7-rc.1", path: stalePath, size: 0 }),
+    );
+
+    expect(McpProviderSession.resolveToolportGatewayPath({}, "win32", homeDirectory)).toBe(
+      livePath,
+    );
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect("finds gateway at Local\\Toolport installer root", () =>
+  Effect.sync(() => {
+    McpProviderSession.clearAllMcpProviderSessions();
+    const homeDirectory = NodeFS.mkdtempSync(
+      NodePath.join(NodeOS.tmpdir(), "toolport-studio-local-install-"),
+    );
+    const gatewayPath = NodePath.join(
+      homeDirectory,
+      "AppData",
+      "Local",
+      "Toolport",
+      "toolport-gateway.exe",
+    );
+    NodeFS.mkdirSync(NodePath.dirname(gatewayPath), { recursive: true });
+    NodeFS.writeFileSync(gatewayPath, "");
+
+    expect(McpProviderSession.resolveToolportGatewayPath({}, "win32", homeDirectory)).toBe(
+      gatewayPath,
+    );
+
+    // Stale TOOLPORT_GATEWAY_PATH must not block auto-discovery.
+    expect(
+      McpProviderSession.resolveToolportGatewayPath(
+        { TOOLPORT_GATEWAY_PATH: "C:\\missing\\toolport-gateway.exe" },
+        "win32",
+        homeDirectory,
+      ),
+    ).toBe(gatewayPath);
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it("describes injection readiness for diagnostics", () => {
+  expect(
+    McpProviderSession.describeToolportGatewayResolution({
+      TOOLPORT_STUDIO_TOOLPORT_MCP: "off",
+    }),
+  ).toMatchObject({ injectionEnabled: false, ready: false, reason: "disabled" });
+
+  // Hermetic home: no install leaves, so a dead override surfaces clearly.
+  expect(
+    McpProviderSession.describeToolportGatewayResolution(
+      {
+        TOOLPORT_STUDIO_TOOLPORT_MCP: "on",
+        TOOLPORT_GATEWAY_PATH: "C:\\missing\\toolport-gateway.exe",
+        PATH: "",
+      },
+      "win32",
+      "C:\\Users\\no-toolport-install",
+    ),
+  ).toMatchObject({
+    injectionEnabled: true,
+    ready: false,
+    reason: "configured_path_missing",
+    configuredPath: "C:\\missing\\toolport-gateway.exe",
+  });
+
+  // Inject on with empty PATH and no home install → not found (no false ready).
+  expect(
+    McpProviderSession.describeToolportGatewayResolution(
+      {
+        TOOLPORT_STUDIO_TOOLPORT_MCP: "on",
+        PATH: "",
+      },
+      "win32",
+      "C:\\Users\\no-toolport-install",
+    ),
+  ).toMatchObject({
+    injectionEnabled: true,
+    ready: false,
+    reason: "gateway_not_found",
+  });
+});
 
 it("treats unset env as off; explicit on/off/url control injection", () => {
   // Hermetic default: unset env → off (server settings write on/off at boot).

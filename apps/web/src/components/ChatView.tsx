@@ -3251,6 +3251,7 @@ function ChatViewContent(props: ChatViewProps) {
             : "none";
   const [thisTurnCardDismissedKey, setThisTurnCardDismissedKey] = useState<string | null>(null);
   const [thisTurnCardForcedOpen, setThisTurnCardForcedOpen] = useState(false);
+  const [thisTurnExpandRequestId, setThisTurnExpandRequestId] = useState(0);
   useEffect(() => {
     // New turn / send re-enables the card after a prior dismiss.
     setThisTurnCardDismissedKey((previous) =>
@@ -3266,6 +3267,7 @@ function ChatViewContent(props: ChatViewProps) {
   const openThisTurnCard = useCallback(() => {
     setThisTurnCardDismissedKey(null);
     setThisTurnCardForcedOpen(true);
+    setThisTurnExpandRequestId((previous) => previous + 1);
   }, []);
   const dismissThisTurnCard = useCallback(() => {
     setThisTurnCardDismissedKey(thisTurnCardKey);
@@ -6154,6 +6156,7 @@ function ChatViewContent(props: ChatViewProps) {
                     onOpenTurnDiff={isServerThread ? onOpenTurnDiff : undefined}
                     onOpenToolport={openToolportMcp}
                     onOpenDockedActivity={addActivitySurface}
+                    expandRequestId={thisTurnExpandRequestId}
                   />
                 </div>
               ) : null}

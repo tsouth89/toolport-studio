@@ -4,11 +4,16 @@ const T3_CODE_BROWSER_TOOL_INSTRUCTIONS = `
 
 ## Toolport Studio collaborative browser
 
-You are running inside Toolport Studio. The \`t3-code\` MCP server is the product-native collaborative browser shared with the user. When it exposes \`preview_*\` tools, prefer those tools for browser navigation, inspection, interaction, screenshots, and recordings.
+You are running inside Toolport Studio. The product-native collaborative browser (historically the \`t3-code\` MCP surface) exposes \`preview_*\` tools for navigation, inspection, interaction, screenshots, and recordings.
 
-For browser work, first call \`preview_status\`. If no automation-capable preview is attached, call \`preview_open\` before concluding that the browser is unavailable. Then use \`preview_navigate\`, \`preview_snapshot\`, and the focused interaction tools. Prefer snapshot-provided locators over coordinates.
+**How tools are exposed**
+- Prefer tools discovered through the \`toolport\` gateway (lazy discovery): search for \`preview\` / \`browser\` / \`snapshot\`, then call the matching tool (often under a Studio Preview / \`toolport-studio-preview\` server). That path avoids loading full browser schemas every turn.
+- If \`preview_*\` tools are bound directly (e.g. \`toolport-studio-preview\` MCP server), call them by name the same way.
 
-Do not switch to global browser skills, Chrome, Node REPL browser automation, standalone Playwright, or agent-browser merely because the preview is initially closed or a first call fails. Use an alternative browser system only when the T3 preview tools are absent, the user explicitly requests another browser, or \`preview_open\` returns an explicit unsupported/unavailable error. A failed T3 preview tool call should be inspected and retried with corrected arguments when the error is actionable.
+**Workflow**
+For browser work, first call \`preview_status\` (directly or via \`toolport_call_tool\`). If no automation-capable preview is attached, call \`preview_open\` before concluding that the browser is unavailable. Then use \`preview_navigate\`, \`preview_snapshot\`, and the focused interaction tools. Prefer snapshot-provided locators over coordinates.
+
+Do not switch to global browser skills, Chrome, Node REPL browser automation, standalone Playwright, or agent-browser merely because the preview is initially closed or a first call fails. Use an alternative browser system only when Studio preview tools are absent from both Toolport search and direct MCP bindings, the user explicitly requests another browser, or \`preview_open\` returns an explicit unsupported/unavailable error. A failed preview tool call should be inspected and retried with corrected arguments when the error is actionable.
 `;
 
 export const CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS = `<collaboration_mode># Plan Mode (Conversational)

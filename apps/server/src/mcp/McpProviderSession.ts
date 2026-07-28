@@ -5,6 +5,14 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as Schema from "effect/Schema";
 
+import {
+  defaultStudioToolportOverlayPath,
+  resolveUserToolportRegistryPath,
+  STUDIO_PREVIEW_SECRET_ENV_KEY,
+  toolportPreviewViaEnv,
+  type PreviewMcpDeliveryMode,
+} from "./ToolportPreviewBridge.ts";
+
 export interface McpProviderSessionConfig {
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
@@ -60,10 +68,27 @@ const decodeGatewayManifest = Schema.decodeUnknownOption(
 );
 
 const sessionsByThread = new Map<ThreadId, McpProviderSessionConfig>();
+/**
+ * Threads that should expose Studio browser preview tools via **direct** inject.
+ * When Toolport gateway is ready, preview rides through Toolport instead (no
+ * arm required — lazy discovery avoids the schema tax). Arm still gates the
+ * direct fallback path when the gateway is missing.
+ */
+const previewMcpArmedThreads = new Set<ThreadId>();
+
+/** Optional Studio state dir so the Toolport registry overlay lands under userdata. */
+let studioStateDirectoryForToolportOverlay: string | undefined;
 
 function nonEmpty(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
+}
+
+/** Point the Toolport preview overlay at Studio's state directory (call at server boot). */
+export function setStudioStateDirectoryForToolportOverlay(
+  stateDirectory: string | undefined,
+): void {
+  studioStateDirectoryForToolportOverlay = nonEmpty(stateDirectory);
 }
 
 /** True when a server name is Toolport's own gateway entry (current or legacy). */
@@ -102,13 +127,19 @@ function toolportDataDirectories(
 
   if (platform === "win32") {
     const roaming = NodePath.join(homeDirectory, "AppData", "Roaming");
+    const local = NodePath.join(homeDirectory, "AppData", "Local");
     // Prefer the post-rename leaf; keep legacy Conduit leaves as fallbacks so
-    // Studio still finds a gateway that has not migrated yet.
+    // Studio still finds a gateway that has not migrated yet. Local\Toolport is
+    // a common installer layout (gateway at the data-dir root, not under bin/).
     return [
       NodePath.join(roaming, "Toolport"),
+      NodePath.join(local, "Toolport"),
       NodePath.join(roaming, "Conduit"),
+      NodePath.join(local, "Conduit"),
       NodePath.join(roaming, "Toolport-dev"),
+      NodePath.join(local, "Toolport-dev"),
       NodePath.join(roaming, "Conduit-dev"),
+      NodePath.join(local, "Conduit-dev"),
     ];
   }
 
@@ -125,16 +156,96 @@ function toolportDataDirectories(
   ];
 }
 
+function isUsableGatewayFile(filePath: string): boolean {
+  try {
+    return NodeFS.existsSync(filePath) && NodeFS.statSync(filePath).isFile();
+  } catch {
+    return false;
+  }
+}
+
 function gatewayPathFromManifest(dataDirectory: string): string | undefined {
   const manifestPath = NodePath.join(dataDirectory, "bin", TOOLPORT_GATEWAY_MANIFEST);
   try {
     const parsed = decodeGatewayManifest(NodeFS.readFileSync(manifestPath, "utf8"));
     if (parsed._tag === "None") return undefined;
     const gatewayPath = nonEmpty(parsed.value.path);
-    return gatewayPath && NodeFS.existsSync(gatewayPath) ? gatewayPath : undefined;
+    return gatewayPath && isUsableGatewayFile(gatewayPath) ? gatewayPath : undefined;
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Pick an unversioned gateway, else the newest versioned binary in a bin/ leaf
+ * (toolport-gateway-1.9.7-rc.1.exe). Covers stale manifest paths after upgrade.
+ */
+function gatewayPathFromBinDirectory(binDirectory: string): string | undefined {
+  try {
+    if (!NodeFS.existsSync(binDirectory)) {
+      return undefined;
+    }
+    const preferredNames = [
+      "toolport-gateway.exe",
+      "toolport-gateway",
+      "conduit-gateway.exe",
+      "conduit-gateway",
+    ];
+    for (const name of preferredNames) {
+      const candidate = NodePath.join(binDirectory, name);
+      if (isUsableGatewayFile(candidate)) {
+        return candidate;
+      }
+    }
+
+    let best: { path: string; mtimeMs: number } | undefined;
+    for (const entry of NodeFS.readdirSync(binDirectory)) {
+      if (!/^(toolport|conduit)-gateway/i.test(entry)) {
+        continue;
+      }
+      // Skip non-binaries (manifests, text files).
+      if (/\.(json|log|txt|md|bak)$/i.test(entry)) {
+        continue;
+      }
+      const candidate = NodePath.join(binDirectory, entry);
+      try {
+        const stat = NodeFS.statSync(candidate);
+        if (!stat.isFile()) continue;
+        if (!best || stat.mtimeMs > best.mtimeMs) {
+          best = { path: candidate, mtimeMs: stat.mtimeMs };
+        }
+      } catch {
+        // ignore unreadable entries
+      }
+    }
+    return best?.path;
+  } catch {
+    return undefined;
+  }
+}
+
+function gatewayPathFromDataDirectory(
+  dataDirectory: string,
+  platform: NodeJS.Platform,
+): string | undefined {
+  const fromManifest = gatewayPathFromManifest(dataDirectory);
+  if (fromManifest) return fromManifest;
+
+  const fromBin = gatewayPathFromBinDirectory(NodePath.join(dataDirectory, "bin"));
+  if (fromBin) return fromBin;
+
+  // Installer root: Local\Toolport\toolport-gateway.exe
+  const rootNames =
+    platform === "win32"
+      ? ["toolport-gateway.exe", "conduit-gateway.exe"]
+      : ["toolport-gateway", "conduit-gateway"];
+  for (const name of rootNames) {
+    const candidate = NodePath.join(dataDirectory, name);
+    if (isUsableGatewayFile(candidate)) {
+      return candidate;
+    }
+  }
+  return undefined;
 }
 
 function gatewayPathFromSearchPath(
@@ -160,7 +271,7 @@ function gatewayPathFromSearchPath(
     if (!trimmedDirectory) continue;
     for (const executableName of executableNames) {
       const candidate = NodePath.join(trimmedDirectory, executableName);
-      if (NodeFS.existsSync(candidate)) return candidate;
+      if (isUsableGatewayFile(candidate)) return candidate;
     }
   }
   return undefined;
@@ -174,14 +285,69 @@ export function resolveToolportGatewayPath(
   homeDirectory = NodeOS.homedir(),
 ): string | undefined {
   const configured = nonEmpty(environment.TOOLPORT_GATEWAY_PATH);
-  if (configured) return configured;
+  // Prefer an explicit override when the file exists. A stale/missing override
+  // falls through to data-dir discovery so dogfood installs still inject.
+  if (configured && isUsableGatewayFile(configured)) {
+    return configured;
+  }
 
   for (const dataDirectory of toolportDataDirectories(environment, platform, homeDirectory)) {
-    const fromManifest = gatewayPathFromManifest(dataDirectory);
-    if (fromManifest) return fromManifest;
+    const resolved = gatewayPathFromDataDirectory(dataDirectory, platform);
+    if (resolved) return resolved;
   }
 
   return gatewayPathFromSearchPath(environment, platform);
+}
+
+/**
+ * Why inject is on but sessions may still lack a toolport binding.
+ * Used for boot logs and Activity diagnostics.
+ */
+export function describeToolportGatewayResolution(
+  environment: NodeJS.ProcessEnv = process.env,
+  // oxlint-disable-next-line t3code/no-global-process-runtime
+  platform: NodeJS.Platform = process.platform,
+  homeDirectory = NodeOS.homedir(),
+): {
+  readonly injectionEnabled: boolean;
+  readonly gatewayPath: string | null;
+  readonly configuredPath: string | null;
+  readonly ready: boolean;
+  readonly reason: "disabled" | "ready" | "gateway_not_found" | "configured_path_missing";
+} {
+  const injectionEnabled = isToolportMcpInjectionEnabled(environment);
+  const configuredPath = nonEmpty(environment.TOOLPORT_GATEWAY_PATH) ?? null;
+  if (!injectionEnabled) {
+    return {
+      injectionEnabled: false,
+      gatewayPath: null,
+      configuredPath,
+      ready: false,
+      reason: "disabled",
+    };
+  }
+  const gatewayPath = resolveToolportGatewayPath(environment, platform, homeDirectory) ?? null;
+  if (!gatewayPath) {
+    // Prefer a specific reason when the only signal is a dead override.
+    const reason =
+      configuredPath !== null && !isUsableGatewayFile(configuredPath)
+        ? "configured_path_missing"
+        : "gateway_not_found";
+    return {
+      injectionEnabled: true,
+      gatewayPath: null,
+      configuredPath,
+      ready: false,
+      reason,
+    };
+  }
+  return {
+    injectionEnabled: true,
+    gatewayPath,
+    configuredPath,
+    ready: true,
+    reason: "ready",
+  };
 }
 
 /**
@@ -225,10 +391,126 @@ export function applyToolportMcpInjectionEnv(enabled: boolean): void {
   process.env.TOOLPORT_STUDIO_TOOLPORT_MCP = enabled ? "on" : "off";
 }
 
+/**
+ * Whether direct or via-Toolport preview is allowed for this thread.
+ *
+ * - `TOOLPORT_STUDIO_PREVIEW_MCP=off` → never
+ * - `TOOLPORT_STUDIO_PREVIEW_MCP=on` → always when session credentials exist
+ * - unset → via-Toolport when gateway can carry it (no arm); direct only after arm
+ */
+export function isPreviewMcpInjectionEnabled(
+  threadId: ThreadId,
+  environment: NodeJS.ProcessEnv = process.env,
+  options?: { readonly toolportCanCarryPreview?: boolean },
+): boolean {
+  const flag = nonEmpty(environment.TOOLPORT_STUDIO_PREVIEW_MCP)?.toLowerCase();
+  if (flag === "0" || flag === "false" || flag === "off") {
+    return false;
+  }
+  if (flag === "1" || flag === "true" || flag === "on") {
+    return true;
+  }
+  // Via-Toolport is lazy (~900 meta-tool tokens). No need to wait for panel open.
+  if (options?.toolportCanCarryPreview) {
+    return true;
+  }
+  return previewMcpArmedThreads.has(threadId);
+}
+
+/** Mark a thread so **direct** preview inject is allowed when Toolport is unavailable. */
+export function armPreviewMcpForThread(threadId: ThreadId): void {
+  previewMcpArmedThreads.add(threadId);
+}
+
+export function isPreviewMcpArmedForThread(threadId: ThreadId): boolean {
+  return previewMcpArmedThreads.has(threadId);
+}
+
+/**
+ * Whether Studio can spawn a local Toolport gateway stdio child that we control
+ * (registry overlay + secret env). Streamable-HTTP Toolport URLs cannot carry
+ * Studio secrets this way — those fall back to direct preview inject.
+ */
+export function canRoutePreviewViaToolport(
+  environment: NodeJS.ProcessEnv = process.env,
+  // oxlint-disable-next-line t3code/no-global-process-runtime
+  platform: NodeJS.Platform = process.platform,
+  homeDirectory = NodeOS.homedir(),
+): boolean {
+  if (!isToolportMcpInjectionEnabled(environment)) {
+    return false;
+  }
+  // HTTP remote gateway — cannot inject TOOLPORT_REGISTRY / secret env.
+  if (nonEmpty(environment.TOOLPORT_STUDIO_MCP_URL)) {
+    return false;
+  }
+  if (environment.NODE_ENV === "test" && !nonEmpty(environment.TOOLPORT_GATEWAY_PATH)) {
+    return false;
+  }
+  return resolveToolportGatewayPath(environment, platform, homeDirectory) != null;
+}
+
+/**
+ * Resolve how Studio browser tools reach the provider for this thread.
+ * Prefer via-Toolport (lazy) over direct full-schema inject.
+ */
+export function resolvePreviewMcpDeliveryMode(
+  threadId: ThreadId,
+  environment: NodeJS.ProcessEnv = process.env,
+  // oxlint-disable-next-line t3code/no-global-process-runtime
+  platform: NodeJS.Platform = process.platform,
+  homeDirectory = NodeOS.homedir(),
+): PreviewMcpDeliveryMode {
+  const session = readMcpProviderSession(threadId);
+  if (!session) {
+    return "off";
+  }
+  const via = canRoutePreviewViaToolport(environment, platform, homeDirectory);
+  if (!isPreviewMcpInjectionEnabled(threadId, environment, { toolportCanCarryPreview: via })) {
+    return "off";
+  }
+  return via ? "via-toolport" : "direct";
+}
+
+/**
+ * Stable fingerprint for adapter rebind/recycle checks.
+ * Includes server names plus whether Toolport carries Studio preview (secret
+ * attached), so a silent drop from via-toolport to bare toolport still rebinds.
+ */
+export function mcpBindingCatalogKey(bindings: ReadonlyArray<McpProviderBinding>): string {
+  const names = bindings
+    .map((binding) => binding.name)
+    .toSorted()
+    .join("\0");
+  const toolport = bindings.find(
+    (binding) => binding.name === TOOLPORT_MCP_SERVER_NAME && binding.transport === "stdio",
+  );
+  const previewVia =
+    toolport?.transport === "stdio" &&
+    Boolean(toolport.env[`TOOLPORT_SECRET_${STUDIO_PREVIEW_SECRET_ENV_KEY}`]);
+  const hasDirectPreview = bindings.some((binding) => binding.name === INTERNAL_MCP_SERVER_NAME);
+  const previewLane = previewVia ? "via" : hasDirectPreview ? "direct" : "none";
+  return `${names}\0preview:${previewLane}`;
+}
+
+function toolportBindingCarriesPreview(binding: McpProviderBinding | undefined): boolean {
+  return (
+    binding?.transport === "stdio" &&
+    Boolean(binding.env[`TOOLPORT_SECRET_${STUDIO_PREVIEW_SECRET_ENV_KEY}`])
+  );
+}
+
+/**
+ * Build the Studio-managed Toolport stdio/http binding.
+ * When `attachPreviewVia` is true, write the overlay + secret env so preview
+ * tools are reachable through lazy discovery.
+ */
 function toolportMcpBinding(
+  threadId: ThreadId,
   environment: NodeJS.ProcessEnv,
   platform: NodeJS.Platform,
   homeDirectory: string,
+  attachPreviewVia: boolean,
 ): McpProviderBinding | undefined {
   if (!isToolportMcpInjectionEnabled(environment)) {
     return undefined;
@@ -254,12 +536,36 @@ function toolportMcpBinding(
 
   const command = resolveToolportGatewayPath(environment, platform, homeDirectory);
   if (!command) return undefined;
+
+  const env: Record<string, string> = { ...toolportStudioClientEnv() };
+  if (attachPreviewVia) {
+    const session = readMcpProviderSession(threadId);
+    if (session) {
+      const overlayPath =
+        nonEmpty(environment.TOOLPORT_STUDIO_PREVIEW_REGISTRY) ??
+        defaultStudioToolportOverlayPath(studioStateDirectoryForToolportOverlay, homeDirectory);
+      const userRegistryPath = resolveUserToolportRegistryPath(
+        environment,
+        platform,
+        homeDirectory,
+      );
+      const previewEnv = toolportPreviewViaEnv({
+        session,
+        overlayPath,
+        userRegistryPath,
+      });
+      if (previewEnv) {
+        Object.assign(env, previewEnv);
+      }
+    }
+  }
+
   return {
     name: TOOLPORT_MCP_SERVER_NAME,
     transport: "stdio",
     command,
     args: [],
-    env: { ...toolportStudioClientEnv() },
+    env,
   };
 }
 
@@ -281,7 +587,23 @@ export function readMcpProviderBindings(
 ): ReadonlyArray<McpProviderBinding> {
   const bindings: Array<McpProviderBinding> = [];
   const internalSession = readMcpProviderSession(threadId);
-  if (internalSession) {
+  const delivery = resolvePreviewMcpDeliveryMode(threadId, environment, platform, homeDirectory);
+
+  const toolport = toolportMcpBinding(
+    threadId,
+    environment,
+    platform,
+    homeDirectory,
+    delivery === "via-toolport",
+  );
+  // Never leave "via" half-configured: if overlay/secret setup failed, fall back
+  // to direct full-schema inject so browser tools still work in dogfood.
+  const previewViaOk = delivery === "via-toolport" && toolportBindingCarriesPreview(toolport);
+  const useDirectPreview =
+    Boolean(internalSession) &&
+    (delivery === "direct" || (delivery === "via-toolport" && !previewViaOk));
+
+  if (useDirectPreview && internalSession) {
     bindings.push({
       name: INTERNAL_MCP_SERVER_NAME,
       transport: "http",
@@ -292,9 +614,30 @@ export function readMcpProviderBindings(
     });
   }
 
-  const toolport = toolportMcpBinding(environment, platform, homeDirectory);
   if (toolport) bindings.push(toolport);
   return bindings;
+}
+
+/**
+ * Effective preview delivery after fallthrough (for diagnostics / Activity).
+ * Distinct from {@link resolvePreviewMcpDeliveryMode}, which is intent only.
+ */
+export function resolveEffectivePreviewMcpDelivery(
+  threadId: ThreadId,
+  environment: NodeJS.ProcessEnv = process.env,
+  // oxlint-disable-next-line t3code/no-global-process-runtime
+  platform: NodeJS.Platform = process.platform,
+  homeDirectory = NodeOS.homedir(),
+): PreviewMcpDeliveryMode {
+  const bindings = readMcpProviderBindings(threadId, environment, platform, homeDirectory);
+  if (bindings.some((binding) => binding.name === INTERNAL_MCP_SERVER_NAME)) {
+    return "direct";
+  }
+  const toolport = bindings.find((binding) => binding.name === TOOLPORT_MCP_SERVER_NAME);
+  if (toolportBindingCarriesPreview(toolport)) {
+    return "via-toolport";
+  }
+  return "off";
 }
 
 export function toAcpMcpServers(
@@ -453,8 +796,10 @@ export function environmentSuppressingGrokConfigToolportGateway(
 
 export function clearMcpProviderSession(threadId: ThreadId): void {
   sessionsByThread.delete(threadId);
+  previewMcpArmedThreads.delete(threadId);
 }
 
 export function clearAllMcpProviderSessions(): void {
   sessionsByThread.clear();
+  previewMcpArmedThreads.clear();
 }

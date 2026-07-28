@@ -67,7 +67,11 @@ import {
   makeGrokAcpRuntime,
   resolveGrokAcpBaseModelId,
 } from "../acp/GrokAcpSupport.ts";
-import { type GrokReasoningEffort, resolveGrokReasoningEffort } from "./GrokProvider.ts";
+import {
+  GROK_ASSUMED_CONTEXT_WINDOW_TOKENS,
+  type GrokReasoningEffort,
+  resolveGrokReasoningEffort,
+} from "./GrokProvider.ts";
 import {
   extractXAiAskUserQuestions,
   makeXAiAskUserQuestionCancelledResponse,
@@ -445,6 +449,10 @@ interface GrokSessionContext {
    * when this no longer matches {@link McpProviderSession.isToolportMcpInjectionEnabled}.
    */
   injectsToolportMcp: boolean;
+  /** MCP server name fingerprint at last ACP spawn (recycle when catalog changes). */
+  mcpBindingCatalog: string;
+  /** Last context-fill token count emitted to the UI (throttle _meta.totalTokens). */
+  lastEmittedUsageTokens: number | undefined;
   /**
    * Visible assistant/tool stream events observed for the active turn. Used to
    * detect silent end_turn completions that leave the session looking dead.
@@ -1542,20 +1550,32 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               return;
             }
 
-            // Context usage can arrive without a live turn binding; still surface
-            // it for the composer meter (Claude/Codex parity).
+            // Context fill: Grok stamps `_meta.totalTokens` on most session/updates
+            // (not ACP usage_update). Throttle so every message chunk is not a
+            // context-window activity row.
             if (event._tag === "UsageUpdated") {
+              const previous = ctx.lastEmittedUsageTokens;
+              if (previous === event.usedTokens) {
+                return;
+              }
+              if (previous !== undefined && Math.abs(event.usedTokens - previous) < 1_000) {
+                return;
+              }
               const stamp = yield* makeEventStamp();
+              // Agent rarely sends window size; without a max the UI ring stays empty.
+              const maxTokens =
+                event.maxTokens > 0 ? event.maxTokens : GROK_ASSUMED_CONTEXT_WINDOW_TOKENS;
               const usageEvent = makeAcpTokenUsageUpdatedEvent({
                 stamp,
                 provider: PROVIDER,
                 threadId: ctx.threadId,
                 turnId: resolveNotificationTurnId(ctx),
                 usedTokens: event.usedTokens,
-                maxTokens: event.maxTokens,
+                maxTokens,
                 rawPayload: event.rawPayload,
               });
               if (usageEvent) {
+                ctx.lastEmittedUsageTokens = event.usedTokens;
                 yield* offerRuntimeEvent(usageEvent);
               }
               return;
@@ -1915,6 +1935,8 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         ctx.acpDisposed = false;
         ctx.acpCompromised = false;
         ctx.injectsToolportMcp = injectsToolportGateway;
+        ctx.mcpBindingCatalog = McpProviderSession.mcpBindingCatalogKey(mcpBindings);
+        ctx.lastEmittedUsageTokens = undefined;
         // Fresh ACP process: drop residual Stop/watchdog interrupt bookkeeping so
         // the next user message cannot steer into a cancelled turn id and fail
         // preparation with "Grok prompt was interrupted during preparation."
@@ -2075,6 +2097,8 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             stopped: false,
             acpCompromised: false,
             injectsToolportMcp: injectsToolportGateway,
+            mcpBindingCatalog: McpProviderSession.mcpBindingCatalogKey(mcpBindings),
+            lastEmittedUsageTokens: undefined,
             turnVisibleUpdateCount: 0,
             lastTurnActivityAtMs: yield* Clock.currentTimeMillis,
             lastToolActivityAtMs: yield* Clock.currentTimeMillis,
@@ -2171,14 +2195,12 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               input.threadId,
               options?.environment ?? process.env,
             );
-            const wantsToolportMcp = nextMcpBindings.some(
-              (binding) => binding.name === McpProviderSession.TOOLPORT_MCP_SERVER_NAME,
-            );
-            if (wantsToolportMcp !== ctx.injectsToolportMcp) {
-              yield* Effect.logInfo("Grok Toolport MCP setting changed; recycling ACP process", {
+            const nextCatalog = McpProviderSession.mcpBindingCatalogKey(nextMcpBindings);
+            if (nextCatalog !== ctx.mcpBindingCatalog) {
+              yield* Effect.logInfo("Grok MCP catalog changed; recycling ACP process", {
                 threadId: input.threadId,
-                from: ctx.injectsToolportMcp,
-                to: wantsToolportMcp,
+                from: ctx.mcpBindingCatalog,
+                to: nextCatalog,
               });
               ctx.acpCompromised = true;
             }

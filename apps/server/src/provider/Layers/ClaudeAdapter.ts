@@ -248,6 +248,8 @@ interface ClaudeSessionContext {
    * Settings toggles do not reach a live SDK query until we restart it.
    */
   injectsToolportMcp: boolean;
+  /** Fingerprint of MCP server names bound at last query start (rebind on change). */
+  mcpBindingCatalog: string;
   /** Permission callback for createQuery; kept so MCP rebind can restart the runtime. */
   canUseTool: CanUseTool;
   stopped: boolean;
@@ -1515,8 +1517,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
   /**
    * Claude Code keeps mcpServers from createQuery for the life of that query.
-   * Resume also preserves the original tool catalog. When Settings flips
-   * Toolport injection, restart the query without resume and rehydrate history.
+   * Resume also preserves the original tool catalog. When Toolport injection or
+   * preview MCP arming changes, restart the query without resume and rehydrate.
    */
   const rebindClaudeToolportMcpIfNeeded = Effect.fn("rebindClaudeToolportMcpIfNeeded")(function* (
     context: ClaudeSessionContext,
@@ -1525,15 +1527,19 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       return;
     }
     const env = options?.environment ?? process.env;
-    const wantsToolport = McpProviderSession.isToolportMcpInjectionEnabled(env);
-    if (wantsToolport === context.injectsToolportMcp) {
+    const desiredBindings = McpProviderSession.readMcpProviderBindings(
+      context.session.threadId,
+      env,
+    );
+    const desiredCatalog = McpProviderSession.mcpBindingCatalogKey(desiredBindings);
+    if (desiredCatalog === context.mcpBindingCatalog) {
       return;
     }
 
-    yield* Effect.logInfo("Claude Toolport MCP setting changed; restarting query runtime", {
+    yield* Effect.logInfo("Claude MCP catalog changed; restarting query runtime", {
       threadId: context.session.threadId,
-      from: context.injectsToolportMcp,
-      to: wantsToolport,
+      from: context.mcpBindingCatalog,
+      to: desiredCatalog,
     });
 
     const streamFiber = context.streamFiber;
@@ -1561,7 +1567,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       Stream.toAsyncIterable,
     );
 
-    const mcpBindings = McpProviderSession.readMcpProviderBindings(context.session.threadId, env);
+    const mcpBindings = desiredBindings;
     const injectsToolport = mcpBindings.some(
       (binding) => binding.name === McpProviderSession.TOOLPORT_MCP_SERVER_NAME,
     );
@@ -1602,6 +1608,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     context.resumeSessionId = freshSessionId;
     context.needsContextRehydration = true;
     context.injectsToolportMcp = injectsToolport;
+    context.mcpBindingCatalog = desiredCatalog;
     context.lastAssistantUuid = undefined;
     context.session = {
       ...context.session,
@@ -4045,6 +4052,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         lastThreadStartedId: undefined,
         needsContextRehydration,
         injectsToolportMcp,
+        mcpBindingCatalog: McpProviderSession.mcpBindingCatalogKey(mcpBindings),
         canUseTool,
         stopped: false,
       };

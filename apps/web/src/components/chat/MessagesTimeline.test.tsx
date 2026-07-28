@@ -736,7 +736,7 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain('aria-label="Stop generation"');
   });
 
-  it("keeps This turn off the Working row during a healthy turn", () => {
+  it("surfaces This turn on the Working row during a healthy turn", () => {
     const markup = renderToStaticMarkup(
       <MessagesTimeline
         {...buildProps()}
@@ -748,10 +748,10 @@ describe("MessagesTimeline", () => {
     );
 
     expect(markup).toContain("Working");
-    expect(markup).not.toContain("This turn");
+    expect(markup).toContain("This turn");
   });
 
-  it("surfaces This turn on the Working row when the turn goes quiet", () => {
+  it("keeps This turn on the Working row when the turn goes quiet", () => {
     const lastStreamActivityAt = new Date(Date.now() - 120_000).toISOString();
     const markup = renderToStaticMarkup(
       <MessagesTimeline

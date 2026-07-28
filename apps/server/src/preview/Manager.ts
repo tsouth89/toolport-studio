@@ -1,5 +1,6 @@
 /**
  * In-memory PreviewManager implementation.
+ * Opening a tab arms Studio preview MCP for the thread (provider tool inject).
  *
  * Sessions are keyed by `(threadId, tabId)`; a single thread can host
  * multiple tabs (browser-style). `open` always creates a new tab — tab
@@ -38,6 +39,8 @@ import * as PubSub from "effect/PubSub";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as SynchronizedRef from "effect/SynchronizedRef";
+
+import * as McpProviderSession from "../mcp/McpProviderSession.ts";
 
 export class PreviewManager extends Context.Service<
   PreviewManager,
@@ -216,6 +219,10 @@ export const make = Effect.gen(function* PreviewManagerMake() {
         });
         return { sessions };
       });
+      // User opened browser/preview for this thread. Arms **direct** preview
+      // inject when Toolport is unavailable. When Toolport is ready, preview
+      // already rides through the gateway (lazy discovery; no arm needed).
+      yield* Effect.sync(() => McpProviderSession.armPreviewMcpForThread(input.threadId));
       yield* PubSub.publish(eventsPubSub, {
         type: "opened",
         threadId: input.threadId,

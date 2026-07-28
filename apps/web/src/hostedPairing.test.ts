@@ -27,13 +27,15 @@ describe("hostedPairing", () => {
   it("prefers hash tokens so generated hosted links do not put credentials in search params", () => {
     vi.stubEnv("VITE_HOSTED_APP_URL", "https://preview.t3.codes");
 
-    const url = new URL(
-      buildHostedPairingUrl({
-        host: "https://backend.example.com:3773",
-        token: "pairing-token",
-        label: "Workstation",
-      }),
-    );
+    const pairingUrl = buildHostedPairingUrl({
+      host: "https://backend.example.com:3773",
+      token: "pairing-token",
+      label: "Workstation",
+    });
+    if (pairingUrl === null) {
+      throw new Error("Expected a hosted pairing URL for a configured hosted app.");
+    }
+    const url = new URL(pairingUrl);
 
     expect(url.origin).toBe("https://preview.t3.codes");
     expect(url.pathname).toBe("/pair");
@@ -46,16 +48,28 @@ describe("hostedPairing", () => {
   it("builds hosted channel selection URLs through the configured router origin", () => {
     vi.stubEnv("VITE_HOSTED_APP_URL", "https://app.t3.codes");
 
-    const url = new URL(
-      buildHostedChannelSelectionUrl({
-        channel: "nightly",
-      }),
-    );
+    const channelUrl = buildHostedChannelSelectionUrl({
+      channel: "nightly",
+    });
+    if (channelUrl === null) {
+      throw new Error("Expected a hosted channel URL for a configured hosted app.");
+    }
+    const url = new URL(channelUrl);
 
     expect(url.origin).toBe("https://app.t3.codes");
     expect(url.pathname).toBe("/__t3code/channel");
     expect(url.searchParams.get("channel")).toBe("nightly");
     expect(url.searchParams.has("next")).toBe(false);
+  });
+
+  it("builds no hosted URLs when this build owns no hosted app", () => {
+    vi.stubEnv("VITE_HOSTED_APP_URL", "");
+
+    expect(buildHostedPairingUrl({ host: "https://backend.example.com:3773", token: "t" })).toBe(
+      null,
+    );
+    expect(buildHostedChannelSelectionUrl({ channel: "nightly" })).toBe(null);
+    expect(isHostedStaticApp(new URL("https://app.example.com/"))).toBe(false);
   });
 
   it("ignores incomplete hosted pairing requests", () => {

@@ -1111,6 +1111,9 @@ const makeWsRpcLayer = (
                   activeProfileId: toolportMcp.activeProfileId,
                   activeProfileName: toolportMcp.activeProfileName,
                   servers: toolportMcp.servers,
+                  injectionEnabled: toolportMcp.injectionEnabled,
+                  injectionReady: toolportMcp.injectionReady,
+                  injectionReason: toolportMcp.injectionReason,
                 },
               }
             : {}),

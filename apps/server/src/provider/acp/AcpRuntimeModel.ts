@@ -637,5 +637,49 @@ export function parseSessionUpdateEvent(params: EffectAcpSchema.SessionNotificat
       break;
   }
 
+  // Grok Build (and some ACP agents) do not emit sessionUpdate=usage_update.
+  // They stamp context fill on every session/update as `_meta.totalTokens`.
+  // Only add when the switch did not already produce a UsageUpdated event.
+  if (!events.some((event) => event._tag === "UsageUpdated")) {
+    const metaUsage = extractSessionUpdateMetaUsage(params);
+    if (metaUsage) {
+      events.push({
+        _tag: "UsageUpdated",
+        usedTokens: metaUsage.usedTokens,
+        maxTokens: metaUsage.maxTokens,
+        rawPayload: params,
+      });
+    }
+  }
+
   return { ...(modeId !== undefined ? { modeId } : {}), events };
+}
+
+/**
+ * Grok puts live context fill on SessionNotification._meta.totalTokens.
+ * Optional window size if the agent ever reports it.
+ */
+function extractSessionUpdateMetaUsage(params: EffectAcpSchema.SessionNotification): {
+  readonly usedTokens: number;
+  readonly maxTokens: number;
+} | null {
+  const meta = params._meta;
+  if (!meta || typeof meta !== "object" || Array.isArray(meta)) {
+    return null;
+  }
+  const record = meta as Record<string, unknown>;
+  const totalTokens = record.totalTokens;
+  if (typeof totalTokens !== "number" || !Number.isFinite(totalTokens) || totalTokens <= 0) {
+    return null;
+  }
+  const windowCandidate =
+    record.contextWindowTokens ?? record.contextWindow ?? record.maxTokens ?? record.windowSize;
+  const maxTokens =
+    typeof windowCandidate === "number" && Number.isFinite(windowCandidate) && windowCandidate > 0
+      ? Math.trunc(windowCandidate)
+      : 0;
+  return {
+    usedTokens: Math.trunc(totalTokens),
+    maxTokens,
+  };
 }

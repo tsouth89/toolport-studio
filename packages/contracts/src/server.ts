@@ -409,7 +409,7 @@ export type ServerSignalProcessResult = typeof ServerSignalProcessResult.Type;
 
 /**
  * Toolport-backed MCP inventory for Activity (SOU-386).
- * Only present when Toolport's registry.json is readable on this machine.
+ * Present when registry.json is readable and/or Studio inject is enabled.
  */
 export const ToolportMcpServerStatus = Schema.Struct({
   id: TrimmedNonEmptyString,
@@ -420,11 +420,25 @@ export const ToolportMcpServerStatus = Schema.Struct({
 });
 export type ToolportMcpServerStatus = typeof ToolportMcpServerStatus.Type;
 
+/** Why Studio can or cannot spawn the Toolport gateway into provider sessions. */
+export const ToolportMcpInjectionReason = Schema.Literals([
+  "disabled",
+  "ready",
+  "gateway_not_found",
+  "configured_path_missing",
+]);
+export type ToolportMcpInjectionReason = typeof ToolportMcpInjectionReason.Type;
+
 export const ToolportMcpStatus = Schema.Struct({
   gatewayAvailable: Schema.Boolean,
   activeProfileId: Schema.NullOr(TrimmedNonEmptyString),
   activeProfileName: Schema.NullOr(TrimmedNonEmptyString),
   servers: Schema.Array(ToolportMcpServerStatus),
+  /** Server settings / env: inject Toolport into provider MCP catalogs. */
+  injectionEnabled: Schema.Boolean,
+  /** Inject on and gateway binary resolved. */
+  injectionReady: Schema.Boolean,
+  injectionReason: ToolportMcpInjectionReason,
 });
 export type ToolportMcpStatus = typeof ToolportMcpStatus.Type;
 

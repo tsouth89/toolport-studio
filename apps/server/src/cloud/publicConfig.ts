@@ -1,4 +1,4 @@
-import { CONNECT_OAUTH_SCOPES, DEFAULT_HOSTED_APP_URL } from "@t3tools/shared/connectAuth";
+import { CONNECT_OAUTH_SCOPES } from "@t3tools/shared/connectAuth";
 import { clerkFrontendApiUrlFromPublishableKey } from "@t3tools/shared/relayAuth";
 import { normalizeSecureRelayUrl } from "@t3tools/shared/relayUrl";
 import * as Config from "effect/Config";
@@ -102,14 +102,14 @@ export function makeRelayUrlConfig(fallback = buildTimeRelayUrl) {
 export const relayUrlConfig = makeRelayUrlConfig();
 
 /**
- * Hosted app origin used for out-of-band OAuth on headless
- * machines. Overridable so staging/nightly builds can point their CLIs at a
- * matching hosted deployment.
+ * Hosted app origin used for out-of-band OAuth on headless machines. There is
+ * deliberately no built-in default: the CLI must never send a user's connect
+ * request to a hosted deployment this build does not own, so Connect stays off
+ * until a deployment configures its own origin.
  */
-export const hostedAppUrlConfig = makePublicValueConfig(
-  "T3CODE_HOSTED_APP_URL",
-  DEFAULT_HOSTED_APP_URL,
-).pipe(Config.mapOrFail(validateHostedAppUrl));
+export const hostedAppUrlConfig = makePublicValueConfig("T3CODE_HOSTED_APP_URL", "").pipe(
+  Config.mapOrFail(validateHostedAppUrl),
+);
 
 function validateHostedAppUrl(value: string) {
   try {

@@ -10,6 +10,7 @@ import {
   deriveActivityMcpStatus,
   deriveThreadActivityViewModel,
   displayPathForActivity,
+  formatActivityMcpInjectionLabel,
   isActivityRecentMilestone,
   type ThreadActivityStep,
 } from "./threadActivityViewModel";
@@ -609,6 +610,9 @@ describe("deriveActivityMcpStatus", () => {
           { id: "github", name: "GitHub", enabled: true, transport: "http" },
           { id: "linear-2", name: "Linear", enabled: true, transport: "http" },
         ],
+        injectionEnabled: true,
+        injectionReady: true,
+        injectionReason: "ready",
       },
       timelineEntries: workTimeline([
         workEntry({
@@ -631,6 +635,7 @@ describe("deriveActivityMcpStatus", () => {
     });
 
     expect(status?.gatewayAvailable).toBe(true);
+    expect(status?.injectionReady).toBe(true);
     expect(status?.servers[0]?.name).toBe("Linear");
     expect(status?.servers[0]?.useCount).toBe(2);
     expect(status?.servers[0]?.health).toBe("ready");
@@ -640,8 +645,232 @@ describe("deriveActivityMcpStatus", () => {
     expect(status?.usedThisTurn.map((server) => server.name)).toEqual(["Linear"]);
   });
 
+  it("attributes Grok/ACP Toolport gateway calls (dynamic_tool_call + rawInput)", () => {
+    const status = deriveActivityMcpStatus({
+      mcpStatus: {
+        gatewayAvailable: true,
+        activeProfileId: "default",
+        activeProfileName: "Default",
+        servers: [
+          { id: "github", name: "GitHub", enabled: true, transport: "http" },
+          { id: "linear-2", name: "Linear", enabled: true, transport: "http" },
+        ],
+        injectionEnabled: true,
+        injectionReady: true,
+        injectionReason: "ready",
+      },
+      timelineEntries: workTimeline([
+        workEntry({
+          id: "tp-search",
+          label: "Searched Toolport tools",
+          toolTitle: "Searched Toolport tools",
+          itemType: "dynamic_tool_call",
+          toolLifecycleStatus: "completed",
+          toolData: {
+            toolCallId: "1",
+            rawInput: { query: "list projects", server: "linear" },
+          },
+        }),
+        workEntry({
+          id: "tp-call",
+          // Real Grok presentation when nested tool is known (outer wire name is gone).
+          label: "Called Linear · list projects",
+          toolTitle: "Called Linear · list projects",
+          itemType: "dynamic_tool_call",
+          toolLifecycleStatus: "completed",
+          toolData: {
+            toolCallId: "2",
+            rawInput: {
+              name: "linear_2__list_projects",
+              arguments: {},
+            },
+          },
+        }),
+      ]),
+    });
+
+    // Downstream MCP wins over the gateway chip (search + call both hit Linear).
+    expect(status?.usedThisTurn.map((server) => server.name)).toEqual(["Linear"]);
+    expect(status?.servers.find((s) => s.id === "linear-2")?.useCount).toBe(2);
+  });
+
+  it("attributes nested Toolport call_tool targets even when title is pure gateway", () => {
+    const status = deriveActivityMcpStatus({
+      mcpStatus: {
+        gatewayAvailable: true,
+        activeProfileId: "default",
+        activeProfileName: "Default",
+        servers: [
+          { id: "github", name: "GitHub", enabled: true, transport: "http" },
+          { id: "linear-2", name: "Linear", enabled: true, transport: "http" },
+        ],
+        injectionEnabled: true,
+        injectionReady: true,
+        injectionReason: "ready",
+      },
+      timelineEntries: workTimeline([
+        workEntry({
+          id: "tp-call-opaque",
+          label: "Called a tool via Toolport",
+          toolTitle: "Called a tool via Toolport",
+          itemType: "dynamic_tool_call",
+          toolLifecycleStatus: "completed",
+          toolData: {
+            toolCallId: "3",
+            rawInput: {
+              name: "linear_2__list_projects",
+              arguments: {},
+            },
+          },
+        }),
+      ]),
+    });
+
+    expect(status?.usedThisTurn.map((server) => server.name)).toEqual(["Linear"]);
+  });
+
+  it("matches Studio Preview wire ids and humanized titles", () => {
+    const status = deriveActivityMcpStatus({
+      mcpStatus: {
+        gatewayAvailable: true,
+        activeProfileId: "default",
+        activeProfileName: "Default",
+        servers: [
+          {
+            id: "toolport-studio-preview",
+            name: "Studio Preview",
+            enabled: true,
+            transport: "http",
+          },
+        ],
+        injectionEnabled: false,
+        injectionReady: false,
+        injectionReason: "disabled",
+      },
+      timelineEntries: workTimeline([
+        workEntry({
+          id: "prev",
+          label: "Called Studio Preview · preview status",
+          toolTitle: "Called Studio Preview · preview status",
+          itemType: "dynamic_tool_call",
+          toolLifecycleStatus: "completed",
+          toolData: {
+            rawInput: {},
+          },
+        }),
+      ]),
+    });
+
+    expect(status?.usedThisTurn.map((server) => server.name)).toEqual(["Studio Preview"]);
+  });
+
+  it("surfaces synthetic Toolport when only gateway meta tools ran", () => {
+    const status = deriveActivityMcpStatus({
+      mcpStatus: {
+        gatewayAvailable: true,
+        activeProfileId: "default",
+        activeProfileName: "Default",
+        servers: [{ id: "github", name: "GitHub", enabled: true, transport: "http" }],
+        injectionEnabled: true,
+        injectionReady: true,
+        injectionReason: "ready",
+      },
+      timelineEntries: workTimeline([
+        workEntry({
+          id: "status",
+          label: "Checked Toolport status",
+          toolTitle: "Checked Toolport status",
+          itemType: "dynamic_tool_call",
+          toolLifecycleStatus: "completed",
+        }),
+      ]),
+    });
+
+    expect(status?.usedThisTurn.map((server) => server.name)).toEqual(["Toolport"]);
+    expect(status?.servers.find((s) => s.id === "github")?.useCount).toBe(0);
+  });
+
+  it("surfaces inject-only status when registry has no servers", () => {
+    const status = deriveActivityMcpStatus({
+      mcpStatus: {
+        gatewayAvailable: false,
+        activeProfileId: null,
+        activeProfileName: null,
+        servers: [],
+        injectionEnabled: true,
+        injectionReady: false,
+        injectionReason: "gateway_not_found",
+      },
+      timelineEntries: [],
+    });
+    expect(status).toMatchObject({
+      injectionEnabled: true,
+      injectionReady: false,
+      injectionReason: "gateway_not_found",
+      totalServerCount: 0,
+    });
+  });
+
   it("returns null without Toolport registry status", () => {
     expect(deriveActivityMcpStatus({ mcpStatus: null, timelineEntries: [] })).toBeNull();
+  });
+
+  it("returns null when inject is off and registry is empty", () => {
+    expect(
+      deriveActivityMcpStatus({
+        mcpStatus: {
+          gatewayAvailable: false,
+          activeProfileId: null,
+          activeProfileName: null,
+          servers: [],
+          injectionEnabled: false,
+          injectionReady: false,
+          injectionReason: "disabled",
+        },
+        timelineEntries: [],
+      }),
+    ).toBeNull();
+  });
+});
+
+describe("formatActivityMcpInjectionLabel", () => {
+  it("maps inject reasons to short labels", () => {
+    expect(
+      formatActivityMcpInjectionLabel({
+        gatewayAvailable: true,
+        activeProfileName: null,
+        usedThisTurn: [],
+        servers: [],
+        totalServerCount: 0,
+        injectionEnabled: true,
+        injectionReady: true,
+        injectionReason: "ready",
+      }),
+    ).toBe("Studio inject ready");
+    expect(
+      formatActivityMcpInjectionLabel({
+        gatewayAvailable: false,
+        activeProfileName: null,
+        usedThisTurn: [],
+        servers: [],
+        totalServerCount: 0,
+        injectionEnabled: true,
+        injectionReady: false,
+        injectionReason: "gateway_not_found",
+      }),
+    ).toBe("Gateway not found");
+    expect(
+      formatActivityMcpInjectionLabel({
+        gatewayAvailable: false,
+        activeProfileName: null,
+        usedThisTurn: [],
+        servers: [],
+        totalServerCount: 0,
+        injectionEnabled: false,
+        injectionReady: false,
+        injectionReason: "disabled",
+      }),
+    ).toBe("Studio inject off");
   });
 });
 

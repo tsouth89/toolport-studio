@@ -988,10 +988,14 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
     entry.toolTitle = title;
   }
   const payloadData = asRecord(payload?.data);
-  if (itemType === "mcp_tool_call") {
-    if (payloadData?.item !== undefined) {
-      entry.toolData = payloadData.item;
-    }
+  // Codex stamps MCP as `mcp_tool_call` with `data.item.{server,tool}`.
+  // Grok/ACP stamps gateway tools as `dynamic_tool_call` with `data.rawInput`
+  // (wire name + args). Activity "used this turn" needs either shape — not
+  // shell/command payloads (those stay command/detail only).
+  if (payloadData && (itemType === "mcp_tool_call" || itemType === "dynamic_tool_call")) {
+    const item = payloadData.item;
+    entry.toolData =
+      item !== undefined && item !== null && typeof item === "object" ? item : payloadData;
   }
   if (itemType) {
     entry.itemType = itemType;
