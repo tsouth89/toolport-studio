@@ -22,7 +22,11 @@ export default defineConfig({
   },
   staged: {
     // Formatter only for now — no lint or typecheck on commit.
-    "*": "vp fmt",
+    // --no-error-on-unmatched-pattern: a commit can legitimately contain
+    // nothing formattable (a .gitignore edit, a pure deletion). Without it
+    // `vp fmt` exits non-zero on "Expected at least one target file" and
+    // blocks the commit outright.
+    "*": "vp fmt --no-error-on-unmatched-pattern",
   },
   fmt: {
     ignorePatterns: [
