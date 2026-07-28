@@ -1099,6 +1099,27 @@ describe("deriveWorkLogEntries", () => {
     );
   });
 
+  it("keeps a trailing backslash from escaping the closing quote of a formatted argv part", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "command-tool-trailing-backslash",
+        kind: "tool.completed",
+        summary: "Ran command",
+        payload: {
+          itemType: "command_execution",
+          data: {
+            item: {
+              command: ["rg", "-n", "C:\\some dir\\", "--stats"],
+            },
+          },
+        },
+      }),
+    ];
+
+    const [entry] = deriveWorkLogEntries(activities);
+    expect(entry?.command).toBe('rg -n "C:\\some dir\\\\" --stats');
+  });
+
   it("extracts command text from command detail when structured command metadata is missing", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({

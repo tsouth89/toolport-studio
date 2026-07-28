@@ -9,6 +9,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 
 import { HostProcessEnvironment, HostProcessPlatform } from "./hostProcess.ts";
+import { trimChars } from "./String.ts";
 import * as Context from "effect/Context";
 
 const PATH_CAPTURE_START = "__T3CODE_PATH_START__";
@@ -401,7 +402,7 @@ export function readEnvironmentFromWindowsShell(
 }
 
 function stripWrappingQuotes(value: string): string {
-  return value.replace(/^"+|"+$/g, "");
+  return trimChars(value, '"');
 }
 
 function pathDelimiterForPlatform(platform: NodeJS.Platform): string {

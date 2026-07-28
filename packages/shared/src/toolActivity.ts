@@ -1,4 +1,5 @@
 import type { ToolLifecycleItemType } from "@t3tools/contracts";
+import { trimTrailingChars, WHITESPACE_CHARS } from "./String.ts";
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -37,8 +38,12 @@ function stripTrailingExitCode(value: string | undefined): string | undefined {
   if (!trimmed) {
     return undefined;
   }
-  const match = /^(?<output>[\s\S]*?)(?:\s*<exited with exit code \d+>)\s*$/iu.exec(trimmed);
-  const output = match?.groups?.output?.trim() ?? trimmed;
+  // Anchored on the literal so the engine cannot retry a lazy prefix at every
+  // position, which is what made the old /^[\s\S]*?\s*<exited …>\s*$/ pattern
+  // quadratic.
+  const withoutTrailingSpace = trimTrailingChars(trimmed, WHITESPACE_CHARS);
+  const exitCode = /<exited with exit code \d+>$/iu.exec(withoutTrailingSpace);
+  const output = (exitCode ? withoutTrailingSpace.slice(0, exitCode.index) : trimmed).trim();
   return output.length > 0 ? output : undefined;
 }
 
@@ -429,10 +434,11 @@ function normalizeEquivalentValue(value: string | undefined): string | undefined
   if (!trimmed) {
     return undefined;
   }
-  return trimmed
-    .replace(/\s+/gu, " ")
-    .replace(/\s+(?:complete|completed|started)\s*$/iu, "")
-    .trim();
+  return stripStatusSuffix(trimmed.replace(/\s+/gu, " "), [
+    "completed",
+    "complete",
+    "started",
+  ]).trim();
 }
 
 function isEquivalent(left: string | undefined, right: string | undefined): boolean {
@@ -484,12 +490,65 @@ function isGenericToolTitle(value: string | undefined): boolean {
   if (!value) {
     return true;
   }
-  const normalized = value
-    .trim()
-    .toLowerCase()
-    .replace(/\s+(?:complete|completed|started|updated)\s*$/u, "")
-    .trim();
+  const normalized = stripStatusSuffix(value.trim().toLowerCase(), [
+    "completed",
+    "complete",
+    "started",
+    "updated",
+  ]).trim();
   return GENERIC_TOOL_TITLES.has(normalized);
+}
+
+/**
+ * Drops a trailing status word ("… complete", "… started") and the whitespace
+ * before it, case-insensitively.
+ *
+ * Scanned rather than matched with /\s+(?:complete|…)\s*$/, which is
+ * quadratic: on a long run of whitespace the engine retries from every
+ * position before `$` rules it out. `suffixes` must be ordered longest-first
+ * so "completed" is not truncated to "complet".
+ */
+function stripStatusSuffix(value: string, suffixes: ReadonlyArray<string>): string {
+  const trimmed = trimTrailingChars(value, WHITESPACE_CHARS);
+  const lower = trimmed.toLowerCase();
+  for (const suffix of suffixes) {
+    if (!lower.endsWith(suffix)) {
+      continue;
+    }
+    const boundary = trimmed.length - suffix.length;
+    // The old pattern required \s+ before the word, so a bare "completed" or
+    // a "task-completed" suffix was never stripped.
+    if (boundary <= 0 || !WHITESPACE_CHARS.includes(trimmed[boundary - 1]!)) {
+      continue;
+    }
+    return trimTrailingChars(trimmed.slice(0, boundary), WHITESPACE_CHARS);
+  }
+  return trimmed;
+}
+
+/**
+ * Drops a trailing instance suffix such as `_2` or `-12`.
+ *
+ * Scanned rather than matched with /[_-]+\d+$/, which is quadratic: on a long
+ * run of separators the engine retries the run at every position before `$`
+ * rules it out.
+ */
+function stripInstanceSuffix(value: string): string {
+  let digitsStart = value.length;
+  while (digitsStart > 0 && value[digitsStart - 1]! >= "0" && value[digitsStart - 1]! <= "9") {
+    digitsStart--;
+  }
+  if (digitsStart === value.length) {
+    return value;
+  }
+  let separatorStart = digitsStart;
+  while (
+    separatorStart > 0 &&
+    (value[separatorStart - 1] === "_" || value[separatorStart - 1] === "-")
+  ) {
+    separatorStart--;
+  }
+  return separatorStart === digitsStart ? value : value.slice(0, separatorStart);
 }
 
 function humanizeServerSegment(server: string): string {
@@ -498,7 +557,7 @@ function humanizeServerSegment(server: string): string {
     return trimmed;
   }
   // linear_2 / linear-2 → Linear (strip trailing instance suffixes first).
-  const withoutInstance = trimmed.replace(/[_-]+\d+$/u, "");
+  const withoutInstance = stripInstanceSuffix(trimmed);
   // Preserve already-branded registry labels (GitHub, OpenAI) — do not
   // force Titlecase that would turn GitHub into Github.
   if (

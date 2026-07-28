@@ -1372,7 +1372,16 @@ function unwrapKnownShellCommandWrapper(value: string): string {
 }
 
 function formatCommandArrayPart(value: string): string {
-  return /[\s"'`]/.test(value) ? `"${value.replace(/"/g, '\\"')}"` : value;
+  if (!/[\s"'`]/.test(value)) {
+    return value;
+  }
+  // Inside double quotes a backslash only changes meaning when it precedes a
+  // quote — including the closing one, so escaping just `"` lets a value
+  // ending in `\` render as `"a\"` and swallow the rest of the command.
+  // Doubling only those runs leaves ordinary paths like C:\Program Files\x
+  // readable instead of backslash-doubling every Windows path.
+  const escaped = value.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/, "$1$1");
+  return `"${escaped}"`;
 }
 
 function formatCommandValue(value: unknown): string | null {

@@ -54,16 +54,40 @@ function decodeHtmlEntities(input: string): string {
   );
 }
 
+/**
+ * Reduces release-note HTML/markdown to plain text for display.
+ *
+ * Entities are decoded *before* tags are stripped. Decoding last would let a
+ * note that escaped markup as `&lt;script&gt;` reassemble into a real tag
+ * after the stripper had already run, so the "plain text" result could still
+ * carry markup into whatever renders it.
+ *
+ * Tag removal runs to a fixpoint. A single pass is not enough on its own:
+ * `<[^>]*>` only matches a *closed* tag, so an unterminated `<script` would
+ * survive, and removing one span can leave its neighbours adjacent. Repeating
+ * until the string stops changing makes the result independent of how the
+ * input was chopped up. Prose comparisons like `if x < y` are left alone,
+ * because a bare `<` is only dropped when a tag name follows it.
+ */
+function stripHtmlMarkup(input: string): string {
+  let current = input;
+  for (;;) {
+    const next = current.replace(/<[^>]*>/g, "").replace(/<[/!?]?[a-zA-Z][^\s>]*/g, "");
+    if (next === current) {
+      return current;
+    }
+    current = next;
+  }
+}
+
 function stripMarkup(input: string): string {
-  return decodeHtmlEntities(
-    input
-      .replace(/<br\s*\/?>/gi, "\n")
-      .replace(/<li\b[^>]*>/gi, "\n- ")
-      .replace(/<\/(?:p|div|li|h[1-6]|ul|ol|blockquote)>/gi, "\n")
-      .replace(/<[^>]*>/g, "")
-      .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
-      .replace(/\*\*([^*]+)\*\*/g, "$1"),
-  );
+  const withLineBreaks = decodeHtmlEntities(input)
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<li\b[^>]*>/gi, "\n- ")
+    .replace(/<\/(?:p|div|li|h[1-6]|ul|ol|blockquote)>/gi, "\n");
+  return stripHtmlMarkup(withLineBreaks)
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/\*\*([^*]+)\*\*/g, "$1");
 }
 
 function truncateReleaseNoteItem(item: string): string {

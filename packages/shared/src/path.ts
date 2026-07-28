@@ -1,3 +1,5 @@
+import { trimTrailingChars } from "./String.ts";
+
 export function isWindowsDrivePath(value: string): boolean {
   return /^[a-zA-Z]:([/\\]|$)/.test(value);
 }
@@ -30,8 +32,8 @@ function trimTrailingPathSeparators(value: string): string {
     return value;
   }
   const trimmed = value.startsWith("/")
-    ? value.replace(/\/+$/g, "")
-    : value.replace(/[\\/]+$/g, "");
+    ? trimTrailingChars(value, "/")
+    : trimTrailingChars(value, "\\/");
   if (trimmed.length === 0) {
     return value;
   }

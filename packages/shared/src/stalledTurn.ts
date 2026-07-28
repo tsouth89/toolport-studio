@@ -145,15 +145,35 @@ export function formatQuietTurnNotice(
   }
   // Open-tool labels are already progressive ("Running git log"), so splice them
   // in as the verb instead of stacking "still running Running git log".
-  const progressive = /^(?<verb>[a-z]+ing)\b\s*(?<rest>.*)$/iu.exec(toolLabel);
-  const verb = progressive?.groups?.verb;
-  if (verb) {
-    const rest = progressive?.groups?.rest?.trim();
-    return rest
-      ? `Waiting · still ${verb.toLowerCase()} ${rest}`
-      : `Waiting · still ${verb.toLowerCase()}`;
+  const progressive = splitProgressiveVerb(toolLabel);
+  if (progressive) {
+    const { verb, rest } = progressive;
+    return rest ? `Waiting · still ${verb} ${rest}` : `Waiting · still ${verb}`;
   }
   return `Waiting · still running ${toolLabel}`;
+}
+
+/**
+ * Splits "Running git log" into its progressive verb and the remainder.
+ *
+ * Scanned rather than matched with /^[a-z]+ing\b\s*.*$/i, which is quadratic:
+ * on a long run of letters the engine retries the run from every position
+ * before the "ing" tail rules it out.
+ */
+function splitProgressiveVerb(label: string): { verb: string; rest: string } | null {
+  let end = 0;
+  while (end < label.length && isAsciiLetter(label[end]!)) {
+    end++;
+  }
+  const word = label.slice(0, end);
+  if (word.length <= 3 || !word.toLowerCase().endsWith("ing")) {
+    return null;
+  }
+  return { verb: word.toLowerCase(), rest: label.slice(end).trim() };
+}
+
+function isAsciiLetter(char: string): boolean {
+  return (char >= "a" && char <= "z") || (char >= "A" && char <= "Z");
 }
 
 function parseIsoToMs(value: string | null | undefined): number | null {

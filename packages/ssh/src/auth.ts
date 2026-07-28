@@ -204,14 +204,42 @@ export const buildSshChildEnvironment = Effect.fn("ssh/auth.buildSshChildEnviron
   };
 });
 
+const PERMISSION_DENIED_PREFIX = "permission denied (";
+const SSH_AUTH_METHODS = [
+  "publickey",
+  "password",
+  "keyboard-interactive",
+  "hostbased",
+  "gssapi-with-mic",
+] as const;
+
+/**
+ * Scanned rather than matched with
+ * /permission denied \((?:publickey|…)[^)]*\)/, where the alternation and
+ * `[^)]*` can both consume the method name. That ambiguity let the engine
+ * retry every split on a message repeating the prefix.
+ */
+function hasPermissionDeniedForKnownMethod(normalized: string): boolean {
+  for (let from = 0; ; ) {
+    const start = normalized.indexOf(PERMISSION_DENIED_PREFIX, from);
+    if (start < 0) {
+      return false;
+    }
+    const inner = start + PERMISSION_DENIED_PREFIX.length;
+    const close = normalized.indexOf(")", inner);
+    if (close >= 0 && SSH_AUTH_METHODS.some((method) => normalized.startsWith(method, inner))) {
+      return true;
+    }
+    from = start + 1;
+  }
+}
+
 export function isSshAuthFailure(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   const normalized = message.toLowerCase();
   return (
-    /permission denied \((?:publickey|password|keyboard-interactive|hostbased|gssapi-with-mic)[^)]*\)/u.test(
-      normalized,
-    ) ||
-    /authentication failed/u.test(normalized) ||
-    /too many authentication failures/u.test(normalized)
+    hasPermissionDeniedForKnownMethod(normalized) ||
+    normalized.includes("authentication failed") ||
+    normalized.includes("too many authentication failures")
   );
 }

@@ -24,8 +24,14 @@ const FILE_LINK_TOKEN_REGEX = /(^|\s)\[((?:\\.|[^\]\\])*)\]\(([^)\s]+)\)(?=\s)/g
 const URI_SCHEME_REGEX = /^[A-Za-z][A-Za-z0-9+.-]*:/;
 const WINDOWS_DRIVE_PATH_REGEX = /^[A-Za-z]:[\\/]/;
 // Autocomplete emits canonical file links, so ambiguous bare @scope/package text stays a package.
+//
+// The tail is `?` rather than `*` on purpose. `[^\s@"]` matches `/` itself, so
+// (?:\/[^\s@"]+)* could split the same tail at every slash — exponential
+// backtracking on a failing match. Since a slash is ordinary content for that
+// class, one greedy `/…` run accepts exactly the same strings as the repeated
+// group, with no ambiguity to explore.
 const SCOPED_PACKAGE_REFERENCE_REGEX =
-  /^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*(?:\/[^\s@"]+)*$/;
+  /^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*(?:\/[^\s@"]+)?$/;
 
 function collectMentionTokens(text: string): ComposerInlineToken[] {
   const matches: ComposerInlineToken[] = [];

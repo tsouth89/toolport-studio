@@ -6,6 +6,11 @@ on:
     branches:
       - main
 
+# Every job here only reads the repo to build and test it. Setting this at the
+# top level means a new job cannot silently inherit a write-capable token.
+permissions:
+  contents: read
+
 jobs:
   check:
     name: Check
