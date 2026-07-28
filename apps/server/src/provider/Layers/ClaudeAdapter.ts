@@ -275,6 +275,7 @@ const CLAUDE_PENDING_USER_INPUT_TIMEOUT_MS = 5 * 60_000;
  */
 const sleepWallClock = (ms: number): Effect.Effect<void> =>
   Effect.callback<void>((resume) => {
+    // @effect-diagnostics-next-line globalTimersInEffect:off - deliberate wall-clock bypass.
     const handle = setTimeout(() => {
       resume(Effect.void);
     }, ms);
@@ -2280,8 +2281,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           providerItemId: tool.itemId,
         }),
         raw: {
-          source: forceCloseOpenTools ? OPEN_TOOL_FORCE_CLOSE_SOURCE : "claude.sdk.message",
-          method: forceCloseOpenTools ? "claude/interrupt" : "claude/result",
+          // `source` names the provider wire protocol, so the Studio force-close
+          // marker travels in `method` (matching CodexAdapter) rather than here.
+          source: "claude.sdk.message",
+          method: forceCloseOpenTools ? OPEN_TOOL_FORCE_CLOSE_SOURCE : "claude/result",
           payload: result ?? { status },
         },
       });

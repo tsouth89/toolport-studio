@@ -219,8 +219,8 @@ export function classifyProviderEmittedFailure(text: string): ProviderEmittedFai
 export function formatProviderEmittedFailureMessage(
   failure: ProviderEmittedFailure,
   context?: {
-    readonly providerLabel?: string;
-    readonly model?: string;
+    readonly providerLabel?: string | undefined;
+    readonly model?: string | undefined;
   },
 ): string {
   const bits = [failure.message];

@@ -187,7 +187,7 @@ export function isGrokLongRunningToolKind(kind: string | undefined): boolean {
  */
 export function resolveGrokOpenToolWatchdogMs(input: {
   readonly openToolKinds: ReadonlyArray<string | undefined>;
-  readonly thresholds?: Partial<GrokSilentTurnWatchdogConfig>;
+  readonly thresholds?: Partial<GrokSilentTurnWatchdogConfig> | undefined;
 }): number {
   const openToolMs = input.thresholds?.openToolMs ?? GROK_SILENT_OPEN_TOOL_WATCHDOG_MS;
   const openExecuteToolMs =
@@ -363,8 +363,8 @@ export function formatGrokSilentTurnWorkSummary(
 export function buildGrokSilentTurnStopMessage(input: {
   readonly silentTurnKind: Exclude<GrokSilentTurnKind, null>;
   readonly silentMs: number;
-  readonly toolLabel?: string;
-  readonly completedToolTitles?: ReadonlyArray<string>;
+  readonly toolLabel?: string | undefined;
+  readonly completedToolTitles?: ReadonlyArray<string> | undefined;
 }): string {
   const toolLabel = input.toolLabel?.trim() || "a tool";
   const seconds = Math.max(1, Math.round(input.silentMs / 1000));
@@ -885,8 +885,8 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             Effect.catch((error) =>
               Deferred.fail(
                 pending.result,
-                error instanceof ProviderAdapterRequestError ||
-                  error instanceof ProviderAdapterValidationError
+                error._tag === "ProviderAdapterRequestError" ||
+                  error._tag === "ProviderAdapterValidationError"
                   ? error
                   : queuedTurnCancelledError(),
               ),

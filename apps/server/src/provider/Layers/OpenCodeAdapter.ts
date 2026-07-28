@@ -265,7 +265,9 @@ interface OpenCodeSessionContext {
 function openCodeMcpConfigFromBinding(binding: McpProviderSession.McpProviderBinding):
   | {
       readonly type: "local";
-      readonly command: ReadonlyArray<string>;
+      // Freshly built per call, and the OpenCode SDK's McpLocalConfig takes a
+      // mutable array, so this must not be a ReadonlyArray.
+      readonly command: string[];
       readonly environment: Record<string, string>;
     }
   | {
@@ -1657,7 +1659,7 @@ export function makeOpenCodeAdapter(
       const context = yield* ensureSessionContext(sessions, input.threadId);
       // Toolport MCP is fixed at session start for local servers; rebind before
       // the next prompt so Settings toggles apply without a new thread.
-      yield* rebindOpenCodeToolportMcpIfNeeded(context);
+      yield* rebindOpenCodeToolportMcpIfNeeded(context).pipe(Effect.mapError(toRequestError));
       // A sendTurn while a turn is active is a steer: OpenCode queues the
       // prompt into the busy session and the work continues as one turn, so
       // the active turn id is reused instead of opening a new turn.

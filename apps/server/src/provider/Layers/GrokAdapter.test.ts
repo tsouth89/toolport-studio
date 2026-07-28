@@ -1114,7 +1114,7 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
           ),
           Effect.andThen(
             event.type === "item.updated" &&
-              (event.payload.status === "inProgress" || event.payload.status === "pending") &&
+              event.payload.status === "inProgress" &&
               String(event.threadId) === String(threadId)
               ? Deferred.succeed(toolOpened, undefined).pipe(Effect.ignore, Effect.asVoid)
               : Effect.void,
@@ -1224,7 +1224,7 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
         }).pipe(
           Effect.andThen(
             event.type === "item.updated" &&
-              (event.payload.status === "inProgress" || event.payload.status === "pending") &&
+              event.payload.status === "inProgress" &&
               String(event.threadId) === String(threadId)
               ? Deferred.succeed(toolOpened, undefined).pipe(Effect.ignore, Effect.asVoid)
               : Effect.void,
@@ -1409,7 +1409,7 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
             return;
           }
           runtimeEvents.push(event);
-          if (event.type === "turn.started") {
+          if (event.type === "turn.started" && event.turnId !== undefined) {
             yield* Deferred.succeed(firstTurnStarted, event.turnId).pipe(Effect.ignore);
           }
           if (event.type === "turn.completed") {
@@ -1794,7 +1794,7 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
       yield* Fiber.join(sendTurnFiber).pipe(Effect.timeout("5 seconds"), Effect.ignore);
       // Mock emits the late update shortly after cancel; give the notification
       // consumer a beat to drop it.
-      yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 300)));
+      yield* Effect.sleep("300 millis");
       for (let yieldAttempt = 0; yieldAttempt < 8; yieldAttempt += 1) {
         yield* Effect.yieldNow;
       }

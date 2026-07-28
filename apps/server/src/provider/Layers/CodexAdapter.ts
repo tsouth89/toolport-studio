@@ -1537,6 +1537,9 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
   const forceCloseCodexOpenTools = (
     session: CodexAdapterSessionContext,
     turnId: string | undefined,
+    // Force-closes are emitted just before the terminal turn event, so they
+    // share its timestamp rather than reading a wall clock outside Effect.
+    createdAt: string,
   ): ReadonlyArray<ProviderRuntimeEvent> => {
     if (!shouldForceCloseRemainingOpenToolsOnSettle(session.openTools.size)) {
       session.openTools.clear();
@@ -1545,7 +1548,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     const stampBase = {
       provider: PROVIDER,
       threadId: session.threadId,
-      createdAt: new Date().toISOString(),
+      createdAt,
     };
     const open = [...session.openTools.values()].filter(
       (tool) => turnId === undefined || tool.turnId === undefined || tool.turnId === turnId,
@@ -1603,6 +1606,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           ...forceCloseCodexOpenTools(
             session,
             runtimeEvent.turnId ? String(runtimeEvent.turnId) : undefined,
+            runtimeEvent.createdAt,
           ),
         );
       }

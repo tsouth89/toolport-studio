@@ -42,7 +42,7 @@ describe("StopPolicy", () => {
       ...base,
       type: "turn.aborted",
       turnId: "turn-1" as never,
-      payload: {},
+      payload: { reason: "cancelled" },
     } as ProviderRuntimeEvent;
     expect(isTurnTerminalRuntimeEvent(completed)).toBe(true);
     expect(isTurnTerminalRuntimeEvent(aborted)).toBe(true);

@@ -133,6 +133,7 @@ describe("AcpCoreRuntimeEvents", () => {
           toolCallId: "tool-untitled",
           kind: "read",
           status: "inProgress",
+          data: {},
         },
         rawPayload: { sessionId: "session-1" },
       }),

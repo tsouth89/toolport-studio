@@ -179,6 +179,7 @@ function assertMissing(path: string, message: string): void {
 }
 
 function toBashPath(path: string): string {
+  // oxlint-disable-next-line t3code/no-global-process-runtime
   if (process.platform === "win32") {
     try {
       const bashWorkingDirectory = NodeChildProcess.execFileSync("bash", ["-lc", "pwd"], {

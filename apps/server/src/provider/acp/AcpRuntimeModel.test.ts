@@ -263,7 +263,7 @@ describe("AcpRuntimeModel", () => {
         toolCallId: "tool-build",
         title: "run_terminal_command",
         kind: "execute",
-        status: "inProgress",
+        status: "in_progress",
         rawInput: { command: "cargo run --manifest-path rust/Cargo.toml" },
       },
     } satisfies EffectAcpSchema.SessionNotification);

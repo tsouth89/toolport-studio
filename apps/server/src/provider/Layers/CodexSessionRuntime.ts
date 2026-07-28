@@ -1679,7 +1679,7 @@ export const makeCodexSessionRuntime = (
 
           if (!effectiveTurnId) {
             // Still force ready if session is stuck running without a turn id.
-            if (session.status === "running" || session.status === "starting") {
+            if (session.status === "running") {
               yield* updateSession(sessionRef, {
                 status: "ready",
                 activeTurnId: undefined,

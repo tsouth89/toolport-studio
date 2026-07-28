@@ -3356,13 +3356,11 @@ describe("ClaudeAdapterLive", () => {
         },
       );
 
-      const permissionResult = yield* Effect.promise(() =>
-        Promise.race([
-          permissionPromise,
-          new Promise<never>((_, reject) => {
-            setTimeout(() => reject(new Error("approval timeout did not fire within 3s")), 3_000);
-          }),
-        ]),
+      const permissionResult = yield* Effect.promise(() => permissionPromise).pipe(
+        Effect.timeoutOrElse({
+          duration: "3 seconds",
+          orElse: () => Effect.die(new Error("approval timeout did not fire within 3s")),
+        }),
       );
       assert.deepEqual(permissionResult, {
         behavior: "deny",
@@ -3370,7 +3368,7 @@ describe("ClaudeAdapterLive", () => {
       } satisfies PermissionResult);
 
       // Allow the event collector fiber to observe terminal events.
-      yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 50)));
+      yield* Effect.sleep("50 millis");
 
       assert.isTrue(
         runtimeEvents.some((event) => event.type === "request.opened"),
@@ -4493,20 +4491,18 @@ describe("ClaudeAdapterLive", () => {
         },
       );
 
-      const permissionResult = yield* Effect.promise(() =>
-        Promise.race([
-          permissionPromise,
-          new Promise<never>((_, reject) => {
-            setTimeout(() => reject(new Error("user-input timeout did not fire within 3s")), 3_000);
-          }),
-        ]),
+      const permissionResult = yield* Effect.promise(() => permissionPromise).pipe(
+        Effect.timeoutOrElse({
+          duration: "3 seconds",
+          orElse: () => Effect.die(new Error("user-input timeout did not fire within 3s")),
+        }),
       );
       assert.deepEqual(permissionResult, {
         behavior: "deny",
         message: "User cancelled tool execution.",
       } satisfies PermissionResult);
 
-      yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 50)));
+      yield* Effect.sleep("50 millis");
 
       assert.isTrue(
         runtimeEvents.some((event) => event.type === "user-input.requested"),

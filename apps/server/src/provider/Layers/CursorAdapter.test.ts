@@ -14,6 +14,7 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { createModelSelection } from "@t3tools/shared/model";
 
 import {
@@ -122,18 +123,29 @@ async function readJsonLines(filePath: string) {
     .map((line) => JSON.parse(line) as Record<string, unknown>);
 }
 
-async function waitForFileContent(filePath: string, attempts = 40) {
+/**
+ * Poll until the exit log satisfies `isReady`. Callers that expect several
+ * signals must say so: the mock writes one line per killed process, so a
+ * "file is non-empty" check returns after the first and races the rest.
+ */
+async function waitForFileContent(
+  filePath: string,
+  isReady: (raw: string) => boolean = (raw) => raw.trim().length > 0,
+  attempts = 200,
+) {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
       const raw = await NodeFSP.readFile(filePath, "utf8");
-      if (raw.trim().length > 0) {
+      if (isReady(raw)) {
         return raw;
       }
     } catch {}
-    await Effect.runPromise(Effect.yieldNow);
+    await Effect.runPromise(Effect.sleep("10 millis"));
   }
   throw new Error(`Timed out waiting for file content at ${filePath}`);
 }
+
+const countSigterms = (raw: string) => raw.match(/SIGTERM/g)?.length ?? 0;
 
 function waitForJsonLogMatch(
   filePath: string,
@@ -437,7 +449,7 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
 
       // Windows process kill often terminates without delivering SIGTERM handlers,
       // so only assert the exit log on Unix where the mock can record SIGTERM.
-      if (process.platform !== "win32") {
+      if ((yield* HostProcessPlatform) !== "win32") {
         const exitLog = yield* Effect.promise(() => waitForFileContent(exitLogPath));
         assert.include(exitLog, "SIGTERM");
       }
@@ -493,9 +505,13 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
 
         yield* adapter.stopSession(threadId);
 
-        if (process.platform !== "win32") {
-          const exitLog = yield* Effect.promise(() => waitForFileContent(exitLogPath));
-          assert.equal(exitLog.match(/SIGTERM/g)?.length ?? 0, 2);
+        if ((yield* HostProcessPlatform) !== "win32") {
+          // Both the replaced session and the surviving one must be torn down,
+          // so wait for the second SIGTERM instead of the first write landing.
+          const exitLog = yield* Effect.promise(() =>
+            waitForFileContent(exitLogPath, (raw) => countSigterms(raw) >= 2),
+          );
+          assert.equal(countSigterms(exitLog), 2);
         }
         const sessions = yield* adapter.listSessions();
         assert.isUndefined(sessions.find((session) => session.threadId === threadId));

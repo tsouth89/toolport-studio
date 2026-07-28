@@ -3591,13 +3591,19 @@ describe("ProviderRuntimeIngestion", () => {
       },
     });
 
+    // Wait for the *second* delta to land, not merely for a reasoning activity
+    // to exist: throttling can flush delta 1 on its own, and returning there
+    // races the upsert that appends delta 2.
     const thread = await waitForThread(harness.readModel, (entry) =>
       entry.activities.some(
         (activity: ProviderRuntimeTestActivity) =>
           activity.kind === "task.progress" &&
           typeof activity.payload === "object" &&
           activity.payload !== null &&
-          (activity.payload as { source?: unknown }).source === "provider.reasoning",
+          (activity.payload as { source?: unknown }).source === "provider.reasoning" &&
+          String((activity.payload as { detail?: unknown }).detail ?? "").includes(
+            "inspect GrokAdapter",
+          ),
       ),
     );
 

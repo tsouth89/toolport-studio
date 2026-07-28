@@ -66,7 +66,7 @@ describe("buildInitialGrokProviderSnapshot", () => {
       const snapshot = yield* buildInitialGrokProviderSnapshot(decodeGrokSettings({}));
       const model = snapshot.models.find((entry) => entry.slug === "grok-build");
       expect(model).toBeDefined();
-      const reasoning = model?.capabilities.optionDescriptors.find(
+      const reasoning = model?.capabilities?.optionDescriptors?.find(
         (descriptor) => descriptor.id === "reasoning" && descriptor.type === "select",
       );
       expect(reasoning?.type).toBe("select");
