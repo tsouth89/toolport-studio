@@ -9,6 +9,7 @@ import type {
 import * as Arr from "effect/Array";
 import * as Result from "effect/Result";
 import { detectSourceControlProviderFromRemoteUrl } from "./sourceControl.ts";
+import { trimChars, trimTrailingChars, WHITESPACE_CHARS } from "./String.ts";
 
 export const WORKTREE_BRANCH_PREFIX = "t3code";
 // Canonical form is `t3code/<8 hex>`. Older mobile builds generated `t3code/<uuid>`
@@ -24,19 +25,25 @@ const TEMP_WORKTREE_BRANCH_PATTERN = new RegExp(
  * Strips quotes, collapses separators, limits to 64 chars.
  */
 export function sanitizeBranchFragment(raw: string): string {
-  const normalized = raw
-    .trim()
-    .toLowerCase()
-    .replace(/['"`]/g, "")
-    .replace(/^[./\s_-]+|[./\s_-]+$/g, "");
+  // Edge trimming goes through trimChars rather than /[…]+$/ regexes, which
+  // are quadratic on a long run of the trimmed characters. Ordinary ASCII
+  // whitespace is listed explicitly; anything more exotic survives to the
+  // [^a-z0-9/_-] pass below, becomes "-", and is trimmed with the rest.
+  const normalized = trimChars(
+    raw.trim().toLowerCase().replace(/['"`]/g, ""),
+    `./_- ${WHITESPACE_CHARS}`,
+  );
 
-  const branchFragment = normalized
-    .replace(/[^a-z0-9/_-]+/g, "-")
-    .replace(/\/+/g, "/")
-    .replace(/-+/g, "-")
-    .replace(/^[./_-]+|[./_-]+$/g, "")
-    .slice(0, 64)
-    .replace(/[./_-]+$/g, "");
+  const branchFragment = trimTrailingChars(
+    trimChars(
+      normalized
+        .replace(/[^a-z0-9/_-]+/g, "-")
+        .replace(/\/+/g, "/")
+        .replace(/-+/g, "-"),
+      "./_-",
+    ).slice(0, 64),
+    "./_-",
+  );
 
   return branchFragment.length > 0 ? branchFragment : "update";
 }
@@ -112,9 +119,7 @@ export function isTemporaryWorktreeBranch(refName: string): boolean {
  * Normalize a git remote URL into a stable comparison key.
  */
 export function normalizeGitRemoteUrl(value: string): string {
-  const normalized = value
-    .trim()
-    .replace(/\/+$/g, "")
+  const normalized = trimTrailingChars(value.trim(), "/")
     .replace(/\.git$/i, "")
     .toLowerCase();
 

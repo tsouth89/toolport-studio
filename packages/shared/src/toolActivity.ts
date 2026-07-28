@@ -492,13 +492,38 @@ function isGenericToolTitle(value: string | undefined): boolean {
   return GENERIC_TOOL_TITLES.has(normalized);
 }
 
+/**
+ * Drops a trailing instance suffix such as `_2` or `-12`.
+ *
+ * Scanned rather than matched with /[_-]+\d+$/, which is quadratic: on a long
+ * run of separators the engine retries the run at every position before `$`
+ * rules it out.
+ */
+function stripInstanceSuffix(value: string): string {
+  let digitsStart = value.length;
+  while (digitsStart > 0 && value[digitsStart - 1]! >= "0" && value[digitsStart - 1]! <= "9") {
+    digitsStart--;
+  }
+  if (digitsStart === value.length) {
+    return value;
+  }
+  let separatorStart = digitsStart;
+  while (
+    separatorStart > 0 &&
+    (value[separatorStart - 1] === "_" || value[separatorStart - 1] === "-")
+  ) {
+    separatorStart--;
+  }
+  return separatorStart === digitsStart ? value : value.slice(0, separatorStart);
+}
+
 function humanizeServerSegment(server: string): string {
   const trimmed = server.trim();
   if (trimmed.length === 0) {
     return trimmed;
   }
   // linear_2 / linear-2 → Linear (strip trailing instance suffixes first).
-  const withoutInstance = trimmed.replace(/[_-]+\d+$/u, "");
+  const withoutInstance = stripInstanceSuffix(trimmed);
   // Preserve already-branded registry labels (GitHub, OpenAI) — do not
   // force Titlecase that would turn GitHub into Github.
   if (
