@@ -329,7 +329,9 @@ function selectRecentActivitySteps(
   workspaceRoot?: string | null,
 ): ThreadActivityStep[] {
   const milestones = workEntries.filter(isActivityRecentMilestone);
-  const steps = milestones.map((entry) => toActivityStep(entry, { turnActive, workspaceRoot }));
+  const steps = milestones.map((entry) =>
+    toActivityStep(entry, { turnActive, workspaceRoot: workspaceRoot ?? null }),
+  );
   const collapsed = collapseConsecutiveActivitySteps(steps);
   if (collapsed.length <= MAX_RECENT_STEPS) {
     return collapsed;
