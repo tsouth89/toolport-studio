@@ -135,7 +135,7 @@ function resolveSpawnExecutableWithNode(
 }
 
 export const SpawnExecutableResolution = Context.Reference<SpawnExecutableResolver>(
-  "@t3tools/shared/shell/SpawnExecutableResolution",
+  "@toolport-studio/shared/shell/SpawnExecutableResolution",
   {
     defaultValue: () => resolveSpawnExecutableWithNode,
   },
@@ -334,14 +334,14 @@ export type WindowsShellEnvironmentReader = (
 ) => Partial<Record<string, string>>;
 
 export const WindowsShellEnvironment = Context.Reference<WindowsShellEnvironmentReader>(
-  "@t3tools/shared/shell/WindowsShellEnvironment",
+  "@toolport-studio/shared/shell/WindowsShellEnvironment",
   {
     defaultValue: () => readEnvironmentFromWindowsShell,
   },
 );
 
 export const CommandAvailability = Context.Reference<CommandAvailabilityChecker>(
-  "@t3tools/shared/shell/CommandAvailability",
+  "@toolport-studio/shared/shell/CommandAvailability",
   {
     defaultValue: () => isCommandAvailable,
   },

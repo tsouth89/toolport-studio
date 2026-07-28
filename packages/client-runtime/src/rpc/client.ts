@@ -1,4 +1,4 @@
-import { ORCHESTRATION_WS_METHODS, WS_METHODS } from "@t3tools/contracts";
+import { ORCHESTRATION_WS_METHODS, WS_METHODS } from "@toolport-studio/contracts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import type * as Duration from "effect/Duration";
@@ -30,7 +30,7 @@ export class EnvironmentRpcRequestObserver extends Context.Reference<{
   readonly observe: (
     request: EnvironmentRpcRequestObservation,
   ) => Effect.Effect<Effect.Effect<void>>;
-}>("@t3tools/client-runtime/rpc/EnvironmentRpcRequestObserver", {
+}>("@toolport-studio/client-runtime/rpc/EnvironmentRpcRequestObserver", {
   defaultValue: () => ({
     observe: () => Effect.succeed(Effect.void),
   }),

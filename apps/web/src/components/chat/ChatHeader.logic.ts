@@ -1,4 +1,4 @@
-import type { EnvironmentId } from "@t3tools/contracts";
+import type { EnvironmentId } from "@toolport-studio/contracts";
 
 export function shouldShowOpenInPicker(input: {
   readonly activeProjectName: string | undefined;

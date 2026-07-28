@@ -20,8 +20,8 @@ import {
   type RuntimeMode,
   ThreadId,
   ProviderInstanceId,
-} from "@t3tools/contracts";
-import { createModelSelection } from "@t3tools/shared/model";
+} from "@toolport-studio/contracts";
+import { createModelSelection } from "@toolport-studio/shared/model";
 import { assert, describe, it } from "@effect/vitest";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";

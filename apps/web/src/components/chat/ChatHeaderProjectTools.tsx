@@ -2,14 +2,14 @@
  * Single header overflow for IDE/scripts/git chrome so the chat title stays
  * primary. Agent loop chrome (Working / This turn) lives in the timeline.
  */
-import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { scopeThreadRef } from "@toolport-studio/client-runtime/environment";
 import type {
   EditorId,
   EnvironmentId,
   ProjectScript,
   ResolvedKeybindingsConfig,
   ThreadId,
-} from "@t3tools/contracts";
+} from "@toolport-studio/contracts";
 import { MoreHorizontalIcon } from "lucide-react";
 import { memo } from "react";
 

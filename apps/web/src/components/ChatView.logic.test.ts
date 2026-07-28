@@ -5,7 +5,7 @@ import {
   ProviderInstanceId,
   ThreadId,
   TurnId,
-} from "@t3tools/contracts";
+} from "@toolport-studio/contracts";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import type { Thread } from "../types";

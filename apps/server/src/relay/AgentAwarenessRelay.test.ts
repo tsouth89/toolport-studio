@@ -11,14 +11,14 @@ import type {
   ProjectId,
   ThreadId,
   TurnId,
-} from "@t3tools/contracts";
+} from "@toolport-studio/contracts";
 import type {
   RelayAgentActivityPublishProofPayload,
   RelayAgentActivityState,
-} from "@t3tools/contracts/relay";
-import { CommandId, ProviderInstanceId } from "@t3tools/contracts";
-import { RelayClientTracer } from "@t3tools/shared/relayTracing";
-import { RELAY_ACTIVITY_PUBLISH_TYP, verifyRelayJwt } from "@t3tools/shared/relayJwt";
+} from "@toolport-studio/contracts/relay";
+import { CommandId, ProviderInstanceId } from "@toolport-studio/contracts";
+import { RelayClientTracer } from "@toolport-studio/shared/relayTracing";
+import { RELAY_ACTIVITY_PUBLISH_TYP, verifyRelayJwt } from "@toolport-studio/shared/relayJwt";
 import { describe, expect, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";

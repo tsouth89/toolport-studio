@@ -9,8 +9,8 @@ import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
-import { SpawnExecutableResolution } from "@t3tools/shared/shell";
+import { HostProcessPlatform } from "@toolport-studio/shared/hostProcess";
+import { SpawnExecutableResolution } from "@toolport-studio/shared/shell";
 import * as ExternalLauncher from "./externalLauncher.ts";
 
 function makeMockDetachedHandle(onUnref: () => void = () => undefined) {

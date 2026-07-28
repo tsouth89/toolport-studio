@@ -1,5 +1,5 @@
-import type { ContextMenuItem, PreviewSessionSnapshot } from "@t3tools/contracts";
-import { getTerminalLabel } from "@t3tools/shared/terminalLabels";
+import type { ContextMenuItem, PreviewSessionSnapshot } from "@toolport-studio/contracts";
+import { getTerminalLabel } from "@toolport-studio/shared/terminalLabels";
 import {
   Activity,
   ClipboardList,

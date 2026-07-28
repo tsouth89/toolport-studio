@@ -1,9 +1,9 @@
-import type { ScopedProjectRef } from "@t3tools/contracts";
-import { scopedProjectKey, scopeProjectRef } from "@t3tools/client-runtime/environment";
+import type { ScopedProjectRef } from "@toolport-studio/contracts";
+import { scopedProjectKey, scopeProjectRef } from "@toolport-studio/client-runtime/environment";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
-} from "@t3tools/client-runtime/state/runtime";
+} from "@toolport-studio/client-runtime/state/runtime";
 import { useParams } from "@tanstack/react-router";
 import { FolderPlusIcon } from "lucide-react";
 import { useCallback, useMemo } from "react";

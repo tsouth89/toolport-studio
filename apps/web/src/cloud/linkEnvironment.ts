@@ -14,18 +14,18 @@ import {
   EnvironmentHttpUnauthorizedError,
   EnvironmentId,
   WS_METHODS,
-} from "@t3tools/contracts";
+} from "@toolport-studio/contracts";
 import {
   type RelayClientDeviceRecord,
   type RelayClientEnvironmentRecord,
   type RelayEnvironmentLinkResponse,
   type RelayProtectedError as RelayProtectedErrorType,
   type RelayManagedEndpointProviderKind,
-} from "@t3tools/contracts/relay";
-import { EnvironmentRegistry } from "@t3tools/client-runtime/connection";
-import { request, runStream } from "@t3tools/client-runtime/rpc";
-import { makeEnvironmentHttpApiClient } from "@t3tools/client-runtime/rpc";
-import { ManagedRelay } from "@t3tools/client-runtime/relay";
+} from "@toolport-studio/contracts/relay";
+import { EnvironmentRegistry } from "@toolport-studio/client-runtime/connection";
+import { request, runStream } from "@toolport-studio/client-runtime/rpc";
+import { makeEnvironmentHttpApiClient } from "@toolport-studio/client-runtime/rpc";
+import { ManagedRelay } from "@toolport-studio/client-runtime/relay";
 
 import {
   readPrimaryEnvironmentDescriptor,

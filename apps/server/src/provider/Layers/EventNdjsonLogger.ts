@@ -9,9 +9,9 @@
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 
-import type { ThreadId } from "@t3tools/contracts";
-import { RotatingFileSink } from "@t3tools/shared/logging";
-import { errorTag } from "@t3tools/shared/observability";
+import type { ThreadId } from "@toolport-studio/contracts";
+import { RotatingFileSink } from "@toolport-studio/shared/logging";
+import { errorTag } from "@toolport-studio/shared/observability";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Logger from "effect/Logger";

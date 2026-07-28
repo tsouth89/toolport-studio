@@ -1,6 +1,6 @@
 "use client";
 
-import type { DesktopPreviewPointerEvent } from "@t3tools/contracts";
+import type { DesktopPreviewPointerEvent } from "@toolport-studio/contracts";
 import { MousePointer2 } from "lucide-react";
 import { useEffect, useState } from "react";
 

@@ -8,8 +8,8 @@ import {
   ProviderInstanceId,
   ThreadId,
   TurnId,
-} from "@t3tools/contracts";
-import type { OrchestrationThread } from "@t3tools/contracts";
+} from "@toolport-studio/contracts";
+import type { OrchestrationThread } from "@toolport-studio/contracts";
 
 import { applyThreadDetailEvent } from "./threadReducer.ts";
 

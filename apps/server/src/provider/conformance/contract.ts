@@ -20,7 +20,7 @@
 import type * as Effect from "effect/Effect";
 import type * as Scope from "effect/Scope";
 
-import type { ProviderRuntimeEvent, ThreadId } from "@t3tools/contracts";
+import type { ProviderRuntimeEvent, ThreadId } from "@toolport-studio/contracts";
 
 import * as Schema from "effect/Schema";
 

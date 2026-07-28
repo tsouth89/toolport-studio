@@ -1,5 +1,5 @@
-import { scopeProjectRef } from "@t3tools/client-runtime/environment";
-import type { EnvironmentId, ProjectId, ScopedProjectRef } from "@t3tools/contracts";
+import { scopeProjectRef } from "@toolport-studio/client-runtime/environment";
+import type { EnvironmentId, ProjectId, ScopedProjectRef } from "@toolport-studio/contracts";
 import type { DraftThreadEnvMode } from "../composerDraftStore";
 
 interface ThreadContextLike {

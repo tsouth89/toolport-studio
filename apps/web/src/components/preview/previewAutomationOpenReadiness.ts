@@ -1,4 +1,7 @@
-import type { PreviewAutomationOpenInput, PreviewSessionSnapshot } from "@t3tools/contracts";
+import type {
+  PreviewAutomationOpenInput,
+  PreviewSessionSnapshot,
+} from "@toolport-studio/contracts";
 
 export function previewAutomationOpenNeedsOverlay(
   input: PreviewAutomationOpenInput,

@@ -1,4 +1,4 @@
-import { ProjectId, ThreadId } from "@t3tools/contracts";
+import { ProjectId, ThreadId } from "@toolport-studio/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import {

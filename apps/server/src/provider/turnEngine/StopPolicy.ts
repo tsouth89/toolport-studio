@@ -5,7 +5,7 @@
  * are force-closed is a product decision that lives here, not per-adapter.
  */
 
-import type { ProviderRuntimeEvent } from "@t3tools/contracts";
+import type { ProviderRuntimeEvent } from "@toolport-studio/contracts";
 
 /** Stop tears down the turn; open tools should not block settlement. */
 export function shouldForceCloseOpenToolsOnStop(): boolean {

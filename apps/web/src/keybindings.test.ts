@@ -5,7 +5,7 @@ import {
   type KeybindingShortcut,
   type KeybindingWhenNode,
   type ResolvedKeybindingsConfig,
-} from "@t3tools/contracts";
+} from "@toolport-studio/contracts";
 import {
   formatShortcutLabel,
   isChatNewShortcut,

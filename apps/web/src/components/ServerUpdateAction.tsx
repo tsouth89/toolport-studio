@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import type { EnvironmentId, ServerSelfUpdateCapability } from "@t3tools/contracts";
+import type { EnvironmentId, ServerSelfUpdateCapability } from "@toolport-studio/contracts";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
-} from "@t3tools/client-runtime/state/runtime";
+} from "@toolport-studio/client-runtime/state/runtime";
 
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { serverEnvironment } from "~/state/server";

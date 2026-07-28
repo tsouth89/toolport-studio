@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-import type { PreviewAnnotationPayload, ThreadId } from "@t3tools/contracts";
+import type { PreviewAnnotationPayload, ThreadId } from "@toolport-studio/contracts";
 
 import type { ComposerImageAttachment } from "./composerDraftStore";
 import type { ElementContextDraft } from "./lib/elementContext";

@@ -1,5 +1,9 @@
-import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
-import { type EnvironmentId, type PreviewSessionSnapshot, ThreadId } from "@t3tools/contracts";
+import { scopedThreadKey, scopeThreadRef } from "@toolport-studio/client-runtime/environment";
+import {
+  type EnvironmentId,
+  type PreviewSessionSnapshot,
+  ThreadId,
+} from "@toolport-studio/contracts";
 import { beforeEach, describe, expect, it } from "vite-plus/test";
 
 import {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
-import type { ProviderRuntimeEvent } from "@t3tools/contracts";
+import type { ProviderRuntimeEvent } from "@toolport-studio/contracts";
 
 import {
   isPendingInteractionRuntimeEvent,

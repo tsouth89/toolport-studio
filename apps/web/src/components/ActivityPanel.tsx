@@ -1,4 +1,4 @@
-import type { TurnId } from "@t3tools/contracts";
+import type { TurnId } from "@toolport-studio/contracts";
 import {
   Activity,
   AlertTriangle,
@@ -11,7 +11,7 @@ import {
 } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 
-import { formatMcpServerDisplayName } from "@t3tools/shared/toolActivity";
+import { formatMcpServerDisplayName } from "@toolport-studio/shared/toolActivity";
 import { formatDuration } from "../session-logic";
 import {
   formatActivityMcpInjectionLabel,

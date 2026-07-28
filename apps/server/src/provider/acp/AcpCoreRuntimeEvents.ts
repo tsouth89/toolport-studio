@@ -12,7 +12,7 @@ import {
   type ThreadTokenUsageSnapshot,
   type ToolLifecycleItemType,
   type TurnId,
-} from "@t3tools/contracts";
+} from "@toolport-studio/contracts";
 
 import type { AcpPermissionRequest, AcpPlanUpdate, AcpToolCallState } from "./AcpRuntimeModel.ts";
 

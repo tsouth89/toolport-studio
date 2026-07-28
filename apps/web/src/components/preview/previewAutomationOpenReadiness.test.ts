@@ -1,4 +1,7 @@
-import type { PreviewAutomationOpenInput, PreviewSessionSnapshot } from "@t3tools/contracts";
+import type {
+  PreviewAutomationOpenInput,
+  PreviewSessionSnapshot,
+} from "@toolport-studio/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import { previewAutomationOpenNeedsOverlay } from "./previewAutomationOpenReadiness";

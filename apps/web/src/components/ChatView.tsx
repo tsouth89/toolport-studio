@@ -21,28 +21,31 @@ import {
   ProviderDriverKind,
   RuntimeMode,
   TerminalOpenInput,
-} from "@t3tools/contracts";
+} from "@toolport-studio/contracts";
 import {
   connectionStatusTitle,
   type EnvironmentConnectionPresentation,
-} from "@t3tools/client-runtime/connection";
+} from "@toolport-studio/client-runtime/connection";
 
 import {
   parseScopedThreadKey,
   scopedThreadKey,
   scopeProjectRef,
   scopeThreadRef,
-} from "@t3tools/client-runtime/environment";
+} from "@toolport-studio/client-runtime/environment";
 import {
   applyClaudePromptEffortPrefix,
   createModelSelection,
   resolvePromptInjectedEffort,
-} from "@t3tools/shared/model";
-import { CHAT_LIST_ANCHOR_OFFSET } from "@t3tools/shared/chatList";
-import { projectScriptCwd, projectScriptRuntimeEnv } from "@t3tools/shared/projectScripts";
-import { resolveLiveStreamActivityAt } from "@t3tools/shared/stalledTurn";
-import { truncate } from "@t3tools/shared/String";
-import { nextTerminalId, resolveTerminalSessionLabel } from "@t3tools/shared/terminalLabels";
+} from "@toolport-studio/shared/model";
+import { CHAT_LIST_ANCHOR_OFFSET } from "@toolport-studio/shared/chatList";
+import { projectScriptCwd, projectScriptRuntimeEnv } from "@toolport-studio/shared/projectScripts";
+import { resolveLiveStreamActivityAt } from "@toolport-studio/shared/stalledTurn";
+import { truncate } from "@toolport-studio/shared/String";
+import {
+  nextTerminalId,
+  resolveTerminalSessionLabel,
+} from "@toolport-studio/shared/terminalLabels";
 import { Debouncer } from "@tanstack/react-pacer";
 import { useAtomValue } from "@effect/atom-react";
 import {
@@ -65,7 +68,7 @@ import {
   settlePromise,
   squashAtomCommandFailure,
   type AtomCommandResult,
-} from "@t3tools/client-runtime/state/runtime";
+} from "@toolport-studio/client-runtime/state/runtime";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { isElectron } from "../env";
@@ -118,7 +121,7 @@ import { useTheme } from "../hooks/useTheme";
 import { useTurnDiffSummaries } from "../hooks/useTurnDiffSummaries";
 import { isCommandPaletteOpen, openCommandPalette } from "../commandPaletteBus";
 import { isGeneralChatProject } from "../lib/generalChat";
-import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/git";
+import { buildTemporaryWorktreeBranchName } from "@toolport-studio/shared/git";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY } from "../rightPanelLayout";
 import {

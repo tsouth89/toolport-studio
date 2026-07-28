@@ -1,18 +1,18 @@
 import { autoAnimate } from "@formkit/auto-animate";
 import { useAtomValue } from "@effect/atom-react";
-import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
+import type { EnvironmentThreadShell } from "@toolport-studio/client-runtime/state/models";
 import {
   scopeProjectRef,
   scopeThreadRef,
   scopedThreadKey,
-} from "@t3tools/client-runtime/environment";
+} from "@toolport-studio/client-runtime/environment";
 import {
   EnvironmentId,
   ProjectId,
   ThreadId,
   type ScopedThreadRef,
   type SidebarProjectGroupingMode,
-} from "@t3tools/contracts";
+} from "@toolport-studio/contracts";
 import {
   ArchiveIcon,
   ChevronDownIcon,
@@ -48,7 +48,7 @@ import {
   isAtomCommandInterrupted,
   settlePromise,
   squashAtomCommandFailure,
-} from "@t3tools/client-runtime/state/runtime";
+} from "@toolport-studio/client-runtime/state/runtime";
 import { isElectron } from "../env";
 import {
   resolveShortcutCommand,

@@ -5,7 +5,7 @@ import {
   type ProviderOptionSelection,
   type ScopedThreadRef,
   type ServerProviderModel,
-} from "@t3tools/contracts";
+} from "@toolport-studio/contracts";
 import {
   applyClaudePromptEffortPrefix,
   buildProviderOptionSelectionsFromDescriptors,
@@ -13,7 +13,7 @@ import {
   getProviderOptionCurrentValue,
   getProviderOptionDescriptors,
   isClaudeUltrathinkPrompt,
-} from "@t3tools/shared/model";
+} from "@toolport-studio/shared/model";
 import { memo, useCallback, useState } from "react";
 import type { VariantProps } from "class-variance-authority";
 import { ChevronDownIcon } from "lucide-react";

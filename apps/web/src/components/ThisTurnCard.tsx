@@ -2,11 +2,11 @@
  * Codex-style floating "this turn" card. Chat stays primary; this is optional
  * inspect chrome for live work, files, and Toolport — not a docked instrument column.
  */
-import type { TurnId } from "@t3tools/contracts";
+import type { TurnId } from "@toolport-studio/contracts";
 import { CheckCircle2, ChevronDown, ChevronUp, ExternalLink, Loader2, X } from "lucide-react";
 import { useEffect, useState } from "react";
 
-import { formatMcpServerDisplayName } from "@t3tools/shared/toolActivity";
+import { formatMcpServerDisplayName } from "@toolport-studio/shared/toolActivity";
 import { formatDuration } from "../session-logic";
 import type { ThreadActivityViewModel } from "../threadActivityViewModel";
 import { cn } from "../lib/utils";

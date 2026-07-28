@@ -1,4 +1,8 @@
-import { OpenCodeSettings, ProviderInstanceId, TextGenerationError } from "@t3tools/contracts";
+import {
+  OpenCodeSettings,
+  ProviderInstanceId,
+  TextGenerationError,
+} from "@toolport-studio/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
 import * as Duration from "effect/Duration";
@@ -6,7 +10,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
-import * as NetService from "@t3tools/shared/Net";
+import * as NetService from "@toolport-studio/shared/Net";
 import { beforeEach, expect } from "vite-plus/test";
 
 import * as ServerConfig from "../config.ts";

@@ -1,5 +1,5 @@
-import type { EnvironmentId } from "@t3tools/contracts";
-import { isProjectFaviconFallbackUrl } from "@t3tools/shared/projectFavicon";
+import type { EnvironmentId } from "@toolport-studio/contracts";
+import { isProjectFaviconFallbackUrl } from "@toolport-studio/shared/projectFavicon";
 import { FolderIcon } from "lucide-react";
 import type { ComponentType } from "react";
 import { useState } from "react";

@@ -11,8 +11,8 @@ import {
   type ProviderSession,
   type RuntimeMode,
   type TurnId,
-} from "@t3tools/contracts";
-import { isTemporaryWorktreeBranch, WORKTREE_BRANCH_PREFIX } from "@t3tools/shared/git";
+} from "@toolport-studio/contracts";
+import { isTemporaryWorktreeBranch, WORKTREE_BRANCH_PREFIX } from "@toolport-studio/shared/git";
 import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
@@ -23,7 +23,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
-import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
+import { makeDrainableWorker } from "@toolport-studio/shared/DrainableWorker";
 
 import { resolveThreadWorkspaceCwd } from "../../checkpointing/Utils.ts";
 import { increment, orchestrationEventsProcessedTotal } from "../../observability/Metrics.ts";

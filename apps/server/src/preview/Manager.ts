@@ -25,12 +25,12 @@ import {
   FILL_PREVIEW_VIEWPORT,
   PreviewSessionLookupError,
   type PreviewSessionSnapshot,
-} from "@t3tools/contracts";
+} from "@toolport-studio/contracts";
 import {
   isPreviewUrlNormalizationError,
   newPreviewTabId,
   normalizePreviewUrl,
-} from "@t3tools/shared/preview";
+} from "@toolport-studio/shared/preview";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";

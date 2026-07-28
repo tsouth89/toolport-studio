@@ -20,7 +20,7 @@ import {
   type SDKUserMessage,
   type ModelUsage,
 } from "@anthropic-ai/claude-agent-sdk";
-import { parseCliArgs } from "@t3tools/shared/cliArgs";
+import { parseCliArgs } from "@toolport-studio/shared/cliArgs";
 import {
   ApprovalRequestId,
   type CanonicalItemType,
@@ -45,18 +45,18 @@ import {
   ThreadId,
   TurnId,
   type UserInputQuestion,
-} from "@t3tools/contracts";
+} from "@toolport-studio/contracts";
 import {
   applyClaudePromptEffortPrefix,
   getModelSelectionBooleanOptionValue,
   getModelSelectionStringOptionValue,
   getProviderOptionDescriptors,
   resolvePromptInjectedEffort,
-} from "@t3tools/shared/model";
+} from "@toolport-studio/shared/model";
 import {
   classifyProviderEmittedFailure,
   formatProviderEmittedFailureMessage,
-} from "@t3tools/shared/providerError";
+} from "@toolport-studio/shared/providerError";
 import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";

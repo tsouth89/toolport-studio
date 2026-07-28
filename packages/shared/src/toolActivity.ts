@@ -1,4 +1,4 @@
-import type { ToolLifecycleItemType } from "@t3tools/contracts";
+import type { ToolLifecycleItemType } from "@toolport-studio/contracts";
 import { trimTrailingChars, WHITESPACE_CHARS } from "./String.ts";
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {

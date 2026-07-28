@@ -3,8 +3,8 @@ import {
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   EnvironmentHttpApi,
-} from "@t3tools/contracts";
-import { decodeOtlpTraceRecords } from "@t3tools/shared/observability";
+} from "@toolport-studio/contracts";
+import { decodeOtlpTraceRecords } from "@toolport-studio/shared/observability";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";

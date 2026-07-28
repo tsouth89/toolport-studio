@@ -12,8 +12,8 @@ import * as Option from "effect/Option";
 import * as Schedule from "effect/Schedule";
 import type * as Scope from "effect/Scope";
 
-import { TurnId, type ProviderRuntimeEvent } from "@t3tools/contracts";
-import { isGenericToolActivityTitle } from "@t3tools/shared/toolActivity";
+import { TurnId, type ProviderRuntimeEvent } from "@toolport-studio/contracts";
+import { isGenericToolActivityTitle } from "@toolport-studio/shared/toolActivity";
 
 import type { ProviderAdapterError } from "../Errors.ts";
 import {

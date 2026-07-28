@@ -46,8 +46,8 @@ import {
   DesktopBackendBootstrap,
   type DesktopBackendBootstrap as DesktopBackendBootstrapValue,
   PRIMARY_LOCAL_ENVIRONMENT_ID,
-} from "@t3tools/contracts";
-import { waitForHttpReady as waitForHttpReadyShared } from "@t3tools/shared/httpReadiness";
+} from "@toolport-studio/contracts";
+import { waitForHttpReady as waitForHttpReadyShared } from "@toolport-studio/shared/httpReadiness";
 
 import * as DesktopObservability from "../app/DesktopObservability.ts";
 

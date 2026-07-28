@@ -1,9 +1,9 @@
-import { EDITORS, EditorId, EnvironmentId } from "@t3tools/contracts";
+import { EDITORS, EditorId, EnvironmentId } from "@toolport-studio/contracts";
 import {
   mapAtomCommandResult,
   type AtomCommandFailure,
   type AtomCommandResult,
-} from "@t3tools/client-runtime/state/runtime";
+} from "@toolport-studio/client-runtime/state/runtime";
 import * as Cause from "effect/Cause";
 import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/unstable/reactivity";

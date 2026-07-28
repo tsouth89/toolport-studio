@@ -1,9 +1,9 @@
 "use client";
 
 import { useAtomValue } from "@effect/atom-react";
-import { parseScopedThreadKey, scopedThreadKey } from "@t3tools/client-runtime/environment";
-import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
-import type { ScopedThreadRef } from "@t3tools/contracts";
+import { parseScopedThreadKey, scopedThreadKey } from "@toolport-studio/client-runtime/environment";
+import { runAtomCommand } from "@toolport-studio/client-runtime/state/runtime";
+import type { ScopedThreadRef } from "@toolport-studio/contracts";
 import * as Schema from "effect/Schema";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
 

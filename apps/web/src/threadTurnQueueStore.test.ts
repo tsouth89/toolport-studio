@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach } from "vite-plus/test";
-import { ThreadId } from "@t3tools/contracts";
+import { ThreadId } from "@toolport-studio/contracts";
 
 import { resolveComposerSubmitIntent, useThreadTurnQueueStore } from "./threadTurnQueueStore";
 

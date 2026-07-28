@@ -3,8 +3,8 @@ import type {
   PreviewOpenInput,
   PreviewSessionSnapshot,
   ScopedThreadRef,
-} from "@t3tools/contracts";
-import type { AtomCommandResult } from "@t3tools/client-runtime/state/runtime";
+} from "@toolport-studio/contracts";
+import type { AtomCommandResult } from "@toolport-studio/client-runtime/state/runtime";
 
 import { applyPreviewServerSnapshot, rememberPreviewUrl } from "~/previewStateStore";
 

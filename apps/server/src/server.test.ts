@@ -2,7 +2,7 @@ import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeSocket from "@effect/platform-node/NodeSocket";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeCrypto from "node:crypto";
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import { HostProcessPlatform } from "@toolport-studio/shared/hostProcess";
 
 import {
   AuthAccessTokenType,
@@ -30,14 +30,14 @@ import {
   WS_METHODS,
   WsRpcGroup,
   EditorId,
-} from "@t3tools/contracts";
+} from "@toolport-studio/contracts";
 import {
   computeDpopAccessTokenHash,
   computeDpopJwkThumbprint,
   type DpopPublicJwk,
-} from "@t3tools/shared/dpop";
-import { RELAY_HEALTH_REQUEST_TYP, RELAY_MINT_REQUEST_TYP } from "@t3tools/shared/relayJwt";
-import * as RelayClient from "@t3tools/shared/relayClient";
+} from "@toolport-studio/shared/dpop";
+import { RELAY_HEALTH_REQUEST_TYP, RELAY_MINT_REQUEST_TYP } from "@toolport-studio/shared/relayJwt";
+import * as RelayClient from "@toolport-studio/shared/relayClient";
 import { assert, it } from "@effect/vitest";
 import { assertFailure, assertInclude, assertTrue } from "@effect/vitest/utils";
 import * as Clock from "effect/Clock";

@@ -1,4 +1,7 @@
-import { managedRelaySessionAtom, setManagedRelaySession } from "@t3tools/client-runtime/relay";
+import {
+  managedRelaySessionAtom,
+  setManagedRelaySession,
+} from "@toolport-studio/client-runtime/relay";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { appAtomRegistry } from "../rpc/atomRegistry";

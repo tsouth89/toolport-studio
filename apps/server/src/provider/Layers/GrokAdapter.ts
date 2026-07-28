@@ -16,7 +16,7 @@ import {
   RuntimeRequestId,
   type ThreadId,
   TurnId,
-} from "@t3tools/contracts";
+} from "@toolport-studio/contracts";
 import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
@@ -90,7 +90,7 @@ import {
 import {
   classifyProviderEmittedFailure,
   formatProviderEmittedFailureMessage,
-} from "@t3tools/shared/providerError";
+} from "@toolport-studio/shared/providerError";
 
 import {
   abandonTurnQueue,

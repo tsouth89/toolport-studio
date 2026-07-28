@@ -12,7 +12,11 @@
  *
  * @module provider/Drivers/OpenCodeDriver
  */
-import { OpenCodeSettings, ProviderDriverKind, type ServerProvider } from "@t3tools/contracts";
+import {
+  OpenCodeSettings,
+  ProviderDriverKind,
+  type ServerProvider,
+} from "@toolport-studio/contracts";
 import * as Duration from "effect/Duration";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";

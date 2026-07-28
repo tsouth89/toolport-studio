@@ -1,6 +1,6 @@
-import { CONNECT_OAUTH_SCOPES } from "@t3tools/shared/connectAuth";
-import { clerkFrontendApiUrlFromPublishableKey } from "@t3tools/shared/relayAuth";
-import { normalizeSecureRelayUrl } from "@t3tools/shared/relayUrl";
+import { CONNECT_OAUTH_SCOPES } from "@toolport-studio/shared/connectAuth";
+import { clerkFrontendApiUrlFromPublishableKey } from "@toolport-studio/shared/relayAuth";
+import { normalizeSecureRelayUrl } from "@toolport-studio/shared/relayUrl";
 import * as Config from "effect/Config";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
