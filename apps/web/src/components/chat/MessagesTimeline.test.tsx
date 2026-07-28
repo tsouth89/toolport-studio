@@ -731,18 +731,36 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).toMatch(/Working(\.\.\.| for)/);
+    expect(markup).toMatch(/Working(\.\.\.|[\s\S]*·)/);
     expect(markup).not.toContain("Quiet for");
     expect(markup).not.toContain('aria-label="Stop generation"');
   });
 
-  it("links the Working row to Activity when onOpenActivity is provided", () => {
+  it("keeps View in Activity off the Working row during a healthy turn", () => {
     const markup = renderToStaticMarkup(
       <MessagesTimeline
         {...buildProps()}
         isWorking
         activeTurnStartedAt={new Date(Date.now() - 60_000).toISOString()}
         onOpenActivity={() => {}}
+        timelineEntries={[]}
+      />,
+    );
+
+    expect(markup).toContain("Working");
+    expect(markup).not.toContain("View in Activity");
+  });
+
+  it("surfaces View in Activity on the Working row when the turn goes quiet", () => {
+    const lastStreamActivityAt = new Date(Date.now() - 120_000).toISOString();
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        isWorking
+        activeTurnStartedAt={new Date(Date.now() - 180_000).toISOString()}
+        lastStreamActivityAt={lastStreamActivityAt}
+        onOpenActivity={() => {}}
+        onInterrupt={() => {}}
         timelineEntries={[]}
       />,
     );
@@ -782,7 +800,9 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).toContain("Working for");
+    expect(markup).toContain("Working");
     expect(markup).toContain("linear_2 · list_issues");
+    // Total turn runtime sits next to Working (e.g. Working · 12s · tool).
+    expect(markup).toMatch(/Working[\s\S]*?·[\s\S]*?s/);
   });
 });

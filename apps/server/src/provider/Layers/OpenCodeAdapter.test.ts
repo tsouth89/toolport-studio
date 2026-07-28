@@ -268,6 +268,11 @@ const openCodeAdapterTestSettings = Schema.decodeSync(OpenCodeSettings)({
   serverPassword: "secret-password",
 });
 
+/** Local binary spawn (no remote serverUrl) for MCP rebind coverage. */
+const openCodeAdapterLocalSpawnSettings = Schema.decodeSync(OpenCodeSettings)({
+  binaryPath: "fake-opencode",
+});
+
 const OpenCodeAdapterTestLayer = Layer.effect(
   OpenCodeAdapter,
   makeOpenCodeAdapter(openCodeAdapterTestSettings),
@@ -410,12 +415,9 @@ it.effect("rebinds Toolport MCP on local OpenCode when the settings toggle flips
     TOOLPORT_STUDIO_TOOLPORT_MCP: "off",
   };
   // Local spawn (no serverUrl) so Studio owns the server and can mcp.add.
-  const localSettings = Schema.decodeSync(OpenCodeSettings)({
-    binaryPath: "fake-opencode",
-  });
   const layer = Layer.effect(
     OpenCodeAdapter,
-    makeOpenCodeAdapter(localSettings, { environment }),
+    makeOpenCodeAdapter(openCodeAdapterLocalSpawnSettings, { environment }),
   ).pipe(
     Layer.provideMerge(Layer.succeed(OpenCodeRuntime, OpenCodeRuntimeTestDouble)),
     Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),

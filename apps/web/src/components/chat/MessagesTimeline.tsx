@@ -33,7 +33,6 @@ import {
   deriveTimelineEntries,
   formatElapsed,
   formatWorkLogThoughtLine,
-  formatWorkLogToolLabel,
   formatWorkLogTimelineLine,
   isThinkingWorkLogEntry,
   workEntryIndicatesToolFailure,
@@ -50,25 +49,14 @@ import {
 } from "../../lib/diffRendering";
 import ChatMarkdown from "../ChatMarkdown";
 import {
-  BotIcon,
   CheckIcon,
   ChevronDownIcon,
   ChevronRightIcon,
-  CircleAlertIcon,
-  EyeIcon,
-  GlobeIcon,
-  HammerIcon,
   Loader2Icon,
-  MessageCircleIcon,
   MousePointerClickIcon,
   PaintbrushIcon,
-  MinusIcon,
-  SquarePenIcon,
-  TerminalIcon,
   Undo2Icon,
-  WrenchIcon,
   XIcon,
-  ZapIcon,
 } from "lucide-react";
 import { Button } from "../ui/button";
 import { buildExpandedImagePreview, ExpandedImagePreview } from "./ExpandedImagePreview";
@@ -77,6 +65,7 @@ import { ChangedFilesCard } from "./ChangedFilesTree";
 import { shouldAutoExpandChangedFiles } from "./changedFilesPresentation";
 import { MessageCopyButton } from "./MessageCopyButton";
 import {
+  collapseConsecutiveTimelineWorkEntries,
   computeStableMessagesTimelineRows,
   deriveMessagesTimelineRows,
   normalizeCompactToolLabel,
@@ -92,6 +81,8 @@ import {
   type MessagesTimelineRow,
   TIMELINE_MINIMAP_MIN_ITEMS,
   type TimelineLatestTurn,
+  WORK_RAIL_COLLAPSE_AT,
+  WORK_RAIL_COLLAPSED_TAIL,
 } from "./MessagesTimeline.logic";
 import { TerminalContextInlineChip } from "./TerminalContextInlineChip";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -1128,20 +1119,32 @@ function ProposedPlanTimelineRow({
   );
 }
 
+function isGenericWorkingToolLabel(label: string | null): boolean {
+  if (!label) return true;
+  const normalized = label.trim().toLowerCase();
+  // Keep "Following up" — that is the mid-turn interjection signal.
+  return normalized === "thinking" || normalized === "thought" || normalized === "working";
+}
+
 function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "working" }> }) {
   const activity = use(TimelineRowActivityCtx);
-  const toolLabel = row.activeToolLabel?.trim() || null;
-  const toolDetail = row.activeToolDetail?.trim() || null;
+  const rawToolLabel = row.activeToolLabel?.trim() || null;
+  // Thought is already on the rail; keep Working to timer + concrete tool only.
+  const toolLabel = isGenericWorkingToolLabel(rawToolLabel) ? null : rawToolLabel;
+  const toolDetail = toolLabel ? row.activeToolDetail?.trim() || null : null;
   const quiet = useQuietTurnIndicator(
     activity.lastStreamActivityAt,
     row.hasLongRunningOpenTool,
-    toolLabel,
+    rawToolLabel,
   );
   const toolTooltip = row.activeToolTooltip?.trim() || toolDetail;
   const toolTitle = [toolLabel, toolTooltip].filter(Boolean).join(" — ") || undefined;
   const onOpenActivity = activity.onOpenActivity;
   const onInterrupt = activity.onInterrupt;
   const showRecoveryStop = quiet.isQuiet && onInterrupt !== null;
+  // Keep Activity link for recovery/quiet only — constant "View in Activity"
+  // next to every Working line is noise during a healthy turn.
+  const showActivityLink = quiet.isQuiet && onOpenActivity !== null;
 
   return (
     <div
@@ -1187,7 +1190,12 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
         <span className="min-w-0 font-medium">
           {row.createdAt ? (
             <>
-              Working for <WorkingTimer createdAt={row.createdAt} />
+              Working
+              <span className="font-normal text-muted-foreground" aria-hidden="true">
+                {" "}
+                ·{" "}
+              </span>
+              <WorkingTimer createdAt={row.createdAt} />
             </>
           ) : (
             "Working..."
@@ -1241,7 +1249,7 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
             </button>
           </>
         ) : null}
-        {onOpenActivity ? (
+        {showActivityLink ? (
           <>
             <span className="text-muted-foreground/50" aria-hidden="true">
               ·
@@ -1342,7 +1350,7 @@ function readQuietTurnIndicator(
 // does not create a React commit every second while a response is streaming.
 // ---------------------------------------------------------------------------
 
-/** Live "Working for Xs" label. */
+/** Live total turn runtime next to Working (e.g. "3m 42s"). */
 function WorkingTimer({ createdAt }: { createdAt: string }) {
   const textRef = useRef<HTMLSpanElement>(null);
   const initialText = formatWorkingTimerNow(createdAt);
@@ -1381,26 +1389,38 @@ const WorkGroupSection = memo(function WorkGroupSection({
     () => groupedEntries.filter((entry) => !workEntryIndicatesToolNeutralStatus(entry)),
     [groupedEntries],
   );
+  const densifiedItems = useMemo(
+    () => collapseConsecutiveTimelineWorkEntries(nonEmptyEntries),
+    [nonEmptyEntries],
+  );
   const onlyToolEntries =
     nonEmptyEntries.length > 0 && nonEmptyEntries.every((entry) => workLogEntryIsToolLike(entry));
   // Tool + Thought stacks share the Grok Build rail (not the info/error path).
   const isNarrationStack =
     nonEmptyEntries.length > 0 &&
     nonEmptyEntries.every((entry) => workLogEntryIsNarrationStackEntry(entry));
-  // SOU-386 PR3: pure tool / narration stacks start expanded for small runs;
-  // long runs collapse under the card header so the center column stays scannable.
-  const [cardExpanded, setCardExpanded] = useState(() => nonEmptyEntries.length <= 6);
+  // null = follow auto collapse when the densified rail grows past the threshold.
+  // That way a short open card folds itself as the turn lengthens, instead of
+  // staying fully expanded once it crossed the threshold while already open.
+  const [userExpanded, setUserExpanded] = useState<boolean | null>(null);
 
   if (nonEmptyEntries.length === 0) return null;
 
   if (onlyToolEntries || isNarrationStack) {
-    const stepCount = nonEmptyEntries.length;
-    const groupLabel = `${stepCount} step${stepCount === 1 ? "" : "s"}`;
+    const rawStepCount = nonEmptyEntries.length;
+    const densifiedCount = densifiedItems.length;
+    const groupLabel = `${rawStepCount} step${rawStepCount === 1 ? "" : "s"}`;
     const inProgressCount = nonEmptyEntries.filter(
       (entry) => entry.toolLifecycleStatus === "inProgress",
     ).length;
-    const canCollapse = stepCount > 6;
-    const showBody = !canCollapse || cardExpanded;
+    const canCollapse = densifiedCount > WORK_RAIL_COLLAPSE_AT;
+    // When the densified rail shrinks below the threshold, always show full
+    // list (ignore a stale userCollapsed). Default when collapsible: folded.
+    const fullyExpanded = !canCollapse || (userExpanded ?? false);
+    const visibleItems = fullyExpanded
+      ? densifiedItems
+      : densifiedItems.slice(-WORK_RAIL_COLLAPSED_TAIL);
+    const hiddenCount = densifiedCount - visibleItems.length;
 
     return (
       <section className="relative py-0.5" aria-label={groupLabel}>
@@ -1416,8 +1436,8 @@ const WorkGroupSection = memo(function WorkGroupSection({
               "mb-0.5 flex w-full items-center gap-2 rounded-md px-0.5 py-0.5 text-left transition-colors",
               "cursor-pointer hover:bg-accent/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70",
             )}
-            aria-expanded={showBody}
-            onClick={() => setCardExpanded((value) => !value)}
+            aria-expanded={fullyExpanded}
+            onClick={() => setUserExpanded((value) => !(value ?? false))}
           >
             <span className="relative z-[1] flex size-5 shrink-0 items-center justify-center text-muted-foreground/70">
               {inProgressCount > 0 ? (
@@ -1429,27 +1449,35 @@ const WorkGroupSection = memo(function WorkGroupSection({
             <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-foreground/80">
               {groupLabel}
               {inProgressCount > 0 ? ` · ${inProgressCount} running` : ""}
+              {!fullyExpanded && hiddenCount > 0 ? ` · +${hiddenCount} earlier` : ""}
             </span>
             <ChevronDownIcon
               className={cn(
                 "size-3.5 shrink-0 text-muted-foreground/65 transition-transform duration-200",
-                showBody && "rotate-180",
+                fullyExpanded && "rotate-180",
               )}
             />
           </button>
         ) : null}
-        {showBody ? (
-          <div className="space-y-0.5">
-            {nonEmptyEntries.map((workEntry, index) => (
+        <div className="space-y-0.5">
+          {visibleItems.map((item, index) => {
+            // Duration uses the densified sequence so collapsed tool runs still
+            // get a sensible thought span against the next visible row.
+            const fullIndex = fullyExpanded ? index : densifiedCount - visibleItems.length + index;
+            return (
               <SimpleWorkEntryRow
-                key={workEntry.id}
-                workEntry={workEntry}
+                key={item.rowKey}
+                workEntry={item.entry}
                 workspaceRoot={workspaceRoot}
-                thoughtDurationLabel={thoughtDurationLabelForIndex(nonEmptyEntries, index)}
+                mergeCount={item.count}
+                thoughtDurationLabel={thoughtDurationLabelForDensifiedIndex(
+                  densifiedItems,
+                  fullIndex,
+                )}
               />
-            ))}
-          </div>
-        ) : null}
+            );
+          })}
+        </div>
       </section>
     );
   }
@@ -1487,6 +1515,21 @@ function thoughtDurationLabelForIndex(
     return null;
   }
   return formatElapsed(entry.createdAt, next.createdAt);
+}
+
+function thoughtDurationLabelForDensifiedIndex(
+  items: ReadonlyArray<{ entry: TimelineWorkEntry; firstCreatedAt: string }>,
+  index: number,
+): string | null {
+  const item = items[index];
+  if (!item || !isThinkingWorkLogEntry(item.entry)) {
+    return null;
+  }
+  const next = items[index + 1];
+  if (!next?.firstCreatedAt) {
+    return null;
+  }
+  return formatElapsed(item.firstCreatedAt, next.firstCreatedAt);
 }
 
 function WorkGroupToggleTimelineRow({
@@ -2054,77 +2097,6 @@ function formatWorkingTimerNow(startIso: string): string {
   return formatWorkingTimer(startIso, new Date().toISOString()) ?? "0s";
 }
 
-type WorkEntryIconName =
-  | "bot"
-  | "check"
-  | "circle-alert"
-  | "eye"
-  | "globe"
-  | "hammer"
-  | "message-circle"
-  | "square-pen"
-  | "terminal"
-  | "wrench"
-  | "x"
-  | "zap";
-
-function WorkEntryIconSvg({ name, className }: { name: WorkEntryIconName; className: string }) {
-  switch (name) {
-    case "bot":
-      return <BotIcon className={className} aria-hidden />;
-    case "check":
-      return <CheckIcon className={className} aria-hidden />;
-    case "circle-alert":
-      return <CircleAlertIcon className={className} aria-hidden />;
-    case "eye":
-      return <EyeIcon className={className} aria-hidden />;
-    case "globe":
-      return <GlobeIcon className={className} aria-hidden />;
-    case "hammer":
-      return <HammerIcon className={className} aria-hidden />;
-    case "message-circle":
-      return <MessageCircleIcon className={className} aria-hidden />;
-    case "square-pen":
-      return <SquarePenIcon className={className} aria-hidden />;
-    case "terminal":
-      return <TerminalIcon className={className} aria-hidden />;
-    case "wrench":
-      return <WrenchIcon className={className} aria-hidden />;
-    case "x":
-      return <XIcon className={className} aria-hidden />;
-    case "zap":
-      return <ZapIcon className={className} aria-hidden />;
-  }
-}
-
-function workToneIcon(tone: TimelineWorkEntry["tone"]): {
-  iconName: WorkEntryIconName;
-  className: string;
-} {
-  if (tone === "error") {
-    return {
-      iconName: "circle-alert",
-      className: "text-foreground/92",
-    };
-  }
-  if (tone === "thinking") {
-    return {
-      iconName: "bot",
-      className: "text-foreground/92",
-    };
-  }
-  if (tone === "info") {
-    return {
-      iconName: "check",
-      className: "text-muted-foreground",
-    };
-  }
-  return {
-    iconName: "zap",
-    className: "text-foreground/92",
-  };
-}
-
 function workEntryPreview(
   workEntry: Pick<TimelineWorkEntry, "detail" | "command" | "changedFiles">,
   workspaceRoot: string | undefined,
@@ -2275,46 +2247,20 @@ function buildToolCallExpandedBody(
   return blocks.length > 0 ? blocks.join("\n\n") : null;
 }
 
-function workEntryIconName(workEntry: TimelineWorkEntry): WorkEntryIconName {
-  if (
-    workEntry.sourceActivityKind === "user-input.requested" ||
-    workEntry.sourceActivityKind === "user-input.resolved"
-  ) {
-    return "message-circle";
-  }
-  if (workEntry.requestKind === "command") return "terminal";
-  if (workEntry.requestKind === "file-read") return "eye";
-  if (workEntry.requestKind === "file-change") return "square-pen";
-
-  if (workEntry.itemType === "command_execution" || workEntry.command) {
-    return "terminal";
-  }
-  if (workEntry.itemType === "file_change" || (workEntry.changedFiles?.length ?? 0) > 0) {
-    return "square-pen";
-  }
-  if (workEntry.itemType === "web_search") return "globe";
-  if (workEntry.itemType === "image_view") return "eye";
-
-  switch (workEntry.itemType) {
-    case "mcp_tool_call":
-      return "wrench";
-    case "dynamic_tool_call":
-    case "collab_agent_tool_call":
-      return "hammer";
-  }
-
-  return workToneIcon(workEntry.tone).iconName;
-}
-
 function toolWorkEntryHeading(
   workEntry: TimelineWorkEntry,
   thoughtDurationLabel?: string | null,
+  mergeCount = 1,
 ): string {
   // Verb-first scannable line: "Ran git log +2 more", "Read app.ts", "Thought for 3.4s".
   if (isThinkingWorkLogEntry(workEntry)) {
     return formatWorkLogThoughtLine(thoughtDurationLabel);
   }
-  return formatWorkLogTimelineLine(workEntry);
+  const base = formatWorkLogTimelineLine(workEntry);
+  if (mergeCount > 1) {
+    return `${base} × ${mergeCount}`;
+  }
+  return base;
 }
 
 const stopRowToggle = (e: { stopPropagation: () => void }) => e.stopPropagation();
@@ -2323,13 +2269,14 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   workEntry: TimelineWorkEntry;
   workspaceRoot: string | undefined;
   thoughtDurationLabel?: string | null;
+  mergeCount?: number;
 }) {
-  const { workEntry, workspaceRoot, thoughtDurationLabel = null } = props;
+  const { workEntry, workspaceRoot, thoughtDurationLabel = null, mergeCount = 1 } = props;
   const activity = use(TimelineRowActivityCtx);
   const [expanded, setExpanded] = useState(false);
   const showWarningIndicator = workEntry.sourceActivityKind === "runtime.warning";
   const isThought = isThinkingWorkLogEntry(workEntry);
-  const heading = toolWorkEntryHeading(workEntry, thoughtDurationLabel);
+  const heading = toolWorkEntryHeading(workEntry, thoughtDurationLabel, mergeCount);
   // Line already includes the scannable context (Ran git status); only show a
   // muted preview when it adds something the headline does not already say.
   const rawPreview = isThought ? null : workEntryPreview(workEntry, workspaceRoot);
@@ -2348,7 +2295,6 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
     showFailedIndicator &&
     (workEntry.sourceActivityKind === "runtime.error" || !workLogEntryIsToolLike(workEntry));
   const turnSettled = !activity.activeTurnInProgress;
-  const showNeutralIndicator = !turnSettled && workEntryIndicatesToolNeutralStatus(workEntry);
   const showSuccessIndicator =
     workEntryIndicatesToolSuccess(workEntry) ||
     (turnSettled && workEntryIndicatesToolNeutralStatus(workEntry));

@@ -5,6 +5,7 @@ import {
   formatWorkLogToolLabel,
   isThinkingWorkLogEntry,
   workEntryIndicatesToolNeutralStatus,
+  workEntryIndicatesToolSuccess,
   workEntryLooksLongRunning,
   workLogEntryIsNarrationStackEntry,
   workLogEntryIsToolLike,
@@ -36,6 +37,74 @@ export function sharedToolLabelForWorkEntries(entries: ReadonlyArray<WorkLogEntr
   }
   return labels.every((label) => label === first) ? first : null;
 }
+
+/**
+ * Collapse consecutive successful tools that share the same display label
+ * (`Read MessagesTimeline.tsx` × 3). Live in-progress tools, thoughts, and
+ * failed/declined/stopped rows stay individual so errors are not hidden behind ×N.
+ */
+export type CollapsedTimelineWorkItem = {
+  readonly entry: WorkLogEntry;
+  /** Latest entry in the merged run (display + status). */
+  readonly count: number;
+  readonly firstCreatedAt: string;
+  /**
+   * Stable React key for the densified row. Prefer the first entry id in the
+   * run so remounts do not reset expanded state when later tools merge in.
+   */
+  readonly rowKey: string;
+};
+
+function timelineWorkCollapseKey(entry: WorkLogEntry): string | null {
+  if (isThinkingWorkLogEntry(entry)) {
+    return null;
+  }
+  if (!workLogEntryIsToolLike(entry)) {
+    return null;
+  }
+  if (entry.toolLifecycleStatus === "inProgress") {
+    return null;
+  }
+  // Only densify successful tools — never hide failures behind a count.
+  if (!workEntryIndicatesToolSuccess(entry)) {
+    return null;
+  }
+  const label = formatWorkLogToolLabel(entry, "past").trim();
+  return label.length > 0 ? label : null;
+}
+
+export function collapseConsecutiveTimelineWorkEntries(
+  entries: ReadonlyArray<WorkLogEntry>,
+): CollapsedTimelineWorkItem[] {
+  const collapsed: CollapsedTimelineWorkItem[] = [];
+  for (const entry of entries) {
+    const key = timelineWorkCollapseKey(entry);
+    const prev = collapsed[collapsed.length - 1];
+    const prevKey = prev ? timelineWorkCollapseKey(prev.entry) : null;
+    if (key !== null && prev && prevKey === key) {
+      collapsed[collapsed.length - 1] = {
+        entry,
+        count: prev.count + 1,
+        firstCreatedAt: prev.firstCreatedAt,
+        rowKey: prev.rowKey,
+      };
+      continue;
+    }
+    collapsed.push({
+      entry,
+      count: 1,
+      firstCreatedAt: entry.createdAt,
+      rowKey: entry.id,
+    });
+  }
+  return collapsed;
+}
+
+/** Step card collapses once the densified rail grows past this many rows. */
+export const WORK_RAIL_COLLAPSE_AT = 6;
+/** When collapsed, still pin the latest densified row so progress stays visible. */
+export const WORK_RAIL_COLLAPSED_TAIL = 1;
+
 export const TIMELINE_MINIMAP_MIN_ITEMS = 2;
 export const TIMELINE_MINIMAP_MAX_HEIGHT_CSS = "calc(100vh - 18rem)";
 export const TIMELINE_CONTENT_MAX_WIDTH = 768;

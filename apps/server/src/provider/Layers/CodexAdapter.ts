@@ -1709,7 +1709,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         runtimeMode: previous?.runtimeMode ?? session.runtimeMode,
         ...(model ? { model } : {}),
         ...(session.serviceTier ? { serviceTier: session.serviceTier } : {}),
-        ...(mcpLaunchOptions ?? {}),
+        ...mcpLaunchOptions,
         ...(options?.pendingApprovalTimeoutMs !== undefined
           ? { pendingApprovalTimeoutMs: options.pendingApprovalTimeoutMs }
           : {}),
@@ -1812,7 +1812,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           runtimeMode: input.runtimeMode,
           ...(model ? { model } : {}),
           ...(serviceTier ? { serviceTier } : {}),
-          ...(mcpLaunchOptions ?? {}),
+          ...mcpLaunchOptions,
           ...(options?.pendingApprovalTimeoutMs !== undefined
             ? { pendingApprovalTimeoutMs: options.pendingApprovalTimeoutMs }
             : {}),

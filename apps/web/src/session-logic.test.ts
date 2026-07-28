@@ -1753,6 +1753,7 @@ describe("deriveWorkLogEntries context window handling", () => {
 describe("isLatestTurnSettled", () => {
   const latestTurn = {
     turnId: TurnId.make("turn-1"),
+    requestedAt: "2026-02-27T21:09:58.000Z",
     startedAt: "2026-02-27T21:10:00.000Z",
     completedAt: "2026-02-27T21:10:06.000Z",
   } as const;
@@ -1762,6 +1763,7 @@ describe("isLatestTurnSettled", () => {
       isLatestTurnSettled(latestTurn, {
         status: "running",
         activeTurnId: TurnId.make("turn-1"),
+        updatedAt: "2026-02-27T21:10:06.000Z",
       }),
     ).toBe(true);
   });
@@ -1771,6 +1773,7 @@ describe("isLatestTurnSettled", () => {
       isLatestTurnSettled(latestTurn, {
         status: "running",
         activeTurnId: TurnId.make("turn-2"),
+        updatedAt: "2026-02-27T21:10:06.000Z",
       }),
     ).toBe(true);
   });
@@ -1780,6 +1783,7 @@ describe("isLatestTurnSettled", () => {
       isLatestTurnSettled(latestTurn, {
         status: "ready",
         activeTurnId: null,
+        updatedAt: "2026-02-27T21:10:06.000Z",
       }),
     ).toBe(true);
   });
@@ -1789,6 +1793,7 @@ describe("isLatestTurnSettled", () => {
       isLatestTurnSettled(
         {
           turnId: TurnId.make("turn-1"),
+          requestedAt: "2026-02-27T21:09:58.000Z",
           startedAt: null,
           completedAt: "2026-02-27T21:10:06.000Z",
         },
@@ -1801,6 +1806,7 @@ describe("isLatestTurnSettled", () => {
 describe("deriveComposerPhase", () => {
   const completedTurn = {
     turnId: TurnId.make("turn-1"),
+    requestedAt: "2026-02-27T21:09:58.000Z",
     startedAt: "2026-02-27T21:10:00.000Z",
     completedAt: "2026-02-27T21:10:06.000Z",
   } as const;
@@ -1833,6 +1839,7 @@ describe("deriveComposerPhase", () => {
 describe("deriveActiveWorkStartedAt", () => {
   const latestTurn = {
     turnId: TurnId.make("turn-1"),
+    requestedAt: "2026-02-27T21:09:58.000Z",
     startedAt: "2026-02-27T21:10:00.000Z",
     completedAt: "2026-02-27T21:10:06.000Z",
   } as const;
@@ -1844,10 +1851,30 @@ describe("deriveActiveWorkStartedAt", () => {
         {
           status: "running",
           activeTurnId: TurnId.make("turn-1"),
+          updatedAt: "2026-02-27T21:10:01.000Z",
         },
         "2026-02-27T21:11:00.000Z",
       ),
     ).toBe("2026-02-27T21:10:00.000Z");
+  });
+
+  it("uses requestedAt when the provider has not set startedAt yet", () => {
+    expect(
+      deriveActiveWorkStartedAt(
+        {
+          turnId: TurnId.make("turn-1"),
+          requestedAt: "2026-02-27T21:09:58.000Z",
+          startedAt: null,
+          completedAt: null,
+        },
+        {
+          status: "running",
+          activeTurnId: TurnId.make("turn-1"),
+          updatedAt: "2026-02-27T21:10:01.000Z",
+        },
+        "2026-02-27T21:09:57.000Z",
+      ),
+    ).toBe("2026-02-27T21:09:58.000Z");
   });
 
   it("uses the new send start while the session is running a different turn", () => {
@@ -1857,10 +1884,25 @@ describe("deriveActiveWorkStartedAt", () => {
         {
           status: "running",
           activeTurnId: TurnId.make("turn-2"),
+          updatedAt: "2026-02-27T21:11:00.000Z",
         },
         "2026-02-27T21:11:00.000Z",
       ),
     ).toBe("2026-02-27T21:11:00.000Z");
+  });
+
+  it("falls back to session.updatedAt while starting before local send projects", () => {
+    expect(
+      deriveActiveWorkStartedAt(
+        null,
+        {
+          status: "starting",
+          activeTurnId: TurnId.make("turn-2"),
+          updatedAt: "2026-02-27T21:12:00.000Z",
+        },
+        null,
+      ),
+    ).toBe("2026-02-27T21:12:00.000Z");
   });
 
   it("falls back to sendStartedAt once the latest turn is settled", () => {
@@ -1870,6 +1912,7 @@ describe("deriveActiveWorkStartedAt", () => {
         {
           status: "ready",
           activeTurnId: null,
+          updatedAt: "2026-02-27T21:10:06.000Z",
         },
         "2026-02-27T21:11:00.000Z",
       ),
@@ -1881,6 +1924,7 @@ describe("deriveActiveWorkStartedAt", () => {
       deriveActiveWorkStartedAt(
         {
           turnId: TurnId.make("turn-1"),
+          requestedAt: "2026-02-27T21:09:58.000Z",
           startedAt: "2026-02-27T21:10:00.000Z",
           completedAt: "2026-02-27T21:10:06.000Z",
         },

@@ -72,6 +72,9 @@ export default defineConfig({
       "unicorn/consistent-function-scoping": "off",
       "oxc/no-map-spread": "off",
       "react-in-jsx-scope": "off",
+      // Markdown/command-palette useMemo component maps and icon render props
+      // intentionally close over props; extracting to module scope is noisier.
+      "react/no-unstable-nested-components": "off",
       "react-hooks/exhaustive-deps": "off",
       "eslint/no-shadow": "off",
       "eslint/no-await-in-loop": "off",

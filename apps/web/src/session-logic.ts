@@ -494,8 +494,26 @@ export function formatElapsed(startIso: string, endIso: string | undefined): str
   return formatDuration(endedAt - startedAt);
 }
 
-type LatestTurnTiming = Pick<OrchestrationLatestTurn, "turnId" | "startedAt" | "completedAt">;
-type SessionActivityState = Pick<NonNullable<Thread["session"]>, "status" | "activeTurnId">;
+type LatestTurnTiming = Pick<
+  OrchestrationLatestTurn,
+  "turnId" | "startedAt" | "completedAt" | "requestedAt"
+>;
+type SessionActivityState = Pick<
+  NonNullable<Thread["session"]>,
+  "status" | "activeTurnId" | "updatedAt"
+>;
+
+function firstValidIsoTimestamp(...candidates: Array<string | null | undefined>): string | null {
+  for (const candidate of candidates) {
+    if (candidate === null || candidate === undefined || candidate.length === 0) {
+      continue;
+    }
+    if (Number.isFinite(Date.parse(candidate))) {
+      return candidate;
+    }
+  }
+  return null;
+}
 
 export function isLatestTurnSettled(
   latestTurn: LatestTurnTiming | null,
@@ -509,22 +527,36 @@ export function isLatestTurnSettled(
   return latestTurn.completedAt != null;
 }
 
+/**
+ * Anchor for the live "Working · 3m 42s" timer. Prefer the provider turn's
+ * startedAt, then requestedAt, then local send, then session.updatedAt so the
+ * total run time is almost always visible during a live turn.
+ */
 export function deriveActiveWorkStartedAt(
   latestTurn: LatestTurnTiming | null,
   session: SessionActivityState | null,
   sendStartedAt: string | null,
 ): string | null {
-  const runningTurnId = session?.status === "running" ? session.activeTurnId : null;
+  const turnAnchor = latestTurn
+    ? firstValidIsoTimestamp(latestTurn.startedAt, latestTurn.requestedAt)
+    : null;
+  const sessionClock = firstValidIsoTimestamp(session?.updatedAt);
+  const runningTurnId =
+    session?.status === "running" || session?.status === "starting" ? session.activeTurnId : null;
+
   if (runningTurnId !== null) {
     if (latestTurn?.turnId === runningTurnId) {
-      return latestTurn.startedAt ?? sendStartedAt;
+      return firstValidIsoTimestamp(turnAnchor, sendStartedAt, sessionClock);
     }
-    return sendStartedAt;
+    // Session already moved to a new turn id before latestTurn projected.
+    return firstValidIsoTimestamp(sendStartedAt, sessionClock, turnAnchor);
   }
+
   if (!isLatestTurnSettled(latestTurn, session)) {
-    return latestTurn?.startedAt ?? sendStartedAt;
+    return firstValidIsoTimestamp(turnAnchor, sendStartedAt, sessionClock);
   }
-  return sendStartedAt;
+
+  return firstValidIsoTimestamp(sendStartedAt);
 }
 
 function requestKindFromRequestType(requestType: unknown): PendingApproval["requestKind"] | null {
@@ -995,7 +1027,7 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
     isGenericWorkLogToolLabel(displaySeed)
   ) {
     const presentationData: Record<string, unknown> = {
-      ...(payloadData ?? {}),
+      ...payloadData,
       ...(commandPreview.command ? { command: commandPreview.command } : {}),
       ...(changedFiles.length > 0 ? { locations: changedFiles.map((path) => ({ path })) } : {}),
     };
