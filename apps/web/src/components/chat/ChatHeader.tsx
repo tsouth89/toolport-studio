@@ -131,8 +131,9 @@ export const ChatHeader = memo(function ChatHeader({
       <div
         data-chat-header-actions
         className={cn(
-          "flex shrink-0 items-center justify-end gap-1.5 @3xl/header-actions:gap-2",
-          rightPanelOpen ? "pr-0" : "pr-16",
+          // Keep header actions sparse — Open/scripts/git should not compete with the thread title.
+          "flex shrink-0 items-center justify-end gap-1 @3xl/header-actions:gap-1.5",
+          rightPanelOpen ? "pr-0" : "pr-14",
         )}
       >
         {isProjectless ? (

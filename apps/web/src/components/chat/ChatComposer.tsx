@@ -195,25 +195,29 @@ const IMAGE_SIZE_LIMIT_LABEL = `${Math.round(PROVIDER_SEND_TURN_MAX_IMAGE_BYTES 
 
 const runtimeModeConfig: Record<
   RuntimeMode,
-  { label: string; description: string; icon: LucideIcon }
+  { label: string; shortLabel: string; description: string; icon: LucideIcon }
 > = {
   "approval-required": {
     label: "Supervised",
+    shortLabel: "Super",
     description: "Ask before commands and file changes.",
     icon: LockIcon,
   },
   "auto-accept-edits": {
     label: "Auto-accept edits",
+    shortLabel: "Edits",
     description: "Auto-approve edits, ask before other actions.",
     icon: PenLineIcon,
   },
   auto: {
     label: "Auto",
+    shortLabel: "Auto",
     description: "An AI reviewer approves routine actions; risky ones still ask.",
     icon: SparklesIcon,
   },
   "full-access": {
     label: "Full access",
+    shortLabel: "Full",
     description: "Allow commands and edits without prompts.",
     icon: LockOpenIcon,
   },
@@ -330,13 +334,16 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
               <SelectTrigger
                 variant="ghost"
                 size="sm"
-                className="font-medium"
+                className="gap-1.5 px-2 font-medium text-muted-foreground/80 hover:text-foreground sm:px-2.5"
                 aria-label="Runtime mode"
               />
             }
           >
-            <RuntimeModeIcon className="size-4" />
-            <SelectValue>{runtimeModeOption.label}</SelectValue>
+            <RuntimeModeIcon className="size-4 shrink-0" />
+            <SelectValue>
+              <span className="sm:hidden">{runtimeModeOption.shortLabel}</span>
+              <span className="hidden sm:inline">{runtimeModeOption.label}</span>
+            </SelectValue>
           </TooltipTrigger>
           <SelectPopup alignItemWithTrigger={false}>
             {runtimeModeOptions.map((mode) => {
@@ -2680,7 +2687,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 showMobilePendingAnswerActions && "hidden sm:flex",
               )}
             >
-              <div className="-m-1 flex min-w-0 flex-1 items-center gap-1 overflow-x-auto p-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+              <div className="-m-1 flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto p-1 sm:gap-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                 {noProviderAvailable ? (
                   <Button
                     type="button"
@@ -2761,7 +2768,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 data-chat-composer-primary-actions-compact={
                   isComposerPrimaryActionsCompact ? "true" : "false"
                 }
-                className="flex shrink-0 flex-nowrap items-center justify-end gap-2"
+                className="flex shrink-0 flex-nowrap items-center justify-end gap-1.5"
               >
                 <ComposerFooterPrimaryActions
                   compact={isComposerPrimaryActionsCompact}
