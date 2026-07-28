@@ -689,27 +689,37 @@ export function canSteerGrokSendTurn(input: {
   readonly promptsInFlight: number;
   readonly activeTurnId: TurnId | undefined;
   readonly interruptedTurnIds: ReadonlySet<TurnId>;
+  /** Session status — used when promptsInFlight is briefly 0 but the turn is live. */
+  readonly sessionStatus?: string | undefined;
 }): boolean {
-  return canSteerSendTurn({
-    promptsInFlight: input.promptsInFlight,
-    hasActiveTurnId: input.activeTurnId !== undefined,
-    activeTurnInterrupted:
-      input.activeTurnId !== undefined && input.interruptedTurnIds.has(input.activeTurnId),
-  });
+  // Concurrent mid-turn steer can race or run while the primary counter is
+  // briefly stale. A live activeTurnId on a running session is enough; the
+  // promptsInFlight>0 check alone wrongly opened a second turn (cancel-like).
+  if (input.activeTurnId === undefined) {
+    return false;
+  }
+  if (input.interruptedTurnIds.has(input.activeTurnId)) {
+    return false;
+  }
+  if (input.promptsInFlight > 0) {
+    return true;
+  }
+  return input.sessionStatus === "running" || input.sessionStatus === "connecting";
 }
 
 /**
  * Engine-owned disposition for a Grok send that may land while a turn is live.
  *
- * Product default is mid-turn **steer** (ACP preempt / interject). When the
- * capability matrix declares `queue`, concurrent sends are held and drained
- * after settle instead. Interrupted turns are never steered or queued into.
+ * Product default is mid-turn **steer** via concurrent `session/prompt` (no
+ * cancel). When the capability matrix declares `queue`, concurrent sends are
+ * held and drained after settle instead. Interrupted turns are never steered.
  */
 export function resolveGrokSendDisposition(input: {
   readonly turnQueue: TurnQueueState;
   readonly promptsInFlight: number;
   readonly activeTurnId: TurnId | undefined;
   readonly interruptedTurnIds: ReadonlySet<TurnId>;
+  readonly sessionStatus?: string | undefined;
   readonly nextTurn: QueuedTurnInput;
   /** Override capability for tests; defaults to Grok matrix entry. */
   readonly sendWhileRunning?: "steer" | "queue";
@@ -718,6 +728,7 @@ export function resolveGrokSendDisposition(input: {
     promptsInFlight: input.promptsInFlight,
     activeTurnId: input.activeTurnId,
     interruptedTurnIds: input.interruptedTurnIds,
+    sessionStatus: input.sessionStatus,
   });
   const behavior = input.sendWhileRunning ?? PROVIDER_TURN_CAPABILITIES.grok.sendWhileRunning;
 
@@ -2138,11 +2149,17 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               ctx.currentReasoningEffort = requestedReasoningEffort;
               ctx.acpCompromised = true;
             }
-            // Toolport MCP is also spawn-time (ACP mcpServers). Settings toggles
-            // update process.env immediately; existing children must recycle so
-            // Linear/etc become available without starting a brand-new thread.
-            const wantsToolportMcp = McpProviderSession.isToolportMcpInjectionEnabled(
+            // Toolport MCP is spawn-time (ACP mcpServers). Compare the *actual*
+            // inject decision (bindings include toolport) to what this process
+            // was started with — not the env flag alone. Flag-on with empty
+            // bindings used to trip recycle on every send, which aborted live
+            // turns and made mid-turn steer open a competing turn.
+            const nextMcpBindings = McpProviderSession.readMcpProviderBindings(
+              input.threadId,
               options?.environment ?? process.env,
+            );
+            const wantsToolportMcp = nextMcpBindings.some(
+              (binding) => binding.name === McpProviderSession.TOOLPORT_MCP_SERVER_NAME,
             );
             if (wantsToolportMcp !== ctx.injectsToolportMcp) {
               yield* Effect.logInfo("Grok Toolport MCP setting changed; recycling ACP process", {
@@ -2169,6 +2186,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               promptsInFlight: ctx.promptsInFlight,
               activeTurnId: liveActiveTurnId,
               interruptedTurnIds: ctx.interruptedTurnIds,
+              sessionStatus: ctx.session.status,
               nextTurn: {
                 id: String(nextTurnId),
                 text: typeof input.input === "string" ? input.input : "",
@@ -2187,6 +2205,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               queuePhase: disposed.state.phase,
               interrupted:
                 liveActiveTurnId !== undefined && ctx.interruptedTurnIds.has(liveActiveTurnId),
+              concurrentSteer: disposed.disposition._tag === "steer",
             });
             if (disposed.disposition._tag === "queued") {
               // Hold this send until the live turn settles, then auto-start.
@@ -2530,11 +2549,11 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             }
           });
 
-          // Full interjection loop (not a soft queue):
-          // 1) Preempt the in-flight session/prompt (ACP serializes prompts).
-          // 2) Send the new prompt on the same Studio turn.
-          // Synthetic "Following up" chrome is intentionally not emitted —
-          // silence beats invention (turn-engine InterjectionPolicy).
+          // Native mid-turn interject: concurrent session/prompt, no cancel.
+          // Cancel+reprompt kills open tools and discards context — not how
+          // Grok Build steers. ACP has no session/inject yet; concurrent prompt
+          // lets the agent accept the user message at its next safe breakpoint
+          // while the live tool loop continues (turn-engine InterjectionPolicy).
           if (prepared.isSteering) {
             const liveForSteer = sessions.get(input.threadId);
             if (liveForSteer) {
@@ -2543,15 +2562,10 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               liveForSteer.lastToolActivityAtMs = nowMs;
               liveForSteer.turnVisibleUpdateCount += 1;
             }
-            // Time the preempt→prompt handoff. If the agent holds the ACP prompt
-            // slot, the steering prompt queues behind the live tool loop and the
-            // user sees "Grok ignored my message" instead of an interject.
-            const preemptStartedMs = yield* Clock.currentTimeMillis;
-            yield* prepared.acp.preemptActivePrompt;
-            yield* Effect.logInfo("Grok steer preempted active prompt", {
+            yield* Effect.logInfo("Grok steer concurrent prompt (no cancel)", {
               threadId: input.threadId,
               turnId: prepared.turnId,
-              preemptMs: (yield* Clock.currentTimeMillis) - preemptStartedMs,
+              openToolCount: liveForSteer?.openToolCallIds.size ?? 0,
             });
             if (shouldEmitSyntheticFollowUpChrome()) {
               const textPart = prepared.promptParts.find(
@@ -2584,32 +2598,32 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           // failing the whole sendTurn: the UI keys off turn.completed failed.
           // Cancel often completes the prompt RPC successfully first; the
           // success path settles via interruptedTurnIds + silentTurnStopMessage.
+          const promptRequest = { prompt: prepared.promptParts } as const;
+          const promptRpc = prepared.isSteering
+            ? prepared.acp.promptConcurrent(promptRequest)
+            : prepared.acp.prompt(promptRequest);
           const result = yield* Effect.raceFirst(
-            prepared.acp
-              .prompt({
-                prompt: prepared.promptParts,
-              })
-              .pipe(
-                Effect.tap((promptResult) =>
-                  Effect.all([
-                    Ref.set(promptRpcSucceeded, true),
-                    Ref.set(promptResultRef, promptResult),
-                  ]),
-                ),
-                Effect.tapError((error) =>
-                  Ref.set(
-                    promptFailureMessageRef,
-                    mapAcpToAdapterError(PROVIDER, input.threadId, "session/prompt", error).message,
-                  ).pipe(
-                    Effect.andThen(
-                      prepared.acp.drainEvents.pipe(Effect.timeout("2 seconds"), Effect.ignore),
-                    ),
+            promptRpc.pipe(
+              Effect.tap((promptResult) =>
+                Effect.all([
+                  Ref.set(promptRpcSucceeded, true),
+                  Ref.set(promptResultRef, promptResult),
+                ]),
+              ),
+              Effect.tapError((error) =>
+                Ref.set(
+                  promptFailureMessageRef,
+                  mapAcpToAdapterError(PROVIDER, input.threadId, "session/prompt", error).message,
+                ).pipe(
+                  Effect.andThen(
+                    prepared.acp.drainEvents.pipe(Effect.timeout("2 seconds"), Effect.ignore),
                   ),
                 ),
-                Effect.mapError((error) =>
-                  mapAcpToAdapterError(PROVIDER, input.threadId, "session/prompt", error),
-                ),
               ),
+              Effect.mapError((error) =>
+                mapAcpToAdapterError(PROVIDER, input.threadId, "session/prompt", error),
+              ),
+            ),
             silenceWatchdog.pipe(
               Effect.tapError((error) =>
                 Ref.set(

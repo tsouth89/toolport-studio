@@ -248,6 +248,14 @@ it("refuses to steer into a cancelled/interrupted turn after Stop", () => {
       interruptedTurnIds: new Set(),
     }),
   );
+  assert.isTrue(
+    canSteerGrokSendTurn({
+      promptsInFlight: 0,
+      activeTurnId: liveTurn,
+      interruptedTurnIds: new Set(),
+      sessionStatus: "running",
+    }),
+  );
   assert.isFalse(
     canSteerGrokSendTurn({
       promptsInFlight: 1,
@@ -1390,18 +1398,22 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
       }).pipe(TestClock.withLive),
   );
 
-  it.effect("steers a mid-turn message by preempting the in-flight prompt", () =>
+  it.effect("steers mid-turn with concurrent prompt and never cancels the live turn", () =>
     Effect.gen(function* () {
-      const threadId = ThreadId.make("grok-steer-preempt");
-      // First prompt hangs until cancel; steer must cancel it and run immediately.
+      const threadId = ThreadId.make("grok-steer-concurrent");
+      const tempDir = yield* Effect.promise(() =>
+        NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "grok-steer-concurrent-")),
+      );
+      const requestLogPath = NodePath.join(tempDir, "requests.jsonl");
+      // First prompt hangs until cancel. Steer must land as a concurrent
+      // session/prompt without session/cancel (no tool kill).
       const adapter = yield* makeMockTestAdapter({
         T3_ACP_HANG_PROMPT_TEXT: "work forever",
         T3_ACP_PROMPT_RESPONSE_TEXT: "steered reply",
+        T3_ACP_REQUEST_LOG_PATH: requestLogPath,
       });
 
       const firstTurnStarted = yield* Deferred.make<TurnId>();
-      const steerCompleted =
-        yield* Deferred.make<Extract<ProviderRuntimeEvent, { type: "turn.completed" }>>();
       const runtimeEvents: ProviderRuntimeEvent[] = [];
       const eventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
         Effect.gen(function* () {
@@ -1411,9 +1423,6 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
           runtimeEvents.push(event);
           if (event.type === "turn.started" && event.turnId !== undefined) {
             yield* Deferred.succeed(firstTurnStarted, event.turnId).pipe(Effect.ignore);
-          }
-          if (event.type === "turn.completed") {
-            yield* Deferred.succeed(steerCompleted, event).pipe(Effect.ignore);
           }
         }),
       ).pipe(Effect.forkChild);
@@ -1434,24 +1443,27 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
         .pipe(Effect.forkChild);
 
       const liveTurnId = yield* Deferred.await(firstTurnStarted).pipe(Effect.timeout("8 seconds"));
+      // Let the hang leave the thread lock and enter session/prompt.
+      yield* Effect.sleep("500 millis");
 
-      // Without preemption this would block until the hang ends (never).
+      const sessionsBefore = yield* adapter.listSessions();
+      const sessionBefore = sessionsBefore.find((entry) => entry.threadId === threadId);
+      assert.equal(
+        sessionBefore?.status,
+        "running",
+        `hang must still be live before steer (got ${sessionBefore?.status})`,
+      );
+
       const steered = yield* adapter
         .sendTurn({
           threadId,
-          input: "stop and do this instead",
+          input: "also keep the open tools; just note this constraint",
           attachments: [],
         })
         .pipe(Effect.timeout("12 seconds"));
 
       assert.equal(String(steered.turnId), String(liveTurnId));
-      const completed = yield* Deferred.await(steerCompleted).pipe(Effect.timeout("8 seconds"));
-      assert.equal(String(completed.turnId), String(liveTurnId));
-      // Steer keeps one turn; hang fiber should also release after preempt.
-      yield* Fiber.join(hangFiber).pipe(Effect.timeout("8 seconds"), Effect.ignore);
 
-      // Product default: no synthetic "Following up" runtime.warning (turn engine).
-      // Turn identity reuse + completion is the authoritative signal.
       const followingUp = runtimeEvents.find(
         (event) =>
           event.type === "runtime.warning" &&
@@ -1463,10 +1475,24 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
         "steer must not invent Following up chrome; silence beats fabrication",
       );
 
+      const requestLog = yield* Effect.promise(() => NodeFSP.readFile(requestLogPath, "utf8"));
+      assert.equal(
+        (requestLog.match(/"method"\s*:\s*"session\/cancel"/g) ?? []).length,
+        0,
+        "concurrent steer must not send session/cancel (that kills open tools)",
+      );
+      assert.isTrue(
+        (requestLog.match(/"method"\s*:\s*"session\/prompt"/g) ?? []).length >= 2,
+        "expected hang + steer session/prompt RPCs",
+      );
+
+      // Hang still owns the primary turn until Stop.
       const sessions = yield* adapter.listSessions();
       const session = sessions.find((entry) => entry.threadId === threadId);
-      assert.equal(session?.status, "ready");
+      assert.equal(session?.status, "running");
 
+      yield* adapter.interruptTurn(threadId, liveTurnId);
+      yield* Fiber.join(hangFiber).pipe(Effect.timeout("8 seconds"), Effect.ignore);
       yield* Fiber.interrupt(eventsFiber);
       yield* adapter.stopSession(threadId);
     }).pipe(TestClock.withLive),

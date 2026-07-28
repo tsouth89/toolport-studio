@@ -264,17 +264,17 @@ export const makeXAiPromptCompletionRuntime = Effect.fn("makeXAiPromptCompletion
       { discard: true },
     );
 
-    return {
-      ...runtime,
-      start: () =>
-        runtime
-          .start()
-          .pipe(Effect.tap((started) => Ref.set(activeSessionIdRef, started.sessionId))),
-      prompt: (payload) =>
+    const withXAiPromptCompletion =
+      (
+        runPrompt: (
+          payload: Omit<EffectAcpSchema.PromptRequest, "sessionId">,
+        ) => ReturnType<AcpSessionRuntime.AcpSessionRuntime["Service"]["prompt"]>,
+      ) =>
+      (payload: Omit<EffectAcpSchema.PromptRequest, "sessionId">) =>
         Effect.gen(function* () {
           const sessionId = yield* Ref.get(activeSessionIdRef);
           if (sessionId === undefined) {
-            return yield* runtime.prompt(payload);
+            return yield* runPrompt(payload);
           }
 
           const promptId = yield* allocatePromptFallbackId;
@@ -294,7 +294,7 @@ export const makeXAiPromptCompletionRuntime = Effect.fn("makeXAiPromptCompletion
           const fallbackWon = yield* Ref.make(false);
 
           return yield* Effect.raceFirst(
-            runtime.prompt(requestPayload),
+            runPrompt(requestPayload),
             Deferred.await(fallback.deferred).pipe(Effect.tap(() => Ref.set(fallbackWon, true))),
           ).pipe(
             Effect.tap(() =>
@@ -331,7 +331,17 @@ export const makeXAiPromptCompletionRuntime = Effect.fn("makeXAiPromptCompletion
             ),
             Effect.ensuring(unregisterXAiPromptCompletionFallback(pendingRef, fallback.deferred)),
           );
-        }),
+        });
+
+    return {
+      ...runtime,
+      start: () =>
+        runtime
+          .start()
+          .pipe(Effect.tap((started) => Ref.set(activeSessionIdRef, started.sessionId))),
+      prompt: withXAiPromptCompletion(runtime.prompt),
+      // Concurrent steer must get the same xAI prompt_complete race as primary.
+      promptConcurrent: withXAiPromptCompletion(runtime.promptConcurrent),
       cancel: Ref.get(activeSessionIdRef).pipe(
         Effect.flatMap((sessionId) =>
           sessionId === undefined

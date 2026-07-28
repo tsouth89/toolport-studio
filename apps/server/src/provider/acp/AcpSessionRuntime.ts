@@ -220,6 +220,17 @@ export class AcpSessionRuntime extends Context.Service<
       payload: Omit<EffectAcpSchema.PromptRequest, "sessionId">,
     ) => Effect.Effect<EffectAcpSchema.PromptResponse, EffectAcpErrors.AcpError>;
     /**
+     * Mid-turn steer without cancel: fires `session/prompt` while the primary
+     * prompt may still be in flight. Does **not** take the serialization
+     * semaphore and does **not** send `session/cancel`, so the agent can inject
+     * the user message at its next safe breakpoint (native Grok-style) instead
+     * of killing open tools. ACP has no session/inject yet; concurrent prompt
+     * is the non-destructive alternative to cancel+reprompt.
+     */
+    readonly promptConcurrent: (
+      payload: Omit<EffectAcpSchema.PromptRequest, "sessionId">,
+    ) => Effect.Effect<EffectAcpSchema.PromptResponse, EffectAcpErrors.AcpError>;
+    /**
      * Sends a real ACP `session/cancel` notification for the active session.
      * @see https://agentclientprotocol.com/protocol/schema#session/cancel
      */
@@ -227,6 +238,8 @@ export class AcpSessionRuntime extends Context.Service<
     /**
      * Immediately releases the in-flight `session/prompt` so a steering message
      * can run now instead of waiting for the current tool loop to finish.
+     * Prefer `promptConcurrent` for Grok-native interject; keep this for agents
+     * that cannot accept concurrent prompts.
      * Does not force-settle the Studio turn (adapters keep the same turn id).
      */
     readonly preemptActivePrompt: Effect.Effect<void>;
@@ -920,6 +933,21 @@ export const make = (
             }),
           ),
         ),
+      // Concurrent mid-turn inject: no semaphore, no cancel latch. Leaves the
+      // primary prompt (and its Stop latch) alone so open tools keep running.
+      promptConcurrent: (payload) =>
+        Effect.gen(function* () {
+          const started = yield* getStartedState;
+          const requestPayload = {
+            sessionId: started.sessionId,
+            ...payload,
+          } satisfies EffectAcpSchema.PromptRequest;
+          return yield* runLoggedRequest(
+            "session/prompt",
+            requestPayload,
+            acp.agent.prompt(requestPayload),
+          );
+        }),
       cancel: getStartedState.pipe(
         Effect.flatMap((started) =>
           Effect.gen(function* () {
