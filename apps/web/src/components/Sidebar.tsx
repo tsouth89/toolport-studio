@@ -391,8 +391,14 @@ const SidebarRow = memo(function SidebarRow(props: {
   });
   const prStatus = prStatusIndicator(pr, gitStatus.data?.sourceControlProvider);
 
+  // Prefer the live session instance, but fall back to the thread's model
+  // selection so a running session still shows its provider mark if the
+  // session id is briefly missing from the providers map.
   const modelInstanceId = thread.session?.providerInstanceId ?? thread.modelSelection.instanceId;
-  const providerEntry = props.providerEntryByInstanceId.get(modelInstanceId) ?? null;
+  const providerEntry =
+    props.providerEntryByInstanceId.get(modelInstanceId) ??
+    props.providerEntryByInstanceId.get(thread.modelSelection.instanceId) ??
+    null;
   const driverKind = providerEntry?.driverKind ?? null;
   const selectedModel = providerEntry?.models.find(
     (model) => model.slug === thread.modelSelection.model,
@@ -581,57 +587,65 @@ const SidebarRow = memo(function SidebarRow(props: {
             />
           }
         >
-          {/* Leading: status + provider + title. Trailing is a reserved slot so
-              hover actions never paint over the title (absolute overlay used to). */}
+          {/* Leading meta is two fixed rails so a running status dot never
+              steals title width or collides with the provider mark:
+              [status 12px][provider 14px][title…][trailing rail]. */}
           <div
             className={cn(
               "relative z-10 flex h-7 min-w-0 items-center gap-1.5 px-2",
               nestUnderProjectShelf && "ps-4",
             )}
           >
-            <span
-              className="flex size-3 shrink-0 items-center justify-center"
-              aria-hidden
-              title={topStatus?.label}
-            >
-              {topStatus ? (
-                <span
-                  className={cn(
-                    "block size-1.5 rounded-full",
-                    status === "working"
-                      ? "animate-status-pulse bg-sky-500 dark:bg-sky-400"
-                      : status === "approval"
-                        ? "bg-amber-500 dark:bg-amber-300"
-                        : status === "input"
-                          ? "bg-indigo-500 dark:bg-indigo-300"
-                          : status === "failed"
-                            ? "bg-red-500 dark:bg-red-400"
-                            : "bg-emerald-500 dark:bg-emerald-400",
-                  )}
-                />
-              ) : null}
-            </span>
-            {driverKind ? (
+            <span className="flex shrink-0 items-center gap-1.5">
               <span
-                className="inline-flex shrink-0 text-sidebar-muted-foreground"
-                title={thread.session?.providerName ?? modelInstanceId}
+                className="flex size-3 shrink-0 items-center justify-center"
+                aria-hidden
+                title={topStatus?.label}
               >
-                <ProviderInstanceIcon
-                  driverKind={driverKind}
-                  displayName={thread.session?.providerName ?? modelInstanceId}
-                  iconClassName="size-3.5"
-                />
+                {topStatus ? (
+                  <span
+                    className={cn(
+                      "block size-1.5 rounded-full",
+                      status === "working"
+                        ? "animate-status-pulse bg-sky-500 dark:bg-sky-400"
+                        : status === "approval"
+                          ? "bg-amber-500 dark:bg-amber-300"
+                          : status === "input"
+                            ? "bg-indigo-500 dark:bg-indigo-300"
+                            : status === "failed"
+                              ? "bg-red-500 dark:bg-red-400"
+                              : "bg-emerald-500 dark:bg-emerald-400",
+                    )}
+                  />
+                ) : null}
               </span>
-            ) : showProjectFavicon ? (
-              <ProjectFavicon
-                environmentId={thread.environmentId}
-                cwd={props.projectCwd ?? ""}
-                className="size-3.5 shrink-0 opacity-80"
-              />
-            ) : null}
-            <div className="flex min-w-0 flex-1 items-center gap-1">{title}</div>
+              <span
+                className="flex size-3.5 shrink-0 items-center justify-center text-sidebar-muted-foreground"
+                title={
+                  driverKind
+                    ? (thread.session?.providerName ?? modelInstanceId)
+                    : (props.projectTitle ?? undefined)
+                }
+              >
+                {driverKind ? (
+                  <ProviderInstanceIcon
+                    driverKind={driverKind}
+                    displayName={thread.session?.providerName ?? modelInstanceId}
+                    iconClassName="size-3.5"
+                  />
+                ) : showProjectFavicon ? (
+                  <ProjectFavicon
+                    environmentId={thread.environmentId}
+                    cwd={props.projectCwd ?? ""}
+                    className="size-3.5 opacity-80"
+                  />
+                ) : null}
+              </span>
+            </span>
+            <div className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">{title}</div>
             {/* Fixed-width trailing rail: title truncates against this edge at rest
-                and on hover, so actions never sit on top of the name. */}
+                and on hover, so actions never sit on top of the name. Elapsed
+                "1m" / archive both fit here without shrinking the leading rails. */}
             <span className="relative ml-auto flex h-5 w-16 shrink-0 items-center justify-end">
               <span
                 className={cn(
