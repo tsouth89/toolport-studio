@@ -213,12 +213,13 @@ export function ThisTurnCard({
   );
 }
 
-/** Whether the floating card should offer something useful to show. */
+/**
+ * Auto-show only while the turn is live or needs attention. After settle the
+ * timeline already has Worked for / changed files — keep the chat Claude-clean
+ * unless the user forced the card open (handled by the parent).
+ */
 export function shouldShowThisTurnCard(model: ThreadActivityViewModel): boolean {
   if (model.isWorking) return true;
   if (model.attention !== null) return true;
-  if (model.current !== null) return true;
-  if (model.changedFiles !== null && model.changedFiles.fileCount > 0) return true;
-  if (model.recentSteps.length > 0) return true;
   return false;
 }

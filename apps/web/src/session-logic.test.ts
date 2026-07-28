@@ -1957,7 +1957,7 @@ describe("formatWorkLogToolLabel", () => {
           toolLifecycleStatus: "completed",
         }),
       ),
-    ).toBe("Called Toolport call tool");
+    ).toBe("Called a tool via Toolport");
     expect(
       formatWorkLogToolLabel(
         entry({
@@ -1967,7 +1967,20 @@ describe("formatWorkLogToolLabel", () => {
           itemType: "mcp_tool_call",
         }),
       ),
-    ).toBe("Called Toolport search tools");
+    ).toBe("Searched Toolport tools");
+    expect(
+      formatWorkLogToolLabel(
+        entry({
+          id: "mcp-routed",
+          label: "toolport__toolport_call_tool",
+          toolTitle: "toolport__toolport_call_tool",
+          itemType: "mcp_tool_call",
+          toolData: {
+            arguments: { name: "linear_2__save_comment" },
+          },
+        }),
+      ),
+    ).toBe("Called Linear · save comment");
   });
 
   it("keeps already-friendly MCP server · tool titles", () => {

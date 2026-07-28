@@ -492,17 +492,120 @@ function isGenericToolTitle(value: string | undefined): boolean {
   return GENERIC_TOOL_TITLES.has(normalized);
 }
 
+function humanizeServerSegment(server: string): string {
+  // linear_2 / linear-2 → Linear
+  const base = server
+    .trim()
+    .replace(/[_-]+\d+$/u, "")
+    .replace(/[_-]+/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+  if (base.length === 0) {
+    return server.trim();
+  }
+  return base.charAt(0).toUpperCase() + base.slice(1).toLowerCase();
+}
+
+function humanizeToolSegment(tool: string): string {
+  const normalized = tool.trim().replace(/[_-]+/gu, " ").replace(/\s+/gu, " ").trim();
+  if (normalized.length === 0) {
+    return tool.trim();
+  }
+  // Tool names read better as sentence-case: "list issues", "save comment".
+  return normalized.toLowerCase();
+}
+
 function humanizeStructuredToolName(value: string): string {
   let name = value.trim();
   // Common MCP / Toolport prefixes: server__tool or toolport__toolport_run_script
   name = name.replace(/^(?:mcp__|toolport__)+/iu, "");
+  // Gateway tools are often toolport__toolport_call_tool → remaining "toolport_call_tool"
+  name = name.replace(/^toolport(?:__|_)+/iu, "");
+
+  // Prefer server__tool splitting before collapsing underscores.
+  if (name.includes("__")) {
+    const parts = name
+      .split("__")
+      .map((part) => part.trim())
+      .filter(Boolean);
+    if (parts.length >= 2) {
+      const server = humanizeServerSegment(parts[0]!);
+      const tool = humanizeToolSegment(parts.slice(1).join("_"));
+      return `${server} · ${tool}`;
+    }
+  }
+
   name = name.replace(/__/gu, " · ");
   name = name.replace(/[_-]+/gu, " ");
   name = name.replace(/\s+/gu, " ").trim();
+  // Drop redundant "toolport · " after prefix strip (call tool, search tools, …).
+  name = name.replace(/^toolport\s*·\s*/iu, "").trim();
   if (name.length === 0) {
     return value.trim();
   }
-  return name.charAt(0).toUpperCase() + name.slice(1);
+  if (name.includes(" · ")) {
+    const [serverPart, ...toolParts] = name.split(" · ");
+    return `${humanizeServerSegment(serverPart ?? "")} · ${humanizeToolSegment(toolParts.join(" "))}`;
+  }
+  // Single token / phrase: "call tool", "search tools"
+  return name.charAt(0).toUpperCase() + name.slice(1).toLowerCase();
+}
+
+/** Known Toolport gateway meta-tools (not the downstream MCP tool itself). */
+function isToolportGatewayMetaToolName(value: string): boolean {
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/^(?:mcp__|toolport__)+/gu, "")
+    .replace(/__/gu, "_")
+    .replace(/^toolport_/u, "");
+  return (
+    normalized === "call_tool" ||
+    normalized === "toolport_call_tool" ||
+    normalized === "search_tools" ||
+    normalized === "toolport_search_tools" ||
+    normalized === "status" ||
+    normalized === "toolport_status" ||
+    normalized === "run_script" ||
+    normalized === "toolport_run_script" ||
+    normalized === "fetch_result" ||
+    normalized === "toolport_fetch_result"
+  );
+}
+
+function toolportGatewayMetaSummary(
+  value: string,
+  tense: ToolActivityTense,
+  nestedToolName?: string,
+): string | undefined {
+  if (!isToolportGatewayMetaToolName(value)) {
+    return undefined;
+  }
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/^(?:mcp__|toolport__)+/gu, "")
+    .replace(/__/gu, "_")
+    .replace(/^toolport_/u, "");
+  if (normalized === "call_tool" || normalized === "toolport_call_tool") {
+    if (nestedToolName) {
+      return `${verb("call", tense)} ${nestedToolName}`;
+    }
+    return tense === "present" ? "Calling a tool via Toolport" : "Called a tool via Toolport";
+  }
+  if (normalized === "search_tools" || normalized === "toolport_search_tools") {
+    return tense === "present" ? "Searching Toolport tools" : "Searched Toolport tools";
+  }
+  if (normalized === "status" || normalized === "toolport_status") {
+    return tense === "present" ? "Checking Toolport status" : "Checked Toolport status";
+  }
+  if (normalized === "run_script" || normalized === "toolport_run_script") {
+    return tense === "present" ? "Running a Toolport script" : "Ran a Toolport script";
+  }
+  if (normalized === "fetch_result" || normalized === "toolport_fetch_result") {
+    return tense === "present" ? "Fetching a Toolport result" : "Fetched a Toolport result";
+  }
+  return undefined;
 }
 
 /**
@@ -530,12 +633,51 @@ export function humanizeToolDisplayName(value: string): string {
   return humanizeStructuredToolName(trimmed);
 }
 
+/**
+ * Nested tool name for Toolport gateway `call_tool` (arguments.name) so the
+ * timeline shows "Called Linear · list issues" instead of "Called Toolport call tool".
+ */
+function extractToolportRoutedToolName(
+  data: Record<string, unknown> | undefined,
+): string | undefined {
+  if (!data) {
+    return undefined;
+  }
+  const rawInput = asRecord(data.rawInput);
+  const item = asRecord(data.item);
+  const argBags = [
+    asRecord(rawInput?.arguments),
+    asRecord(rawInput?.input),
+    asRecord(item?.arguments),
+    asRecord(item?.input),
+    asRecord(data.arguments),
+    asRecord(data.input),
+  ];
+  for (const bag of argBags) {
+    if (!bag) continue;
+    const nested =
+      asTrimmedString(bag.name) ??
+      asTrimmedString(bag.tool) ??
+      asTrimmedString(bag.tool_name) ??
+      asTrimmedString(bag.toolName);
+    if (nested && !isGenericToolTitle(nested) && !isToolportGatewayMetaToolName(nested)) {
+      return humanizeStructuredToolName(nested);
+    }
+  }
+  return undefined;
+}
+
 function extractStructuredToolName(data: Record<string, unknown> | undefined): string | undefined {
   if (!data) {
     return undefined;
   }
   const rawInput = asRecord(data.rawInput);
   const item = asRecord(data.item);
+  // Prefer the routed downstream tool when this is a Toolport gateway call.
+  const routed = extractToolportRoutedToolName(data);
+  if (routed) {
+    return routed;
+  }
   const candidates = [
     asTrimmedString(rawInput?.tool_name),
     asTrimmedString(rawInput?.toolName),
@@ -547,14 +689,15 @@ function extractStructuredToolName(data: Record<string, unknown> | undefined): s
     asTrimmedString(data.tool),
   ];
   for (const candidate of candidates) {
-    if (candidate && !isGenericToolTitle(candidate)) {
+    if (candidate && !isGenericToolTitle(candidate) && !isToolportGatewayMetaToolName(candidate)) {
       return humanizeStructuredToolName(candidate);
     }
   }
   const server = asTrimmedString(item?.server) ?? asTrimmedString(data.server);
   const tool = asTrimmedString(item?.tool) ?? asTrimmedString(data.tool);
-  if (server && tool) {
-    return `${server} · ${humanizeStructuredToolName(tool)}`;
+  if (server && tool && !isToolportGatewayMetaToolName(tool)) {
+    // Prefer "Linear · list issues" over "Linear 2 · List issues".
+    return `${humanizeServerSegment(server)} · ${humanizeToolSegment(tool)}`;
   }
   return undefined;
 }
@@ -786,6 +929,23 @@ export function deriveToolActivityPresentation(
       summary: `${verb("call", tense)} ${structuredName}`,
       ...(subtitle ? { detail: subtitle } : {}),
     };
+  }
+
+  const routedNested = extractToolportRoutedToolName(data);
+  const wireTitleCandidates = [
+    title,
+    asTrimmedString(asRecord(data?.rawInput)?.tool_name),
+    asTrimmedString(asRecord(data?.rawInput)?.toolName),
+    asTrimmedString(asRecord(data?.rawInput)?.name),
+    asTrimmedString(asRecord(data?.item)?.name),
+    asTrimmedString(asRecord(data?.item)?.tool),
+  ];
+  for (const wire of wireTitleCandidates) {
+    if (!wire) continue;
+    const gatewaySummary = toolportGatewayMetaSummary(wire, tense, routedNested);
+    if (gatewaySummary) {
+      return { summary: gatewaySummary };
+    }
   }
 
   if (title && !isGenericToolTitle(title)) {

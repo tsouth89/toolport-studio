@@ -181,7 +181,7 @@ describe("toolActivity", () => {
         fallbackSummary: "Tool",
       }),
     ).toEqual({
-      summary: "Called Toolport run script",
+      summary: "Ran a Toolport script",
     });
   });
 
@@ -189,7 +189,7 @@ describe("toolActivity", () => {
     expect(looksLikeWireToolName("toolport__toolport_call_tool")).toBe(true);
     expect(looksLikeWireToolName("mcp__linear__list_issues")).toBe(true);
     expect(looksLikeWireToolName("t3-code · preview_status")).toBe(false);
-    expect(humanizeToolDisplayName("toolport__toolport_call_tool")).toBe("Toolport call tool");
+    expect(humanizeToolDisplayName("toolport__toolport_call_tool")).toBe("Call tool");
     expect(humanizeToolDisplayName("mcp__linear__list_issues")).toBe("Linear · list issues");
     expect(humanizeToolDisplayName("t3-code · preview_status")).toBe("t3-code · preview_status");
 
@@ -200,7 +200,34 @@ describe("toolActivity", () => {
         fallbackSummary: "toolport__toolport_search_tools",
       }),
     ).toEqual({
-      summary: "Called Toolport search tools",
+      summary: "Searched Toolport tools",
+    });
+  });
+
+  it("surfaces the routed Toolport tool instead of call_tool gateway noise", () => {
+    expect(
+      deriveToolActivityPresentation({
+        itemType: "mcp_tool_call",
+        title: "toolport__toolport_call_tool",
+        data: {
+          rawInput: {
+            name: "toolport__toolport_call_tool",
+            arguments: { name: "linear_2__list_issues" },
+          },
+        },
+        fallbackSummary: "toolport__toolport_call_tool",
+      }),
+    ).toEqual({
+      summary: "Called Linear · list issues",
+    });
+    expect(
+      deriveToolActivityPresentation({
+        itemType: "mcp_tool_call",
+        title: "toolport__toolport_call_tool",
+        fallbackSummary: "toolport__toolport_call_tool",
+      }),
+    ).toEqual({
+      summary: "Called a tool via Toolport",
     });
   });
 

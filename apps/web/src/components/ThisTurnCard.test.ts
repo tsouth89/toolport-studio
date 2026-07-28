@@ -36,7 +36,7 @@ describe("shouldShowThisTurnCard", () => {
     expect(shouldShowThisTurnCard(baseModel())).toBe(false);
   });
 
-  it("shows after settle when there is a last step", () => {
+  it("hides after settle so the timeline owns the story", () => {
     expect(
       shouldShowThisTurnCard(
         baseModel({
@@ -46,6 +46,26 @@ describe("shouldShowThisTurnCard", () => {
             startedAt: "2026-07-28T00:03:00.000Z",
             source: "settled",
           },
+          recentSteps: [
+            {
+              id: "s1",
+              label: "Read session-logic.ts",
+              status: "completed",
+              createdAt: "2026-07-28T00:03:00.000Z",
+              tone: "tool",
+              isToolLike: true,
+            },
+          ],
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it("shows when attention is required even if not working", () => {
+    expect(
+      shouldShowThisTurnCard(
+        baseModel({
+          attention: { kind: "approval", label: "Approval required" },
         }),
       ),
     ).toBe(true);
