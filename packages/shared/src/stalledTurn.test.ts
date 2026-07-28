@@ -7,6 +7,7 @@ import {
   deriveStalledTurnState,
   formatQuietTurnNotice,
   formatStalledSilenceLabel,
+  resolveLiveStreamActivityAt,
   resolveStalledTurnThresholdMs,
 } from "./stalledTurn.js";
 
@@ -44,6 +45,36 @@ describe("deriveLastStreamActivityAt", () => {
         sessionUpdatedAt: "2026-07-25T12:00:05.000Z",
       }),
     ).toBe("2026-07-25T12:00:05.000Z");
+  });
+});
+
+describe("resolveLiveStreamActivityAt", () => {
+  it("floors stale prior-turn clocks to the new local send / work start", () => {
+    // After Enter, projection still has the previous turn and thread.updatedAt
+    // from minutes ago. Quiet must not use that as silence.
+    expect(
+      resolveLiveStreamActivityAt({
+        threadUpdatedAt: "2026-07-25T11:50:00.000Z",
+        sessionUpdatedAt: "2026-07-25T11:50:00.000Z",
+        latestTurnRequestedAt: "2026-07-25T11:50:00.000Z",
+        latestTurnStartedAt: "2026-07-25T11:50:01.000Z",
+        includeLatestTurnAnchors: false,
+        localDispatchStartedAt: "2026-07-25T12:00:00.000Z",
+        activeWorkStartedAt: "2026-07-25T12:00:00.000Z",
+      }),
+    ).toBe("2026-07-25T12:00:00.000Z");
+  });
+
+  it("keeps a fresher live stream clock when the turn is open", () => {
+    expect(
+      resolveLiveStreamActivityAt({
+        threadUpdatedAt: "2026-07-25T12:00:30.000Z",
+        latestTurnStartedAt: "2026-07-25T12:00:00.000Z",
+        includeLatestTurnAnchors: true,
+        localDispatchStartedAt: "2026-07-25T12:00:00.000Z",
+        activeWorkStartedAt: "2026-07-25T12:00:00.000Z",
+      }),
+    ).toBe("2026-07-25T12:00:30.000Z");
   });
 });
 

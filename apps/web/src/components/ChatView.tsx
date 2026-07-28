@@ -40,7 +40,7 @@ import {
 } from "@t3tools/shared/model";
 import { CHAT_LIST_ANCHOR_OFFSET } from "@t3tools/shared/chatList";
 import { projectScriptCwd, projectScriptRuntimeEnv } from "@t3tools/shared/projectScripts";
-import { deriveLastStreamActivityAt } from "@t3tools/shared/stalledTurn";
+import { resolveLiveStreamActivityAt } from "@t3tools/shared/stalledTurn";
 import { truncate } from "@t3tools/shared/String";
 import { nextTerminalId, resolveTerminalSessionLabel } from "@t3tools/shared/terminalLabels";
 import { Debouncer } from "@tanstack/react-pacer";
@@ -2163,14 +2163,19 @@ function ChatViewContent(props: ChatViewProps) {
   );
   // Track silence while any live work is in flight so the Working row can show
   // quiet/recovery copy during long connecting or silent running windows.
+  // Floor against local send / work start so a settled prior turn's old
+  // timestamps do not flash "Quiet for … · Stop · View in Activity" on Enter.
   const lastStreamActivityAt =
     isWorking && activeThread
-      ? (deriveLastStreamActivityAt({
+      ? resolveLiveStreamActivityAt({
           threadUpdatedAt: activeThread.updatedAt,
           sessionUpdatedAt: activeThread.session?.updatedAt ?? null,
           latestTurnRequestedAt: activeLatestTurn?.requestedAt ?? null,
           latestTurnStartedAt: activeLatestTurn?.startedAt ?? null,
-        }) ?? localDispatchStartedAt)
+          includeLatestTurnAnchors: !latestTurnSettled,
+          localDispatchStartedAt,
+          activeWorkStartedAt,
+        })
       : null;
   useEffect(() => {
     attachmentPreviewHandoffByMessageIdRef.current = attachmentPreviewHandoffByMessageId;

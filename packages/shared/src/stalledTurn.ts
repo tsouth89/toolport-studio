@@ -50,6 +50,33 @@ export function deriveLastStreamActivityAt(input: {
   );
 }
 
+/**
+ * Quiet-clock for the live Working row. Never older than the current work
+ * window: after Enter, projection still carries the prior turn's timestamps
+ * for a frame, and `?? localDispatchStartedAt` only helped when derivation was
+ * null — a 5-minute-old thread.updatedAt still looked like "Quiet for 5m ·
+ * Stop · View in Activity" until the new turn projected.
+ */
+export function resolveLiveStreamActivityAt(input: {
+  readonly threadUpdatedAt?: string | null;
+  readonly sessionUpdatedAt?: string | null;
+  readonly latestTurnRequestedAt?: string | null;
+  readonly latestTurnStartedAt?: string | null;
+  /** Only pass these when the latest turn is still unsettled. */
+  readonly includeLatestTurnAnchors?: boolean;
+  readonly localDispatchStartedAt?: string | null;
+  readonly activeWorkStartedAt?: string | null;
+}): string | null {
+  const includeLatestTurn = input.includeLatestTurnAnchors !== false;
+  const fromStream = deriveLastStreamActivityAt({
+    threadUpdatedAt: input.threadUpdatedAt,
+    sessionUpdatedAt: input.sessionUpdatedAt,
+    latestTurnRequestedAt: includeLatestTurn ? input.latestTurnRequestedAt : null,
+    latestTurnStartedAt: includeLatestTurn ? input.latestTurnStartedAt : null,
+  });
+  return maxIsoTimestamp(fromStream, input.localDispatchStartedAt, input.activeWorkStartedAt);
+}
+
 export function resolveStalledTurnThresholdMs(input: {
   readonly hasLongRunningOpenTool?: boolean;
 }): number {
@@ -135,7 +162,7 @@ function parseIsoToMs(value: string | null | undefined): number | null {
   return Number.isNaN(ms) ? null : ms;
 }
 
-function maxIsoTimestamp(...values: Array<string | null | undefined>): string | null {
+export function maxIsoTimestamp(...values: Array<string | null | undefined>): string | null {
   let best: string | null = null;
   let bestMs = Number.NEGATIVE_INFINITY;
   for (const value of values) {
