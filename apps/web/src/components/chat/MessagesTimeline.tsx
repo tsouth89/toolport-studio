@@ -1141,9 +1141,9 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
   const toolTooltip = row.activeToolTooltip?.trim() || toolDetail;
   const toolTitle = [toolLabel, toolTooltip].filter(Boolean).join(" — ") || undefined;
   const onOpenActivity = activity.onOpenActivity;
-  const onInterrupt = activity.onInterrupt;
-  const showRecoveryStop = quiet.isQuiet && onInterrupt !== null;
-  // Quiet recovery only — opens the This-turn card (Codex-style), not a dock.
+  // Wait notice only — Stop lives on the composer (queue/send). Silence is
+  // usually model think or a long tool, not a hang recovery moment.
+  // Opens the This-turn card (Codex-style), not a docked Activity column.
   const showActivityLink = quiet.isQuiet && onOpenActivity !== null;
 
   return (
@@ -1232,21 +1232,6 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
               ·
             </span>
             <span className="font-normal text-muted-foreground">{quiet.notice}</span>
-          </>
-        ) : null}
-        {showRecoveryStop ? (
-          <>
-            <span className="text-muted-foreground/50" aria-hidden="true">
-              ·
-            </span>
-            <button
-              type="button"
-              className="rounded-md bg-destructive/90 px-2 py-0.5 text-[11px] font-semibold text-white hover:bg-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              onClick={onInterrupt}
-              aria-label="Stop generation"
-            >
-              Stop
-            </button>
           </>
         ) : null}
         {showActivityLink ? (

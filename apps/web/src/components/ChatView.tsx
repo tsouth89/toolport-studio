@@ -2165,7 +2165,7 @@ function ChatViewContent(props: ChatViewProps) {
   // Track silence while any live work is in flight so the Working row can show
   // quiet/recovery copy during long connecting or silent running windows.
   // Floor against local send / work start so a settled prior turn's old
-  // timestamps do not flash "Quiet for … · Stop · View in Activity" on Enter.
+  // timestamps do not flash a long wait notice on Enter.
   const lastStreamActivityAt =
     isWorking && activeThread
       ? resolveLiveStreamActivityAt({

@@ -5,10 +5,10 @@
  * Shared across providers: any adapter that leaves a session "running" while
  * silent will surface the same quiet signal.
  *
- * Product note (SOU-386 / SOU-399): this is a **soft quiet notice only**, not a
+ * Product note (SOU-386 / SOU-399): this is a **soft wait notice only**, not a
  * hang kill. Server never silence-kills open tools; post-tool/think use a long
- * (15m) ceiling only when no tool is open. Do not add a second client-side
- * interrupt here. Hard recovery is user Stop + ACP process death settlement.
+ * (15m) ceiling only when no tool is open. Do not surface Stop on the Working
+ * row (composer already has it) and do not auto-interrupt from silence.
  */
 
 /**
@@ -18,9 +18,9 @@
 export const STALLED_TURN_THRESHOLD_MS = 120_000;
 
 /**
- * When an execute/monitor-style tool is open, suppress the quiet notice unless
- * silence exceeds this ceiling. Long tools are expected to be quiet; user Stop
- * is the recovery path (server does not auto-kill open tools).
+ * When an execute/monitor-style tool is open, suppress the wait notice unless
+ * silence exceeds this ceiling. Long tools are expected to be quiet; recovery
+ * is the composer Stop control (server does not auto-kill open tools).
  */
 export const STALLED_TURN_LONG_RUNNING_THRESHOLD_MS = 10 * 60_000;
 
@@ -54,8 +54,8 @@ export function deriveLastStreamActivityAt(input: {
  * Quiet-clock for the live Working row. Never older than the current work
  * window: after Enter, projection still carries the prior turn's timestamps
  * for a frame, and `?? localDispatchStartedAt` only helped when derivation was
- * null — a 5-minute-old thread.updatedAt still looked like "Quiet for 5m ·
- * Stop · View in Activity" until the new turn projected.
+ * null — a 5-minute-old thread.updatedAt still looked like a long wait on
+ * Enter until the new turn projected.
  */
 export function resolveLiveStreamActivityAt(input: {
   readonly threadUpdatedAt?: string | null;
@@ -127,9 +127,9 @@ export function formatStalledSilenceLabel(silentForMs: number): string {
 }
 
 /**
- * Calm Working-row copy — no panic language, no auto-kill.
- * When an open/last tool title is known, name it so the user can tell quiet
- * long work from a blank hang.
+ * Calm Working-row copy when the stream has been silent for a while.
+ * Silence is usually wait (model think / long tool), not a hang — never imply Stop.
+ * When an open/last tool title is known, name it so the wait has a subject.
  */
 export function formatQuietTurnNotice(
   silentForMs: number,
@@ -137,10 +137,11 @@ export function formatQuietTurnNotice(
     readonly activeToolLabel?: string | null;
   },
 ): string {
-  const base = `Quiet for ${formatStalledSilenceLabel(silentForMs)}`;
+  const silence = formatStalledSilenceLabel(silentForMs);
   const toolLabel = options?.activeToolLabel?.trim();
   if (!toolLabel) {
-    return base;
+    // No open tool signal: still treat as wait, not failure.
+    return `Waiting · no updates for ${silence}`;
   }
   // Open-tool labels are already progressive ("Running git log"), so splice them
   // in as the verb instead of stacking "still running Running git log".
@@ -149,10 +150,10 @@ export function formatQuietTurnNotice(
   if (verb) {
     const rest = progressive?.groups?.rest?.trim();
     return rest
-      ? `${base} · still ${verb.toLowerCase()} ${rest}`
-      : `${base} · still ${verb.toLowerCase()}`;
+      ? `Waiting · still ${verb.toLowerCase()} ${rest}`
+      : `Waiting · still ${verb.toLowerCase()}`;
   }
-  return `${base} · still running ${toolLabel}`;
+  return `Waiting · still running ${toolLabel}`;
 }
 
 function parseIsoToMs(value: string | null | undefined): number | null {

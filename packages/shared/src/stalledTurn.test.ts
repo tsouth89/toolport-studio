@@ -171,15 +171,17 @@ describe("formatStalledSilenceLabel", () => {
 });
 
 describe("formatQuietTurnNotice", () => {
-  it("uses calm quiet copy without panic language", () => {
-    expect(formatQuietTurnNotice(125_000)).toBe("Quiet for 2m 5s");
-    expect(formatQuietTurnNotice(45_000)).toBe("Quiet for 45s");
+  it("frames silence as wait, not failure", () => {
+    expect(formatQuietTurnNotice(125_000)).toBe("Waiting · no updates for 2m 5s");
+    expect(formatQuietTurnNotice(45_000)).toBe("Waiting · no updates for 45s");
   });
 
   it("names the open tool when known", () => {
     expect(formatQuietTurnNotice(125_000, { activeToolLabel: "Search" })).toBe(
-      "Quiet for 2m 5s · still running Search",
+      "Waiting · still running Search",
     );
-    expect(formatQuietTurnNotice(45_000, { activeToolLabel: "  " })).toBe("Quiet for 45s");
+    expect(formatQuietTurnNotice(45_000, { activeToolLabel: "  " })).toBe(
+      "Waiting · no updates for 45s",
+    );
   });
 });

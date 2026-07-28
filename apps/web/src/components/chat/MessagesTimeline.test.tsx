@@ -656,7 +656,7 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain('aria-label="Searched failed"');
   });
 
-  it("shows a quiet notice and recovery Stop after the 2m silence threshold", () => {
+  it("shows a wait notice after the 2m silence threshold without a recovery Stop", () => {
     const lastStreamActivityAt = new Date(Date.now() - 130_000).toISOString();
     const markup = renderToStaticMarkup(
       <MessagesTimeline
@@ -670,15 +670,15 @@ describe("MessagesTimeline", () => {
 
     expect(markup).toContain('role="status"');
     expect(markup).toContain('aria-live="polite"');
-    expect(markup).toContain("Quiet for");
-    expect(markup).toContain('aria-label="Stop generation"');
-    expect(markup).toContain("Stop");
-    expect(markup).not.toContain("No updates for");
+    expect(markup).toContain("Waiting");
+    expect(markup).toContain("no updates for");
+    expect(markup).not.toContain('aria-label="Stop generation"');
+    expect(markup).not.toContain("Quiet for");
     expect(markup).not.toContain("No progress from the provider");
     expect(markup).not.toContain("Stop now");
   });
 
-  it("names the open tool on the quiet notice when a long tool is still running", () => {
+  it("names the open tool on the wait notice when a long tool is still running", () => {
     const lastStreamActivityAt = new Date(Date.now() - 11 * 60_000).toISOString();
     const markup = renderToStaticMarkup(
       <MessagesTimeline
@@ -713,12 +713,12 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).toContain("Quiet for");
+    expect(markup).toContain("Waiting");
     expect(markup).toContain("still running a command");
-    expect(markup).toContain('aria-label="Stop generation"');
+    expect(markup).not.toContain('aria-label="Stop generation"');
   });
 
-  it("does not flash quiet at 45s of silence", () => {
+  it("does not flash wait copy at 45s of silence", () => {
     const lastStreamActivityAt = new Date(Date.now() - 45_000).toISOString();
     const markup = renderToStaticMarkup(
       <MessagesTimeline
@@ -732,7 +732,7 @@ describe("MessagesTimeline", () => {
     );
 
     expect(markup).toMatch(/Working(\.\.\.|[\s\S]*·)/);
-    expect(markup).not.toContain("Quiet for");
+    expect(markup).not.toContain("Waiting");
     expect(markup).not.toContain('aria-label="Stop generation"');
   });
 
