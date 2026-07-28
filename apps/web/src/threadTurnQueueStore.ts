@@ -9,9 +9,9 @@ import type { ReviewCommentContext } from "./reviewCommentContext";
 
 /**
  * In-memory per-thread queue for turns composed while the provider is still
- * running. Mid-turn default is steer (interject into the live turn, Grok-native);
- * queue is explicit (Ctrl/Cmd+Enter or the Queue control). File handles are
- * session-only (not persisted).
+ * running. Mid-turn default is queue (Enter); Send or Ctrl/Cmd+Enter steers
+ * into the live turn. Empty Enter with a non-empty queue flushes send-now.
+ * File handles are session-only (not persisted).
  */
 export interface ThreadQueuedTurn {
   readonly id: string;
@@ -153,9 +153,10 @@ export function resolveComposerSubmitIntent(input: {
     return "queue";
   }
   if (input.phase === "running") {
-    // Default while running: steer into the live turn (native Grok interject).
-    // Ctrl/Cmd+Enter (or the Queue control) holds the message until settle.
-    return input.ctrlOrMetaKey ? "queue" : "steer";
+    // Default while running: queue for after the turn. Second (empty) Enter
+    // flushes the queue head as steer/send-now. Ctrl/Cmd+Enter or the Send
+    // control injects into the live turn immediately.
+    return input.ctrlOrMetaKey ? "steer" : "queue";
   }
   return "send";
 }

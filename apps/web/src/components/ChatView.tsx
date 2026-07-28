@@ -4585,10 +4585,10 @@ function ChatViewContent(props: ChatViewProps) {
       ctrlOrMetaKey: options?.ctrlOrMetaKey ?? false,
       ...(options?.intent === undefined ? {} : { explicitIntent: options.intent }),
     });
-    // While a turn is live, default Enter/Send steers into the live turn
-    // (native Grok interject). Empty Enter with a non-empty queue flushes the
-    // head. Ctrl/Cmd+Enter or Queue holds the message until settle. Stop
-    // cancels the live turn; queued messages are kept unless cleared.
+    // While a turn is live, default Enter queues for after settle. Empty
+    // Enter with a non-empty queue flushes the head as send-now (steer if
+    // still running). Ctrl/Cmd+Enter or Send injects into the live turn.
+    // Stop cancels the live turn; queued messages are kept unless cleared.
     if (phase === "running" && !hasSendableContent && activeThreadQueueCount > 0) {
       const head = useThreadTurnQueueStore.getState().list(activeThread.id)[0];
       if (head) {

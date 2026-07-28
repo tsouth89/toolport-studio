@@ -13,22 +13,22 @@ describe("resolveComposerSubmitIntent", () => {
     ).toBe("send");
   });
 
-  it("steers by default while a turn is running (native interject)", () => {
+  it("queues by default while a turn is running", () => {
     expect(
       resolveComposerSubmitIntent({
         phase: "running",
         ctrlOrMetaKey: false,
       }),
-    ).toBe("steer");
+    ).toBe("queue");
   });
 
-  it("queues with ctrl/meta while a turn is running", () => {
+  it("steers with ctrl/meta while a turn is running", () => {
     expect(
       resolveComposerSubmitIntent({
         phase: "running",
         ctrlOrMetaKey: true,
       }),
-    ).toBe("queue");
+    ).toBe("steer");
   });
 
   it("honors explicit intents", () => {

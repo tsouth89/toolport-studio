@@ -1899,8 +1899,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       key === "Enter" &&
       shouldSubmitComposerOnEnter({ isMobileViewport, shiftKey: event.shiftKey })
     ) {
-      // Bare Enter while running steers/interjects (native Grok). Ctrl/Cmd+Enter
-      // queues for after the turn. resolveComposerSubmitIntent owns the mapping.
+      // Bare Enter while running queues; Ctrl/Cmd+Enter steers/interjects.
+      // Empty Enter with a non-empty queue flushes send-now (see onSend).
+      // resolveComposerSubmitIntent owns the mapping.
       submitComposer(undefined, {
         ctrlOrMetaKey: event.ctrlKey || event.metaKey,
       });
