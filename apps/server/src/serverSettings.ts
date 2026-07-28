@@ -51,6 +51,7 @@ import { applyServerSettingsPatch } from "@t3tools/shared/serverSettings";
 import {
   applyToolportMcpInjectionEnv,
   describeToolportGatewayResolution,
+  setStudioStateDirectoryForToolportOverlay,
 } from "./mcp/McpProviderSession.ts";
 import * as ServerSecretStore from "./auth/ServerSecretStore.ts";
 
@@ -572,6 +573,8 @@ const make = Effect.gen(function* () {
     }
 
     const startup = Effect.gen(function* () {
+      // Overlay registry for preview-via-Toolport lives next to settings.json.
+      setStudioStateDirectoryForToolportOverlay(pathService.dirname(settingsPath));
       yield* startWatcher;
       yield* Cache.invalidate(settingsCache, cacheKey);
       const settings = yield* getSettingsFromCache;

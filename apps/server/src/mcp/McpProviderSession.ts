@@ -5,6 +5,13 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as Schema from "effect/Schema";
 
+import {
+  defaultStudioToolportOverlayPath,
+  resolveUserToolportRegistryPath,
+  toolportPreviewViaEnv,
+  type PreviewMcpDeliveryMode,
+} from "./ToolportPreviewBridge.ts";
+
 export interface McpProviderSessionConfig {
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
@@ -61,15 +68,26 @@ const decodeGatewayManifest = Schema.decodeUnknownOption(
 
 const sessionsByThread = new Map<ThreadId, McpProviderSessionConfig>();
 /**
- * Threads that should expose Studio browser preview tools to the provider.
- * Default off — 14 tool schemas tax Claude context every turn when unused.
- * Armed when the user opens in-app browser/preview for that thread.
+ * Threads that should expose Studio browser preview tools via **direct** inject.
+ * When Toolport gateway is ready, preview rides through Toolport instead (no
+ * arm required — lazy discovery avoids the schema tax). Arm still gates the
+ * direct fallback path when the gateway is missing.
  */
 const previewMcpArmedThreads = new Set<ThreadId>();
+
+/** Optional Studio state dir so the Toolport registry overlay lands under userdata. */
+let studioStateDirectoryForToolportOverlay: string | undefined;
 
 function nonEmpty(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
+}
+
+/** Point the Toolport preview overlay at Studio's state directory (call at server boot). */
+export function setStudioStateDirectoryForToolportOverlay(
+  stateDirectory: string | undefined,
+): void {
+  studioStateDirectoryForToolportOverlay = nonEmpty(stateDirectory);
 }
 
 /** True when a server name is Toolport's own gateway entry (current or legacy). */
@@ -373,16 +391,16 @@ export function applyToolportMcpInjectionEnv(enabled: boolean): void {
 }
 
 /**
- * Whether the internal browser-preview MCP server should be bound for a thread.
+ * Whether direct or via-Toolport preview is allowed for this thread.
  *
- * Product default is **off** (no token tax until browser is used).
- * - `TOOLPORT_STUDIO_PREVIEW_MCP=on` → always inject when session credentials exist
- * - `TOOLPORT_STUDIO_PREVIEW_MCP=off` → never inject
- * - unset → inject only after `armPreviewMcpForThread` (preview panel open)
+ * - `TOOLPORT_STUDIO_PREVIEW_MCP=off` → never
+ * - `TOOLPORT_STUDIO_PREVIEW_MCP=on` → always when session credentials exist
+ * - unset → via-Toolport when gateway can carry it (no arm); direct only after arm
  */
 export function isPreviewMcpInjectionEnabled(
   threadId: ThreadId,
   environment: NodeJS.ProcessEnv = process.env,
+  options?: { readonly toolportCanCarryPreview?: boolean },
 ): boolean {
   const flag = nonEmpty(environment.TOOLPORT_STUDIO_PREVIEW_MCP)?.toLowerCase();
   if (flag === "0" || flag === "false" || flag === "off") {
@@ -391,16 +409,66 @@ export function isPreviewMcpInjectionEnabled(
   if (flag === "1" || flag === "true" || flag === "on") {
     return true;
   }
+  // Via-Toolport is lazy (~900 meta-tool tokens). No need to wait for panel open.
+  if (options?.toolportCanCarryPreview) {
+    return true;
+  }
   return previewMcpArmedThreads.has(threadId);
 }
 
-/** Mark a thread so provider sessions include Studio browser preview tools. */
+/** Mark a thread so **direct** preview inject is allowed when Toolport is unavailable. */
 export function armPreviewMcpForThread(threadId: ThreadId): void {
   previewMcpArmedThreads.add(threadId);
 }
 
 export function isPreviewMcpArmedForThread(threadId: ThreadId): boolean {
   return previewMcpArmedThreads.has(threadId);
+}
+
+/**
+ * Whether Studio can spawn a local Toolport gateway stdio child that we control
+ * (registry overlay + secret env). Streamable-HTTP Toolport URLs cannot carry
+ * Studio secrets this way — those fall back to direct preview inject.
+ */
+export function canRoutePreviewViaToolport(
+  environment: NodeJS.ProcessEnv = process.env,
+  // oxlint-disable-next-line t3code/no-global-process-runtime
+  platform: NodeJS.Platform = process.platform,
+  homeDirectory = NodeOS.homedir(),
+): boolean {
+  if (!isToolportMcpInjectionEnabled(environment)) {
+    return false;
+  }
+  // HTTP remote gateway — cannot inject TOOLPORT_REGISTRY / secret env.
+  if (nonEmpty(environment.TOOLPORT_STUDIO_MCP_URL)) {
+    return false;
+  }
+  if (environment.NODE_ENV === "test" && !nonEmpty(environment.TOOLPORT_GATEWAY_PATH)) {
+    return false;
+  }
+  return resolveToolportGatewayPath(environment, platform, homeDirectory) != null;
+}
+
+/**
+ * Resolve how Studio browser tools reach the provider for this thread.
+ * Prefer via-Toolport (lazy) over direct full-schema inject.
+ */
+export function resolvePreviewMcpDeliveryMode(
+  threadId: ThreadId,
+  environment: NodeJS.ProcessEnv = process.env,
+  // oxlint-disable-next-line t3code/no-global-process-runtime
+  platform: NodeJS.Platform = process.platform,
+  homeDirectory = NodeOS.homedir(),
+): PreviewMcpDeliveryMode {
+  const session = readMcpProviderSession(threadId);
+  if (!session) {
+    return "off";
+  }
+  const via = canRoutePreviewViaToolport(environment, platform, homeDirectory);
+  if (!isPreviewMcpInjectionEnabled(threadId, environment, { toolportCanCarryPreview: via })) {
+    return "off";
+  }
+  return via ? "via-toolport" : "direct";
 }
 
 /** Stable fingerprint of MCP server names for adapter rebind/recycle checks. */
@@ -412,6 +480,7 @@ export function mcpBindingCatalogKey(bindings: ReadonlyArray<McpProviderBinding>
 }
 
 function toolportMcpBinding(
+  threadId: ThreadId,
   environment: NodeJS.ProcessEnv,
   platform: NodeJS.Platform,
   homeDirectory: string,
@@ -440,12 +509,37 @@ function toolportMcpBinding(
 
   const command = resolveToolportGatewayPath(environment, platform, homeDirectory);
   if (!command) return undefined;
+
+  const env: Record<string, string> = { ...toolportStudioClientEnv() };
+  const delivery = resolvePreviewMcpDeliveryMode(threadId, environment, platform, homeDirectory);
+  if (delivery === "via-toolport") {
+    const session = readMcpProviderSession(threadId);
+    if (session) {
+      const overlayPath =
+        nonEmpty(environment.TOOLPORT_STUDIO_PREVIEW_REGISTRY) ??
+        defaultStudioToolportOverlayPath(studioStateDirectoryForToolportOverlay, homeDirectory);
+      const userRegistryPath = resolveUserToolportRegistryPath(
+        environment,
+        platform,
+        homeDirectory,
+      );
+      const previewEnv = toolportPreviewViaEnv({
+        session,
+        overlayPath,
+        userRegistryPath,
+      });
+      if (previewEnv) {
+        Object.assign(env, previewEnv);
+      }
+    }
+  }
+
   return {
     name: TOOLPORT_MCP_SERVER_NAME,
     transport: "stdio",
     command,
     args: [],
-    env: { ...toolportStudioClientEnv() },
+    env,
   };
 }
 
@@ -467,8 +561,10 @@ export function readMcpProviderBindings(
 ): ReadonlyArray<McpProviderBinding> {
   const bindings: Array<McpProviderBinding> = [];
   const internalSession = readMcpProviderSession(threadId);
-  // Preview MCP is opt-in per thread (or force-on via env). Toolport stays separate.
-  if (internalSession && isPreviewMcpInjectionEnabled(threadId, environment)) {
+  const delivery = resolvePreviewMcpDeliveryMode(threadId, environment, platform, homeDirectory);
+
+  // Direct full-schema inject only when Toolport cannot carry preview.
+  if (delivery === "direct" && internalSession) {
     bindings.push({
       name: INTERNAL_MCP_SERVER_NAME,
       transport: "http",
@@ -479,7 +575,7 @@ export function readMcpProviderBindings(
     });
   }
 
-  const toolport = toolportMcpBinding(environment, platform, homeDirectory);
+  const toolport = toolportMcpBinding(threadId, environment, platform, homeDirectory);
   if (toolport) bindings.push(toolport);
   return bindings;
 }

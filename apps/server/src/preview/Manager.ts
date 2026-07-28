@@ -219,8 +219,9 @@ export const make = Effect.gen(function* PreviewManagerMake() {
         });
         return { sessions };
       });
-      // User opened browser/preview for this thread — allow provider inject of
-      // toolport-studio-preview (default off to avoid Claude tool-schema tax).
+      // User opened browser/preview for this thread. Arms **direct** preview
+      // inject when Toolport is unavailable. When Toolport is ready, preview
+      // already rides through the gateway (lazy discovery; no arm needed).
       yield* Effect.sync(() => McpProviderSession.armPreviewMcpForThread(input.threadId));
       yield* PubSub.publish(eventsPubSub, {
         type: "opened",

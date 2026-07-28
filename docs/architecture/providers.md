@@ -37,10 +37,29 @@ Each provider session receives:
 
 - Toolport's local gateway when it is installed and enabled
 - An explicitly configured Toolport Streamable HTTP endpoint when supplied
-- Toolport Studio's internal preview automation server when available
+- Studio browser preview tools (see below)
 
 Bindings are created per session so credentials and temporary endpoints do not
 leak into global provider configuration.
+
+### Browser preview: prefer via Toolport
+
+Studio's collaborative browser tools (`preview_*`) live on an internal HTTP MCP
+server (`toolport-studio-preview`). **When the Toolport gateway is available**,
+Studio does **not** dual-inject that server as a second full MCP binding (that
+would dump ~14 tool schemas into every turn). Instead:
+
+1. Studio writes a session registry overlay (user Toolport registry + a managed
+   `toolport-studio-preview` HTTP entry pointing at Studio's loopback MCP).
+2. Studio-spawned gateway processes receive `TOOLPORT_REGISTRY` plus
+   `TOOLPORT_SECRET_STUDIO_PREVIEW_BEARER` (per-session credential).
+3. Agents discover and call `preview_*` through Toolport lazy meta-tools
+   (~900 tokens of definitions, not full preview schemas).
+
+**Fallback:** if Toolport inject is off or the gateway binary is missing, Studio
+injects `toolport-studio-preview` directly only after the user opens the in-app
+browser for that thread (or `TOOLPORT_STUDIO_PREVIEW_MCP=on`). Force
+`TOOLPORT_STUDIO_PREVIEW_MCP=off` disables both paths.
 
 ### Single gateway, no doubles
 

@@ -89,13 +89,12 @@ it.effect("adds an explicitly configured Toolport stdio gateway with dual client
     McpProviderSession.armPreviewMcpForThread(threadId);
 
     // Configured path must resolve to a real file (stale overrides no longer inject).
-    const gatewayPath = NodePath.join(
-      NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "toolport-studio-gateway-")),
-      "toolport-gateway.exe",
-    );
+    const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "toolport-studio-gateway-"));
+    const gatewayPath = NodePath.join(root, "toolport-gateway.exe");
     NodeFS.writeFileSync(gatewayPath, "");
+    const overlayPath = NodePath.join(root, "overlay-registry.json");
 
-    // Toolport needs explicit on (or settings default); env-only path needs flag.
+    // Toolport inject off → direct preview only (armed fallback).
     expect(
       McpProviderSession.readMcpProviderBindings(
         threadId,
@@ -107,8 +106,36 @@ it.effect("adds an explicitly configured Toolport stdio gateway with dual client
       ),
     ).toEqual([expect.objectContaining({ name: "toolport-studio-preview", transport: "http" })]);
 
+    // Toolport inject on → preview rides through gateway (no dual full-schema bind).
+    const withToolport = McpProviderSession.readMcpProviderBindings(
+      threadId,
+      {
+        TOOLPORT_GATEWAY_PATH: gatewayPath,
+        TOOLPORT_STUDIO_TOOLPORT_MCP: "on",
+        TOOLPORT_STUDIO_PREVIEW_REGISTRY: overlayPath,
+        TOOLPORT_DATA_DIR: NodePath.join(root, "missing-user-registry"),
+      },
+      "win32",
+      "C:\\Users\\tester",
+    );
+    expect(withToolport).toHaveLength(1);
+    expect(withToolport[0]).toMatchObject({
+      name: "toolport",
+      transport: "stdio",
+      command: gatewayPath,
+    });
+    expect(withToolport[0]?.transport).toBe("stdio");
+    if (withToolport[0]?.transport === "stdio") {
+      expect(withToolport[0].env).toMatchObject({
+        TOOLPORT_CLIENT_ID: "toolport-studio",
+        CONDUIT_CLIENT_ID: "toolport-studio",
+        TOOLPORT_REGISTRY: overlayPath,
+        TOOLPORT_SECRET_STUDIO_PREVIEW_BEARER: "preview-token",
+      });
+    }
+    expect(withToolport.some((b) => b.name === "toolport-studio-preview")).toBe(false);
     expect(
-      McpProviderSession.readMcpProviderBindings(
+      McpProviderSession.resolvePreviewMcpDeliveryMode(
         threadId,
         {
           TOOLPORT_GATEWAY_PATH: gatewayPath,
@@ -117,8 +144,50 @@ it.effect("adds an explicitly configured Toolport stdio gateway with dual client
         "win32",
         "C:\\Users\\tester",
       ),
-    ).toEqual([
-      expect.objectContaining({ name: "toolport-studio-preview", transport: "http" }),
+    ).toBe("via-toolport");
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect("via-toolport does not require arm; force-off disables preview entirely", () =>
+  Effect.sync(() => {
+    McpProviderSession.clearAllMcpProviderSessions();
+    setInternalPreviewSession();
+    // Not armed.
+
+    const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "toolport-via-preview-"));
+    const gatewayPath = NodePath.join(root, "toolport-gateway.exe");
+    NodeFS.writeFileSync(gatewayPath, "");
+    const overlayPath = NodePath.join(root, "overlay.json");
+
+    const via = McpProviderSession.readMcpProviderBindings(
+      threadId,
+      {
+        TOOLPORT_GATEWAY_PATH: gatewayPath,
+        TOOLPORT_STUDIO_TOOLPORT_MCP: "on",
+        TOOLPORT_STUDIO_PREVIEW_REGISTRY: overlayPath,
+        TOOLPORT_DATA_DIR: NodePath.join(root, "no-reg"),
+      },
+      "win32",
+      "C:\\Users\\tester",
+    );
+    expect(via).toHaveLength(1);
+    expect(via[0]?.name).toBe("toolport");
+    if (via[0]?.transport === "stdio") {
+      expect(via[0].env.TOOLPORT_SECRET_STUDIO_PREVIEW_BEARER).toBe("preview-token");
+    }
+
+    const off = McpProviderSession.readMcpProviderBindings(
+      threadId,
+      {
+        TOOLPORT_GATEWAY_PATH: gatewayPath,
+        TOOLPORT_STUDIO_TOOLPORT_MCP: "on",
+        TOOLPORT_STUDIO_PREVIEW_MCP: "off",
+        TOOLPORT_STUDIO_PREVIEW_REGISTRY: overlayPath,
+      },
+      "win32",
+      "C:\\Users\\tester",
+    );
+    expect(off).toEqual([
       {
         name: "toolport",
         transport: "stdio",
