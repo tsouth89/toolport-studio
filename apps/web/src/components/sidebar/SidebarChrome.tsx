@@ -5,6 +5,7 @@ import { Link, useNavigate } from "@tanstack/react-router";
 
 import { APP_BASE_NAME, APP_STAGE_LABEL } from "../../branding";
 import { ensureLocalApi, readLocalApi } from "../../localApi";
+import { openToolportApp } from "../../lib/openToolport";
 import { cn } from "../../lib/utils";
 import { primaryServerConfigAtom } from "../../state/server";
 import { resolveSidebarStageBadgeLabel } from "../Sidebar.logic";
@@ -168,6 +169,10 @@ export const SidebarChromeFooter = memo(function SidebarChromeFooter() {
   const handleNav = useCallback(
     (item: (typeof navItems)[number]) => {
       closeMobileSidebar();
+      if (item.kind === "toolport") {
+        void openToolportApp();
+        return;
+      }
       if (item.kind === "external") {
         openExternal(item.target);
         return;

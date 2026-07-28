@@ -6,6 +6,7 @@ import type { ToolportMcpStatus, TurnId } from "@t3tools/contracts";
 
 import { summarizeTurnDiffStats } from "./lib/turnDiffTree";
 import {
+  formatElapsed,
   formatWorkLogToolContext,
   formatWorkLogToolLabel,
   looksLikeFilePath,
@@ -44,8 +45,25 @@ export interface ThreadActivityCurrentStep {
   readonly label: string;
   readonly detail?: string;
   readonly startedAt: string | null;
-  readonly source: "tool" | "thinking" | "working" | "approval" | "user-input" | "error";
+  readonly source:
+    | "tool"
+    | "thinking"
+    | "working"
+    | "approval"
+    | "user-input"
+    | "error"
+    /** Last milestone after the turn settled — not an empty "start a turn" shell. */
+    | "settled";
 }
+
+/**
+ * Header chip for Activity: live elapsed while working, total duration after a
+ * turn settles, idle only when the panel has nothing to show for this thread.
+ */
+export type ThreadActivityStatusBadge =
+  | { readonly kind: "elapsed"; readonly startedAt: string }
+  | { readonly kind: "done"; readonly durationLabel: string | null }
+  | { readonly kind: "idle" };
 
 export interface ThreadActivityChangedFile {
   readonly path: string;
@@ -96,6 +114,7 @@ export interface ThreadActivityMcpStatus {
 export interface ThreadActivityViewModel {
   readonly isWorking: boolean;
   readonly elapsedStartedAt: string | null;
+  readonly statusBadge: ThreadActivityStatusBadge;
   readonly current: ThreadActivityCurrentStep | null;
   readonly recentSteps: ReadonlyArray<ThreadActivityStep>;
   readonly changedFiles: ThreadActivityChangedFiles | null;
@@ -117,21 +136,6 @@ const MAX_ACTIVITY_DETAIL_CHARS = 96;
 const MAX_CHANGED_FILE_PREVIEW = 5;
 const MAX_ACTIVITY_ARTIFACTS = 5;
 const MAX_ACTIVITY_MCP_SERVERS = 6;
-
-/** Compact detail: single line, hard-capped. */
-export function formatActivityDetail(detail: string | undefined): string | undefined {
-  if (!detail) {
-    return undefined;
-  }
-  const normalized = detail.replace(/\s+/g, " ").trim();
-  if (normalized.length === 0) {
-    return undefined;
-  }
-  if (normalized.length <= MAX_ACTIVITY_DETAIL_CHARS) {
-    return normalized;
-  }
-  return `${normalized.slice(0, MAX_ACTIVITY_DETAIL_CHARS - 1).trimEnd()}…`;
-}
 
 /**
  * Recent steps keep tools + hard milestones only.
@@ -217,16 +221,20 @@ function stepLabel(entry: WorkLogEntry, tense?: ToolActivityTense): string {
 function recentStepDetail(
   entry: WorkLogEntry,
   status: ThreadActivityStepStatus,
+  workspaceRoot?: string | null,
 ): string | undefined {
   if (status === "failed" || status === "interrupted") {
-    return formatActivityDetail(entry.detail ?? entry.command);
+    return formatActivityDetail(entry.detail ?? entry.command, workspaceRoot);
   }
-  return formatActivityDetail(formatWorkLogToolContext(entry));
+  return formatActivityDetail(formatWorkLogToolContext(entry), workspaceRoot);
 }
 
-function toActivityStep(entry: WorkLogEntry, options: { turnActive: boolean }): ThreadActivityStep {
+function toActivityStep(
+  entry: WorkLogEntry,
+  options: { turnActive: boolean; workspaceRoot?: string | null },
+): ThreadActivityStep {
   const status = stepStatusFromWorkEntry(entry, options);
-  const detail = recentStepDetail(entry, status);
+  const detail = recentStepDetail(entry, status, options.workspaceRoot);
   return {
     id: entry.id,
     label: stepLabel(entry),
@@ -318,9 +326,12 @@ export function collapseConsecutiveActivitySteps(
 function selectRecentActivitySteps(
   workEntries: ReadonlyArray<WorkLogEntry>,
   turnActive: boolean,
+  workspaceRoot?: string | null,
 ): ThreadActivityStep[] {
   const milestones = workEntries.filter(isActivityRecentMilestone);
-  const steps = milestones.map((entry) => toActivityStep(entry, { turnActive }));
+  const steps = milestones.map((entry) =>
+    toActivityStep(entry, { turnActive, workspaceRoot: workspaceRoot ?? null }),
+  );
   const collapsed = collapseConsecutiveActivitySteps(steps);
   if (collapsed.length <= MAX_RECENT_STEPS) {
     return collapsed;
@@ -335,9 +346,12 @@ function normalizeRelativePath(pathValue: string): string {
     .trim();
 }
 
-function toChangedFileRow(file: TurnDiffFileChange): ThreadActivityChangedFile {
+function toChangedFileRow(
+  file: TurnDiffFileChange,
+  workspaceRoot?: string | null,
+): ThreadActivityChangedFile {
   return {
-    path: normalizeRelativePath(file.path) || file.path,
+    path: displayPathForActivity(file.path, workspaceRoot) || file.path,
     additions: typeof file.additions === "number" ? file.additions : 0,
     deletions: typeof file.deletions === "number" ? file.deletions : 0,
   };
@@ -367,9 +381,30 @@ function pickCheckpointSummary(
   })[0]!;
 }
 
-/** Prefer workspace-relative display when an absolute path contains a project root. */
-function displayPathForActivity(pathValue: string): string {
+/**
+ * Prefer paths under the active workspace root (no drive letter dumps).
+ * Falls back to stripping a known repo leaf, then last path segments.
+ */
+export function displayPathForActivity(pathValue: string, workspaceRoot?: string | null): string {
   const normalized = normalizeRelativePath(pathValue);
+  if (normalized.length === 0) {
+    return normalized;
+  }
+
+  if (workspaceRoot) {
+    const root = normalizeRelativePath(workspaceRoot).replace(/\/+$/u, "");
+    if (root.length > 0) {
+      const pathLower = normalized.toLowerCase();
+      const rootLower = root.toLowerCase();
+      if (pathLower === rootLower) {
+        return ".";
+      }
+      if (pathLower.startsWith(`${rootLower}/`)) {
+        return normalized.slice(root.length + 1);
+      }
+    }
+  }
+
   // .../toolport/... or .../toolport-studio/... → path under that repo root.
   const repoMatch = /\/(?:toolport(?:-studio)?|t3-code)\/(.+)$/i.exec(`/${normalized}`);
   if (repoMatch?.[1]) {
@@ -388,9 +423,36 @@ function displayPathForActivity(pathValue: string): string {
   return normalized;
 }
 
+/** Compact detail; relativize path-like strings when a workspace root is known. */
+export function formatActivityDetail(
+  detail: string | undefined,
+  workspaceRoot?: string | null,
+): string | undefined {
+  if (!detail) {
+    return undefined;
+  }
+  let normalized = detail.replace(/\s+/g, " ").trim();
+  if (normalized.length === 0) {
+    return undefined;
+  }
+  // Absolute Windows/Unix paths (or paths with backslashes) become workspace-relative.
+  if (
+    looksLikeFilePath(normalized) ||
+    /^[A-Za-z]:[\\/]/.test(normalized) ||
+    normalized.includes("\\")
+  ) {
+    normalized = displayPathForActivity(normalized, workspaceRoot);
+  }
+  if (normalized.length <= MAX_ACTIVITY_DETAIL_CHARS) {
+    return normalized;
+  }
+  return `${normalized.slice(0, MAX_ACTIVITY_DETAIL_CHARS - 1).trimEnd()}…`;
+}
+
 function collectWorkLogChangedPaths(
   workEntries: ReadonlyArray<WorkLogEntry>,
   preferredTurnId: TurnId | null,
+  workspaceRoot?: string | null,
 ): string[] {
   const seen = new Set<string>();
   const paths: string[] = [];
@@ -401,7 +463,7 @@ function collectWorkLogChangedPaths(
     if (!looksLikeFilePath(raw)) {
       return;
     }
-    const path = displayPathForActivity(raw);
+    const path = displayPathForActivity(raw, workspaceRoot);
     if (path.length === 0 || seen.has(path) || !looksLikeFilePath(path)) {
       return;
     }
@@ -439,11 +501,15 @@ export function deriveActivityChangedFiles(input: {
   readonly turnDiffSummaries: ReadonlyArray<TurnDiffSummary>;
   readonly preferredTurnId: TurnId | null;
   readonly workEntries: ReadonlyArray<WorkLogEntry>;
+  readonly workspaceRoot?: string | null;
 }): ThreadActivityChangedFiles | null {
+  const workspaceRoot = input.workspaceRoot ?? null;
   const summary = pickCheckpointSummary(input.turnDiffSummaries, input.preferredTurnId);
   if (summary) {
     const stats = summarizeTurnDiffStats(summary.files);
-    const files = summary.files.slice(0, MAX_CHANGED_FILE_PREVIEW).map(toChangedFileRow);
+    const files = summary.files
+      .slice(0, MAX_CHANGED_FILE_PREVIEW)
+      .map((file) => toChangedFileRow(file, workspaceRoot));
     return {
       turnId: summary.turnId,
       fileCount: summary.files.length,
@@ -455,7 +521,7 @@ export function deriveActivityChangedFiles(input: {
     };
   }
 
-  const paths = collectWorkLogChangedPaths(input.workEntries, input.preferredTurnId);
+  const paths = collectWorkLogChangedPaths(input.workEntries, input.preferredTurnId, workspaceRoot);
   if (paths.length === 0) {
     return null;
   }
@@ -615,18 +681,25 @@ export function deriveThreadActivityViewModel(input: {
   readonly turnDiffSummaries?: ReadonlyArray<TurnDiffSummary>;
   /** Settled latest turn id — used when selecting checkpoint / work-log files. */
   readonly latestTurnId?: TurnId | null;
+  /** Turn wall-clock anchors for the settled "Done · 3m 10s" badge. */
+  readonly latestTurnStartedAt?: string | null;
+  readonly latestTurnCompletedAt?: string | null;
   readonly proposedPlans?: ReadonlyArray<ProposedPlan>;
   readonly mcpStatus?: ToolportMcpStatus | null;
+  /** Active project / worktree root — shortens absolute paths in the panel. */
+  readonly workspaceRoot?: string | null;
 }): ThreadActivityViewModel {
   const unsettledTurnId = input.unsettledTurnId ?? null;
   const turnActive = input.isWorking;
+  const workspaceRoot = input.workspaceRoot ?? null;
   const workEntries = collectWorkEntries(input.timelineEntries, unsettledTurnId);
-  const recentSteps = selectRecentActivitySteps(workEntries, turnActive);
+  const recentSteps = selectRecentActivitySteps(workEntries, turnActive, workspaceRoot);
   const preferredTurnId = unsettledTurnId ?? input.latestTurnId ?? null;
   const changedFiles = deriveActivityChangedFiles({
     turnDiffSummaries: input.turnDiffSummaries ?? [],
     preferredTurnId,
     workEntries,
+    workspaceRoot,
   });
   const artifacts = deriveActivityArtifacts({
     proposedPlans: input.proposedPlans ?? [],
@@ -659,7 +732,7 @@ export function deriveThreadActivityViewModel(input: {
     // label Current while tools are quiet; it is not a Recent milestone.
     if (runningTool) {
       const label = stepLabel(runningTool, "present");
-      const detail = formatActivityDetail(formatWorkLogToolContext(runningTool));
+      const detail = formatActivityDetail(formatWorkLogToolContext(runningTool), workspaceRoot);
       current = {
         // Prefer the real tool name as the hero (Grok-terminal style), not
         // "Waiting on …" — elapsed already communicates that work is open.
@@ -690,6 +763,16 @@ export function deriveThreadActivityViewModel(input: {
         source: "working",
       };
     }
+  } else if (recentSteps.length > 0) {
+    // Settled turn with history: show the last milestone instead of an empty
+    // "Start a turn" shell while Recent steps still list the work.
+    const last = recentSteps[recentSteps.length - 1]!;
+    current = {
+      label: last.label,
+      ...(last.detail ? { detail: last.detail } : {}),
+      startedAt: last.createdAt,
+      source: "settled",
+    };
   }
 
   let attention: ThreadActivityViewModel["attention"] = null;
@@ -701,9 +784,34 @@ export function deriveThreadActivityViewModel(input: {
     attention = { kind: "error", label: input.threadError.trim() };
   }
 
+  const hasSettledContext =
+    recentSteps.length > 0 || changedFiles !== null || artifacts.length > 0 || current !== null;
+  const settledStart =
+    input.latestTurnStartedAt ??
+    input.activeTurnStartedAt ??
+    workEntries[0]?.createdAt ??
+    recentSteps[0]?.createdAt ??
+    null;
+  const settledEnd =
+    input.latestTurnCompletedAt ??
+    (workEntries.length > 0 ? workEntries[workEntries.length - 1]?.createdAt : null) ??
+    recentSteps[recentSteps.length - 1]?.createdAt ??
+    null;
+  const settledDurationLabel =
+    !input.isWorking && settledStart && settledEnd ? formatElapsed(settledStart, settledEnd) : null;
+  // When the turn projection lacks timestamps, still show Done if we have work history.
+  const statusBadge: ThreadActivityStatusBadge = input.isWorking
+    ? input.activeTurnStartedAt
+      ? { kind: "elapsed", startedAt: input.activeTurnStartedAt }
+      : { kind: "idle" }
+    : hasSettledContext
+      ? { kind: "done", durationLabel: settledDurationLabel }
+      : { kind: "idle" };
+
   return {
     isWorking: input.isWorking,
     elapsedStartedAt: input.isWorking ? input.activeTurnStartedAt : null,
+    statusBadge,
     current,
     recentSteps,
     changedFiles,

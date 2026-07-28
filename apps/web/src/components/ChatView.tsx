@@ -40,7 +40,7 @@ import {
 } from "@t3tools/shared/model";
 import { CHAT_LIST_ANCHOR_OFFSET } from "@t3tools/shared/chatList";
 import { projectScriptCwd, projectScriptRuntimeEnv } from "@t3tools/shared/projectScripts";
-import { deriveLastStreamActivityAt } from "@t3tools/shared/stalledTurn";
+import { resolveLiveStreamActivityAt } from "@t3tools/shared/stalledTurn";
 import { truncate } from "@t3tools/shared/String";
 import { nextTerminalId, resolveTerminalSessionLabel } from "@t3tools/shared/terminalLabels";
 import { Debouncer } from "@tanstack/react-pacer";
@@ -69,7 +69,7 @@ import {
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { isElectron } from "../env";
-import { ensureLocalApi, readLocalApi } from "../localApi";
+import { readLocalApi } from "../localApi";
 import { useDiffPanelStore } from "../diffPanelStore";
 import {
   collapseExpandedComposerCursor,
@@ -145,6 +145,7 @@ import PlanSidebar from "./PlanSidebar";
 import { ActivityPanel } from "./ActivityPanel";
 import ThreadTerminalDrawer from "./ThreadTerminalDrawer";
 import { deriveThreadActivityViewModel } from "../threadActivityViewModel";
+import { openToolportApp } from "../lib/openToolport";
 import { ChevronDownIcon, GitBranchIcon, TriangleAlertIcon, WifiOffIcon } from "lucide-react";
 import { cn, randomHex } from "~/lib/utils";
 import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "~/workspaceTitlebar";
@@ -2162,14 +2163,19 @@ function ChatViewContent(props: ChatViewProps) {
   );
   // Track silence while any live work is in flight so the Working row can show
   // quiet/recovery copy during long connecting or silent running windows.
+  // Floor against local send / work start so a settled prior turn's old
+  // timestamps do not flash "Quiet for … · Stop · View in Activity" on Enter.
   const lastStreamActivityAt =
     isWorking && activeThread
-      ? (deriveLastStreamActivityAt({
+      ? resolveLiveStreamActivityAt({
           threadUpdatedAt: activeThread.updatedAt,
           sessionUpdatedAt: activeThread.session?.updatedAt ?? null,
           latestTurnRequestedAt: activeLatestTurn?.requestedAt ?? null,
           latestTurnStartedAt: activeLatestTurn?.startedAt ?? null,
-        }) ?? localDispatchStartedAt)
+          includeLatestTurnAnchors: !latestTurnSettled,
+          localDispatchStartedAt,
+          activeWorkStartedAt,
+        })
       : null;
   useEffect(() => {
     attachmentPreviewHandoffByMessageIdRef.current = attachmentPreviewHandoffByMessageId;
@@ -2441,6 +2447,7 @@ function ChatViewContent(props: ChatViewProps) {
     useTurnDiffSummaries(activeThread);
   const activityViewModel = useMemo(() => {
     const unsettledTurnId = !latestTurnSettled ? (activeLatestTurn?.turnId ?? null) : null;
+    const workspaceRoot = activeThread?.worktreePath ?? activeProject?.workspaceRoot ?? null;
     return deriveThreadActivityViewModel({
       timelineEntries,
       isWorking,
@@ -2455,12 +2462,20 @@ function ChatViewContent(props: ChatViewProps) {
       threadError,
       turnDiffSummaries,
       latestTurnId: activeLatestTurn?.turnId ?? null,
+      latestTurnStartedAt: activeLatestTurn?.startedAt ?? activeLatestTurn?.requestedAt ?? null,
+      latestTurnCompletedAt: activeLatestTurn?.completedAt ?? null,
       proposedPlans: activeThread?.proposedPlans ?? [],
       mcpStatus: serverConfig?.mcpStatus ?? null,
+      workspaceRoot,
     });
   }, [
+    activeLatestTurn?.completedAt,
+    activeLatestTurn?.requestedAt,
+    activeLatestTurn?.startedAt,
     activeLatestTurn?.turnId,
+    activeProject?.workspaceRoot,
     activeThread?.proposedPlans,
+    activeThread?.worktreePath,
     activeWorkStartedAt,
     isWorking,
     latestTurnSettled,
@@ -3216,11 +3231,8 @@ function ChatViewContent(props: ChatViewProps) {
     useRightPanelStore.getState().open(activeThreadRef, "plan");
   }, [activeThreadRef]);
   const openToolportMcp = useCallback(() => {
-    // Toolport owns the full MCP catalog/control plane (product vision).
-    const api = readLocalApi() ?? ensureLocalApi();
-    void api.shell.openExternal("https://toolport.app").catch(() => {
-      /* best-effort View all */
-    });
+    // Prefer installed Toolport app (toolport://); fall back to web catalog.
+    void openToolportApp();
   }, []);
   const openFileSurface = useCallback(
     (relativePath: string) => {
