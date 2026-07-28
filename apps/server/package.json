@@ -1,6 +1,6 @@
 {
   "name": "t3",
-  "version": "0.1.0-alpha.18",
+  "version": "0.1.0-alpha.19",
   "description": "The local Toolport Studio server and provider runtime.",
   "homepage": "https://toolport.studio",
   "license": "MIT",
