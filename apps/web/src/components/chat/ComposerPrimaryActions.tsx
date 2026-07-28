@@ -30,7 +30,7 @@ interface ComposerPrimaryActionsProps {
   onInterrupt: () => void;
   /** Inject composer content into the live turn (steer / interject). */
   onSteer?: () => void;
-  /** Queue for after the live turn finishes (default while running). */
+  /** Queue for after the live turn finishes (Ctrl/Cmd+Enter while running). */
   onQueue?: () => void;
   onImplementPlanInNewThread: () => void;
 }
@@ -166,7 +166,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
     );
   }
 
-  // Live turn: primary Queue (Enter), secondary Send now (steer), Stop.
+  // Live turn: primary Send (Enter steers/interjects), secondary Queue, Stop.
   if (isRunning) {
     const canQueueOrSteer = !isEnvironmentUnavailable && hasSendableContent;
     return (
@@ -179,13 +179,13 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
             "disabled:pointer-events-none disabled:opacity-35",
           )}
           {...pointerFocusProps}
-          disabled={!canQueueOrSteer || !onSteer}
-          aria-label="Send into live turn now"
-          title="Send now (Ctrl+Enter) — inject into the live turn"
-          onClick={() => onSteer?.()}
+          disabled={!canQueueOrSteer || !onQueue}
+          aria-label="Queue message for after this turn"
+          title="Queue (Ctrl+Enter) — runs after this turn finishes"
+          onClick={() => onQueue?.()}
         >
-          <ZapIcon className="size-3.5 shrink-0 opacity-80" aria-hidden="true" />
-          <span className="hidden sm:inline">Send now</span>
+          <ListPlusIcon className="size-3.5 shrink-0 opacity-80" aria-hidden="true" />
+          <span className="hidden sm:inline">Queue</span>
         </button>
         <button
           type="button"
@@ -198,16 +198,16 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
               : "bg-primary/90 enabled:shadow-xs enabled:shadow-primary/20 hover:bg-primary",
           )}
           {...pointerFocusProps}
-          disabled={!canQueueOrSteer || !onQueue}
-          aria-label="Queue message for after this turn"
-          title="Queue (Enter) — runs after this turn finishes"
-          onClick={() => onQueue?.()}
+          disabled={!canQueueOrSteer || !onSteer}
+          aria-label="Send into live turn now"
+          title="Send (Enter) — inject into the live turn"
+          onClick={() => onSteer?.()}
         >
           <span className="absolute inset-0 -z-10" aria-hidden="true">
             <StageBackdropButtonArt variant={stageBackdropVariant} />
           </span>
-          <ListPlusIcon className="size-3.5 shrink-0" aria-hidden="true" />
-          Queue
+          <ZapIcon className="size-3.5 shrink-0" aria-hidden="true" />
+          Send
         </button>
         <StopCircleButton
           onClick={onInterrupt}
