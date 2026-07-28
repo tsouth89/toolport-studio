@@ -11,7 +11,7 @@ export interface PierreIconResolution {
 
 const PIERRE_ICON_SPRITE_ID = "t3code-pierre-file-icon-sprite";
 
-const T3_FILE_ICON_SPRITE = `
+const TOOLPORT_STUDIO_FILE_ICON_SPRITE = `
 <svg xmlns="http://www.w3.org/2000/svg" width="0" height="0" aria-hidden="true">
   <symbol id="t3-file-icon-package-json" viewBox="0 0 32 32">
     <path d="M2 2H30V30H2" fill="#c12127" />
@@ -37,10 +37,10 @@ const T3_FILE_ICON_SPRITE = `
   </symbol>
 </svg>`;
 
-export const T3_PIERRE_ICONS = {
+export const TOOLPORT_STUDIO_PIERRE_ICONS = {
   set: "complete",
   colored: true,
-  spriteSheet: T3_FILE_ICON_SPRITE,
+  spriteSheet: TOOLPORT_STUDIO_FILE_ICON_SPRITE,
   byFileName: {
     "package.json": "t3-file-icon-package-json",
     "tsconfig.json": "t3-file-icon-tsconfig",
@@ -52,7 +52,7 @@ export const T3_PIERRE_ICONS = {
   },
 } satisfies FileTreeIcons;
 
-const completeIconResolver = createFileTreeIconResolver(T3_PIERRE_ICONS);
+const completeIconResolver = createFileTreeIconResolver(TOOLPORT_STUDIO_PIERRE_ICONS);
 
 const LANGUAGE_EXTENSION_ALIASES: Record<string, string> = {
   bash: "sh",
@@ -112,6 +112,6 @@ export function ensurePierreIconSprite(): void {
   container.style.height = "0";
   container.style.overflow = "hidden";
   container.style.pointerEvents = "none";
-  container.innerHTML = `${getBuiltInSpriteSheet("complete")}${T3_FILE_ICON_SPRITE}`;
+  container.innerHTML = `${getBuiltInSpriteSheet("complete")}${TOOLPORT_STUDIO_FILE_ICON_SPRITE}`;
   document.body.prepend(container);
 }

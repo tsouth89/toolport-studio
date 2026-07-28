@@ -284,7 +284,7 @@ describe("XAiAcpExtension", () => {
   it.effect("resolves a hung standard prompt from xAI prompt completion", () =>
     Effect.gen(function* () {
       const runtime = yield* makePromptCompletionRuntime({
-        T3_ACP_EMIT_XAI_PROMPT_COMPLETE_THEN_HANG: "1",
+        TOOLPORT_STUDIO_ACP_EMIT_XAI_PROMPT_COMPLETE_THEN_HANG: "1",
       });
       yield* runtime.start();
 
@@ -308,8 +308,8 @@ describe("XAiAcpExtension", () => {
   it.effect("accepts the public xAI prompt_complete method name", () =>
     Effect.gen(function* () {
       const runtime = yield* makePromptCompletionRuntime({
-        T3_ACP_EMIT_XAI_PROMPT_COMPLETE_THEN_HANG: "1",
-        T3_ACP_XAI_PROMPT_COMPLETE_METHOD: "x.ai/session/prompt_complete",
+        TOOLPORT_STUDIO_ACP_EMIT_XAI_PROMPT_COMPLETE_THEN_HANG: "1",
+        TOOLPORT_STUDIO_ACP_XAI_PROMPT_COMPLETE_METHOD: "x.ai/session/prompt_complete",
       });
       yield* runtime.start();
 
@@ -330,8 +330,8 @@ describe("XAiAcpExtension", () => {
   it.effect("resolves a hung prompt from Grok 0.2.112 turn_completed session update", () =>
     Effect.gen(function* () {
       const runtime = yield* makePromptCompletionRuntime({
-        T3_ACP_EMIT_XAI_PROMPT_COMPLETE_THEN_HANG: "1",
-        T3_ACP_XAI_PROMPT_COMPLETE_METHOD: "_x.ai/session/update",
+        TOOLPORT_STUDIO_ACP_EMIT_XAI_PROMPT_COMPLETE_THEN_HANG: "1",
+        TOOLPORT_STUDIO_ACP_XAI_PROMPT_COMPLETE_METHOD: "_x.ai/session/update",
       });
       yield* runtime.start();
 
@@ -355,7 +355,7 @@ describe("XAiAcpExtension", () => {
       const cancelGate = yield* Deferred.make<void>();
       const runtime = yield* makePromptCompletionRuntime(
         {
-          T3_ACP_EMIT_XAI_PROMPT_COMPLETE_THEN_HANG: "1",
+          TOOLPORT_STUDIO_ACP_EMIT_XAI_PROMPT_COMPLETE_THEN_HANG: "1",
         },
         {
           cancel: Effect.gen(function* () {
@@ -422,7 +422,7 @@ describe("XAiAcpExtension", () => {
   it.effect("ignores stale xAI completion from an already settled prompt", () =>
     Effect.gen(function* () {
       const runtime = yield* makePromptCompletionRuntime({
-        T3_ACP_EMIT_STALE_XAI_PROMPT_COMPLETE_BEFORE_SECOND_HANG: "1",
+        TOOLPORT_STUDIO_ACP_EMIT_STALE_XAI_PROMPT_COMPLETE_BEFORE_SECOND_HANG: "1",
       });
       yield* runtime.start();
 

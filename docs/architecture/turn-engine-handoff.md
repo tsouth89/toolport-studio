@@ -181,12 +181,12 @@ failing. Encoding this is the first concrete deliverable.
 Standing a provider up in isolation currently requires a different technique
 each time — itself evidence the boundary is wrong:
 
-| Provider      | Fake injected via                                            |
-| ------------- | ------------------------------------------------------------ |
-| claude        | `createQuery` option                                         |
-| codex         | `makeRuntime` option                                         |
-| grok / cursor | spawn `scripts/acp-mock-agent.ts`, script via `T3_ACP_*` env |
-| opencode      | `Layer.succeed(OpenCodeRuntime, …)` service replacement      |
+| Provider      | Fake injected via                                                         |
+| ------------- | ------------------------------------------------------------------------- |
+| claude        | `createQuery` option                                                      |
+| codex         | `makeRuntime` option                                                      |
+| grok / cursor | spawn `scripts/acp-mock-agent.ts`, script via `TOOLPORT_STUDIO_ACP_*` env |
+| opencode      | `Layer.succeed(OpenCodeRuntime, …)` service replacement                   |
 
 ---
 
@@ -320,14 +320,14 @@ Treat it as a stopgap and record it as such.
 
 ## 10. Key file map
 
-| Path                                                     | Role                                           |
-| -------------------------------------------------------- | ---------------------------------------------- |
-| `apps/server/src/provider/Services/ProviderAdapter.ts`   | the interface to replace the policy half of    |
-| `apps/server/src/provider/Layers/*Adapter.ts`            | the five adapters                              |
-| `apps/server/src/provider/acp/AcpSessionRuntime.ts`      | shared ACP runtime (Grok + Cursor)             |
-| `apps/server/src/provider/Layers/CodexSessionRuntime.ts` | Codex app-server runtime                       |
-| `apps/server/src/provider/conformance/`                  | the safety net                                 |
-| `packages/contracts/src/providerRuntime.ts`              | `ProviderRuntimeEvent` — the canonical surface |
-| `apps/web/src/components/ChatView.tsx`                   | client shadow state machine (6,517 lines)      |
-| `scripts/acp-mock-agent.ts`                              | scriptable ACP fake, ~35 `T3_ACP_*` knobs      |
-| `docs/product/provider-parity-scorecard.md`              | manual scorecard the suite should supersede    |
+| Path                                                     | Role                                                   |
+| -------------------------------------------------------- | ------------------------------------------------------ |
+| `apps/server/src/provider/Services/ProviderAdapter.ts`   | the interface to replace the policy half of            |
+| `apps/server/src/provider/Layers/*Adapter.ts`            | the five adapters                                      |
+| `apps/server/src/provider/acp/AcpSessionRuntime.ts`      | shared ACP runtime (Grok + Cursor)                     |
+| `apps/server/src/provider/Layers/CodexSessionRuntime.ts` | Codex app-server runtime                               |
+| `apps/server/src/provider/conformance/`                  | the safety net                                         |
+| `packages/contracts/src/providerRuntime.ts`              | `ProviderRuntimeEvent` — the canonical surface         |
+| `apps/web/src/components/ChatView.tsx`                   | client shadow state machine (6,517 lines)              |
+| `scripts/acp-mock-agent.ts`                              | scriptable ACP fake, ~35 `TOOLPORT_STUDIO_ACP_*` knobs |
+| `docs/product/provider-parity-scorecard.md`              | manual scorecard the suite should supersede            |

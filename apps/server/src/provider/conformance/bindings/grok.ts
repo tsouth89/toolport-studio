@@ -4,7 +4,7 @@
  *
  * First member of the **ACP subprocess** family. Unlike the in-process
  * bindings, the fake here is a real child process (`scripts/acp-mock-agent.ts`)
- * configured entirely through `T3_ACP_*` environment variables at spawn time.
+ * configured entirely through `TOOLPORT_STUDIO_ACP_*` environment variables at spawn time.
  *
  * This is the binding that justifies `openSession(script)` taking the script up
  * front: the mock cannot be driven imperatively mid-turn, so the whole
@@ -63,7 +63,7 @@ class GrokConformanceAdapter extends Context.Service<GrokConformanceAdapter, Gro
 ) {}
 
 /**
- * Translate the neutral script vocabulary into `T3_ACP_*` mock-agent env.
+ * Translate the neutral script vocabulary into `TOOLPORT_STUDIO_ACP_*` mock-agent env.
  *
  * The mock completes the prompt by default, so `complete` needs no flag; the
  * interesting steps are the ones that make it deviate.
@@ -75,12 +75,12 @@ export function scriptToAcpEnv(script: ConformanceScript): Record<string, string
   for (const step of script) {
     switch (step.kind) {
       case "assistant-text": {
-        env.T3_ACP_PROMPT_RESPONSE_TEXT = step.text;
+        env.TOOLPORT_STUDIO_ACP_PROMPT_RESPONSE_TEXT = step.text;
         break;
       }
       case "tool-untitled-update": {
         // Named tool_call followed by title-less tool_call_update frames.
-        env.T3_ACP_EMIT_GENERIC_TOOL_PLACEHOLDERS = "1";
+        env.TOOLPORT_STUDIO_ACP_EMIT_GENERIC_TOOL_PLACEHOLDERS = "1";
         break;
       }
       case "tool-start":
@@ -88,9 +88,9 @@ export function scriptToAcpEnv(script: ConformanceScript): Record<string, string
         // tool-start + hang: open a tool then wedge (Stop mid-tool).
         // tool-only: full tool lifecycle without hang.
         if (hasToolStart && hasHang) {
-          env.T3_ACP_EMIT_TOOL_START_THEN_HANG = "1";
+          env.TOOLPORT_STUDIO_ACP_EMIT_TOOL_START_THEN_HANG = "1";
         } else {
-          env.T3_ACP_EMIT_TOOL_CALLS = "1";
+          env.TOOLPORT_STUDIO_ACP_EMIT_TOOL_CALLS = "1";
         }
         break;
       }
@@ -98,19 +98,19 @@ export function scriptToAcpEnv(script: ConformanceScript): Record<string, string
         // Hang only the first prompt so post-stop follow-up can complete
         // (HANG_PROMPT_FOREVER would wedge the recycled process forever).
         if (!(hasToolStart && hasHang)) {
-          env.T3_ACP_HANG_FIRST_PROMPT_FOREVER = "1";
+          env.TOOLPORT_STUDIO_ACP_HANG_FIRST_PROMPT_FOREVER = "1";
         }
         break;
       }
       case "die": {
-        env.T3_ACP_FAIL_PROMPT = "1";
+        env.TOOLPORT_STUDIO_ACP_FAIL_PROMPT = "1";
         break;
       }
       case "approval-request": {
         // Grok: xAI ask hangs until answered (pending interaction under Stop).
         // Cursor: cursor/ask_question also waits on the client response.
-        env.T3_ACP_EMIT_XAI_ASK_USER_QUESTION = "1";
-        env.T3_ACP_EMIT_ASK_QUESTION = "1";
+        env.TOOLPORT_STUDIO_ACP_EMIT_XAI_ASK_USER_QUESTION = "1";
+        env.TOOLPORT_STUDIO_ACP_EMIT_ASK_QUESTION = "1";
         break;
       }
       case "complete": {
@@ -138,7 +138,7 @@ export const grokConformanceBinding: ConformanceBinding = {
       const environment: NodeJS.ProcessEnv = {
         ...process.env,
         ...scriptToAcpEnv(script),
-        T3_ACP_REQUEST_LOG_PATH: requestLogPath,
+        TOOLPORT_STUDIO_ACP_REQUEST_LOG_PATH: requestLogPath,
       };
 
       const layer = Layer.effect(

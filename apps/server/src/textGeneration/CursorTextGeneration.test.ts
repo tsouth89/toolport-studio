@@ -99,8 +99,8 @@ it.layer(CursorTextGenerationTestLayer)("CursorTextGeneration", (it) => {
 
     return withFakeAcpAgent(
       {
-        T3_ACP_REQUEST_LOG_PATH: requestLogPath,
-        T3_ACP_PROMPT_RESPONSE_TEXT: JSON.stringify({
+        TOOLPORT_STUDIO_ACP_REQUEST_LOG_PATH: requestLogPath,
+        TOOLPORT_STUDIO_ACP_PROMPT_RESPONSE_TEXT: JSON.stringify({
           subject: "Add generated commit message",
           body: "- verify cursor acp model config path",
         }),
@@ -191,7 +191,7 @@ it.layer(CursorTextGenerationTestLayer)("CursorTextGeneration", (it) => {
   it.effect("accepts json objects with extra assistant text around them", () =>
     withFakeAcpAgent(
       {
-        T3_ACP_PROMPT_RESPONSE_TEXT:
+        TOOLPORT_STUDIO_ACP_PROMPT_RESPONSE_TEXT:
           'Sure, here is the JSON:\n```json\n{\n  "subject": "Update README dummy comment with attribution and date",\n  "body": ""\n}\n```\nDone.',
       },
       (textGeneration) =>
@@ -216,7 +216,7 @@ it.layer(CursorTextGenerationTestLayer)("CursorTextGeneration", (it) => {
   it.effect("generates thread titles through Cursor ACP text generation", () =>
     withFakeAcpAgent(
       {
-        T3_ACP_PROMPT_RESPONSE_TEXT: JSON.stringify({
+        TOOLPORT_STUDIO_ACP_PROMPT_RESPONSE_TEXT: JSON.stringify({
           title: '"Trim reconnect spinner status after resume."',
         }),
       },
@@ -244,8 +244,8 @@ it.layer(CursorTextGenerationTestLayer)("CursorTextGeneration", (it) => {
 
     return withFakeAcpAgent(
       {
-        T3_ACP_EXIT_LOG_PATH: exitLogPath,
-        T3_ACP_PROMPT_RESPONSE_TEXT: JSON.stringify({
+        TOOLPORT_STUDIO_ACP_EXIT_LOG_PATH: exitLogPath,
+        TOOLPORT_STUDIO_ACP_PROMPT_RESPONSE_TEXT: JSON.stringify({
           subject: "Close runtime after generation",
           body: "",
         }),

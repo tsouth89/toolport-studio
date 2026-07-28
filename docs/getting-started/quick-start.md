@@ -9,7 +9,7 @@ Install and authenticate at least one supported provider CLI before starting
 Toolport Studio. The app probes the installed Claude, Codex, Cursor, Grok, and
 OpenCode CLIs and reports anything that needs attention in Settings.
 
-Install [Toolport](https://toolport.studio) if you want MCP tools inside Studio
+Install [Toolport](https://toolport.app) if you want MCP tools inside Studio
 sessions. Studio discovers the local Toolport gateway and injects it per
 provider session (client id `toolport-studio`) without editing your global Grok
 config. Terminal Grok outside Studio keeps using Toolport's normal connect
@@ -48,13 +48,13 @@ Isolated instance (recommended while alpha is also installed):
 
 ```powershell
 # Windows PowerShell
-$env:T3CODE_DEV_INSTANCE = "dev-local"
+$env:TOOLPORT_STUDIO_DEV_INSTANCE = "dev-local"
 pnpm dev:desktop
 ```
 
 ```bash
 # macOS / Linux
-T3CODE_DEV_INSTANCE=dev-local pnpm dev:desktop
+TOOLPORT_STUDIO_DEV_INSTANCE=dev-local pnpm dev:desktop
 ```
 
 - Installed alpha keeps its own app data and ports.
@@ -69,5 +69,5 @@ pnpm dev:server
 pnpm dev:web
 ```
 
-`T3CODE_DEV_INSTANCE` is an inherited compatibility variable and will be migrated
+`TOOLPORT_STUDIO_DEV_INSTANCE` is an inherited compatibility variable and will be migrated
 only when existing development state can be preserved.

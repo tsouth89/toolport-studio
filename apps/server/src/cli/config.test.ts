@@ -89,15 +89,15 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
             ConfigProvider.layer(
               ConfigProvider.fromEnv({
                 env: {
-                  T3CODE_LOG_LEVEL: "Warn",
-                  T3CODE_MODE: "desktop",
-                  T3CODE_PORT: "4001",
-                  T3CODE_HOST: "0.0.0.0",
-                  T3CODE_HOME: baseDir,
+                  TOOLPORT_STUDIO_LOG_LEVEL: "Warn",
+                  TOOLPORT_STUDIO_MODE: "desktop",
+                  TOOLPORT_STUDIO_PORT: "4001",
+                  TOOLPORT_STUDIO_HOST: "0.0.0.0",
+                  TOOLPORT_STUDIO_HOME: baseDir,
                   VITE_DEV_SERVER_URL: "http://127.0.0.1:5173",
-                  T3CODE_NO_BROWSER: "true",
-                  T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD: "false",
-                  T3CODE_LOG_WS_EVENTS: "true",
+                  TOOLPORT_STUDIO_NO_BROWSER: "true",
+                  TOOLPORT_STUDIO_AUTO_BOOTSTRAP_PROJECT_FROM_CWD: "false",
+                  TOOLPORT_STUDIO_LOG_WS_EVENTS: "true",
                 },
               }),
             ),
@@ -159,15 +159,15 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
             ConfigProvider.layer(
               ConfigProvider.fromEnv({
                 env: {
-                  T3CODE_LOG_LEVEL: "Warn",
-                  T3CODE_MODE: "desktop",
-                  T3CODE_PORT: "4001",
-                  T3CODE_HOST: "0.0.0.0",
-                  T3CODE_HOME: join(NodeOS.tmpdir(), "ignored-base"),
+                  TOOLPORT_STUDIO_LOG_LEVEL: "Warn",
+                  TOOLPORT_STUDIO_MODE: "desktop",
+                  TOOLPORT_STUDIO_PORT: "4001",
+                  TOOLPORT_STUDIO_HOST: "0.0.0.0",
+                  TOOLPORT_STUDIO_HOME: join(NodeOS.tmpdir(), "ignored-base"),
                   VITE_DEV_SERVER_URL: "http://127.0.0.1:5173",
-                  T3CODE_NO_BROWSER: "false",
-                  T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD: "false",
-                  T3CODE_LOG_WS_EVENTS: "false",
+                  TOOLPORT_STUDIO_NO_BROWSER: "false",
+                  TOOLPORT_STUDIO_AUTO_BOOTSTRAP_PROJECT_FROM_CWD: "false",
+                  TOOLPORT_STUDIO_LOG_WS_EVENTS: "false",
                 },
               }),
             ),
@@ -237,10 +237,10 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
             ConfigProvider.layer(
               ConfigProvider.fromEnv({
                 env: {
-                  T3CODE_BOOTSTRAP_FD: String(fd),
-                  T3CODE_NO_BROWSER: "true",
-                  T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD: "true",
-                  T3CODE_LOG_WS_EVENTS: "true",
+                  TOOLPORT_STUDIO_BOOTSTRAP_FD: String(fd),
+                  TOOLPORT_STUDIO_NO_BROWSER: "true",
+                  TOOLPORT_STUDIO_AUTO_BOOTSTRAP_PROJECT_FROM_CWD: "true",
+                  TOOLPORT_STUDIO_LOG_WS_EVENTS: "true",
                 },
               }),
             ),
@@ -312,7 +312,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
             ConfigProvider.layer(
               ConfigProvider.fromEnv({
                 env: {
-                  T3CODE_BOOTSTRAP_FD: String(fd),
+                  TOOLPORT_STUDIO_BOOTSTRAP_FD: String(fd),
                 },
               }),
             ),
@@ -437,12 +437,12 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
             ConfigProvider.layer(
               ConfigProvider.fromEnv({
                 env: {
-                  T3CODE_MODE: "web",
-                  T3CODE_BOOTSTRAP_FD: String(fd),
-                  T3CODE_HOME: baseDir,
-                  T3CODE_NO_BROWSER: "true",
-                  T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD: "true",
-                  T3CODE_LOG_WS_EVENTS: "true",
+                  TOOLPORT_STUDIO_MODE: "web",
+                  TOOLPORT_STUDIO_BOOTSTRAP_FD: String(fd),
+                  TOOLPORT_STUDIO_HOME: baseDir,
+                  TOOLPORT_STUDIO_NO_BROWSER: "true",
+                  TOOLPORT_STUDIO_AUTO_BOOTSTRAP_PROJECT_FROM_CWD: "true",
+                  TOOLPORT_STUDIO_LOG_WS_EVENTS: "true",
                 },
               }),
             ),
@@ -573,8 +573,8 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
             ConfigProvider.layer(
               ConfigProvider.fromEnv({
                 env: {
-                  T3CODE_NO_BROWSER: "false",
-                  T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD: "true",
+                  TOOLPORT_STUDIO_NO_BROWSER: "false",
+                  TOOLPORT_STUDIO_AUTO_BOOTSTRAP_PROJECT_FROM_CWD: "true",
                 },
               }),
             ),

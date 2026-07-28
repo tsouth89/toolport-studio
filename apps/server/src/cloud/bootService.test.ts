@@ -108,8 +108,8 @@ it("renders a systemd unit with absolute paths and append-mode logging", () => {
       "[Service]",
       "Type=simple",
       "WorkingDirectory=%h",
-      "Environment=T3CODE_HOME=/home/theo/.t3",
-      "Environment=T3_BOOT_SERVICE_UNIT=t3code.service",
+      "Environment=TOOLPORT_STUDIO_HOME=/home/theo/.t3",
+      "Environment=TOOLPORT_STUDIO_BOOT_SERVICE_UNIT=t3code.service",
       "ExecStart=/usr/local/bin/node /home/theo/.t3/runtime/versions/0.0.27/node_modules/t3/dist/bin.mjs serve",
       "Restart=always",
       "RestartSec=5",
@@ -136,7 +136,7 @@ it("quotes systemd values containing spaces and escapes percent specifiers", () 
     unitPath: "/home/me/.config/systemd/user/t3code.service",
   });
   assert.include(unit, 'ExecStart="/home/me/my tools/node" "/home/me/T3 Data/bin.mjs" serve');
-  assert.include(unit, 'Environment=T3CODE_HOME="/home/me/T3 Data"');
+  assert.include(unit, 'Environment=TOOLPORT_STUDIO_HOME="/home/me/T3 Data"');
   // append: paths take the rest of the line literally (spaces are fine,
   // quoting is not), but % still goes through specifier expansion.
   assert.include(unit, "StandardOutput=append:/home/me/100%%logs/boot.log");
@@ -229,7 +229,7 @@ it.layer(NodeServices.layer)("BootService", (it) => {
       const unitPath = path.join(dirs.home, ".config", "systemd", "user", "t3code.service");
       const unit = yield* fs.readFileString(unitPath);
       assert.include(unit, `ExecStart=/usr/local/bin/node ${dirs.stableEntry} serve`);
-      assert.include(unit, `Environment=T3CODE_HOME=${dirs.baseDir}`);
+      assert.include(unit, `Environment=TOOLPORT_STUDIO_HOME=${dirs.baseDir}`);
 
       const status = yield* service.status;
       assert.isTrue(status.supported);

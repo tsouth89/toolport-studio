@@ -1,5 +1,5 @@
 import {
-  T3_PROJECT_FILE_NAME,
+  TOOLPORT_STUDIO_PROJECT_FILE_NAME,
   type EnvironmentId,
   type T3ProjectFileScript,
 } from "@toolport-studio/contracts";
@@ -23,7 +23,12 @@ export function useT3ProjectFileScripts(
   environmentId: EnvironmentId,
   cwd: string | null,
 ): ReadonlyArray<T3ProjectFileScript> {
-  const query = useProjectFileQuery(environmentId, cwd ?? "", T3_PROJECT_FILE_NAME, cwd !== null);
+  const query = useProjectFileQuery(
+    environmentId,
+    cwd ?? "",
+    TOOLPORT_STUDIO_PROJECT_FILE_NAME,
+    cwd !== null,
+  );
   const contents = query.data && !query.data.truncated ? query.data.contents : null;
   return useMemo(() => {
     if (contents === null) return NO_SCRIPTS;

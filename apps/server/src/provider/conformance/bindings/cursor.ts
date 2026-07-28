@@ -4,7 +4,7 @@
  *
  * Second member of the ACP subprocess family, and near-identical to the Grok
  * binding by design: both spawn `scripts/acp-mock-agent.ts` and are scripted
- * through `T3_ACP_*` env at spawn time. The script translation is shared with
+ * through `TOOLPORT_STUDIO_ACP_*` env at spawn time. The script translation is shared with
  * Grok (`scriptToAcpEnv`) so the two cannot drift apart silently — divergence
  * between ACP providers is exactly the class of gap this contract exists to
  * catch.

@@ -1,9 +1,11 @@
 export type LoopbackAuthorizationStage = "dev" | "nightly" | "latest";
 
-declare const __T3CODE_BUILD_CHANNEL__: "nightly" | "latest" | undefined;
+declare const __TOOLPORT_STUDIO_BUILD_CHANNEL__: "nightly" | "latest" | undefined;
 
 export function resolveLoopbackAuthorizationStage(): LoopbackAuthorizationStage {
-  return typeof __T3CODE_BUILD_CHANNEL__ === "undefined" ? "dev" : __T3CODE_BUILD_CHANNEL__;
+  return typeof __TOOLPORT_STUDIO_BUILD_CHANNEL__ === "undefined"
+    ? "dev"
+    : __TOOLPORT_STUDIO_BUILD_CHANNEL__;
 }
 
 const stageBrands = {

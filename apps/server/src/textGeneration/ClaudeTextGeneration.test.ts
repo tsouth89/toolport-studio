@@ -33,33 +33,33 @@ function makeFakeClaudeBinary(dir: string) {
         "#!/bin/sh",
         'args="$*"',
         'stdin_content="$(cat)"',
-        'if [ -n "$T3_FAKE_CLAUDE_ARGS_MUST_CONTAIN" ]; then',
-        '  printf "%s" "$args" | grep -F -- "$T3_FAKE_CLAUDE_ARGS_MUST_CONTAIN" >/dev/null || {',
+        'if [ -n "$TOOLPORT_STUDIO_FAKE_CLAUDE_ARGS_MUST_CONTAIN" ]; then',
+        '  printf "%s" "$args" | grep -F -- "$TOOLPORT_STUDIO_FAKE_CLAUDE_ARGS_MUST_CONTAIN" >/dev/null || {',
         '    printf "%s\\n" "args missing expected content" >&2',
         "    exit 2",
         "  }",
         "fi",
-        'if [ -n "$T3_FAKE_CLAUDE_ARGS_MUST_NOT_CONTAIN" ]; then',
-        '  if printf "%s" "$args" | grep -F -- "$T3_FAKE_CLAUDE_ARGS_MUST_NOT_CONTAIN" >/dev/null; then',
+        'if [ -n "$TOOLPORT_STUDIO_FAKE_CLAUDE_ARGS_MUST_NOT_CONTAIN" ]; then',
+        '  if printf "%s" "$args" | grep -F -- "$TOOLPORT_STUDIO_FAKE_CLAUDE_ARGS_MUST_NOT_CONTAIN" >/dev/null; then',
         '    printf "%s\\n" "args contained forbidden content" >&2',
         "    exit 3",
         "  fi",
         "fi",
-        'if [ -n "$T3_FAKE_CLAUDE_STDIN_MUST_CONTAIN" ]; then',
-        '  printf "%s" "$stdin_content" | grep -F -- "$T3_FAKE_CLAUDE_STDIN_MUST_CONTAIN" >/dev/null || {',
+        'if [ -n "$TOOLPORT_STUDIO_FAKE_CLAUDE_STDIN_MUST_CONTAIN" ]; then',
+        '  printf "%s" "$stdin_content" | grep -F -- "$TOOLPORT_STUDIO_FAKE_CLAUDE_STDIN_MUST_CONTAIN" >/dev/null || {',
         '    printf "%s\\n" "stdin missing expected content" >&2',
         "    exit 4",
         "  }",
         "fi",
-        'if [ -n "$T3_FAKE_CLAUDE_CONFIG_DIR_MUST_BE" ] && [ "$CLAUDE_CONFIG_DIR" != "$T3_FAKE_CLAUDE_CONFIG_DIR_MUST_BE" ]; then',
+        'if [ -n "$TOOLPORT_STUDIO_FAKE_CLAUDE_CONFIG_DIR_MUST_BE" ] && [ "$CLAUDE_CONFIG_DIR" != "$TOOLPORT_STUDIO_FAKE_CLAUDE_CONFIG_DIR_MUST_BE" ]; then',
         '  printf "%s\\n" "CLAUDE_CONFIG_DIR was $CLAUDE_CONFIG_DIR" >&2',
         "  exit 5",
         "fi",
-        'if [ -n "$T3_FAKE_CLAUDE_STDERR" ]; then',
-        '  printf "%s\\n" "$T3_FAKE_CLAUDE_STDERR" >&2',
+        'if [ -n "$TOOLPORT_STUDIO_FAKE_CLAUDE_STDERR" ]; then',
+        '  printf "%s\\n" "$TOOLPORT_STUDIO_FAKE_CLAUDE_STDERR" >&2',
         "fi",
-        'printf "%s" "$T3_FAKE_CLAUDE_OUTPUT"',
-        'exit "${T3_FAKE_CLAUDE_EXIT_CODE:-0}"',
+        'printf "%s" "$TOOLPORT_STUDIO_FAKE_CLAUDE_OUTPUT"',
+        'exit "${TOOLPORT_STUDIO_FAKE_CLAUDE_EXIT_CODE:-0}"',
         "",
       ].join("\n"),
     );
@@ -86,53 +86,54 @@ function withFakeClaudeEnv<A, E, R>(
     const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3code-claude-text-" });
     const binDir = yield* makeFakeClaudeBinary(tempDir);
     const previousPath = process.env.PATH;
-    const previousOutput = process.env.T3_FAKE_CLAUDE_OUTPUT;
-    const previousExitCode = process.env.T3_FAKE_CLAUDE_EXIT_CODE;
-    const previousStderr = process.env.T3_FAKE_CLAUDE_STDERR;
-    const previousArgsMustContain = process.env.T3_FAKE_CLAUDE_ARGS_MUST_CONTAIN;
-    const previousArgsMustNotContain = process.env.T3_FAKE_CLAUDE_ARGS_MUST_NOT_CONTAIN;
-    const previousStdinMustContain = process.env.T3_FAKE_CLAUDE_STDIN_MUST_CONTAIN;
-    const previousConfigDirMustBe = process.env.T3_FAKE_CLAUDE_CONFIG_DIR_MUST_BE;
+    const previousOutput = process.env.TOOLPORT_STUDIO_FAKE_CLAUDE_OUTPUT;
+    const previousExitCode = process.env.TOOLPORT_STUDIO_FAKE_CLAUDE_EXIT_CODE;
+    const previousStderr = process.env.TOOLPORT_STUDIO_FAKE_CLAUDE_STDERR;
+    const previousArgsMustContain = process.env.TOOLPORT_STUDIO_FAKE_CLAUDE_ARGS_MUST_CONTAIN;
+    const previousArgsMustNotContain =
+      process.env.TOOLPORT_STUDIO_FAKE_CLAUDE_ARGS_MUST_NOT_CONTAIN;
+    const previousStdinMustContain = process.env.TOOLPORT_STUDIO_FAKE_CLAUDE_STDIN_MUST_CONTAIN;
+    const previousConfigDirMustBe = process.env.TOOLPORT_STUDIO_FAKE_CLAUDE_CONFIG_DIR_MUST_BE;
 
     yield* Effect.acquireRelease(
       Effect.sync(() => {
         process.env.PATH = `${binDir}:${previousPath ?? ""}`;
-        process.env.T3_FAKE_CLAUDE_OUTPUT = input.output;
+        process.env.TOOLPORT_STUDIO_FAKE_CLAUDE_OUTPUT = input.output;
 
         if (input.exitCode !== undefined) {
-          process.env.T3_FAKE_CLAUDE_EXIT_CODE = String(input.exitCode);
+          process.env.TOOLPORT_STUDIO_FAKE_CLAUDE_EXIT_CODE = String(input.exitCode);
         } else {
-          delete process.env.T3_FAKE_CLAUDE_EXIT_CODE;
+          delete process.env.TOOLPORT_STUDIO_FAKE_CLAUDE_EXIT_CODE;
         }
 
         if (input.stderr !== undefined) {
-          process.env.T3_FAKE_CLAUDE_STDERR = input.stderr;
+          process.env.TOOLPORT_STUDIO_FAKE_CLAUDE_STDERR = input.stderr;
         } else {
-          delete process.env.T3_FAKE_CLAUDE_STDERR;
+          delete process.env.TOOLPORT_STUDIO_FAKE_CLAUDE_STDERR;
         }
 
         if (input.argsMustContain !== undefined) {
-          process.env.T3_FAKE_CLAUDE_ARGS_MUST_CONTAIN = input.argsMustContain;
+          process.env.TOOLPORT_STUDIO_FAKE_CLAUDE_ARGS_MUST_CONTAIN = input.argsMustContain;
         } else {
-          delete process.env.T3_FAKE_CLAUDE_ARGS_MUST_CONTAIN;
+          delete process.env.TOOLPORT_STUDIO_FAKE_CLAUDE_ARGS_MUST_CONTAIN;
         }
 
         if (input.argsMustNotContain !== undefined) {
-          process.env.T3_FAKE_CLAUDE_ARGS_MUST_NOT_CONTAIN = input.argsMustNotContain;
+          process.env.TOOLPORT_STUDIO_FAKE_CLAUDE_ARGS_MUST_NOT_CONTAIN = input.argsMustNotContain;
         } else {
-          delete process.env.T3_FAKE_CLAUDE_ARGS_MUST_NOT_CONTAIN;
+          delete process.env.TOOLPORT_STUDIO_FAKE_CLAUDE_ARGS_MUST_NOT_CONTAIN;
         }
 
         if (input.stdinMustContain !== undefined) {
-          process.env.T3_FAKE_CLAUDE_STDIN_MUST_CONTAIN = input.stdinMustContain;
+          process.env.TOOLPORT_STUDIO_FAKE_CLAUDE_STDIN_MUST_CONTAIN = input.stdinMustContain;
         } else {
-          delete process.env.T3_FAKE_CLAUDE_STDIN_MUST_CONTAIN;
+          delete process.env.TOOLPORT_STUDIO_FAKE_CLAUDE_STDIN_MUST_CONTAIN;
         }
 
         if (input.configDirMustBe !== undefined) {
-          process.env.T3_FAKE_CLAUDE_CONFIG_DIR_MUST_BE = input.configDirMustBe;
+          process.env.TOOLPORT_STUDIO_FAKE_CLAUDE_CONFIG_DIR_MUST_BE = input.configDirMustBe;
         } else {
-          delete process.env.T3_FAKE_CLAUDE_CONFIG_DIR_MUST_BE;
+          delete process.env.TOOLPORT_STUDIO_FAKE_CLAUDE_CONFIG_DIR_MUST_BE;
         }
       }),
       () =>
@@ -140,45 +141,46 @@ function withFakeClaudeEnv<A, E, R>(
           process.env.PATH = previousPath;
 
           if (previousOutput === undefined) {
-            delete process.env.T3_FAKE_CLAUDE_OUTPUT;
+            delete process.env.TOOLPORT_STUDIO_FAKE_CLAUDE_OUTPUT;
           } else {
-            process.env.T3_FAKE_CLAUDE_OUTPUT = previousOutput;
+            process.env.TOOLPORT_STUDIO_FAKE_CLAUDE_OUTPUT = previousOutput;
           }
 
           if (previousExitCode === undefined) {
-            delete process.env.T3_FAKE_CLAUDE_EXIT_CODE;
+            delete process.env.TOOLPORT_STUDIO_FAKE_CLAUDE_EXIT_CODE;
           } else {
-            process.env.T3_FAKE_CLAUDE_EXIT_CODE = previousExitCode;
+            process.env.TOOLPORT_STUDIO_FAKE_CLAUDE_EXIT_CODE = previousExitCode;
           }
 
           if (previousStderr === undefined) {
-            delete process.env.T3_FAKE_CLAUDE_STDERR;
+            delete process.env.TOOLPORT_STUDIO_FAKE_CLAUDE_STDERR;
           } else {
-            process.env.T3_FAKE_CLAUDE_STDERR = previousStderr;
+            process.env.TOOLPORT_STUDIO_FAKE_CLAUDE_STDERR = previousStderr;
           }
 
           if (previousArgsMustContain === undefined) {
-            delete process.env.T3_FAKE_CLAUDE_ARGS_MUST_CONTAIN;
+            delete process.env.TOOLPORT_STUDIO_FAKE_CLAUDE_ARGS_MUST_CONTAIN;
           } else {
-            process.env.T3_FAKE_CLAUDE_ARGS_MUST_CONTAIN = previousArgsMustContain;
+            process.env.TOOLPORT_STUDIO_FAKE_CLAUDE_ARGS_MUST_CONTAIN = previousArgsMustContain;
           }
 
           if (previousArgsMustNotContain === undefined) {
-            delete process.env.T3_FAKE_CLAUDE_ARGS_MUST_NOT_CONTAIN;
+            delete process.env.TOOLPORT_STUDIO_FAKE_CLAUDE_ARGS_MUST_NOT_CONTAIN;
           } else {
-            process.env.T3_FAKE_CLAUDE_ARGS_MUST_NOT_CONTAIN = previousArgsMustNotContain;
+            process.env.TOOLPORT_STUDIO_FAKE_CLAUDE_ARGS_MUST_NOT_CONTAIN =
+              previousArgsMustNotContain;
           }
 
           if (previousStdinMustContain === undefined) {
-            delete process.env.T3_FAKE_CLAUDE_STDIN_MUST_CONTAIN;
+            delete process.env.TOOLPORT_STUDIO_FAKE_CLAUDE_STDIN_MUST_CONTAIN;
           } else {
-            process.env.T3_FAKE_CLAUDE_STDIN_MUST_CONTAIN = previousStdinMustContain;
+            process.env.TOOLPORT_STUDIO_FAKE_CLAUDE_STDIN_MUST_CONTAIN = previousStdinMustContain;
           }
 
           if (previousConfigDirMustBe === undefined) {
-            delete process.env.T3_FAKE_CLAUDE_CONFIG_DIR_MUST_BE;
+            delete process.env.TOOLPORT_STUDIO_FAKE_CLAUDE_CONFIG_DIR_MUST_BE;
           } else {
-            process.env.T3_FAKE_CLAUDE_CONFIG_DIR_MUST_BE = previousConfigDirMustBe;
+            process.env.TOOLPORT_STUDIO_FAKE_CLAUDE_CONFIG_DIR_MUST_BE = previousConfigDirMustBe;
           }
         }),
     );

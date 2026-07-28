@@ -53,7 +53,7 @@ async function makeMockAgentWrapper(
     // Stash env on process for the adapter session via ServerSettings binaryPath
     // alone — callers must also set env through the mock wrapper path below.
     // We write a tiny launcher that sets env then loads the mock agent so each
-    // test can isolate T3_ACP_* without mutating the parent process.
+    // test can isolate TOOLPORT_STUDIO_ACP_* without mutating the parent process.
     const dir = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "cursor-acp-mock-"));
     const launcherPath = NodePath.join(dir, "fake-agent.mjs");
     const envEntries = Object.entries(extraEnv ?? {})
@@ -90,7 +90,7 @@ async function makeProbeWrapper(
   const dir = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "cursor-acp-probe-"));
   const launcherPath = NodePath.join(dir, "fake-agent.mjs");
   const envEntries = Object.entries({
-    T3_ACP_REQUEST_LOG_PATH: requestLogPath,
+    TOOLPORT_STUDIO_ACP_REQUEST_LOG_PATH: requestLogPath,
     ...extraEnv,
   })
     .map(([key, value]) => `process.env[${JSON.stringify(key)}] = ${JSON.stringify(value)};`)
@@ -295,7 +295,8 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
         // Matches live dogfood: Cursor returns end_turn with only this text.
         const wrapperPath = yield* Effect.promise(() =>
           makeMockAgentWrapper({
-            T3_ACP_PROMPT_RESPONSE_TEXT: "\n\nError: RetriableError: [resource_exhausted] Error",
+            TOOLPORT_STUDIO_ACP_PROMPT_RESPONSE_TEXT:
+              "\n\nError: RetriableError: [resource_exhausted] Error",
           }),
         );
         yield* settings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
@@ -352,7 +353,7 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
 
       // Keep the first prompt in flight long enough for the steer to land.
       const wrapperPath = yield* Effect.promise(() =>
-        makeMockAgentWrapper({ T3_ACP_PROMPT_DELAY_MS: "1500" }),
+        makeMockAgentWrapper({ TOOLPORT_STUDIO_ACP_PROMPT_DELAY_MS: "1500" }),
       );
       yield* settings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
 
@@ -432,7 +433,7 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
 
       const wrapperPath = yield* Effect.promise(() =>
         makeMockAgentWrapper({
-          T3_ACP_EXIT_LOG_PATH: exitLogPath,
+          TOOLPORT_STUDIO_ACP_EXIT_LOG_PATH: exitLogPath,
         }),
       );
       yield* settings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
@@ -473,7 +474,7 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
         const wrapperPath = yield* Effect.promise(() =>
           makeMockAgentWrapper(
             {
-              T3_ACP_EXIT_LOG_PATH: exitLogPath,
+              TOOLPORT_STUDIO_ACP_EXIT_LOG_PATH: exitLogPath,
             },
             { initialDelaySeconds: 0.2 },
           ),
@@ -666,8 +667,8 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
     "streams ACP tool calls and approvals on the active turn in approval-required mode",
     () =>
       Effect.gen(function* () {
-        const previousEmitToolCalls = process.env.T3_ACP_EMIT_TOOL_CALLS;
-        process.env.T3_ACP_EMIT_TOOL_CALLS = "1";
+        const previousEmitToolCalls = process.env.TOOLPORT_STUDIO_ACP_EMIT_TOOL_CALLS;
+        process.env.TOOLPORT_STUDIO_ACP_EMIT_TOOL_CALLS = "1";
 
         const adapter = yield* CursorAdapter;
         const serverSettings = yield* ServerSettingsService;
@@ -677,7 +678,7 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
         const settledEventsReady = yield* Deferred.make<void>();
 
         const wrapperPath = yield* Effect.promise(() =>
-          makeMockAgentWrapper({ T3_ACP_EMIT_TOOL_CALLS: "1" }),
+          makeMockAgentWrapper({ TOOLPORT_STUDIO_ACP_EMIT_TOOL_CALLS: "1" }),
         );
         yield* serverSettings.updateSettings({
           providers: { cursor: { binaryPath: wrapperPath } },
@@ -806,9 +807,9 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
           Effect.ensuring(
             Effect.sync(() => {
               if (previousEmitToolCalls === undefined) {
-                delete process.env.T3_ACP_EMIT_TOOL_CALLS;
+                delete process.env.TOOLPORT_STUDIO_ACP_EMIT_TOOL_CALLS;
               } else {
-                process.env.T3_ACP_EMIT_TOOL_CALLS = previousEmitToolCalls;
+                process.env.TOOLPORT_STUDIO_ACP_EMIT_TOOL_CALLS = previousEmitToolCalls;
               }
             }),
           ),
@@ -852,7 +853,9 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
         const argvLogPath = NodePath.join(tempDir, "argv.txt");
         yield* Effect.promise(() => NodeFSP.writeFile(requestLogPath, "", "utf8"));
         const wrapperPath = yield* Effect.promise(() =>
-          makeProbeWrapper(requestLogPath, argvLogPath, { T3_ACP_EMIT_TOOL_CALLS: "1" }),
+          makeProbeWrapper(requestLogPath, argvLogPath, {
+            TOOLPORT_STUDIO_ACP_EMIT_TOOL_CALLS: "1",
+          }),
         );
         yield* serverSettings.updateSettings({
           providers: { cursor: { binaryPath: wrapperPath } },
@@ -942,7 +945,7 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
       const settledEventsReady = yield* Deferred.make<void>();
 
       const wrapperPath = yield* Effect.promise(() =>
-        makeMockAgentWrapper({ T3_ACP_EMIT_INTERLEAVED_ASSISTANT_TOOL_CALLS: "1" }),
+        makeMockAgentWrapper({ TOOLPORT_STUDIO_ACP_EMIT_INTERLEAVED_ASSISTANT_TOOL_CALLS: "1" }),
       );
       yield* serverSettings.updateSettings({
         providers: { cursor: { binaryPath: wrapperPath } },
@@ -1072,7 +1075,7 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
       const argvLogPath = NodePath.join(tempDir, "argv.txt");
       yield* Effect.promise(() => NodeFSP.writeFile(requestLogPath, "", "utf8"));
       const wrapperPath = yield* Effect.promise(() =>
-        makeProbeWrapper(requestLogPath, argvLogPath, { T3_ACP_EMIT_TOOL_CALLS: "1" }),
+        makeProbeWrapper(requestLogPath, argvLogPath, { TOOLPORT_STUDIO_ACP_EMIT_TOOL_CALLS: "1" }),
       );
       yield* serverSettings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
 
@@ -1163,7 +1166,7 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
       const approvalRequested = yield* Deferred.make<void>();
 
       const wrapperPath = yield* Effect.promise(() =>
-        makeMockAgentWrapper({ T3_ACP_EMIT_TOOL_CALLS: "1" }),
+        makeMockAgentWrapper({ TOOLPORT_STUDIO_ACP_EMIT_TOOL_CALLS: "1" }),
       );
       yield* serverSettings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
 
@@ -1206,7 +1209,7 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
       const userInputRequested = yield* Deferred.make<void>();
 
       const wrapperPath = yield* Effect.promise(() =>
-        makeMockAgentWrapper({ T3_ACP_EMIT_ASK_QUESTION: "1" }),
+        makeMockAgentWrapper({ TOOLPORT_STUDIO_ACP_EMIT_ASK_QUESTION: "1" }),
       );
       yield* serverSettings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
 
@@ -1249,7 +1252,7 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
       const userInputRequested = yield* Deferred.make<void>();
 
       const wrapperPath = yield* Effect.promise(() =>
-        makeMockAgentWrapper({ T3_ACP_EMIT_ASK_QUESTION: "1" }),
+        makeMockAgentWrapper({ TOOLPORT_STUDIO_ACP_EMIT_ASK_QUESTION: "1" }),
       );
       yield* serverSettings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
 
@@ -1297,7 +1300,7 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
         yield* Deferred.make<Extract<ProviderRuntimeEvent, { type: "turn.completed" }>>();
 
       const wrapperPath = yield* Effect.promise(() =>
-        makeMockAgentWrapper({ T3_ACP_EMIT_TOOL_START_THEN_HANG: "1" }),
+        makeMockAgentWrapper({ TOOLPORT_STUDIO_ACP_EMIT_TOOL_START_THEN_HANG: "1" }),
       );
       yield* serverSettings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
 
@@ -1370,7 +1373,7 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
         yield* Deferred.make<Extract<ProviderRuntimeEvent, { type: "turn.completed" }>>();
 
       const wrapperPath = yield* Effect.promise(() =>
-        makeMockAgentWrapper({ T3_ACP_HANG_PROMPT_TEXT: "hang forever" }),
+        makeMockAgentWrapper({ TOOLPORT_STUDIO_ACP_HANG_PROMPT_TEXT: "hang forever" }),
       );
       yield* serverSettings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
 
@@ -1424,8 +1427,8 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
 
   it.effect("auto-cancels a permission request that sits unanswered", () =>
     Effect.gen(function* () {
-      const previousEmitToolCalls = process.env.T3_ACP_EMIT_TOOL_CALLS;
-      process.env.T3_ACP_EMIT_TOOL_CALLS = "1";
+      const previousEmitToolCalls = process.env.TOOLPORT_STUDIO_ACP_EMIT_TOOL_CALLS;
+      process.env.TOOLPORT_STUDIO_ACP_EMIT_TOOL_CALLS = "1";
 
       const adapter = yield* CursorAdapter;
       const serverSettings = yield* ServerSettingsService;
@@ -1437,7 +1440,7 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
       const turnCompleted = yield* Deferred.make<void>();
 
       const wrapperPath = yield* Effect.promise(() =>
-        makeMockAgentWrapper({ T3_ACP_EMIT_TOOL_CALLS: "1" }),
+        makeMockAgentWrapper({ TOOLPORT_STUDIO_ACP_EMIT_TOOL_CALLS: "1" }),
       );
       yield* serverSettings.updateSettings({
         providers: { cursor: { binaryPath: wrapperPath } },
@@ -1499,9 +1502,9 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
       yield* adapter.stopSession(threadId);
 
       if (previousEmitToolCalls === undefined) {
-        delete process.env.T3_ACP_EMIT_TOOL_CALLS;
+        delete process.env.TOOLPORT_STUDIO_ACP_EMIT_TOOL_CALLS;
       } else {
-        process.env.T3_ACP_EMIT_TOOL_CALLS = previousEmitToolCalls;
+        process.env.TOOLPORT_STUDIO_ACP_EMIT_TOOL_CALLS = previousEmitToolCalls;
       }
     }).pipe(
       Effect.provide(
