@@ -80,7 +80,7 @@ Provider CLIs you already use (Claude, Codex, Grok, etc.) keep their own credent
 
 ## Development
 
-Some internal package names still use the inherited `@t3tools/*` namespace for
+Some internal package names still use the inherited `@toolport-studio/*` namespace for
 technical continuity (imports, state paths, and release wiring). Product-facing
 identity is Toolport Studio.
 

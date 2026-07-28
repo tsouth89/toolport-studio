@@ -1,5 +1,5 @@
 {
-  "name": "@t3tools/shared",
+  "name": "@toolport-studio/shared",
   "private": true,
   "type": "module",
   "exports": {
@@ -213,7 +213,7 @@
   "dependencies": {
     "@noble/curves": "catalog:",
     "@noble/hashes": "catalog:",
-    "@t3tools/contracts": "workspace:*",
+    "@toolport-studio/contracts": "workspace:*",
     "effect": "catalog:",
     "jose": "catalog:",
     "yaml": "catalog:"

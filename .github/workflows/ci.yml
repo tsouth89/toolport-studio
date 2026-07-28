@@ -28,7 +28,7 @@ jobs:
           run-install: true
 
       - name: Ensure Electron runtime is installed
-        run: vp run --filter @t3tools/desktop ensure:electron
+        run: vp run --filter @toolport-studio/desktop ensure:electron
 
       - name: Check
         run: vp check
@@ -61,7 +61,7 @@ jobs:
           run-install: true
 
       - name: Ensure Electron runtime is installed
-        run: vp run --filter @t3tools/desktop ensure:electron
+        run: vp run --filter @toolport-studio/desktop ensure:electron
 
       - name: Test
         run: vp run test

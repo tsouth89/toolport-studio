@@ -18,10 +18,10 @@ import * as Option from "effect/Option";
 
 import * as Electron from "electron";
 
-import * as NetService from "@t3tools/shared/Net";
-import { HostProcessArchitecture, HostProcessPlatform } from "@t3tools/shared/hostProcess";
-import { resolveRemoteT3CliPackageSpec } from "@t3tools/ssh/command";
-import type { RemoteT3RunnerOptions } from "@t3tools/ssh/tunnel";
+import * as NetService from "@toolport-studio/shared/Net";
+import { HostProcessArchitecture, HostProcessPlatform } from "@toolport-studio/shared/hostProcess";
+import { resolveRemoteT3CliPackageSpec } from "@toolport-studio/ssh/command";
+import type { RemoteT3RunnerOptions } from "@toolport-studio/ssh/tunnel";
 import serverPackageJson from "../../server/package.json" with { type: "json" };
 
 import * as DesktopIpc from "./ipc/DesktopIpc.ts";

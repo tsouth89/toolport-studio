@@ -105,9 +105,9 @@ export default defineConfig({
         {
           paths: [
             {
-              name: "@t3tools/client-runtime",
+              name: "@toolport-studio/client-runtime",
               message:
-                "Import from an explicit @t3tools/client-runtime/* subpath. The package has no root export.",
+                "Import from an explicit @toolport-studio/client-runtime/* subpath. The package has no root export.",
             },
           ],
         },

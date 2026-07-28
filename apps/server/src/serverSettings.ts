@@ -24,7 +24,7 @@ import {
   ServerSettings,
   ServerSettingsError,
   type ServerSettingsPatch,
-} from "@t3tools/contracts";
+} from "@toolport-studio/contracts";
 import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -45,9 +45,9 @@ import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import { writeFileStringAtomically } from "./atomicWrite.ts";
 import * as ServerConfig from "./config.ts";
-import { type DeepPartial, deepMerge } from "@t3tools/shared/Struct";
-import { fromJsonStringPretty, fromLenientJson } from "@t3tools/shared/schemaJson";
-import { applyServerSettingsPatch } from "@t3tools/shared/serverSettings";
+import { type DeepPartial, deepMerge } from "@toolport-studio/shared/Struct";
+import { fromJsonStringPretty, fromLenientJson } from "@toolport-studio/shared/schemaJson";
+import { applyServerSettingsPatch } from "@toolport-studio/shared/serverSettings";
 import {
   applyToolportMcpInjectionEnv,
   describeToolportGatewayResolution,

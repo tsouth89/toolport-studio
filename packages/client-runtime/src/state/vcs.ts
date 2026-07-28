@@ -4,8 +4,8 @@ import {
   type VcsListRefsResult,
   type VcsStatusResult,
   WS_METHODS,
-} from "@t3tools/contracts";
-import { applyGitStatusStreamEvent } from "@t3tools/shared/git";
+} from "@toolport-studio/contracts";
+import { applyGitStatusStreamEvent } from "@toolport-studio/shared/git";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";

@@ -1,6 +1,6 @@
-import { type ServerLifecycleWelcomePayload } from "@t3tools/contracts";
-import { scopedProjectKey, scopeProjectRef } from "@t3tools/client-runtime/environment";
-import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import { type ServerLifecycleWelcomePayload } from "@toolport-studio/contracts";
+import { scopedProjectKey, scopeProjectRef } from "@toolport-studio/client-runtime/environment";
+import { squashAtomCommandFailure } from "@toolport-studio/client-runtime/state/runtime";
 import {
   Outlet,
   createRootRoute,

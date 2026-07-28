@@ -2,7 +2,7 @@
  * Shared Activity projection for timeline Working row + right-panel Activity.
  * Pure: no React, no store writes. SOU-386 PR2+ (mockup-shaped recent list).
  */
-import type { ToolportMcpStatus, TurnId } from "@t3tools/contracts";
+import type { ToolportMcpStatus, TurnId } from "@toolport-studio/contracts";
 
 import { summarizeTurnDiffStats } from "./lib/turnDiffTree";
 import {
@@ -17,7 +17,7 @@ import {
   type TimelineEntry,
   type WorkLogEntry,
 } from "./session-logic";
-import type { ToolActivityTense } from "@t3tools/shared/toolActivity";
+import type { ToolActivityTense } from "@toolport-studio/shared/toolActivity";
 import { proposedPlanTitle } from "./proposedPlan";
 import type { ProposedPlan, TurnDiffFileChange, TurnDiffSummary } from "./types";
 

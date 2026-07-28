@@ -1,5 +1,5 @@
 {
-  "name": "@t3tools/scripts",
+  "name": "@toolport-studio/scripts",
   "private": true,
   "description": "Development, packaging, release, and brand tooling for Toolport Studio.",
   "type": "module",
@@ -9,8 +9,8 @@
   },
   "dependencies": {
     "@effect/platform-node": "catalog:",
-    "@t3tools/contracts": "workspace:*",
-    "@t3tools/shared": "workspace:*",
+    "@toolport-studio/contracts": "workspace:*",
+    "@toolport-studio/shared": "workspace:*",
     "effect": "catalog:",
     "pngjs": "7.0.0",
     "yaml": "catalog:"

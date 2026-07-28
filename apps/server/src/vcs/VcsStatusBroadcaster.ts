@@ -19,8 +19,8 @@ import type {
   VcsStatusRemoteResult,
   VcsStatusResult,
   VcsStatusStreamEvent,
-} from "@t3tools/contracts";
-import { mergeGitStatusParts } from "@t3tools/shared/git";
+} from "@toolport-studio/contracts";
+import { mergeGitStatusParts } from "@toolport-studio/shared/git";
 
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
 

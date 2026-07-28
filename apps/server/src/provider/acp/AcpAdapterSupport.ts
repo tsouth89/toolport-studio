@@ -2,8 +2,8 @@ import {
   type ProviderApprovalDecision,
   type ProviderDriverKind,
   type ThreadId,
-} from "@t3tools/contracts";
-import { extractProviderErrorMessage } from "@t3tools/shared/providerError";
+} from "@toolport-studio/contracts";
+import { extractProviderErrorMessage } from "@toolport-studio/shared/providerError";
 import * as Schema from "effect/Schema";
 import * as EffectAcpErrors from "effect-acp/errors";
 

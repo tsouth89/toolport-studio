@@ -26,7 +26,7 @@ import {
   ProviderDriverKind,
   ThreadId,
   type ProviderRuntimeEvent,
-} from "@t3tools/contracts";
+} from "@toolport-studio/contracts";
 
 import { ServerConfig } from "../../../config.ts";
 import { ServerSettingsService } from "../../../serverSettings.ts";

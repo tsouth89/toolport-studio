@@ -1,5 +1,10 @@
-import { scopedProjectKey, scopeProjectRef } from "@t3tools/client-runtime/environment";
-import type { EnvironmentId, ProjectId, ScopedProjectRef, ThreadId } from "@t3tools/contracts";
+import { scopedProjectKey, scopeProjectRef } from "@toolport-studio/client-runtime/environment";
+import type {
+  EnvironmentId,
+  ProjectId,
+  ScopedProjectRef,
+  ThreadId,
+} from "@toolport-studio/contracts";
 import { type DraftId, type DraftThreadState, useComposerDraftStore } from "../composerDraftStore";
 import {
   deriveLogicalProjectKeyFromSettings,

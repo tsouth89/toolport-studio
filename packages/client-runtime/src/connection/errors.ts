@@ -1,5 +1,5 @@
-import type { EnvironmentId } from "@t3tools/contracts";
-import type { RelayProtectedError } from "@t3tools/contracts/relay";
+import type { EnvironmentId } from "@toolport-studio/contracts";
+import type { RelayProtectedError } from "@toolport-studio/contracts/relay";
 import type { ManagedRelayClientError } from "../relay/managedRelay.ts";
 import type { RemoteEnvironmentAuthError } from "../authorization/remote.ts";
 import {

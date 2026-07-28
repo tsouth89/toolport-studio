@@ -14,8 +14,8 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
-import { createModelSelection } from "@t3tools/shared/model";
+import { HostProcessPlatform } from "@toolport-studio/shared/hostProcess";
+import { createModelSelection } from "@toolport-studio/shared/model";
 
 import {
   ApprovalRequestId,
@@ -24,7 +24,7 @@ import {
   type ProviderRuntimeEvent,
   ThreadId,
   ProviderInstanceId,
-} from "@t3tools/contracts";
+} from "@toolport-studio/contracts";
 
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";

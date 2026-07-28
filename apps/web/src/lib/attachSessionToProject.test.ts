@@ -1,5 +1,5 @@
-import { scopeProjectRef, scopedProjectKey } from "@t3tools/client-runtime/environment";
-import { EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
+import { scopeProjectRef, scopedProjectKey } from "@toolport-studio/client-runtime/environment";
+import { EnvironmentId, ProjectId, ThreadId } from "@toolport-studio/contracts";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { attachDraftSessionToProject, attachSessionToProject } from "./attachSessionToProject";
 import { DraftId, useComposerDraftStore } from "../composerDraftStore";

@@ -1,5 +1,5 @@
-import type { ProviderDriverKind, ThreadId } from "@t3tools/contracts";
-import { causeErrorTag, errorTag } from "@t3tools/shared/observability";
+import type { ProviderDriverKind, ThreadId } from "@toolport-studio/contracts";
+import { causeErrorTag, errorTag } from "@toolport-studio/shared/observability";
 import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";

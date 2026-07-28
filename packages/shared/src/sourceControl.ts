@@ -1,4 +1,7 @@
-import type { SourceControlProviderInfo, SourceControlProviderKind } from "@t3tools/contracts";
+import type {
+  SourceControlProviderInfo,
+  SourceControlProviderKind,
+} from "@toolport-studio/contracts";
 
 export interface ChangeRequestPresentation {
   readonly icon: "github" | "gitlab" | "azure-devops" | "bitbucket" | "change-request";

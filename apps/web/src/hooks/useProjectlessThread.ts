@@ -2,8 +2,8 @@ import { useAtomValue } from "@effect/atom-react";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
-} from "@t3tools/client-runtime/state/runtime";
-import { scopeProjectRef } from "@t3tools/client-runtime/environment";
+} from "@toolport-studio/client-runtime/state/runtime";
+import { scopeProjectRef } from "@toolport-studio/client-runtime/environment";
 import { useCallback, useMemo, useRef } from "react";
 
 import {

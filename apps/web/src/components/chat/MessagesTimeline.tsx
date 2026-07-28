@@ -4,15 +4,15 @@ import {
   type ScopedThreadRef,
   type ServerProviderSkill,
   type TurnId,
-} from "@t3tools/contracts";
-import { parseScopedThreadKey } from "@t3tools/client-runtime/environment";
-import { resolveChatListAnchoredEndSpace } from "@t3tools/shared/chatList";
+} from "@toolport-studio/contracts";
+import { parseScopedThreadKey } from "@toolport-studio/client-runtime/environment";
+import { resolveChatListAnchoredEndSpace } from "@toolport-studio/shared/chatList";
 import {
   deriveStalledTurnState,
   formatQuietTurnNotice,
   resolveStalledTurnThresholdMs,
-} from "@t3tools/shared/stalledTurn";
-import { formatMcpToolInspectBody } from "@t3tools/shared/toolActivity";
+} from "@toolport-studio/shared/stalledTurn";
+import { formatMcpToolInspectBody } from "@toolport-studio/shared/toolActivity";
 import {
   createContext,
   Fragment,
@@ -101,7 +101,7 @@ import {
 } from "~/lib/previewAnnotation";
 import { cn } from "~/lib/utils";
 import { useUiStateStore } from "~/uiStateStore";
-import { type TimestampFormat } from "@t3tools/contracts/settings";
+import { type TimestampFormat } from "@toolport-studio/contracts/settings";
 import { formatChatTimestampTooltip, formatShortTimestamp } from "../../timestampFormat";
 
 import {

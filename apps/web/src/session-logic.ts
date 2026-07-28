@@ -11,12 +11,12 @@ import {
   type UserInputQuestion,
   type ThreadId,
   type TurnId,
-} from "@t3tools/contracts";
+} from "@toolport-studio/contracts";
 import {
   deriveToolActivityPresentation,
   humanizeToolDisplayName,
   type ToolActivityTense,
-} from "@t3tools/shared/toolActivity";
+} from "@toolport-studio/shared/toolActivity";
 
 import type {
   ChatMessage,

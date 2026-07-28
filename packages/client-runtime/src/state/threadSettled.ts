@@ -1,4 +1,4 @@
-import type { OrchestrationThreadShell } from "@t3tools/contracts";
+import type { OrchestrationThreadShell } from "@toolport-studio/contracts";
 
 export type ChangeRequestStateLike = "open" | "closed" | "merged";
 

@@ -20,7 +20,7 @@ import {
   type RuntimeMode,
   type ThreadId,
   TurnId,
-} from "@t3tools/contracts";
+} from "@toolport-studio/contracts";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Crypto from "effect/Crypto";
@@ -44,7 +44,7 @@ import type * as EffectAcpSchema from "effect-acp/schema";
 import {
   classifyProviderEmittedFailure,
   formatProviderEmittedFailureMessage,
-} from "@t3tools/shared/providerError";
+} from "@toolport-studio/shared/providerError";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";

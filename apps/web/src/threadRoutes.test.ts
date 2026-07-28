@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
-import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import { ThreadId } from "@t3tools/contracts";
+import { scopeThreadRef } from "@toolport-studio/client-runtime/environment";
+import { ThreadId } from "@toolport-studio/contracts";
 import { DraftId } from "./composerDraftStore";
 
 import {

@@ -3,10 +3,10 @@ import {
   EnvironmentHttpApi,
   type RelayClientInstallProgressEvent,
   type RelayClientInstallProgressStage,
-} from "@t3tools/contracts";
-import { RelayOkResponse } from "@t3tools/contracts/relay";
-import * as RelayClient from "@t3tools/shared/relayClient";
-import { withRelayClientTracing } from "@t3tools/shared/relayTracing";
+} from "@toolport-studio/contracts";
+import { RelayOkResponse } from "@toolport-studio/contracts/relay";
+import * as RelayClient from "@toolport-studio/shared/relayClient";
+import { withRelayClientTracing } from "@toolport-studio/shared/relayTracing";
 import * as Cause from "effect/Cause";
 import * as Config from "effect/Config";
 import * as Console from "effect/Console";

@@ -1,5 +1,5 @@
 import { memo } from "react";
-import { extractProviderErrorMessage } from "@t3tools/shared/providerError";
+import { extractProviderErrorMessage } from "@toolport-studio/shared/providerError";
 import { Alert, AlertAction, AlertDescription } from "../ui/alert";
 import { Button } from "../ui/button";
 import { CircleAlertIcon, XIcon } from "lucide-react";

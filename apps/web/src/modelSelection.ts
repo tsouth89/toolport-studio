@@ -6,14 +6,14 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   type ServerProvider,
-} from "@t3tools/contracts";
+} from "@toolport-studio/contracts";
 import {
   createModelSelection,
   normalizeCustomModelSlug,
   resolveSelectableModel,
-} from "@t3tools/shared/model";
+} from "@toolport-studio/shared/model";
 import { getComposerProviderState } from "./components/chat/composerProviderState";
-import { UnifiedSettings } from "@t3tools/contracts/settings";
+import { UnifiedSettings } from "@toolport-studio/contracts/settings";
 import * as Arr from "effect/Array";
 import * as Result from "effect/Result";
 import {

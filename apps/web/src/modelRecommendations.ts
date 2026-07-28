@@ -1,4 +1,4 @@
-import type { ProviderDriverKind } from "@t3tools/contracts";
+import type { ProviderDriverKind } from "@toolport-studio/contracts";
 
 export interface RecommendationCandidate {
   readonly slug: string;
