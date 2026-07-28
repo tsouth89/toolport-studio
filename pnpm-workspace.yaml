@@ -76,6 +76,26 @@ overrides:
   effect: "catalog:"
   vite: "catalog:"
   yaml: "catalog:"
+  # Security floors for transitive dependencies. Every entry below is a
+  # Dependabot advisory against a package nothing here depends on directly, so
+  # the only way to move it is an override. Each is pinned per major line —
+  # several of these are installed at two majors at once, and a single range
+  # would force unrelated dependents onto a major they do not support.
+  # Drop an entry once every dependent has raised its own floor past it.
+  "@hono/node-server@2": ^2.0.5
+  "@vitest/browser@4": ^4.1.10
+  "brace-expansion@1": ^1.1.16
+  "brace-expansion@2": ^2.1.2
+  "brace-expansion@5": ^5.0.8
+  "builder-util-runtime@9": ^9.7.0
+  "fast-uri@3": ^3.1.4
+  "form-data@4": ^4.0.6
+  "js-yaml@4": ^4.3.0
+  "path-to-regexp@6": ^6.3.0
+  "postcss@8": ^8.5.18
+  "tar@7": ^7.5.21
+  "undici@6": ^6.27.0
+  "undici@8": ^8.5.0
 
 packageExtensions:
   "@effect/vitest@*":
