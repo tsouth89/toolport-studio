@@ -8,6 +8,7 @@ import * as Schema from "effect/Schema";
 import {
   defaultStudioToolportOverlayPath,
   resolveUserToolportRegistryPath,
+  STUDIO_PREVIEW_SECRET_ENV_KEY,
   toolportPreviewViaEnv,
   type PreviewMcpDeliveryMode,
 } from "./ToolportPreviewBridge.ts";
@@ -471,19 +472,45 @@ export function resolvePreviewMcpDeliveryMode(
   return via ? "via-toolport" : "direct";
 }
 
-/** Stable fingerprint of MCP server names for adapter rebind/recycle checks. */
+/**
+ * Stable fingerprint for adapter rebind/recycle checks.
+ * Includes server names plus whether Toolport carries Studio preview (secret
+ * attached), so a silent drop from via-toolport to bare toolport still rebinds.
+ */
 export function mcpBindingCatalogKey(bindings: ReadonlyArray<McpProviderBinding>): string {
-  return bindings
+  const names = bindings
     .map((binding) => binding.name)
     .toSorted()
     .join("\0");
+  const toolport = bindings.find(
+    (binding) => binding.name === TOOLPORT_MCP_SERVER_NAME && binding.transport === "stdio",
+  );
+  const previewVia =
+    toolport?.transport === "stdio" &&
+    Boolean(toolport.env[`TOOLPORT_SECRET_${STUDIO_PREVIEW_SECRET_ENV_KEY}`]);
+  const hasDirectPreview = bindings.some((binding) => binding.name === INTERNAL_MCP_SERVER_NAME);
+  const previewLane = previewVia ? "via" : hasDirectPreview ? "direct" : "none";
+  return `${names}\0preview:${previewLane}`;
 }
 
+function toolportBindingCarriesPreview(binding: McpProviderBinding | undefined): boolean {
+  return (
+    binding?.transport === "stdio" &&
+    Boolean(binding.env[`TOOLPORT_SECRET_${STUDIO_PREVIEW_SECRET_ENV_KEY}`])
+  );
+}
+
+/**
+ * Build the Studio-managed Toolport stdio/http binding.
+ * When `attachPreviewVia` is true, write the overlay + secret env so preview
+ * tools are reachable through lazy discovery.
+ */
 function toolportMcpBinding(
   threadId: ThreadId,
   environment: NodeJS.ProcessEnv,
   platform: NodeJS.Platform,
   homeDirectory: string,
+  attachPreviewVia: boolean,
 ): McpProviderBinding | undefined {
   if (!isToolportMcpInjectionEnabled(environment)) {
     return undefined;
@@ -511,8 +538,7 @@ function toolportMcpBinding(
   if (!command) return undefined;
 
   const env: Record<string, string> = { ...toolportStudioClientEnv() };
-  const delivery = resolvePreviewMcpDeliveryMode(threadId, environment, platform, homeDirectory);
-  if (delivery === "via-toolport") {
+  if (attachPreviewVia) {
     const session = readMcpProviderSession(threadId);
     if (session) {
       const overlayPath =
@@ -563,8 +589,21 @@ export function readMcpProviderBindings(
   const internalSession = readMcpProviderSession(threadId);
   const delivery = resolvePreviewMcpDeliveryMode(threadId, environment, platform, homeDirectory);
 
-  // Direct full-schema inject only when Toolport cannot carry preview.
-  if (delivery === "direct" && internalSession) {
+  const toolport = toolportMcpBinding(
+    threadId,
+    environment,
+    platform,
+    homeDirectory,
+    delivery === "via-toolport",
+  );
+  // Never leave "via" half-configured: if overlay/secret setup failed, fall back
+  // to direct full-schema inject so browser tools still work in dogfood.
+  const previewViaOk = delivery === "via-toolport" && toolportBindingCarriesPreview(toolport);
+  const useDirectPreview =
+    Boolean(internalSession) &&
+    (delivery === "direct" || (delivery === "via-toolport" && !previewViaOk));
+
+  if (useDirectPreview && internalSession) {
     bindings.push({
       name: INTERNAL_MCP_SERVER_NAME,
       transport: "http",
@@ -575,9 +614,30 @@ export function readMcpProviderBindings(
     });
   }
 
-  const toolport = toolportMcpBinding(threadId, environment, platform, homeDirectory);
   if (toolport) bindings.push(toolport);
   return bindings;
+}
+
+/**
+ * Effective preview delivery after fallthrough (for diagnostics / Activity).
+ * Distinct from {@link resolvePreviewMcpDeliveryMode}, which is intent only.
+ */
+export function resolveEffectivePreviewMcpDelivery(
+  threadId: ThreadId,
+  environment: NodeJS.ProcessEnv = process.env,
+  // oxlint-disable-next-line t3code/no-global-process-runtime
+  platform: NodeJS.Platform = process.platform,
+  homeDirectory = NodeOS.homedir(),
+): PreviewMcpDeliveryMode {
+  const bindings = readMcpProviderBindings(threadId, environment, platform, homeDirectory);
+  if (bindings.some((binding) => binding.name === INTERNAL_MCP_SERVER_NAME)) {
+    return "direct";
+  }
+  const toolport = bindings.find((binding) => binding.name === TOOLPORT_MCP_SERVER_NAME);
+  if (toolportBindingCarriesPreview(toolport)) {
+    return "via-toolport";
+  }
+  return "off";
 }
 
 export function toAcpMcpServers(

@@ -56,10 +56,14 @@ would dump ~14 tool schemas into every turn). Instead:
 3. Agents discover and call `preview_*` through Toolport lazy meta-tools
    (~900 tokens of definitions, not full preview schemas).
 
-**Fallback:** if Toolport inject is off or the gateway binary is missing, Studio
-injects `toolport-studio-preview` directly only after the user opens the in-app
-browser for that thread (or `TOOLPORT_STUDIO_PREVIEW_MCP=on`). Force
-`TOOLPORT_STUDIO_PREVIEW_MCP=off` disables both paths.
+**Fallback:** if Toolport inject is off, the gateway binary is missing, or the
+session overlay/secret setup fails, Studio injects `toolport-studio-preview`
+directly (full schemas). Direct mode is also used when the panel is opened
+without a working gateway. Force `TOOLPORT_STUDIO_PREVIEW_MCP=off` disables both
+paths.
+
+Adapter rebind fingerprints include a `preview:via|direct|none` lane so
+switching delivery mid-session recycles/rebinds MCP correctly.
 
 ### Single gateway, no doubles
 

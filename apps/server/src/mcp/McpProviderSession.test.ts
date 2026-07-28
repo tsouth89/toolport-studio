@@ -175,6 +175,20 @@ it.effect("via-toolport does not require arm; force-off disables preview entirel
     if (via[0]?.transport === "stdio") {
       expect(via[0].env.TOOLPORT_SECRET_STUDIO_PREVIEW_BEARER).toBe("preview-token");
     }
+    expect(
+      McpProviderSession.resolveEffectivePreviewMcpDelivery(
+        threadId,
+        {
+          TOOLPORT_GATEWAY_PATH: gatewayPath,
+          TOOLPORT_STUDIO_TOOLPORT_MCP: "on",
+          TOOLPORT_STUDIO_PREVIEW_REGISTRY: overlayPath,
+          TOOLPORT_DATA_DIR: NodePath.join(root, "no-reg"),
+        },
+        "win32",
+        "C:\\Users\\tester",
+      ),
+    ).toBe("via-toolport");
+    expect(McpProviderSession.mcpBindingCatalogKey(via)).toContain("preview:via");
 
     const off = McpProviderSession.readMcpProviderBindings(
       threadId,
@@ -199,6 +213,50 @@ it.effect("via-toolport does not require arm; force-off disables preview entirel
         },
       },
     ]);
+    expect(McpProviderSession.mcpBindingCatalogKey(off)).toContain("preview:none");
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect("falls back to direct preview when via-toolport overlay cannot be written", () =>
+  Effect.sync(() => {
+    McpProviderSession.clearAllMcpProviderSessions();
+    setInternalPreviewSession();
+
+    const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "toolport-via-fallback-"));
+    const gatewayPath = NodePath.join(root, "toolport-gateway.exe");
+    NodeFS.writeFileSync(gatewayPath, "");
+    // Point overlay at a path under a file (not a directory) so write fails.
+    const notADir = NodePath.join(root, "blocked-as-file");
+    NodeFS.writeFileSync(notADir, "x");
+    const badOverlay = NodePath.join(notADir, "overlay.json");
+
+    const bindings = McpProviderSession.readMcpProviderBindings(
+      threadId,
+      {
+        TOOLPORT_GATEWAY_PATH: gatewayPath,
+        TOOLPORT_STUDIO_TOOLPORT_MCP: "on",
+        TOOLPORT_STUDIO_PREVIEW_REGISTRY: badOverlay,
+        TOOLPORT_DATA_DIR: NodePath.join(root, "no-reg"),
+      },
+      "win32",
+      "C:\\Users\\tester",
+    );
+
+    expect(bindings.map((b) => b.name).toSorted()).toEqual(["toolport", "toolport-studio-preview"]);
+    expect(McpProviderSession.mcpBindingCatalogKey(bindings)).toContain("preview:direct");
+    expect(
+      McpProviderSession.resolveEffectivePreviewMcpDelivery(
+        threadId,
+        {
+          TOOLPORT_GATEWAY_PATH: gatewayPath,
+          TOOLPORT_STUDIO_TOOLPORT_MCP: "on",
+          TOOLPORT_STUDIO_PREVIEW_REGISTRY: badOverlay,
+          TOOLPORT_DATA_DIR: NodePath.join(root, "no-reg"),
+        },
+        "win32",
+        "C:\\Users\\tester",
+      ),
+    ).toBe("direct");
   }).pipe(Effect.provide(NodeServices.layer)),
 );
 

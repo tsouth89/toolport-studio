@@ -555,6 +555,8 @@ const make = Effect.gen(function* () {
             resolution.reason === "configured_path_missing"
               ? "TOOLPORT_GATEWAY_PATH points to a missing file; fix or unset it"
               : "Install Toolport or set TOOLPORT_GATEWAY_PATH to toolport-gateway.exe",
+          previewNote:
+            "Browser preview will use direct MCP inject when the panel is opened (or PREVIEW_MCP=on)",
         },
       );
       return;
@@ -562,6 +564,8 @@ const make = Effect.gen(function* () {
     if (resolution.ready) {
       yield* Effect.logInfo("Toolport MCP inject ready", {
         gatewayPath: resolution.gatewayPath,
+        previewDelivery:
+          "via-toolport (lazy discovery); direct inject only if overlay/secret setup fails",
       });
     }
   });

@@ -141,4 +141,34 @@ describe("ToolportPreviewBridge", () => {
       }),
     ).toBeUndefined();
   });
+
+  it("merges against the real user Toolport registry shape when present", () => {
+    const roaming = NodePath.join(process.env.APPDATA ?? "", "Toolport", "registry.json");
+    if (!NodeFS.existsSync(roaming)) {
+      return; // machine without Toolport install — skip
+    }
+    const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "studio-preview-real-reg-"));
+    tempRoots.push(root);
+    const overlay = NodePath.join(root, "overlay.json");
+    const written = writeStudioToolportPreviewOverlay({
+      previewEndpoint: "http://127.0.0.1:3773/mcp",
+      overlayPath: overlay,
+      userRegistryPath: roaming,
+    });
+    expect(written).toBe(overlay);
+    const body = JSON.parse(NodeFS.readFileSync(overlay, "utf8")) as {
+      servers: Array<{ id: string; url?: string }>;
+      profiles: Array<{ enabledServerIds?: string[] }>;
+    };
+    expect(body.servers.some((s) => s.id === STUDIO_PREVIEW_SERVER_ID)).toBe(true);
+    expect(body.servers.find((s) => s.id === STUDIO_PREVIEW_SERVER_ID)?.url).toBe(
+      "http://127.0.0.1:3773/mcp",
+    );
+    // User servers preserved.
+    expect(body.servers.length).toBeGreaterThan(1);
+    // Every profile enables studio preview.
+    for (const profile of body.profiles) {
+      expect(profile.enabledServerIds).toContain(STUDIO_PREVIEW_SERVER_ID);
+    }
+  });
 });

@@ -1637,8 +1637,14 @@ export function makeOpenCodeAdapter(
           to: desiredCatalog,
         });
 
+        // Catalog key is "name\0name\0preview:via|direct|none" — only real server
+        // names are disconnect targets (skip empty segments and the preview lane tag).
         const previousNames = new Set(
-          context.mcpBindingCatalog.length > 0 ? context.mcpBindingCatalog.split("\0") : [],
+          context.mcpBindingCatalog.length > 0
+            ? context.mcpBindingCatalog
+                .split("\0")
+                .filter((name) => name.length > 0 && !name.startsWith("preview:"))
+            : [],
         );
         const desiredNames = new Set(desiredBindings.map((binding) => binding.name));
         for (const name of previousNames) {
