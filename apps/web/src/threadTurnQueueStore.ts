@@ -38,6 +38,8 @@ export interface ThreadTurnQueueState {
     },
     options?: { readonly front?: boolean },
   ) => string;
+  /** Head of the queue without removing it. Drain uses peek → send → remove. */
+  peek: (threadId: ThreadId | string) => ThreadQueuedTurn | null;
   dequeue: (threadId: ThreadId | string) => ThreadQueuedTurn | null;
   remove: (threadId: ThreadId | string, id: string) => void;
   clear: (threadId: ThreadId | string) => void;
@@ -82,6 +84,10 @@ export const useThreadTurnQueueStore = create<ThreadTurnQueueState>((set, get) =
       };
     });
     return id;
+  },
+  peek: (threadId) => {
+    const current = get().queuesByThreadId[threadKey(threadId)] ?? EMPTY_THREAD_TURN_QUEUE;
+    return current[0] ?? null;
   },
   dequeue: (threadId) => {
     const key = threadKey(threadId);

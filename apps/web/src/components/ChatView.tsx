@@ -78,7 +78,7 @@ import {
 import {
   derivePendingApprovals,
   derivePendingUserInputs,
-  derivePhase,
+  deriveComposerPhase,
   deriveTimelineEntries,
   deriveActiveWorkStartedAt,
   deriveActivePlanState,
@@ -1330,9 +1330,13 @@ function ChatViewContent(props: ChatViewProps) {
   const composerRef = useComposerHandleContext() ?? localComposerRef;
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [expandedImage, setExpandedImage] = useState<ExpandedImagePreview | null>(null);
-  const [optimisticUserMessages, setOptimisticUserMessages] = useState<ChatMessage[]>([]);
-  const optimisticUserMessagesRef = useRef(optimisticUserMessages);
-  optimisticUserMessagesRef.current = optimisticUserMessages;
+  // Optimistic user rows are keyed by thread so switching chats cannot wipe an
+  // in-flight send for the thread you left (and must not show that row on B).
+  const [optimisticUserMessagesByThreadId, setOptimisticUserMessagesByThreadId] = useState<
+    Readonly<Record<string, ReadonlyArray<ChatMessage>>>
+  >({});
+  const optimisticUserMessagesByThreadIdRef = useRef(optimisticUserMessagesByThreadId);
+  optimisticUserMessagesByThreadIdRef.current = optimisticUserMessagesByThreadId;
   const [localDraftErrorsByDraftId, setLocalDraftErrorsByDraftId] = useState<
     Record<string, LocalThreadErrorEntry>
   >({});
@@ -1385,8 +1389,11 @@ function ChatViewContent(props: ChatViewProps) {
   const isAtEndRef = useRef(true);
   const attachmentPreviewHandoffByMessageIdRef = useRef<Record<string, string[]>>({});
   const attachmentPreviewPromotionInFlightByMessageIdRef = useRef<Record<string, true>>({});
-  const sendInFlightRef = useRef(false);
-  const sendPreparationAbortRef = useRef<AbortController | null>(null);
+  // Per-thread preparation aborts: Stop / same-thread re-send may cancel prep.
+  // Switching chats must never abort another thread's in-flight send.
+  const sendPreparationAbortByThreadIdRef = useRef<Map<string, AbortController>>(new Map());
+  // Per-thread send lock so thread A's upload cannot block B's Enter.
+  const sendInFlightThreadIdsRef = useRef<Set<string>>(new Set());
   const terminalUiOpenByThreadRef = useRef<Record<string, boolean>>({});
 
   useLayoutEffect(() => {
@@ -2025,7 +2032,7 @@ function ChatViewContent(props: ChatViewProps) {
     selectedProviderByThreadId ?? threadProvider,
   );
   const selectedProvider: ProviderDriverKind = lockedProvider ?? unlockedSelectedProvider;
-  const phase = derivePhase(activeThread?.session ?? null);
+  const phase = deriveComposerPhase(activeThread?.session ?? null, activeLatestTurn ?? null);
   const threadActivities = activeThread?.activities ?? EMPTY_ACTIVITIES;
   const workLogEntries = useMemo(() => deriveWorkLogEntries(threadActivities), [threadActivities]);
   // Quiet notice when multi-session auto-cancel clears an unanswered approval form.
@@ -2208,8 +2215,10 @@ function ChatViewContent(props: ChatViewProps) {
   useEffect(() => {
     return () => {
       clearAttachmentPreviewHandoffs();
-      for (const message of optimisticUserMessagesRef.current) {
-        revokeUserMessagePreviewUrls(message);
+      for (const messages of Object.values(optimisticUserMessagesByThreadIdRef.current)) {
+        for (const message of messages) {
+          revokeUserMessagePreviewUrls(message);
+        }
       }
     };
   }, [clearAttachmentPreviewHandoffs]);
@@ -2402,6 +2411,10 @@ function ChatViewContent(props: ChatViewProps) {
             return changed ? { ...message, attachments } : message;
           });
 
+    const optimisticUserMessages =
+      activeThreadId !== null
+        ? (optimisticUserMessagesByThreadId[String(activeThreadId)] ?? [])
+        : [];
     if (optimisticUserMessages.length === 0) {
       return serverMessagesWithPreviewHandoff;
     }
@@ -2411,7 +2424,12 @@ function ChatViewContent(props: ChatViewProps) {
       return serverMessagesWithPreviewHandoff;
     }
     return [...serverMessagesWithPreviewHandoff, ...pendingMessages];
-  }, [attachmentPreviewHandoffByMessageId, displayServerMessages, optimisticUserMessages]);
+  }, [
+    activeThreadId,
+    attachmentPreviewHandoffByMessageId,
+    displayServerMessages,
+    optimisticUserMessagesByThreadId,
+  ]);
   const timelineEntries = useMemo(
     () =>
       deriveTimelineEntries(timelineMessages, activeThread?.proposedPlans ?? [], workLogEntries),
@@ -3921,15 +3939,26 @@ function ChatViewContent(props: ChatViewProps) {
     if (activeThread.messages.length === 0) {
       return;
     }
+    const threadKey = String(activeThread.id);
+    const optimisticUserMessages = optimisticUserMessagesByThreadId[threadKey] ?? [];
     const serverIds = new Set(activeThread.messages.map((message) => message.id));
     const removedMessages = optimisticUserMessages.filter((message) => serverIds.has(message.id));
     if (removedMessages.length === 0) {
       return;
     }
     const timer = window.setTimeout(() => {
-      setOptimisticUserMessages((existing) =>
-        existing.filter((message) => !serverIds.has(message.id)),
-      );
+      setOptimisticUserMessagesByThreadId((existing) => {
+        const current = existing[threadKey] ?? [];
+        const nextForThread = current.filter((message) => !serverIds.has(message.id));
+        if (nextForThread.length === current.length) {
+          return existing;
+        }
+        if (nextForThread.length === 0) {
+          const { [threadKey]: _removed, ...rest } = existing;
+          return rest;
+        }
+        return { ...existing, [threadKey]: nextForThread };
+      });
     }, 0);
     for (const removedMessage of removedMessages) {
       const previewUrls = collectUserMessageBlobPreviewUrls(removedMessage);
@@ -3942,20 +3971,20 @@ function ChatViewContent(props: ChatViewProps) {
     return () => {
       window.clearTimeout(timer);
     };
-  }, [activeThread?.id, activeThread?.messages, handoffAttachmentPreviews, optimisticUserMessages]);
+  }, [
+    activeThread?.id,
+    activeThread?.messages,
+    handoffAttachmentPreviews,
+    optimisticUserMessagesByThreadId,
+  ]);
 
   useEffect(() => {
-    sendPreparationAbortRef.current?.abort();
-    sendPreparationAbortRef.current = null;
-    setOptimisticUserMessages((existing) => {
-      for (const message of existing) {
-        revokeUserMessagePreviewUrls(message);
-      }
-      return [];
-    });
-    resetLocalDispatch();
+    // Navigation is not cancel. Leaving a chat must not abort its in-flight
+    // send, interrupt a just-started turn, or wipe that thread's optimistic
+    // rows — those are the three ways a successful turn became invisible until
+    // full app restart reloaded the server snapshot.
     setExpandedImage(null);
-  }, [draftId, resetLocalDispatch, threadId]);
+  }, [draftId, threadId]);
 
   const closeExpandedImage = useCallback(() => {
     setExpandedImage(null);
@@ -4466,17 +4495,17 @@ function ChatViewContent(props: ChatViewProps) {
     options?: {
       readonly intent?: "auto" | "queue" | "steer" | "force";
       readonly ctrlOrMetaKey?: boolean;
+      /**
+       * When set, this send is draining a queued item. On success the id is
+       * removed; on failure the item stays queued (no composer restore).
+       */
+      readonly queuedItemId?: string;
     },
   ): Promise<boolean> => {
     e?.preventDefault();
-    if (
-      !activeThread ||
-      isSendBusy ||
-      isConnecting ||
-      activeEnvironmentUnavailable ||
-      sendInFlightRef.current
-    )
-      return false;
+    if (!activeThread || isSendBusy || isConnecting || activeEnvironmentUnavailable) return false;
+    const activeSendThreadKey = String(activeThread.id);
+    if (sendInFlightThreadIdsRef.current.has(activeSendThreadKey)) return false;
     if (activePendingProgress) {
       onAdvanceActivePendingUserInput();
       return false;
@@ -4619,10 +4648,11 @@ function ChatViewContent(props: ChatViewProps) {
       return false;
     }
 
-    sendInFlightRef.current = true;
+    sendInFlightThreadIdsRef.current.add(activeSendThreadKey);
     const sendPreparationAbort = new AbortController();
-    sendPreparationAbortRef.current?.abort();
-    sendPreparationAbortRef.current = sendPreparationAbort;
+    // Only cancel prep for this same thread (re-send / Stop), never for others.
+    sendPreparationAbortByThreadIdRef.current.get(activeSendThreadKey)?.abort();
+    sendPreparationAbortByThreadIdRef.current.set(activeSendThreadKey, sendPreparationAbort);
     if (isDraftHeroState && activeThreadKey) {
       let resolveDockStarted: (() => void) | undefined;
       const dockStarted = new Promise<void>((resolve) => {
@@ -4702,9 +4732,9 @@ function ChatViewContent(props: ChatViewProps) {
       messageId: null,
     });
     scrollToEnd(false);
-    setOptimisticUserMessages((existing) => [
-      ...existing,
-      {
+    setOptimisticUserMessagesByThreadId((existing) => {
+      const key = String(threadIdForSend);
+      const nextMessage: ChatMessage = {
         id: messageIdForSend,
         role: "user",
         text: outgoingMessageText,
@@ -4713,8 +4743,12 @@ function ChatViewContent(props: ChatViewProps) {
         createdAt: messageCreatedAt,
         updatedAt: messageCreatedAt,
         streaming: false,
-      },
-    ]);
+      };
+      return {
+        ...existing,
+        [key]: [...(existing[key] ?? []), nextMessage],
+      };
+    });
     setThreadError(threadIdForSend, null);
     if (expiredTerminalContextCount > 0) {
       const toastCopy = buildExpiredTerminalContextToastCopy(
@@ -4854,18 +4888,36 @@ function ChatViewContent(props: ChatViewProps) {
         failure = startResult;
       } else {
         turnStartSucceeded = true;
-        if (sendPreparationAbort.signal.aborted) {
-          await interruptThreadTurn({
-            environmentId,
-            input: { threadId: threadIdForSend },
-          });
-        }
+        // Never interrupt a successful turnStart because preparation was
+        // aborted. Prep abort is for cancelling image reads / pre-RPC work;
+        // once the server accepted the turn, only explicit Stop may interrupt.
       }
     }
 
     const preparationWasCancelled = sendPreparationAbort.signal.aborted;
+    const drainingQueuedItemId = options?.queuedItemId;
     if (failure !== null || (preparationWasCancelled && !turnStartSucceeded)) {
+      const optimisticKey = String(threadIdForSend);
+      setOptimisticUserMessagesByThreadId((existing) => {
+        const current = existing[optimisticKey] ?? [];
+        const removed = current.filter((message) => message.id === messageIdForSend);
+        if (removed.length === 0) {
+          return existing;
+        }
+        for (const message of removed) {
+          revokeUserMessagePreviewUrls(message);
+        }
+        const nextForThread = current.filter((message) => message.id !== messageIdForSend);
+        if (nextForThread.length === 0) {
+          const { [optimisticKey]: _removed, ...rest } = existing;
+          return rest;
+        }
+        return { ...existing, [optimisticKey]: nextForThread };
+      });
+      // Queue drain failures keep the item queued; do not shove text into the
+      // composer (that would block the next drain and look like a draft).
       if (
+        drainingQueuedItemId === undefined &&
         activeThreadIdRef.current === threadIdForSend &&
         promptRef.current.length === 0 &&
         composerImagesRef.current.length === 0 &&
@@ -4876,14 +4928,6 @@ function ChatViewContent(props: ChatViewProps) {
         (useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)?.reviewComments
           .length ?? 0) === 0
       ) {
-        setOptimisticUserMessages((existing) => {
-          const removed = existing.filter((message) => message.id === messageIdForSend);
-          for (const message of removed) {
-            revokeUserMessagePreviewUrls(message);
-          }
-          const next = existing.filter((message) => message.id !== messageIdForSend);
-          return next.length === existing.length ? existing : next;
-        });
         promptRef.current = promptForSend;
         const retryComposerImages = composerImagesSnapshot.map(cloneComposerImageForRetry);
         composerImagesRef.current = retryComposerImages;
@@ -4901,6 +4945,16 @@ function ChatViewContent(props: ChatViewProps) {
           detectTrigger: true,
         });
       }
+      if (drainingQueuedItemId !== undefined) {
+        clearComposerDraftContent(composerDraftTarget);
+        promptRef.current = "";
+        composerImagesRef.current = [];
+        composerTerminalContextsRef.current = [];
+        composerElementContextsRef.current = [];
+        composerPreviewAnnotationsRef.current = [];
+        composerReviewCommentsRef.current = [];
+        composerRef.current?.resetCursorState();
+      }
       if (failure !== null && !preparationWasCancelled && !isAtomCommandInterrupted(failure)) {
         const error = squashAtomCommandFailure(failure);
         const detail = error instanceof Error ? error.message : "Failed to send message.";
@@ -4915,15 +4969,23 @@ function ChatViewContent(props: ChatViewProps) {
         setThreadError(threadIdForSend, `${detail}${imageHint}`);
       }
     }
-    if (sendPreparationAbortRef.current === sendPreparationAbort) {
-      sendPreparationAbortRef.current = null;
+    if (
+      sendPreparationAbortByThreadIdRef.current.get(activeSendThreadKey) === sendPreparationAbort
+    ) {
+      sendPreparationAbortByThreadIdRef.current.delete(activeSendThreadKey);
     }
-    sendInFlightRef.current = false;
+    sendInFlightThreadIdsRef.current.delete(activeSendThreadKey);
+    if (turnStartSucceeded && drainingQueuedItemId !== undefined) {
+      useThreadTurnQueueStore.getState().remove(threadIdForSend, drainingQueuedItemId);
+    }
     if (!turnStartSucceeded) {
       setDockedDraftHeroThreadKey((currentThreadKey) =>
         currentThreadKey === activeThreadKey ? null : currentThreadKey,
       );
-      resetLocalDispatch();
+      // Only clear local busy for the thread that failed; never clobber another.
+      if (activeThreadIdRef.current === threadIdForSend) {
+        resetLocalDispatch();
+      }
     }
     return turnStartSucceeded;
   };
@@ -4932,11 +4994,12 @@ function ChatViewContent(props: ChatViewProps) {
     if (!activeThread) return;
     // Always clear local "Sending" busy state. Stop must work even when the
     // provider turn never reached phase=running (stuck image read/upload or
-    // missing projection ack).
-    sendPreparationAbortRef.current?.abort();
-    sendPreparationAbortRef.current = null;
+    // missing projection ack). Only abort this thread's preparation.
+    const interruptThreadKey = String(activeThread.id);
+    sendPreparationAbortByThreadIdRef.current.get(interruptThreadKey)?.abort();
+    sendPreparationAbortByThreadIdRef.current.delete(interruptThreadKey);
+    sendInFlightThreadIdsRef.current.delete(interruptThreadKey);
     resetLocalDispatch();
-    sendInFlightRef.current = false;
     // Call the server whenever anything looks live — not only phase=running.
     // Connecting recycle, sticky Working chrome, and unsettled turns all show
     // Stop; gating only on running made Stop a silent no-op (Grok dogfood).
@@ -5004,20 +5067,16 @@ function ChatViewContent(props: ChatViewProps) {
     setThreadError,
   ]);
 
-  /** Pull a queued item into the composer and send it now (steer if live). */
-  const sendQueuedItemNow = useCallback(
-    (itemId: string) => {
-      if (!activeThreadId) {
-        return;
-      }
-      const item = useThreadTurnQueueStore
-        .getState()
-        .list(activeThreadId)
-        .find((entry) => entry.id === itemId);
-      if (!item) {
-        return;
-      }
-      useThreadTurnQueueStore.getState().remove(activeThreadId, itemId);
+  /** Load a queued item into the composer/refs without removing it from the queue. */
+  const applyQueuedItemToComposer = useCallback(
+    (item: {
+      readonly text: string;
+      readonly images: ReadonlyArray<ComposerImageAttachment>;
+      readonly terminalContexts: ReadonlyArray<TerminalContextDraft>;
+      readonly elementContexts: ReadonlyArray<ElementContextDraft>;
+      readonly previewAnnotations: ReadonlyArray<PreviewAnnotationPayload>;
+      readonly reviewComments: ReadonlyArray<ReviewCommentContext>;
+    }) => {
       clearComposerDraftContent(composerDraftTarget);
       setComposerDraftPrompt(composerDraftTarget, item.text);
       if (item.images.length > 0) {
@@ -5038,21 +5097,38 @@ function ChatViewContent(props: ChatViewProps) {
         cursor: item.text.length,
         detectTrigger: false,
       });
-      const intent = phase === "running" ? "steer" : "force";
-      void onSendRef.current(undefined, { intent });
     },
     [
-      activeThreadId,
       addComposerDraftImages,
       clearComposerDraftContent,
       composerDraftTarget,
-      phase,
       setComposerDraftElementContexts,
       setComposerDraftPreviewAnnotations,
       setComposerDraftPrompt,
       setComposerDraftReviewComments,
       setComposerDraftTerminalContexts,
     ],
+  );
+
+  /** Pull a queued item into the composer and send it now (steer if live). */
+  const sendQueuedItemNow = useCallback(
+    (itemId: string) => {
+      if (!activeThreadId) {
+        return;
+      }
+      const item = useThreadTurnQueueStore
+        .getState()
+        .list(activeThreadId)
+        .find((entry) => entry.id === itemId);
+      if (!item) {
+        return;
+      }
+      // Keep the item until onSend succeeds (queuedItemId → remove).
+      applyQueuedItemToComposer(item);
+      const intent = phase === "running" ? "steer" : "force";
+      void onSendRef.current(undefined, { intent, queuedItemId: item.id });
+    },
+    [activeThreadId, applyQueuedItemToComposer, phase],
   );
   sendQueuedItemNowRef.current = sendQueuedItemNow;
 
@@ -5061,67 +5137,43 @@ function ChatViewContent(props: ChatViewProps) {
     if (!activeThreadId || !activeThread) {
       return;
     }
+    const threadSendKey = String(activeThreadId);
+    const composerReady = Boolean(composerRef.current?.getSendContext()?.providerAvailable);
     if (
       !shouldAutoDrainQueuedTurn({
         queueCount: activeThreadQueueCount,
         phase,
         queueFlushInFlight: queueFlushInFlightRef.current,
-        sendInFlight: sendInFlightRef.current,
+        sendInFlight: sendInFlightThreadIdsRef.current.has(threadSendKey),
         isSendBusy,
         isConnecting,
         // Never overwrite a new draft the user started while the queued
         // turn was waiting. The queue remains visible for explicit sending.
         composerHasDraftContent,
+        composerReady,
       })
     ) {
       return;
     }
-    const next = useThreadTurnQueueStore.getState().dequeue(activeThreadId);
+    const next = useThreadTurnQueueStore.getState().peek(activeThreadId);
     if (!next) {
       return;
     }
     queueFlushInFlightRef.current = true;
-    clearComposerDraftContent(composerDraftTarget);
-    setComposerDraftPrompt(composerDraftTarget, next.text);
-    if (next.images.length > 0) {
-      addComposerDraftImages(composerDraftTarget, [...next.images]);
-    }
-    setComposerDraftTerminalContexts(composerDraftTarget, [...next.terminalContexts]);
-    setComposerDraftElementContexts(composerDraftTarget, [...next.elementContexts]);
-    setComposerDraftPreviewAnnotations(composerDraftTarget, [...next.previewAnnotations]);
-    setComposerDraftReviewComments(composerDraftTarget, [...next.reviewComments]);
-    promptRef.current = next.text;
-    composerImagesRef.current = [...next.images];
-    composerTerminalContextsRef.current = [...next.terminalContexts];
-    composerElementContextsRef.current = [...next.elementContexts];
-    composerPreviewAnnotationsRef.current = [...next.previewAnnotations];
-    composerReviewCommentsRef.current = [...next.reviewComments];
-    composerRef.current?.resetCursorState({
-      prompt: next.text,
-      cursor: next.text.length,
-      detectTrigger: false,
-    });
-    // Do not re-enqueue on failure: that loops when onSend rejects synchronously
-    // (composer restore already puts content back for the user to retry).
-    void onSendRef.current(undefined, { intent: "force" }).finally(() => {
+    applyQueuedItemToComposer(next);
+    // peek → send → remove on success (queuedItemId). Failure leaves the queue.
+    void onSendRef.current(undefined, { intent: "force", queuedItemId: next.id }).finally(() => {
       queueFlushInFlightRef.current = false;
     });
   }, [
     activeThread,
     activeThreadId,
     activeThreadQueueCount,
-    addComposerDraftImages,
-    clearComposerDraftContent,
+    applyQueuedItemToComposer,
     composerHasDraftContent,
-    composerDraftTarget,
     isConnecting,
     isSendBusy,
     phase,
-    setComposerDraftElementContexts,
-    setComposerDraftPreviewAnnotations,
-    setComposerDraftPrompt,
-    setComposerDraftReviewComments,
-    setComposerDraftTerminalContexts,
   ]);
 
   const onRespondToApproval = useCallback(
@@ -5294,13 +5346,11 @@ function ChatViewContent(props: ChatViewProps) {
       text: string;
       interactionMode: "default" | "plan";
     }) => {
-      if (
-        !activeThread ||
-        !isServerThread ||
-        isSendBusy ||
-        isConnecting ||
-        sendInFlightRef.current
-      ) {
+      if (!activeThread || !isServerThread || isSendBusy || isConnecting) {
+        return;
+      }
+      const planFollowUpThreadKey = String(activeThread.id);
+      if (sendInFlightThreadIdsRef.current.has(planFollowUpThreadKey)) {
         return;
       }
 
@@ -5332,7 +5382,7 @@ function ChatViewContent(props: ChatViewProps) {
         text: trimmed,
       });
 
-      sendInFlightRef.current = true;
+      sendInFlightThreadIdsRef.current.add(planFollowUpThreadKey);
       beginLocalDispatch({ preparingWorktree: false });
       setThreadError(threadIdForSend, null);
 
@@ -5352,9 +5402,9 @@ function ChatViewContent(props: ChatViewProps) {
       });
       scrollToEnd(false);
 
-      setOptimisticUserMessages((existing) => [
-        ...existing,
-        {
+      setOptimisticUserMessagesByThreadId((existing) => {
+        const key = String(threadIdForSend);
+        const nextMessage: ChatMessage = {
           id: messageIdForSend,
           role: "user",
           text: outgoingMessageText,
@@ -5362,8 +5412,12 @@ function ChatViewContent(props: ChatViewProps) {
           createdAt: messageCreatedAt,
           updatedAt: messageCreatedAt,
           streaming: false,
-        },
-      ]);
+        };
+        return {
+          ...existing,
+          [key]: [...(existing[key] ?? []), nextMessage],
+        };
+      });
 
       const settingsResult = await persistThreadSettingsForNextTurn({
         threadId: threadIdForSend,
@@ -5424,13 +5478,23 @@ function ChatViewContent(props: ChatViewProps) {
             useRightPanelStore.getState().open(activeThreadRef, "plan");
           }
         }
-        sendInFlightRef.current = false;
+        sendInFlightThreadIdsRef.current.delete(planFollowUpThreadKey);
         return;
       }
 
-      setOptimisticUserMessages((existing) =>
-        existing.filter((message) => message.id !== messageIdForSend),
-      );
+      setOptimisticUserMessagesByThreadId((existing) => {
+        const key = String(threadIdForSend);
+        const current = existing[key] ?? [];
+        const nextForThread = current.filter((message) => message.id !== messageIdForSend);
+        if (nextForThread.length === current.length) {
+          return existing;
+        }
+        if (nextForThread.length === 0) {
+          const { [key]: _removed, ...rest } = existing;
+          return rest;
+        }
+        return { ...existing, [key]: nextForThread };
+      });
       if (!isAtomCommandInterrupted(failure)) {
         const error = squashAtomCommandFailure(failure);
         setThreadError(
@@ -5438,7 +5502,7 @@ function ChatViewContent(props: ChatViewProps) {
           error instanceof Error ? error.message : "Failed to send plan follow-up.",
         );
       }
-      sendInFlightRef.current = false;
+      sendInFlightThreadIdsRef.current.delete(planFollowUpThreadKey);
       resetLocalDispatch();
     },
     [
@@ -5469,9 +5533,12 @@ function ChatViewContent(props: ChatViewProps) {
       !isServerThread ||
       isSendBusy ||
       isConnecting ||
-      activeEnvironmentUnavailable ||
-      sendInFlightRef.current
+      activeEnvironmentUnavailable
     ) {
+      return;
+    }
+    const implementPlanThreadKey = String(activeThread.id);
+    if (sendInFlightThreadIdsRef.current.has(implementPlanThreadKey)) {
       return;
     }
 
@@ -5501,10 +5568,10 @@ function ChatViewContent(props: ChatViewProps) {
     const nextThreadTitle = truncate(buildPlanImplementationThreadTitle(planMarkdown));
     const nextThreadModelSelection: ModelSelection = ctxSelectedModelSelection;
 
-    sendInFlightRef.current = true;
+    sendInFlightThreadIdsRef.current.add(implementPlanThreadKey);
     beginLocalDispatch({ preparingWorktree: false });
     const finish = () => {
-      sendInFlightRef.current = false;
+      sendInFlightThreadIdsRef.current.delete(implementPlanThreadKey);
       resetLocalDispatch();
     };
 

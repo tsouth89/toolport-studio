@@ -337,8 +337,11 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       Effect.flatMap(([current, snapshotSequence]) =>
         Option.match(current.data, {
           onNone: () => Effect.void,
-          onSome: (thread) =>
-            shouldPersistThread(thread) ? persist({ snapshotSequence, thread }) : Effect.void,
+          // Always persist on dispose — including mid-turn. Streaming updates
+          // still skip the hot path via shouldPersistThread, but dropping the
+          // idle subscription without a cache write left warm reloads missing
+          // every message that landed while session.status was starting/running.
+          onSome: (thread) => persist({ snapshotSequence, thread }),
         }),
       ),
     ),

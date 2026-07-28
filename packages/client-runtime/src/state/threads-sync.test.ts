@@ -450,7 +450,7 @@ describe("EnvironmentThreads", () => {
     }),
   );
 
-  it.effect("does not persist active thread snapshots during streaming or teardown", () =>
+  it.effect("skips streaming persists while running but still writes the cache on teardown", () =>
     Effect.gen(function* () {
       const savedThreads = yield* Effect.scoped(
         Effect.gen(function* () {
@@ -466,12 +466,18 @@ describe("EnvironmentThreads", () => {
           yield* TestClock.adjust("500 millis");
           yield* Effect.yieldNow;
 
+          // Hot path still avoids writing every running tick.
           expect(yield* Ref.get(harness.savedThreads)).toEqual([]);
           return harness.savedThreads;
         }),
       );
 
-      expect(yield* Ref.get(savedThreads)).toEqual([]);
+      // Dispose must persist mid-turn detail so warm remounts do not miss
+      // messages that only existed in the in-memory subscription.
+      const saved = yield* Ref.get(savedThreads);
+      expect(saved).toHaveLength(1);
+      expect(saved[0]?.thread.session?.status).toBe("running");
+      expect(saved[0]?.thread.messages).toEqual(ACTIVE_THREAD.messages);
     }),
   );
 

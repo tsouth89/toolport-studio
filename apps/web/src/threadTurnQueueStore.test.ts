@@ -64,6 +64,19 @@ describe("useThreadTurnQueueStore", () => {
     expect(useThreadTurnQueueStore.getState().dequeue(threadId)).toBeNull();
   });
 
+  it("peeks the head without removing it so drain can send then remove on success", () => {
+    const threadId = "thread-peek";
+    useThreadTurnQueueStore.getState().enqueue(threadId, { text: "head", images: [] });
+    useThreadTurnQueueStore.getState().enqueue(threadId, { text: "tail", images: [] });
+    expect(useThreadTurnQueueStore.getState().peek(threadId)?.text).toBe("head");
+    expect(useThreadTurnQueueStore.getState().count(threadId)).toBe(2);
+    expect(useThreadTurnQueueStore.getState().peek(threadId)?.text).toBe("head");
+    const headId = useThreadTurnQueueStore.getState().peek(threadId)?.id;
+    expect(headId).toBeDefined();
+    useThreadTurnQueueStore.getState().remove(threadId, headId!);
+    expect(useThreadTurnQueueStore.getState().peek(threadId)?.text).toBe("tail");
+  });
+
   it("removes a specific queued item", () => {
     const threadId = "thread-2";
     const id = useThreadTurnQueueStore

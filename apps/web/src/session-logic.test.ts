@@ -9,6 +9,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   deriveActiveWorkStartedAt,
+  deriveComposerPhase,
   deriveActivePlanState,
   derivePendingApprovals,
   derivePendingUserInputs,
@@ -1756,22 +1757,22 @@ describe("isLatestTurnSettled", () => {
     completedAt: "2026-02-27T21:10:06.000Z",
   } as const;
 
-  it("returns false while the same turn is still active in a running session", () => {
+  it("treats a completed turn as settled even when session status is still sticky-running", () => {
     expect(
       isLatestTurnSettled(latestTurn, {
         status: "running",
         activeTurnId: TurnId.make("turn-1"),
       }),
-    ).toBe(false);
+    ).toBe(true);
   });
 
-  it("returns false while any turn is running to avoid stale latest-turn banners", () => {
+  it("treats a completed latest turn as settled while a newer turn id is running", () => {
     expect(
       isLatestTurnSettled(latestTurn, {
         status: "running",
         activeTurnId: TurnId.make("turn-2"),
       }),
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it("returns true once the session is no longer running that turn", () => {
@@ -1794,6 +1795,38 @@ describe("isLatestTurnSettled", () => {
         null,
       ),
     ).toBe(false);
+  });
+});
+
+describe("deriveComposerPhase", () => {
+  const completedTurn = {
+    turnId: TurnId.make("turn-1"),
+    startedAt: "2026-02-27T21:10:00.000Z",
+    completedAt: "2026-02-27T21:10:06.000Z",
+  } as const;
+
+  it("maps a live running session to running", () => {
+    expect(
+      deriveComposerPhase(
+        {
+          status: "running",
+          activeTurnId: TurnId.make("turn-2"),
+        } as never,
+        completedTurn,
+      ),
+    ).toBe("running");
+  });
+
+  it("treats sticky running on a completed turn as ready for send/drain", () => {
+    expect(
+      deriveComposerPhase(
+        {
+          status: "running",
+          activeTurnId: TurnId.make("turn-1"),
+        } as never,
+        completedTurn,
+      ),
+    ).toBe("ready");
   });
 });
 

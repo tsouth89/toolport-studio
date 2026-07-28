@@ -106,6 +106,11 @@ describe("shouldAutoDrainQueuedTurn", () => {
     expect(shouldAutoDrainQueuedTurn({ ...ready, sendInFlight: true })).toBe(false);
     expect(shouldAutoDrainQueuedTurn({ ...ready, queueFlushInFlight: true })).toBe(false);
   });
+
+  it("waits until the composer is ready after a thread switch", () => {
+    expect(shouldAutoDrainQueuedTurn({ ...ready, composerReady: false })).toBe(false);
+    expect(shouldAutoDrainQueuedTurn({ ...ready, composerReady: true })).toBe(true);
+  });
 });
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {

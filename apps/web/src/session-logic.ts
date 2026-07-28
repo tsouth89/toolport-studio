@@ -499,13 +499,14 @@ type SessionActivityState = Pick<NonNullable<Thread["session"]>, "status" | "act
 
 export function isLatestTurnSettled(
   latestTurn: LatestTurnTiming | null,
-  session: SessionActivityState | null,
+  _session: SessionActivityState | null,
 ): boolean {
+  // Turn timestamps are authoritative. Sticky provider session.status ===
+  // "running" after completedAt used to keep Working chrome forever, block
+  // queue drain, and hide plan banners even though the turn had finished.
+  // Live work is tracked separately via session phase / isWorking.
   if (!latestTurn?.startedAt) return false;
-  if (!latestTurn.completedAt) return false;
-  if (!session) return true;
-  if (session.status === "running") return false;
-  return true;
+  return latestTurn.completedAt != null;
 }
 
 export function deriveActiveWorkStartedAt(
@@ -1800,4 +1801,29 @@ export function derivePhase(session: ThreadSession | null): SessionPhase {
   if (session.status === "starting") return "connecting";
   if (session.status === "running") return "running";
   return "ready";
+}
+
+/**
+ * Session phase for composer/queue/Working decisions. When the provider leaves
+ * session.status stuck on "running" for a turn that already has completedAt
+ * (Grok hang after tokens stop), treat the session as ready so Enter sends
+ * instead of queueing forever and the queue can drain.
+ */
+export function deriveComposerPhase(
+  session: ThreadSession | null,
+  latestTurn: LatestTurnTiming | null,
+): SessionPhase {
+  const base = derivePhase(session);
+  if (base !== "running") {
+    return base;
+  }
+  if (
+    latestTurn?.startedAt != null &&
+    latestTurn.completedAt != null &&
+    session?.activeTurnId != null &&
+    session.activeTurnId === latestTurn.turnId
+  ) {
+    return "ready";
+  }
+  return base;
 }

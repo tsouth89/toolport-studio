@@ -713,6 +713,11 @@ export function shouldAutoDrainQueuedTurn(input: {
   isSendBusy: boolean;
   isConnecting: boolean;
   composerHasDraftContent: boolean;
+  /**
+   * Composer must be mounted with provider context. Drain used to fire right
+   * after a thread switch with a null composerRef and drop the dequeued item.
+   */
+  composerReady?: boolean;
 }): boolean {
   return (
     input.queueCount > 0 &&
@@ -721,6 +726,7 @@ export function shouldAutoDrainQueuedTurn(input: {
     !input.sendInFlight &&
     !input.isSendBusy &&
     !input.isConnecting &&
-    !input.composerHasDraftContent
+    !input.composerHasDraftContent &&
+    input.composerReady !== false
   );
 }
