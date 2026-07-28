@@ -5,21 +5,18 @@ import {
   type ResolvedKeybindingsConfig,
   type ThreadId,
 } from "@t3tools/contracts";
-import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { memo } from "react";
-import GitActionsControl from "../GitActionsControl";
 import { type DraftId } from "~/composerDraftStore";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
-import ProjectScriptsControl, {
+import {
   type NewProjectScriptInput,
   type ProjectScriptActionResult,
 } from "../ProjectScriptsControl";
-import { OpenInPicker } from "./OpenInPicker";
 import { usePrimaryEnvironmentId } from "../../state/environments";
-import { useT3ProjectFileScripts } from "~/hooks/useT3ProjectFileScripts";
 import { ProjectFavicon } from "../ProjectFavicon";
 import { cn } from "~/lib/utils";
 import { FolderPlusIcon } from "lucide-react";
+import { ChatHeaderProjectTools } from "./ChatHeaderProjectTools";
 
 interface ChatHeaderProps {
   activeThreadEnvironmentId: EnvironmentId;
@@ -47,17 +44,8 @@ interface ChatHeaderProps {
   onAttachProject: () => void;
 }
 
-export function shouldShowOpenInPicker(input: {
-  readonly activeProjectName: string | undefined;
-  readonly activeThreadEnvironmentId: EnvironmentId;
-  readonly primaryEnvironmentId: EnvironmentId | null;
-}): boolean {
-  return (
-    Boolean(input.activeProjectName) &&
-    input.primaryEnvironmentId !== null &&
-    input.activeThreadEnvironmentId === input.primaryEnvironmentId
-  );
-}
+/** @deprecated Import from `./ChatHeader.logic` — re-exported for existing call sites. */
+export { shouldShowOpenInPicker } from "./ChatHeader.logic";
 
 export const ChatHeader = memo(function ChatHeader({
   activeThreadEnvironmentId,
@@ -82,15 +70,6 @@ export const ChatHeader = memo(function ChatHeader({
   onAttachProject,
 }: ChatHeaderProps) {
   const primaryEnvironmentId = usePrimaryEnvironmentId();
-  const fileScripts = useT3ProjectFileScripts(
-    activeThreadEnvironmentId,
-    activeProjectScripts ? activeProjectCwd : null,
-  );
-  const showOpenInPicker = shouldShowOpenInPicker({
-    activeProjectName,
-    activeThreadEnvironmentId,
-    primaryEnvironmentId,
-  });
   return (
     <div className="@container/header-actions flex min-w-0 flex-1 items-center gap-1.5 sm:gap-2.5">
       <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden sm:gap-2.5">
@@ -131,8 +110,8 @@ export const ChatHeader = memo(function ChatHeader({
       <div
         data-chat-header-actions
         className={cn(
-          // Keep header actions sparse — Open/scripts/git should not compete with the thread title.
-          "flex shrink-0 items-center justify-end gap-1 @3xl/header-actions:gap-1.5",
+          // Sparse chrome: title first; IDE/scripts/git live under one overflow.
+          "flex shrink-0 items-center justify-end gap-1",
           rightPanelOpen ? "pr-0" : "pr-14",
         )}
       >
@@ -158,33 +137,25 @@ export const ChatHeader = memo(function ChatHeader({
             </TooltipPopup>
           </Tooltip>
         ) : null}
-        {activeProjectScripts && (
-          <ProjectScriptsControl
-            scripts={activeProjectScripts}
-            fileScripts={fileScripts}
-            keybindings={keybindings}
-            preferredScriptId={preferredScriptId}
-            onRunScript={onRunProjectScript}
-            onAddScript={onAddProjectScript}
-            onUpdateScript={onUpdateProjectScript}
-            onDeleteScript={onDeleteProjectScript}
-          />
-        )}
-        {showOpenInPicker && (
-          <OpenInPicker
-            environmentId={activeThreadEnvironmentId}
-            keybindings={keybindings}
-            availableEditors={availableEditors}
-            openInCwd={openInCwd}
-          />
-        )}
-        {activeProjectName && (
-          <GitActionsControl
-            gitCwd={gitCwd}
-            activeThreadRef={scopeThreadRef(activeThreadEnvironmentId, activeThreadId)}
-            {...(draftId ? { draftId } : {})}
-          />
-        )}
+        <ChatHeaderProjectTools
+          activeThreadEnvironmentId={activeThreadEnvironmentId}
+          activeThreadId={activeThreadId}
+          {...(draftId ? { draftId } : {})}
+          activeProjectName={activeProjectName}
+          activeProjectCwd={activeProjectCwd}
+          isProjectless={isProjectless}
+          openInCwd={openInCwd}
+          activeProjectScripts={activeProjectScripts}
+          preferredScriptId={preferredScriptId}
+          keybindings={keybindings}
+          availableEditors={availableEditors}
+          gitCwd={gitCwd}
+          primaryEnvironmentId={primaryEnvironmentId}
+          onRunProjectScript={onRunProjectScript}
+          onAddProjectScript={onAddProjectScript}
+          onUpdateProjectScript={onUpdateProjectScript}
+          onDeleteProjectScript={onDeleteProjectScript}
+        />
       </div>
     </div>
   );

@@ -1143,8 +1143,9 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
   const onOpenActivity = activity.onOpenActivity;
   // Wait notice only — Stop lives on the composer (queue/send). Silence is
   // usually model think or a long tool, not a hang recovery moment.
-  // Opens the This-turn card (Codex-style), not a docked Activity column.
-  const showActivityLink = quiet.isQuiet && onOpenActivity !== null;
+  // Always offer This turn while live so the Codex-style card is one click
+  // away (not only after a quiet/stall threshold).
+  const showActivityLink = onOpenActivity !== null;
 
   return (
     <div
@@ -1241,7 +1242,11 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
             </span>
             <button
               type="button"
-              className="font-medium text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className={
+                quiet.isQuiet
+                  ? "font-medium text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  : "font-medium text-muted-foreground hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              }
               onClick={onOpenActivity}
             >
               This turn

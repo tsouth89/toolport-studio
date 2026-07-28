@@ -12,8 +12,11 @@ import type { ThreadActivityViewModel } from "../threadActivityViewModel";
 import { cn } from "../lib/utils";
 import { DiffStatLabel, hasNonZeroStat } from "./chat/DiffStatLabel";
 
-/** After this long while working, collapse to a pill so chat stays primary. */
-const THIS_TURN_AUTO_COLLAPSE_MS = 12_000;
+/**
+ * Brief expanded glance at turn start, then collapse to a pill so chat stays
+ * primary. Attention re-expands and holds the card open.
+ */
+export const THIS_TURN_AUTO_COLLAPSE_MS = 4_000;
 
 function useElapsedLabel(startedAt: string | null, active: boolean): string | null {
   const [now, setNow] = useState(() => Date.now());
@@ -28,9 +31,27 @@ function useElapsedLabel(startedAt: string | null, active: boolean): string | nu
   return formatDuration(Math.max(0, now - startedMs));
 }
 
+function compactToolLabel(label: string): string {
+  const trimmed = label.trim();
+  if (trimmed.length <= 28) return trimmed;
+  return `${trimmed.slice(0, 27).trimEnd()}…`;
+}
+
 function statusTitle(model: ThreadActivityViewModel, liveElapsed: string | null): string {
   if (model.isWorking) {
-    return liveElapsed ? `This turn · ${liveElapsed}` : "This turn";
+    const current = model.current?.label?.trim();
+    const toolBit =
+      current &&
+      current.length > 0 &&
+      !/^waiting for/i.test(current) &&
+      current.toLowerCase() !== "thinking"
+        ? compactToolLabel(current)
+        : null;
+    if (liveElapsed && toolBit) {
+      return `${toolBit} · ${liveElapsed}`;
+    }
+    if (liveElapsed) return `This turn · ${liveElapsed}`;
+    return toolBit ?? "This turn";
   }
   if (model.statusBadge.kind === "done") {
     return model.statusBadge.durationLabel ? `Done · ${model.statusBadge.durationLabel}` : "Done";
@@ -71,8 +92,19 @@ export function ThisTurnCard({
     usedLabel !== null ||
     model.attention !== null;
 
-  // Long healthy turns: collapse to a pill so the chat stays Claude-clean.
-  // Attention keeps the card open; user expand pins it.
+  // Fresh turn: brief expanded glance, then pill (unless attention / user pin).
+  useEffect(() => {
+    setExpanded(true);
+    setUserPinnedExpanded(false);
+  }, [model.elapsedStartedAt]);
+
+  // Approvals / errors deserve the full card, not a quiet pill.
+  useEffect(() => {
+    if (model.attention !== null) {
+      setExpanded(true);
+    }
+  }, [model.attention]);
+
   useEffect(() => {
     if (!model.isWorking || userPinnedExpanded || model.attention !== null) {
       return;
@@ -82,12 +114,6 @@ export function ThisTurnCard({
     }, THIS_TURN_AUTO_COLLAPSE_MS);
     return () => window.clearTimeout(id);
   }, [model.attention, model.isWorking, model.elapsedStartedAt, userPinnedExpanded]);
-
-  useEffect(() => {
-    // Fresh turn re-opens expanded once.
-    setExpanded(true);
-    setUserPinnedExpanded(false);
-  }, [model.elapsedStartedAt]);
 
   if (!expanded) {
     return (
