@@ -33,11 +33,21 @@ function setInternalPreviewSession(): void {
   });
 }
 
-it.effect("returns the internal preview MCP binding without inventing a Toolport install", () =>
+it.effect("omits preview MCP until the thread is armed (default)", () =>
   Effect.sync(() => {
     McpProviderSession.clearAllMcpProviderSessions();
     setInternalPreviewSession();
 
+    expect(
+      McpProviderSession.readMcpProviderBindings(
+        threadId,
+        { PATH: "" },
+        "win32",
+        "C:\\Users\\tester",
+      ),
+    ).toEqual([]);
+
+    McpProviderSession.armPreviewMcpForThread(threadId);
     expect(
       McpProviderSession.readMcpProviderBindings(
         threadId,
@@ -56,12 +66,29 @@ it.effect("returns the internal preview MCP binding without inventing a Toolport
   }).pipe(Effect.provide(NodeServices.layer)),
 );
 
-it.effect("adds an explicitly configured Toolport stdio gateway with dual client ids", () =>
+it.effect("force-injects preview MCP when TOOLPORT_STUDIO_PREVIEW_MCP=on", () =>
   Effect.sync(() => {
     McpProviderSession.clearAllMcpProviderSessions();
     setInternalPreviewSession();
 
-    // Discovery path requires explicit opt-in (SOU-402 default off).
+    expect(
+      McpProviderSession.readMcpProviderBindings(
+        threadId,
+        { PATH: "", TOOLPORT_STUDIO_PREVIEW_MCP: "on" },
+        "win32",
+        "C:\\Users\\tester",
+      ),
+    ).toEqual([expect.objectContaining({ name: "toolport-studio-preview", transport: "http" })]);
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect("adds an explicitly configured Toolport stdio gateway with dual client ids", () =>
+  Effect.sync(() => {
+    McpProviderSession.clearAllMcpProviderSessions();
+    setInternalPreviewSession();
+    McpProviderSession.armPreviewMcpForThread(threadId);
+
+    // Toolport needs explicit on (or settings default); env-only path needs flag.
     expect(
       McpProviderSession.readMcpProviderBindings(
         threadId,

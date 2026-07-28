@@ -198,6 +198,8 @@ interface CursorSessionContext {
    * Settings toggles update process.env immediately; mismatch triggers recycle.
    */
   injectsToolportMcp: boolean;
+  /** MCP server name fingerprint at last ACP spawn. */
+  mcpBindingCatalog: string;
   stopped: boolean;
 }
 
@@ -1101,6 +1103,12 @@ export function makeCursorAdapter(
         ctx.scope = sessionScope;
         ctx.acp = acp;
         ctx.injectsToolportMcp = injectsToolport;
+        ctx.mcpBindingCatalog = McpProviderSession.mcpBindingCatalogKey(
+          McpProviderSession.readMcpProviderBindings(
+            ctx.threadId,
+            options?.environment ?? process.env,
+          ),
+        );
         ctx.acpCompromised = false;
         ctx.openToolCallIds.clear();
         ctx.openToolTitles.clear();
@@ -1127,9 +1135,8 @@ export function makeCursorAdapter(
       });
 
     /**
-     * Toolport MCP is spawn-time (ACP mcpServers). Settings toggles update
-     * process.env immediately; recycle the child so Linear/etc apply without
-     * starting a brand-new thread (Grok/Claude parity).
+     * MCP servers are spawn-time (ACP mcpServers). Toolport settings or preview
+     * arming can change the catalog; recycle so the agent sees the new list.
      */
     const rebindCursorToolportMcpIfNeeded = (ctx: CursorSessionContext) =>
       Effect.gen(function* () {
@@ -1137,17 +1144,19 @@ export function makeCursorAdapter(
           return;
         }
         const env = options?.environment ?? process.env;
-        const wantsToolport = McpProviderSession.isToolportMcpInjectionEnabled(env);
-        if (wantsToolport === ctx.injectsToolportMcp) {
+        const nextCatalog = McpProviderSession.mcpBindingCatalogKey(
+          McpProviderSession.readMcpProviderBindings(ctx.threadId, env),
+        );
+        if (nextCatalog === ctx.mcpBindingCatalog) {
           return;
         }
 
-        yield* Effect.logInfo("Cursor Toolport MCP setting changed; recycling ACP process", {
+        yield* Effect.logInfo("Cursor MCP catalog changed; recycling ACP process", {
           threadId: ctx.threadId,
-          from: ctx.injectsToolportMcp,
-          to: wantsToolport,
+          from: ctx.mcpBindingCatalog,
+          to: nextCatalog,
         });
-        yield* recycleCursorAcp(ctx, "toolport-mcp-setting-changed");
+        yield* recycleCursorAcp(ctx, "mcp-catalog-changed");
       });
 
     const startSession: CursorAdapterShape["startSession"] = (input) =>
@@ -1302,6 +1311,7 @@ export function makeCursorAdapter(
             promptsInFlight: 0,
             forceSettledTurnIds: new Set(),
             injectsToolportMcp,
+            mcpBindingCatalog: McpProviderSession.mcpBindingCatalogKey(mcpBindings),
             stopped: false,
           };
 

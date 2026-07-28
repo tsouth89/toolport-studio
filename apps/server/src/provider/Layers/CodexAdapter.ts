@@ -159,6 +159,8 @@ interface CodexAdapterSessionContext {
    * Settings toggles update process.env immediately; mismatch triggers recycle.
    */
   injectsToolportMcp: boolean;
+  /** MCP server name fingerprint at last app-server launch. */
+  mcpBindingCatalog: string;
   /** Launch inputs retained so Toolport MCP rebind can respawn app-server. */
   cwd: string;
   runtimeMode: RuntimeMode;
@@ -1671,15 +1673,16 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         return;
       }
       const env = options?.environment ?? process.env;
-      const wantsToolport = McpProviderSession.isToolportMcpInjectionEnabled(env);
-      if (wantsToolport === session.injectsToolportMcp) {
+      const desiredBindings = McpProviderSession.readMcpProviderBindings(session.threadId, env);
+      const desiredCatalog = McpProviderSession.mcpBindingCatalogKey(desiredBindings);
+      if (desiredCatalog === session.mcpBindingCatalog) {
         return;
       }
 
-      yield* Effect.logInfo("Codex Toolport MCP setting changed; recycling app-server process", {
+      yield* Effect.logInfo("Codex MCP catalog changed; recycling app-server process", {
         threadId: session.threadId,
-        from: session.injectsToolportMcp,
-        to: wantsToolport,
+        from: session.mcpBindingCatalog,
+        to: desiredCatalog,
       });
 
       const previous = yield* session.runtime.getSession.pipe(Effect.orElseSucceed(() => null));
@@ -1690,7 +1693,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
 
       yield* disposeCodexProcess(session);
 
-      const mcpBindings = McpProviderSession.readMcpProviderBindings(session.threadId, env);
+      const mcpBindings = desiredBindings;
       const injectsToolportMcp = mcpBindings.some(
         (binding) => binding.name === McpProviderSession.TOOLPORT_MCP_SERVER_NAME,
       );
@@ -1757,6 +1760,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       session.runtime = runtime;
       session.eventFiber = eventFiber;
       session.injectsToolportMcp = injectsToolportMcp;
+      session.mcpBindingCatalog = McpProviderSession.mcpBindingCatalogKey(mcpBindings);
       session.cwd = runtimeInput.cwd;
       session.runtimeMode = runtimeInput.runtimeMode;
       session.model = model;
@@ -1867,6 +1871,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           runtime,
           eventFiber,
           injectsToolportMcp,
+          mcpBindingCatalog: McpProviderSession.mcpBindingCatalogKey(mcpBindings),
           cwd,
           runtimeMode: input.runtimeMode,
           model,

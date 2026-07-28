@@ -245,6 +245,8 @@ interface OpenCodeSessionContext {
    * via mcp.add / mcp.disconnect (local servers only).
    */
   injectsToolportMcp: boolean;
+  /** MCP server name fingerprint after last add/disconnect. */
+  mcpBindingCatalog: string;
   /**
    * One-shot guard flipped by `stopOpenCodeContext` / `emitUnexpectedExit`.
    * The session lifecycle is owned by `sessionScope`; this Ref exists only
@@ -1415,6 +1417,9 @@ export function makeOpenCodeAdapter(
                 mcpBindings.some(
                   (binding) => binding.name === McpProviderSession.TOOLPORT_MCP_SERVER_NAME,
                 );
+              const mcpBindingCatalog = server.external
+                ? ""
+                : McpProviderSession.mcpBindingCatalogKey(mcpBindings);
               // Resume: re-adopt the session named by the durable cursor —
               // OpenCode scopes history by session id. The probe recovers only
               // a confirmed not-found (start fresh); transport/auth/server
@@ -1506,6 +1511,7 @@ export function makeOpenCodeAdapter(
                 openCodeSession: resolved.openCodeSession,
                 created: resolved.created,
                 injectsToolportMcp,
+                mcpBindingCatalog,
               };
             }).pipe(Effect.provideService(Scope.Scope, sessionScope)),
           );
@@ -1572,6 +1578,7 @@ export function makeOpenCodeAdapter(
           activeAgent: undefined,
           activeVariant: undefined,
           injectsToolportMcp: started.injectsToolportMcp,
+          mcpBindingCatalog: started.mcpBindingCatalog,
           stopped: yield* Ref.make(false),
           sessionScope: started.sessionScope,
         };
@@ -1598,9 +1605,9 @@ export function makeOpenCodeAdapter(
     );
 
     /**
-     * Toolport MCP is added at session start via mcp.add (local servers only).
-     * Settings toggles update process.env immediately; rebind with add/disconnect
-     * so Linear/etc apply without starting a brand-new thread.
+     * MCP is added at session start via mcp.add (local servers only). When
+     * Toolport settings or preview arming change the catalog, add/disconnect
+     * so the agent sees the new list without a brand-new thread.
      */
     const rebindOpenCodeToolportMcpIfNeeded = Effect.fn("rebindOpenCodeToolportMcpIfNeeded")(
       function* (context: OpenCodeSessionContext) {
@@ -1608,50 +1615,53 @@ export function makeOpenCodeAdapter(
           return;
         }
         const env = options?.environment ?? process.env;
-        const wantsToolport = McpProviderSession.isToolportMcpInjectionEnabled(env);
-        if (wantsToolport === context.injectsToolportMcp) {
+        const desiredBindings = McpProviderSession.readMcpProviderBindings(
+          context.session.threadId,
+          env,
+        );
+        const desiredCatalog = McpProviderSession.mcpBindingCatalogKey(desiredBindings);
+        if (desiredCatalog === context.mcpBindingCatalog) {
           return;
         }
 
         // External OpenCode servers are user-managed; Studio cannot inject MCP.
-        // Mark the desired setting applied so we do not retry every turn.
         if (context.server.external) {
-          context.injectsToolportMcp = wantsToolport;
+          context.mcpBindingCatalog = desiredCatalog;
+          context.injectsToolportMcp = McpProviderSession.isToolportMcpInjectionEnabled(env);
           return;
         }
 
-        yield* Effect.logInfo("OpenCode Toolport MCP setting changed; rebinding MCP servers", {
+        yield* Effect.logInfo("OpenCode MCP catalog changed; rebinding MCP servers", {
           threadId: context.session.threadId,
-          from: context.injectsToolportMcp,
-          to: wantsToolport,
+          from: context.mcpBindingCatalog,
+          to: desiredCatalog,
         });
 
-        if (wantsToolport) {
-          const mcpBindings = McpProviderSession.readMcpProviderBindings(
-            context.session.threadId,
-            env,
-          );
-          const toolport = mcpBindings.find(
-            (binding) => binding.name === McpProviderSession.TOOLPORT_MCP_SERVER_NAME,
-          );
-          if (toolport) {
+        const previousNames = new Set(
+          context.mcpBindingCatalog.length > 0 ? context.mcpBindingCatalog.split("\0") : [],
+        );
+        const desiredNames = new Set(desiredBindings.map((binding) => binding.name));
+        for (const name of previousNames) {
+          if (!desiredNames.has(name)) {
+            yield* runOpenCodeSdk("mcp.disconnect", () =>
+              context.client.mcp.disconnect({ name }),
+            ).pipe(Effect.ignore);
+          }
+        }
+        for (const binding of desiredBindings) {
+          if (!previousNames.has(binding.name)) {
             yield* runOpenCodeSdk("mcp.add", () =>
               context.client.mcp.add({
-                name: toolport.name,
-                config: openCodeMcpConfigFromBinding(toolport),
+                name: binding.name,
+                config: openCodeMcpConfigFromBinding(binding),
               }),
             );
           }
-        } else {
-          yield* runOpenCodeSdk("mcp.disconnect", () =>
-            context.client.mcp.disconnect({
-              name: McpProviderSession.TOOLPORT_MCP_SERVER_NAME,
-            }),
-          ).pipe(Effect.ignore);
         }
-        // Record the setting we just applied (even if gateway path was missing)
-        // so we do not rebind on every subsequent turn.
-        context.injectsToolportMcp = wantsToolport;
+        context.mcpBindingCatalog = desiredCatalog;
+        context.injectsToolportMcp = desiredBindings.some(
+          (binding) => binding.name === McpProviderSession.TOOLPORT_MCP_SERVER_NAME,
+        );
       },
     );
 

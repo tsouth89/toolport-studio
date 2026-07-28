@@ -445,6 +445,8 @@ interface GrokSessionContext {
    * when this no longer matches {@link McpProviderSession.isToolportMcpInjectionEnabled}.
    */
   injectsToolportMcp: boolean;
+  /** MCP server name fingerprint at last ACP spawn (recycle when catalog changes). */
+  mcpBindingCatalog: string;
   /**
    * Visible assistant/tool stream events observed for the active turn. Used to
    * detect silent end_turn completions that leave the session looking dead.
@@ -1915,6 +1917,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         ctx.acpDisposed = false;
         ctx.acpCompromised = false;
         ctx.injectsToolportMcp = injectsToolportGateway;
+        ctx.mcpBindingCatalog = McpProviderSession.mcpBindingCatalogKey(mcpBindings);
         // Fresh ACP process: drop residual Stop/watchdog interrupt bookkeeping so
         // the next user message cannot steer into a cancelled turn id and fail
         // preparation with "Grok prompt was interrupted during preparation."
@@ -2075,6 +2078,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             stopped: false,
             acpCompromised: false,
             injectsToolportMcp: injectsToolportGateway,
+            mcpBindingCatalog: McpProviderSession.mcpBindingCatalogKey(mcpBindings),
             turnVisibleUpdateCount: 0,
             lastTurnActivityAtMs: yield* Clock.currentTimeMillis,
             lastToolActivityAtMs: yield* Clock.currentTimeMillis,
@@ -2171,14 +2175,12 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               input.threadId,
               options?.environment ?? process.env,
             );
-            const wantsToolportMcp = nextMcpBindings.some(
-              (binding) => binding.name === McpProviderSession.TOOLPORT_MCP_SERVER_NAME,
-            );
-            if (wantsToolportMcp !== ctx.injectsToolportMcp) {
-              yield* Effect.logInfo("Grok Toolport MCP setting changed; recycling ACP process", {
+            const nextCatalog = McpProviderSession.mcpBindingCatalogKey(nextMcpBindings);
+            if (nextCatalog !== ctx.mcpBindingCatalog) {
+              yield* Effect.logInfo("Grok MCP catalog changed; recycling ACP process", {
                 threadId: input.threadId,
-                from: ctx.injectsToolportMcp,
-                to: wantsToolportMcp,
+                from: ctx.mcpBindingCatalog,
+                to: nextCatalog,
               });
               ctx.acpCompromised = true;
             }

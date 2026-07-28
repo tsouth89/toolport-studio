@@ -60,6 +60,12 @@ const decodeGatewayManifest = Schema.decodeUnknownOption(
 );
 
 const sessionsByThread = new Map<ThreadId, McpProviderSessionConfig>();
+/**
+ * Threads that should expose Studio browser preview tools to the provider.
+ * Default off — 14 tool schemas tax Claude context every turn when unused.
+ * Armed when the user opens in-app browser/preview for that thread.
+ */
+const previewMcpArmedThreads = new Set<ThreadId>();
 
 function nonEmpty(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
@@ -225,6 +231,45 @@ export function applyToolportMcpInjectionEnv(enabled: boolean): void {
   process.env.TOOLPORT_STUDIO_TOOLPORT_MCP = enabled ? "on" : "off";
 }
 
+/**
+ * Whether the internal browser-preview MCP server should be bound for a thread.
+ *
+ * Product default is **off** (no token tax until browser is used).
+ * - `TOOLPORT_STUDIO_PREVIEW_MCP=on` → always inject when session credentials exist
+ * - `TOOLPORT_STUDIO_PREVIEW_MCP=off` → never inject
+ * - unset → inject only after `armPreviewMcpForThread` (preview panel open)
+ */
+export function isPreviewMcpInjectionEnabled(
+  threadId: ThreadId,
+  environment: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const flag = nonEmpty(environment.TOOLPORT_STUDIO_PREVIEW_MCP)?.toLowerCase();
+  if (flag === "0" || flag === "false" || flag === "off") {
+    return false;
+  }
+  if (flag === "1" || flag === "true" || flag === "on") {
+    return true;
+  }
+  return previewMcpArmedThreads.has(threadId);
+}
+
+/** Mark a thread so provider sessions include Studio browser preview tools. */
+export function armPreviewMcpForThread(threadId: ThreadId): void {
+  previewMcpArmedThreads.add(threadId);
+}
+
+export function isPreviewMcpArmedForThread(threadId: ThreadId): boolean {
+  return previewMcpArmedThreads.has(threadId);
+}
+
+/** Stable fingerprint of MCP server names for adapter rebind/recycle checks. */
+export function mcpBindingCatalogKey(bindings: ReadonlyArray<McpProviderBinding>): string {
+  return bindings
+    .map((binding) => binding.name)
+    .toSorted()
+    .join("\0");
+}
+
 function toolportMcpBinding(
   environment: NodeJS.ProcessEnv,
   platform: NodeJS.Platform,
@@ -281,7 +326,8 @@ export function readMcpProviderBindings(
 ): ReadonlyArray<McpProviderBinding> {
   const bindings: Array<McpProviderBinding> = [];
   const internalSession = readMcpProviderSession(threadId);
-  if (internalSession) {
+  // Preview MCP is opt-in per thread (or force-on via env). Toolport stays separate.
+  if (internalSession && isPreviewMcpInjectionEnabled(threadId, environment)) {
     bindings.push({
       name: INTERNAL_MCP_SERVER_NAME,
       transport: "http",
@@ -453,8 +499,10 @@ export function environmentSuppressingGrokConfigToolportGateway(
 
 export function clearMcpProviderSession(threadId: ThreadId): void {
   sessionsByThread.delete(threadId);
+  previewMcpArmedThreads.delete(threadId);
 }
 
 export function clearAllMcpProviderSessions(): void {
   sessionsByThread.clear();
+  previewMcpArmedThreads.clear();
 }
