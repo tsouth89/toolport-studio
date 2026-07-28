@@ -15,7 +15,7 @@ import { Argument, Flag } from "effect/unstable/cli";
 
 import { readBootstrapEnvelope } from "../bootstrap.ts";
 import * as ServerConfig from "../config.ts";
-import { expandHomePath, resolveBaseDir } from "../os-jank.ts";
+import { expandHomePath, migrateLegacyBaseDir, resolveBaseDir } from "../os-jank.ts";
 
 export const modeFlag = Flag.choice("mode", ServerConfig.RuntimeMode.literals).pipe(
   Flag.withDescription("Runtime mode. `desktop` keeps loopback defaults unless overridden."),
@@ -280,11 +280,16 @@ export const resolveServerConfig = (
       normalizedFlags.baseDir,
       Option.fromUndefinedOr(env.t3Home),
     ).pipe(Option.filter((value) => value.trim().length > 0));
-    const baseDir = yield* resolveBaseDir(
-      Option.getOrUndefined(
-        resolveOptionPrecedence(explicitBaseDir, Option.fromUndefinedOr(bootstrap?.t3Home)),
-      ),
+    const requestedBaseDir = resolveOptionPrecedence(
+      explicitBaseDir,
+      Option.fromUndefinedOr(bootstrap?.t3Home),
     );
+    // Only when no base directory was requested: an explicit path is the
+    // operator's choice and must not be migrated out from under them.
+    if (Option.isNone(requestedBaseDir)) {
+      yield* migrateLegacyBaseDir();
+    }
+    const baseDir = yield* resolveBaseDir(Option.getOrUndefined(requestedBaseDir));
     const rawCwd = Option.getOrElse(normalizedFlags.cwd, () => process.cwd());
     const cwd = path.resolve(yield* expandHomePath(rawCwd.trim()));
     yield* fs.makeDirectory(cwd, { recursive: true });
