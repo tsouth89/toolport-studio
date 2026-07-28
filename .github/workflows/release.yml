@@ -177,13 +177,6 @@ jobs:
 
           $env:RELEASE_NOTES
 
-          ### Highlights
-
-          - Grok turns preserve native streaming and settle assistant output before completion
-          - Projectless conversations stay out of the project list and can attach to a folder later
-          - Messages and unsent drafts survive project attachment
-          - Provider startup, authentication, image preparation, and Stop handling fail cleanly
-
           ### Install
 
           Download ``Toolport-Studio-$env:VERSION-x64.exe`` and run it.
