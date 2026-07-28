@@ -61,6 +61,11 @@ function decodeHtmlEntities(input: string): string {
  * note that escaped markup as `&lt;script&gt;` reassemble into a real tag
  * after the stripper had already run, so the "plain text" result could still
  * carry markup into whatever renders it.
+ *
+ * Removing `<…>` only handles *closed* tags, so an unterminated `<script`
+ * would survive to the output. Any leftover tag opening is dropped as well,
+ * which leaves prose comparisons like `if x < y` alone because those are not
+ * followed by a name character.
  */
 function stripMarkup(input: string): string {
   return decodeHtmlEntities(input)
@@ -68,6 +73,7 @@ function stripMarkup(input: string): string {
     .replace(/<li\b[^>]*>/gi, "\n- ")
     .replace(/<\/(?:p|div|li|h[1-6]|ul|ol|blockquote)>/gi, "\n")
     .replace(/<[^>]*>/g, "")
+    .replace(/<[/!?]?[a-zA-Z][^\s>]*/g, "")
     .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
     .replace(/\*\*([^*]+)\*\*/g, "$1");
 }

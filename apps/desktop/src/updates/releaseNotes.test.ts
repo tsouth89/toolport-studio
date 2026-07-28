@@ -39,6 +39,16 @@ describe("normalizeDesktopUpdateReleaseNotes", () => {
     expect(notes).toEqual([{ version: "1.0.0", items: ["Fix alert(1) handling"] }]);
   });
 
+  it("drops an unterminated tag opening that the closed-tag strip cannot match", () => {
+    const notes = normalizeDesktopUpdateReleaseNotes("- Fix &lt;script alert(1)", "1.0.0");
+    expect(notes).toEqual([{ version: "1.0.0", items: ["Fix alert(1)"] }]);
+  });
+
+  it("keeps a less-than that is not starting a tag", () => {
+    const notes = normalizeDesktopUpdateReleaseNotes("- Guard when x &lt; y now", "1.0.0");
+    expect(notes).toEqual([{ version: "1.0.0", items: ["Guard when x < y now"] }]);
+  });
+
   it("ignores malformed entries instead of throwing", () => {
     const notes = normalizeDesktopUpdateReleaseNotes(
       [
