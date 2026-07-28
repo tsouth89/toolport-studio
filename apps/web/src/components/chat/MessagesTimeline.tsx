@@ -33,7 +33,6 @@ import {
   deriveTimelineEntries,
   formatElapsed,
   formatWorkLogThoughtLine,
-  formatWorkLogToolLabel,
   formatWorkLogTimelineLine,
   isThinkingWorkLogEntry,
   workEntryIndicatesToolFailure,
@@ -50,25 +49,14 @@ import {
 } from "../../lib/diffRendering";
 import ChatMarkdown from "../ChatMarkdown";
 import {
-  BotIcon,
   CheckIcon,
   ChevronDownIcon,
   ChevronRightIcon,
-  CircleAlertIcon,
-  EyeIcon,
-  GlobeIcon,
-  HammerIcon,
   Loader2Icon,
-  MessageCircleIcon,
   MousePointerClickIcon,
   PaintbrushIcon,
-  MinusIcon,
-  SquarePenIcon,
-  TerminalIcon,
   Undo2Icon,
-  WrenchIcon,
   XIcon,
-  ZapIcon,
 } from "lucide-react";
 import { Button } from "../ui/button";
 import { buildExpandedImagePreview, ExpandedImagePreview } from "./ExpandedImagePreview";
@@ -1426,7 +1414,9 @@ const WorkGroupSection = memo(function WorkGroupSection({
       (entry) => entry.toolLifecycleStatus === "inProgress",
     ).length;
     const canCollapse = densifiedCount > WORK_RAIL_COLLAPSE_AT;
-    const fullyExpanded = userExpanded ?? !canCollapse;
+    // When the densified rail shrinks below the threshold, always show full
+    // list (ignore a stale userCollapsed). Default when collapsible: folded.
+    const fullyExpanded = !canCollapse || (userExpanded ?? false);
     const visibleItems = fullyExpanded
       ? densifiedItems
       : densifiedItems.slice(-WORK_RAIL_COLLAPSED_TAIL);
@@ -1447,7 +1437,7 @@ const WorkGroupSection = memo(function WorkGroupSection({
               "cursor-pointer hover:bg-accent/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70",
             )}
             aria-expanded={fullyExpanded}
-            onClick={() => setUserExpanded((value) => !(value ?? !canCollapse))}
+            onClick={() => setUserExpanded((value) => !(value ?? false))}
           >
             <span className="relative z-[1] flex size-5 shrink-0 items-center justify-center text-muted-foreground/70">
               {inProgressCount > 0 ? (
@@ -1476,7 +1466,7 @@ const WorkGroupSection = memo(function WorkGroupSection({
             const fullIndex = fullyExpanded ? index : densifiedCount - visibleItems.length + index;
             return (
               <SimpleWorkEntryRow
-                key={item.entry.id}
+                key={item.rowKey}
                 workEntry={item.entry}
                 workspaceRoot={workspaceRoot}
                 mergeCount={item.count}
@@ -2107,77 +2097,6 @@ function formatWorkingTimerNow(startIso: string): string {
   return formatWorkingTimer(startIso, new Date().toISOString()) ?? "0s";
 }
 
-type WorkEntryIconName =
-  | "bot"
-  | "check"
-  | "circle-alert"
-  | "eye"
-  | "globe"
-  | "hammer"
-  | "message-circle"
-  | "square-pen"
-  | "terminal"
-  | "wrench"
-  | "x"
-  | "zap";
-
-function WorkEntryIconSvg({ name, className }: { name: WorkEntryIconName; className: string }) {
-  switch (name) {
-    case "bot":
-      return <BotIcon className={className} aria-hidden />;
-    case "check":
-      return <CheckIcon className={className} aria-hidden />;
-    case "circle-alert":
-      return <CircleAlertIcon className={className} aria-hidden />;
-    case "eye":
-      return <EyeIcon className={className} aria-hidden />;
-    case "globe":
-      return <GlobeIcon className={className} aria-hidden />;
-    case "hammer":
-      return <HammerIcon className={className} aria-hidden />;
-    case "message-circle":
-      return <MessageCircleIcon className={className} aria-hidden />;
-    case "square-pen":
-      return <SquarePenIcon className={className} aria-hidden />;
-    case "terminal":
-      return <TerminalIcon className={className} aria-hidden />;
-    case "wrench":
-      return <WrenchIcon className={className} aria-hidden />;
-    case "x":
-      return <XIcon className={className} aria-hidden />;
-    case "zap":
-      return <ZapIcon className={className} aria-hidden />;
-  }
-}
-
-function workToneIcon(tone: TimelineWorkEntry["tone"]): {
-  iconName: WorkEntryIconName;
-  className: string;
-} {
-  if (tone === "error") {
-    return {
-      iconName: "circle-alert",
-      className: "text-foreground/92",
-    };
-  }
-  if (tone === "thinking") {
-    return {
-      iconName: "bot",
-      className: "text-foreground/92",
-    };
-  }
-  if (tone === "info") {
-    return {
-      iconName: "check",
-      className: "text-muted-foreground",
-    };
-  }
-  return {
-    iconName: "zap",
-    className: "text-foreground/92",
-  };
-}
-
 function workEntryPreview(
   workEntry: Pick<TimelineWorkEntry, "detail" | "command" | "changedFiles">,
   workspaceRoot: string | undefined,
@@ -2328,37 +2247,6 @@ function buildToolCallExpandedBody(
   return blocks.length > 0 ? blocks.join("\n\n") : null;
 }
 
-function workEntryIconName(workEntry: TimelineWorkEntry): WorkEntryIconName {
-  if (
-    workEntry.sourceActivityKind === "user-input.requested" ||
-    workEntry.sourceActivityKind === "user-input.resolved"
-  ) {
-    return "message-circle";
-  }
-  if (workEntry.requestKind === "command") return "terminal";
-  if (workEntry.requestKind === "file-read") return "eye";
-  if (workEntry.requestKind === "file-change") return "square-pen";
-
-  if (workEntry.itemType === "command_execution" || workEntry.command) {
-    return "terminal";
-  }
-  if (workEntry.itemType === "file_change" || (workEntry.changedFiles?.length ?? 0) > 0) {
-    return "square-pen";
-  }
-  if (workEntry.itemType === "web_search") return "globe";
-  if (workEntry.itemType === "image_view") return "eye";
-
-  switch (workEntry.itemType) {
-    case "mcp_tool_call":
-      return "wrench";
-    case "dynamic_tool_call":
-    case "collab_agent_tool_call":
-      return "hammer";
-  }
-
-  return workToneIcon(workEntry.tone).iconName;
-}
-
 function toolWorkEntryHeading(
   workEntry: TimelineWorkEntry,
   thoughtDurationLabel?: string | null,
@@ -2407,7 +2295,6 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
     showFailedIndicator &&
     (workEntry.sourceActivityKind === "runtime.error" || !workLogEntryIsToolLike(workEntry));
   const turnSettled = !activity.activeTurnInProgress;
-  const showNeutralIndicator = !turnSettled && workEntryIndicatesToolNeutralStatus(workEntry);
   const showSuccessIndicator =
     workEntryIndicatesToolSuccess(workEntry) ||
     (turnSettled && workEntryIndicatesToolNeutralStatus(workEntry));

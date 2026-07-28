@@ -1132,6 +1132,82 @@ describe("collapseConsecutiveTimelineWorkEntries", () => {
       { id: "r2", count: 1 },
     ]);
   });
+
+  it("does not merge failed or declined tools into densified runs", () => {
+    const collapsed = collapseConsecutiveTimelineWorkEntries([
+      {
+        id: "ok1",
+        createdAt: "2026-01-01T00:00:01Z",
+        label: "Read file",
+        toolTitle: "Read file",
+        itemType: "dynamic_tool_call",
+        toolLifecycleStatus: "completed",
+        tone: "tool",
+      },
+      {
+        id: "fail1",
+        createdAt: "2026-01-01T00:00:02Z",
+        label: "Read file",
+        toolTitle: "Read file",
+        itemType: "dynamic_tool_call",
+        toolLifecycleStatus: "failed",
+        tone: "error",
+      },
+      {
+        id: "fail2",
+        createdAt: "2026-01-01T00:00:03Z",
+        label: "Read file",
+        toolTitle: "Read file",
+        itemType: "dynamic_tool_call",
+        toolLifecycleStatus: "failed",
+        tone: "error",
+      },
+      {
+        id: "ok2",
+        createdAt: "2026-01-01T00:00:04Z",
+        label: "Read file",
+        toolTitle: "Read file",
+        itemType: "dynamic_tool_call",
+        toolLifecycleStatus: "completed",
+        tone: "tool",
+      },
+    ]);
+
+    expect(
+      collapsed.map((item) => ({ id: item.entry.id, count: item.count, rowKey: item.rowKey })),
+    ).toEqual([
+      { id: "ok1", count: 1, rowKey: "ok1" },
+      { id: "fail1", count: 1, rowKey: "fail1" },
+      { id: "fail2", count: 1, rowKey: "fail2" },
+      { id: "ok2", count: 1, rowKey: "ok2" },
+    ]);
+  });
+
+  it("keeps a stable rowKey when successful tools merge", () => {
+    const collapsed = collapseConsecutiveTimelineWorkEntries([
+      {
+        id: "r1",
+        createdAt: "2026-01-01T00:00:01Z",
+        label: "Read file",
+        toolTitle: "Read file",
+        itemType: "dynamic_tool_call",
+        toolLifecycleStatus: "completed",
+        tone: "tool",
+      },
+      {
+        id: "r2",
+        createdAt: "2026-01-01T00:00:02Z",
+        label: "Read file",
+        toolTitle: "Read file",
+        itemType: "dynamic_tool_call",
+        toolLifecycleStatus: "completed",
+        tone: "tool",
+      },
+    ]);
+
+    expect(collapsed).toHaveLength(1);
+    expect(collapsed[0]).toMatchObject({ count: 2, entry: { id: "r2" }, rowKey: "r1" });
+  });
 });
 
 describe("computeStableMessagesTimelineRows", () => {

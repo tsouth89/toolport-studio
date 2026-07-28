@@ -5,6 +5,7 @@ import {
   formatWorkLogToolLabel,
   isThinkingWorkLogEntry,
   workEntryIndicatesToolNeutralStatus,
+  workEntryIndicatesToolSuccess,
   workEntryLooksLongRunning,
   workLogEntryIsNarrationStackEntry,
   workLogEntryIsToolLike,
@@ -38,14 +39,20 @@ export function sharedToolLabelForWorkEntries(entries: ReadonlyArray<WorkLogEntr
 }
 
 /**
- * Collapse consecutive completed tools that share the same display label
- * (`Read MessagesTimeline.tsx` × 3). Live in-progress tools and thoughts stay
- * individual so the rail still reads as a live progression.
+ * Collapse consecutive successful tools that share the same display label
+ * (`Read MessagesTimeline.tsx` × 3). Live in-progress tools, thoughts, and
+ * failed/declined/stopped rows stay individual so errors are not hidden behind ×N.
  */
 export type CollapsedTimelineWorkItem = {
   readonly entry: WorkLogEntry;
+  /** Latest entry in the merged run (display + status). */
   readonly count: number;
   readonly firstCreatedAt: string;
+  /**
+   * Stable React key for the densified row. Prefer the first entry id in the
+   * run so remounts do not reset expanded state when later tools merge in.
+   */
+  readonly rowKey: string;
 };
 
 function timelineWorkCollapseKey(entry: WorkLogEntry): string | null {
@@ -56,6 +63,10 @@ function timelineWorkCollapseKey(entry: WorkLogEntry): string | null {
     return null;
   }
   if (entry.toolLifecycleStatus === "inProgress") {
+    return null;
+  }
+  // Only densify successful tools — never hide failures behind a count.
+  if (!workEntryIndicatesToolSuccess(entry)) {
     return null;
   }
   const label = formatWorkLogToolLabel(entry, "past").trim();
@@ -75,6 +86,7 @@ export function collapseConsecutiveTimelineWorkEntries(
         entry,
         count: prev.count + 1,
         firstCreatedAt: prev.firstCreatedAt,
+        rowKey: prev.rowKey,
       };
       continue;
     }
@@ -82,6 +94,7 @@ export function collapseConsecutiveTimelineWorkEntries(
       entry,
       count: 1,
       firstCreatedAt: entry.createdAt,
+      rowKey: entry.id,
     });
   }
   return collapsed;
