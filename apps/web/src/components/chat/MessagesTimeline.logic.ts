@@ -101,7 +101,7 @@ export function collapseConsecutiveTimelineWorkEntries(
 }
 
 /** Step card collapses once the densified rail grows past this many rows. */
-export const WORK_RAIL_COLLAPSE_AT = 6;
+export const WORK_RAIL_COLLAPSE_AT = 4;
 /** When collapsed, still pin the latest densified row so progress stays visible. */
 export const WORK_RAIL_COLLAPSED_TAIL = 1;
 

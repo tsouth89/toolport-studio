@@ -636,6 +636,8 @@ describe("deriveActivityMcpStatus", () => {
     expect(status?.servers[0]?.health).toBe("ready");
     expect(status?.servers.find((s) => s.id === "expo")?.health).toBe("disabled");
     expect(status?.totalServerCount).toBe(3);
+    // Chat surfaces only list servers that actually ran tools this turn.
+    expect(status?.usedThisTurn.map((server) => server.name)).toEqual(["Linear"]);
   });
 
   it("returns null without Toolport registry status", () => {

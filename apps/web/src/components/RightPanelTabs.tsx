@@ -106,31 +106,9 @@ function RightPanelEmptyState(props: {
   diffAvailable: boolean;
   filesAvailable: boolean;
 }) {
+  // Prefer destinations (files / terminal / browser / diff). Activity is optional
+  // deep-inspect now that the main timeline carries Working chrome.
   const actions = [
-    {
-      label: "Activity",
-      description: "Live turn steps and current work.",
-      icon: Activity,
-      available: true,
-      disabledReason: null,
-      onClick: props.onAddActivity,
-    },
-    {
-      label: "Browser",
-      description: "Open a local app or URL.",
-      icon: Globe2,
-      available: props.browserAvailable,
-      disabledReason: SURFACE_DISABLED_REASONS.browser,
-      onClick: props.onAddBrowser,
-    },
-    {
-      label: "Terminal",
-      description: "Start a shell in this workspace.",
-      icon: TerminalSquare,
-      available: true,
-      disabledReason: null,
-      onClick: props.onAddTerminal,
-    },
     {
       label: "Files",
       description: "Browse and read workspace files.",
@@ -146,6 +124,30 @@ function RightPanelEmptyState(props: {
       available: props.diffAvailable,
       disabledReason: SURFACE_DISABLED_REASONS.diff,
       onClick: props.onAddDiff,
+    },
+    {
+      label: "Terminal",
+      description: "Start a shell in this workspace.",
+      icon: TerminalSquare,
+      available: true,
+      disabledReason: null,
+      onClick: props.onAddTerminal,
+    },
+    {
+      label: "Browser",
+      description: "Open a local app or URL.",
+      icon: Globe2,
+      available: props.browserAvailable,
+      disabledReason: SURFACE_DISABLED_REASONS.browser,
+      onClick: props.onAddBrowser,
+    },
+    {
+      label: "Activity",
+      description: "Deep inspect for this turn (optional).",
+      icon: Activity,
+      available: true,
+      disabledReason: null,
+      onClick: props.onAddActivity,
     },
   ] as const;
 

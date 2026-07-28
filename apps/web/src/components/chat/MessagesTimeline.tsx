@@ -12,6 +12,7 @@ import {
   formatQuietTurnNotice,
   resolveStalledTurnThresholdMs,
 } from "@t3tools/shared/stalledTurn";
+import { formatMcpToolInspectBody } from "@t3tools/shared/toolActivity";
 import {
   createContext,
   Fragment,
@@ -1142,8 +1143,7 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
   const onOpenActivity = activity.onOpenActivity;
   const onInterrupt = activity.onInterrupt;
   const showRecoveryStop = quiet.isQuiet && onInterrupt !== null;
-  // Keep Activity link for recovery/quiet only — constant "View in Activity"
-  // next to every Working line is noise during a healthy turn.
+  // Quiet recovery only — opens the This-turn card (Codex-style), not a dock.
   const showActivityLink = quiet.isQuiet && onOpenActivity !== null;
 
   return (
@@ -1259,7 +1259,7 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
               className="font-medium text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               onClick={onOpenActivity}
             >
-              View in Activity
+              This turn
             </button>
           </>
         ) : null}
@@ -2146,46 +2146,7 @@ function looksLikeJsonBlob(value: string): boolean {
 }
 
 function formatMcpToolExpandedBody(toolData: unknown): string | null {
-  if (toolData === null || typeof toolData !== "object") {
-    return null;
-  }
-  const record = toolData as Record<string, unknown>;
-  const lines: string[] = [];
-  const server = typeof record.server === "string" ? record.server.trim() : "";
-  const tool = typeof record.tool === "string" ? record.tool.trim() : "";
-  if (server || tool) {
-    lines.push([server, tool].filter(Boolean).join(" · "));
-  }
-  const args = record.arguments ?? record.input ?? record.rawInput;
-  if (args !== undefined && args !== null) {
-    if (typeof args === "string" && args.trim() && !looksLikeJsonBlob(args)) {
-      lines.push(args.trim());
-    } else if (typeof args === "object") {
-      try {
-        const pretty = JSON.stringify(args, null, 2);
-        if (pretty.length > 0 && pretty !== "{}" && pretty !== "[]") {
-          lines.push(pretty.length > 1200 ? `${pretty.slice(0, 1199)}…` : pretty);
-        }
-      } catch {
-        // ignore
-      }
-    }
-  }
-  const result = record.result ?? record.output ?? record.content;
-  if (typeof result === "string" && result.trim()) {
-    const text = result.trim();
-    lines.push(text.length > 2000 ? `${text.slice(0, 1999)}…` : text);
-  } else if (result && typeof result === "object") {
-    try {
-      const pretty = JSON.stringify(result, null, 2);
-      if (pretty.length > 0 && pretty !== "{}" && pretty !== "[]") {
-        lines.push(pretty.length > 1200 ? `${pretty.slice(0, 1199)}…` : pretty);
-      }
-    } catch {
-      // ignore
-    }
-  }
-  return lines.length > 0 ? lines.join("\n\n") : null;
+  return formatMcpToolInspectBody(toolData);
 }
 
 function buildToolCallExpandedBody(
