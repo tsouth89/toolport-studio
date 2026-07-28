@@ -68,11 +68,12 @@ export function resolveLiveStreamActivityAt(input: {
   readonly activeWorkStartedAt?: string | null;
 }): string | null {
   const includeLatestTurn = input.includeLatestTurnAnchors !== false;
+  // Coalesce to null so exactOptionalPropertyTypes accepts the nested call.
   const fromStream = deriveLastStreamActivityAt({
-    threadUpdatedAt: input.threadUpdatedAt,
-    sessionUpdatedAt: input.sessionUpdatedAt,
-    latestTurnRequestedAt: includeLatestTurn ? input.latestTurnRequestedAt : null,
-    latestTurnStartedAt: includeLatestTurn ? input.latestTurnStartedAt : null,
+    threadUpdatedAt: input.threadUpdatedAt ?? null,
+    sessionUpdatedAt: input.sessionUpdatedAt ?? null,
+    latestTurnRequestedAt: includeLatestTurn ? (input.latestTurnRequestedAt ?? null) : null,
+    latestTurnStartedAt: includeLatestTurn ? (input.latestTurnStartedAt ?? null) : null,
   });
   return maxIsoTimestamp(fromStream, input.localDispatchStartedAt, input.activeWorkStartedAt);
 }
