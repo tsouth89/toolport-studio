@@ -1,7 +1,9 @@
-import * as NodeFS from "node:fs";
-import * as NodeURL from "node:url";
-
 import { describe, expect, it } from "vite-plus/test";
+
+// Imported as raw text rather than read through the filesystem: this asserts
+// against the exact markup that ships, and keeps the test free of node
+// builtins the repo lints against.
+import indexHtml from "../index.html?raw";
 
 /**
  * The migration ships as an inline <script> in index.html so it runs before
@@ -10,10 +12,6 @@ import { describe, expect, it } from "vite-plus/test";
  * evaluates the real shipped source rather than a copy that could drift.
  */
 function runBootScript(initial: Record<string, string>): Record<string, string> {
-  const indexHtml = NodeFS.readFileSync(
-    NodeURL.fileURLToPath(new URL("../index.html", import.meta.url)),
-    "utf8",
-  );
   // Case-insensitive so this cannot silently stop matching if the tag is ever
   // written differently — a lowercase-only tag match is its own CodeQL finding.
   const script = indexHtml.match(/<script>([\s\S]*?)<\/script>/i)?.[1];
