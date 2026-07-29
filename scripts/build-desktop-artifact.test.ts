@@ -670,6 +670,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         skipBuild: Option.none(),
         keepStage: Option.none(),
         signed: Option.none(),
+        passkeys: Option.none(),
         verbose: Option.none(),
         mockUpdates: Option.none(),
         mockUpdateServerPort: Option.none(),
@@ -697,6 +698,47 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     }),
   );
 
+  it.effect("defaults passkeys on and lets --no-passkeys turn them off", () =>
+    Effect.gen(function* () {
+      const base = {
+        platform: Option.some("mac" as const),
+        target: Option.none(),
+        arch: Option.some("arm64" as const),
+        buildVersion: Option.none(),
+        outputDir: Option.none(),
+        skipBuild: Option.none(),
+        keepStage: Option.none(),
+        signed: Option.some(true),
+        verbose: Option.none(),
+        mockUpdates: Option.none(),
+        mockUpdateServerPort: Option.none(),
+        wslPrebuild: Option.none(),
+      };
+      const hostLayer = Layer.mergeAll(
+        Layer.succeed(HostProcessPlatform, "darwin"),
+        Layer.succeed(HostProcessArchitecture, "arm64"),
+        ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })),
+      );
+
+      // On by default, so an existing signed macOS build keeps its Associated
+      // Domains entitlement without anyone opting back in.
+      const withDefault = yield* resolveBuildOptions({
+        ...base,
+        passkeys: Option.none(),
+      }).pipe(Effect.provide(hostLayer));
+      assert.strictEqual(withDefault.passkeys, true);
+
+      // Opting out is what lets a signed, notarized .dmg build with no
+      // provisioning profile and no Clerk relying-party configuration.
+      const optedOut = yield* resolveBuildOptions({
+        ...base,
+        passkeys: Option.some(false),
+      }).pipe(Effect.provide(hostLayer));
+      assert.strictEqual(optedOut.passkeys, false);
+      assert.strictEqual(optedOut.signed, true);
+    }),
+  );
+
   it.effect("preserves explicit false boolean flags over true env defaults", () =>
     Effect.gen(function* () {
       const resolved = yield* resolveBuildOptions({
@@ -708,6 +750,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         skipBuild: Option.some(false),
         keepStage: Option.some(false),
         signed: Option.some(false),
+        passkeys: Option.none(),
         verbose: Option.some(false),
         mockUpdates: Option.some(false),
         mockUpdateServerPort: Option.none(),

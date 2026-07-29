@@ -122,6 +122,7 @@ interface BuildCliInput {
   readonly skipBuild: Option.Option<boolean>;
   readonly keepStage: Option.Option<boolean>;
   readonly signed: Option.Option<boolean>;
+  readonly passkeys: Option.Option<boolean>;
   readonly verbose: Option.Option<boolean>;
   readonly mockUpdates: Option.Option<boolean>;
   readonly mockUpdateServerPort: Option.Option<number>;
@@ -556,6 +557,7 @@ interface ResolvedBuildOptions {
   readonly skipBuild: boolean;
   readonly keepStage: boolean;
   readonly signed: boolean;
+  readonly passkeys: boolean;
   readonly verbose: boolean;
   readonly mockUpdates: boolean;
   readonly mockUpdateServerPort: number | undefined;
@@ -1018,6 +1020,9 @@ const BuildEnvConfig = Config.all({
   skipBuild: Config.boolean("TOOLPORT_STUDIO_DESKTOP_SKIP_BUILD").pipe(Config.withDefault(false)),
   keepStage: Config.boolean("TOOLPORT_STUDIO_DESKTOP_KEEP_STAGE").pipe(Config.withDefault(false)),
   signed: Config.boolean("TOOLPORT_STUDIO_DESKTOP_SIGNED").pipe(Config.withDefault(false)),
+  // Defaults on, so an existing signed macOS build keeps its Associated Domains
+  // entitlement without anyone opting back in.
+  passkeys: Config.boolean("TOOLPORT_STUDIO_DESKTOP_PASSKEYS").pipe(Config.withDefault(true)),
   verbose: Config.boolean("TOOLPORT_STUDIO_DESKTOP_VERBOSE").pipe(Config.withDefault(false)),
   mockUpdates: Config.boolean("TOOLPORT_STUDIO_DESKTOP_MOCK_UPDATES").pipe(
     Config.withDefault(false),
@@ -1099,6 +1104,7 @@ export const resolveBuildOptions = Effect.fn("resolveBuildOptions")(function* (
   const skipBuild = resolveBooleanFlag(input.skipBuild, env.skipBuild);
   const keepStage = resolveBooleanFlag(input.keepStage, env.keepStage);
   const signed = resolveBooleanFlag(input.signed, env.signed);
+  const passkeys = resolveBooleanFlag(input.passkeys, env.passkeys);
   const verbose = resolveBooleanFlag(input.verbose, env.verbose);
 
   const mockUpdates = resolveBooleanFlag(input.mockUpdates, env.mockUpdates);
@@ -1125,6 +1131,7 @@ export const resolveBuildOptions = Effect.fn("resolveBuildOptions")(function* (
     skipBuild,
     keepStage,
     signed,
+    passkeys,
     verbose,
     mockUpdates,
     mockUpdateServerPort,
@@ -1763,8 +1770,15 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   // electron-builder is filtering out stageResourcesDir directory in the AppImage for production
   yield* fs.copy(stageResourcesDir, path.join(stageAppDir, "apps/desktop/prod-resources"));
 
+  // Passkeys are the only reason a signed macOS build needs an Associated
+  // Domains entitlement, and that entitlement is the only reason it needs a
+  // provisioning profile and the Clerk relying-party domain. Turning them off
+  // therefore removes the whole chain, leaving a Developer ID signed and
+  // notarized .dmg that Gatekeeper accepts — it simply cannot do passkey
+  // sign-in. That is the right trade when the alternative is shipping no macOS
+  // build at all.
   const configuredMacPasskeySigning =
-    options.platform === "mac" && options.signed
+    options.platform === "mac" && options.signed && options.passkeys
       ? yield* Effect.try({
           try: () => resolveMacPasskeySigningConfiguration(loadRepoEnv({ repoRoot })),
           catch: MacPasskeySigningConfigurationResolutionError.fromCause,
@@ -2031,6 +2045,14 @@ const buildDesktopArtifactCli = Command.make("build-desktop-artifact", {
   signed: Flag.boolean("signed").pipe(
     Flag.withDescription(
       "Enable signing/notarization discovery; Windows uses Azure Trusted Signing (env: TOOLPORT_STUDIO_DESKTOP_SIGNED).",
+    ),
+    Flag.optional,
+  ),
+  passkeys: Flag.boolean("passkeys").pipe(
+    Flag.withDescription(
+      "Include macOS passkey support in signed builds. On by default; --no-passkeys drops the " +
+        "Associated Domains entitlement so a signed .dmg needs no provisioning profile or Clerk " +
+        "configuration, at the cost of passkey sign-in (env: TOOLPORT_STUDIO_DESKTOP_PASSKEYS).",
     ),
     Flag.optional,
   ),

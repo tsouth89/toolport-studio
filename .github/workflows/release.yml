@@ -23,16 +23,88 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  windows:
-    name: Windows x64
+  # Validate once, not once per platform. This used to live inside the single
+  # Windows job; with a matrix it would otherwise race three ways against the
+  # same "does this tag already exist" check.
+  preflight:
+    name: Preflight
     if: github.ref == 'refs/heads/main'
-    runs-on: windows-2025
-    timeout-minutes: 30
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+    steps:
+      - name: Validate release request
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          REPO: ${{ github.repository }}
+        run: |
+          # Any supported prerelease channel, not just alpha. Pinning this to
+          # alpha meant the first beta failed validation after the version had
+          # already been bumped and pushed.
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-(alpha|beta|rc)\.[0-9]+$ ]] &&
+             ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-nightly\.[0-9]{8}\.[0-9]+$ ]]; then
+            echo "Expected a prerelease version such as 0.1.0-beta.1, 0.1.0-alpha.4," \
+                 "or 0.1.0-nightly.20260413.42; got '$VERSION'." >&2
+            exit 1
+          fi
+
+          tag="v$VERSION"
+          if gh release view "$tag" --repo "$REPO" >/dev/null 2>&1; then
+            echo "Release $tag already exists." >&2
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: ${{ matrix.label }}
+    needs: preflight
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     environment: release
+    strategy:
+      # One platform failing must not cancel the others. A macOS build that
+      # cannot find its signing secrets should not take the Windows installer
+      # down with it, and `publish` below is written to ship whatever arrived.
+      fail-fast: false
+      matrix:
+        include:
+          - label: Windows x64
+            os: windows-2025
+            platform: win
+            target: nsis
+            arch: x64
+            artifact: windows-x64
+          - label: macOS arm64
+            os: macos-15
+            platform: mac
+            target: dmg
+            arch: arm64
+            artifact: macos-arm64
+          - label: macOS x64
+            os: macos-15
+            platform: mac
+            target: dmg
+            arch: x64
+            artifact: macos-x64
+          - label: Linux x64
+            os: ubuntu-24.04
+            platform: linux
+            target: AppImage
+            arch: x64
+            artifact: linux-x64
 
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          # This job holds code-signing credentials. Leaving the GITHUB_TOKEN in
+          # .git/config would let a malicious dependency install script read it
+          # out of the same environment as those secrets, and nothing here needs
+          # the persisted credential.
+          persist-credentials: false
 
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
@@ -44,38 +116,16 @@ jobs:
       - name: Setup pnpm for packaging
         run: npm install --global pnpm@11.10.0
 
-      - name: Validate release request
-        id: release
-        shell: pwsh
+      - name: Resolve output directory
+        id: paths
+        shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
           VERSION: ${{ inputs.version }}
-        run: |
-          # Any supported prerelease channel, not just alpha. Pinning this to
-          # alpha meant the first beta failed validation after the version had
-          # already been bumped and pushed.
-          if ($env:VERSION -notmatch '^\d+\.\d+\.\d+-(alpha|beta|rc)\.\d+$' -and
-              $env:VERSION -notmatch '^\d+\.\d+\.\d+-nightly\.\d{8}\.\d+$') {
-            throw "Expected a prerelease version such as 0.1.0-beta.1, 0.1.0-alpha.4, or 0.1.0-nightly.20260413.42; got '$env:VERSION'."
-          }
+        run: echo "output_dir=release/toolport-studio-$VERSION" >> "$GITHUB_OUTPUT"
 
-          $tag = "v$env:VERSION"
-          gh release view $tag 2>$null
-          if ($LASTEXITCODE -eq 0) {
-            throw "Release $tag already exists."
-          }
-          $global:LASTEXITCODE = 0
-
-          $outputDir = "release/toolport-studio-$env:VERSION"
-          $installer = "$outputDir/Toolport-Studio-$env:VERSION-x64.exe"
-          $blockmap = "$installer.blockmap"
-          "tag=$tag" >> $env:GITHUB_OUTPUT
-          "output_dir=$outputDir" >> $env:GITHUB_OUTPUT
-          "installer=$installer" >> $env:GITHUB_OUTPUT
-          "blockmap=$blockmap" >> $env:GITHUB_OUTPUT
-
-      - name: Validate signing configuration
-        shell: pwsh
+      - name: Validate Windows signing configuration
+        if: matrix.platform == 'win'
+        shell: bash
         env:
           AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
           AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
@@ -85,24 +135,67 @@ jobs:
           SIGNING_PROFILE: ${{ vars.ARTIFACT_SIGNING_CERTIFICATE_PROFILE_NAME }}
           SIGNING_PUBLISHER: ${{ vars.ARTIFACT_SIGNING_PUBLISHER_NAME }}
         run: |
-          foreach ($name in @(
-            "AZURE_CLIENT_ID",
-            "AZURE_TENANT_ID",
-            "AZURE_SUBSCRIPTION_ID",
-            "SIGNING_ENDPOINT",
-            "SIGNING_ACCOUNT",
-            "SIGNING_PROFILE",
-            "SIGNING_PUBLISHER"
-          )) {
-            if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
-              throw "The release environment is missing $name."
-            }
-          }
+          for name in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID \
+                      SIGNING_ENDPOINT SIGNING_ACCOUNT SIGNING_PROFILE SIGNING_PUBLISHER; do
+            if [ -z "${!name}" ]; then
+              echo "The release environment is missing $name." >&2
+              exit 1
+            fi
+          done
+
+      - name: Materialise macOS signing credentials
+        id: mac_signing
+        if: matrix.platform == 'mac'
+        shell: bash
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_API_KEY_P8_BASE64: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_TEAM_ID: ${{ secrets.TOOLPORT_STUDIO_APPLE_TEAM_ID }}
+        run: |
+          # Fail with the full list rather than deep inside electron-builder,
+          # where a missing notarization credential surfaces as an opaque
+          # notarytool error several minutes into the build.
+          #
+          # Four secrets, not seven: this job builds with --no-passkeys, so there
+          # is no Associated Domains entitlement and therefore no provisioning
+          # profile or Clerk relying-party configuration to supply.
+          missing=()
+          for name in CSC_LINK CSC_KEY_PASSWORD APPLE_API_KEY_P8_BASE64 APPLE_API_KEY_ID \
+                      APPLE_API_ISSUER APPLE_TEAM_ID; do
+            if [ -z "${!name}" ]; then missing+=("$name"); fi
+          done
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "Missing macOS signing secrets: ${missing[*]}" >&2
+            echo "Add them to the 'release' environment, then re-run this job." >&2
+            exit 1
+          fi
+
+          # electron-builder's APPLE_API_KEY is a *path*, but a GitHub secret can
+          # only carry a value. Decode it outside the workspace so it cannot be
+          # picked up by a glob or committed by accident. RUNNER_TEMP is wiped
+          # when the job ends.
+          key_path="$RUNNER_TEMP/apple-api-key.p8"
+          printf '%s' "$APPLE_API_KEY_P8_BASE64" | base64 --decode > "$key_path"
+          chmod 600 "$key_path"
+
+          # A truncated or wrongly-pasted secret decodes to garbage and would
+          # otherwise fail much later with an unhelpful signing error.
+          if ! grep -q "BEGIN PRIVATE KEY" "$key_path"; then
+            echo "APPLE_API_KEY_P8_BASE64 did not decode to a PKCS#8 private key." >&2
+            echo "Store the base64 of the .p8 file exactly as downloaded." >&2
+            exit 1
+          fi
+
+          echo "api_key_path=$key_path" >> "$GITHUB_OUTPUT"
 
       - name: Build desktop bundles
         run: vp run build:desktop
 
       - name: Sign in to Azure with GitHub OIDC
+        if: matrix.platform == 'win'
         uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
@@ -110,39 +203,85 @@ jobs:
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
       - name: Package signed installer
-        shell: pwsh
+        shell: bash
         env:
+          VERSION: ${{ inputs.version }}
+          OUTPUT_DIR: ${{ steps.paths.outputs.output_dir }}
+          PLATFORM: ${{ matrix.platform }}
+          TARGET: ${{ matrix.target }}
+          ARCH: ${{ matrix.arch }}
+          # Windows Authenticode via Azure Trusted Signing.
           AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
           AZURE_TRUSTED_SIGNING_ACCOUNT_NAME: ${{ vars.ARTIFACT_SIGNING_ACCOUNT_NAME }}
           AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ vars.ARTIFACT_SIGNING_CERTIFICATE_PROFILE_NAME }}
           AZURE_TRUSTED_SIGNING_PUBLISHER_NAME: ${{ vars.ARTIFACT_SIGNING_PUBLISHER_NAME }}
-          VERSION: ${{ inputs.version }}
-          OUTPUT_DIR: ${{ steps.release.outputs.output_dir }}
+          # macOS Developer ID signing + App Store Connect API notarization.
+          # APPLE_API_KEY and the provisioning profile are paths written by the
+          # step above, not secret values.
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_API_KEY: ${{ steps.mac_signing.outputs.api_key_path }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          TOOLPORT_STUDIO_APPLE_TEAM_ID: ${{ secrets.TOOLPORT_STUDIO_APPLE_TEAM_ID }}
         run: |
-          node scripts/build-desktop-artifact.ts `
-            --platform win `
-            --target nsis `
-            --arch x64 `
-            --build-version $env:VERSION `
-            --output-dir $env:OUTPUT_DIR `
-            --skip-build `
-            --signed
+          flags=()
+          # Linux has no signing story: an unsigned AppImage is the norm there,
+          # so `--signed` is Windows and macOS only.
+          if [ "$PLATFORM" != "linux" ]; then flags+=(--signed); fi
+          # Ship macOS without passkeys for now. Passkey support needs an
+          # Associated Domains entitlement, which needs a provisioning profile
+          # and the Clerk relying-party domain baked in at build time. Dropping
+          # it keeps the .dmg Developer ID signed and notarized — the part
+          # Gatekeeper cares about — and unblocks shipping macOS at all. Remove
+          # this flag once the profile exists to restore passkey sign-in.
+          if [ "$PLATFORM" = "mac" ]; then flags+=(--no-passkeys); fi
+          node scripts/build-desktop-artifact.ts \
+            --platform "$PLATFORM" \
+            --target "$TARGET" \
+            --arch "$ARCH" \
+            --build-version "$VERSION" \
+            --output-dir "$OUTPUT_DIR" \
+            --skip-build \
+            "${flags[@]}"
 
-      - name: Verify signed release assets
-        id: verify
+      - name: Collect release assets
+        id: assets
+        shell: bash
+        env:
+          OUTPUT_DIR: ${{ steps.paths.outputs.output_dir }}
+        run: |
+          # Globbed rather than reconstructed from the version and arch. Each
+          # platform names its installer differently, and a hardcoded filename
+          # that drifts fails as a confusing "missing asset" long after the
+          # build succeeded. `latest*.yml` is updater metadata, not a download.
+          shopt -s nullglob
+          assets=()
+          for path in "$OUTPUT_DIR"/*; do
+            case "$path" in
+              *.exe|*.exe.blockmap|*.dmg|*.dmg.blockmap|*.AppImage|*.deb|*.rpm|*.zip) assets+=("$path") ;;
+            esac
+          done
+          if [ ${#assets[@]} -eq 0 ]; then
+            echo "No installer produced in $OUTPUT_DIR:" >&2
+            ls -la "$OUTPUT_DIR" >&2 || true
+            exit 1
+          fi
+          printf 'Collected %d asset(s):\n' "${#assets[@]}"
+          printf '  %s\n' "${assets[@]}"
+
+      - name: Verify Windows signature
+        if: matrix.platform == 'win'
         shell: pwsh
         env:
-          INSTALLER: ${{ steps.release.outputs.installer }}
-          BLOCKMAP: ${{ steps.release.outputs.blockmap }}
+          OUTPUT_DIR: ${{ steps.paths.outputs.output_dir }}
           EXPECTED_PUBLISHER: ${{ vars.ARTIFACT_SIGNING_PUBLISHER_NAME }}
         run: |
-          foreach ($path in @($env:INSTALLER, $env:BLOCKMAP)) {
-            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-              throw "Missing release asset: $path"
-            }
-          }
+          $installer = Get-ChildItem -LiteralPath $env:OUTPUT_DIR -Filter *.exe |
+            Select-Object -First 1
+          if (-not $installer) { throw "No .exe found in $env:OUTPUT_DIR" }
 
-          $signature = Get-AuthenticodeSignature -LiteralPath $env:INSTALLER
+          $signature = Get-AuthenticodeSignature -LiteralPath $installer.FullName
           if ($signature.Status -ne "Valid") {
             throw "Installer signature is not valid: $($signature.Status) $($signature.StatusMessage)"
           }
@@ -150,55 +289,130 @@ jobs:
             throw "Unexpected publisher: $($signature.SignerCertificate.Subject)"
           }
 
-          $checksum = (Get-FileHash -LiteralPath $env:INSTALLER -Algorithm SHA256).Hash.ToLowerInvariant()
-          "checksum=$checksum" >> $env:GITHUB_OUTPUT
-          "publisher=$($signature.SignerCertificate.Subject)" >> $env:GITHUB_OUTPUT
+      - name: Verify macOS signature and notarization
+        if: matrix.platform == 'mac'
+        shell: bash
+        env:
+          OUTPUT_DIR: ${{ steps.paths.outputs.output_dir }}
+        run: |
+          dmg="$(ls "$OUTPUT_DIR"/*.dmg 2>/dev/null | head -1)"
+          if [ -z "$dmg" ]; then echo "No .dmg found in $OUTPUT_DIR" >&2; exit 1; fi
 
-      - name: Upload signed workflow artifact
+          # A signed-but-unnotarized build still fails Gatekeeper on a user's
+          # machine with "damaged and can't be opened", so verifying the
+          # signature alone would let the exact failure we care about ship.
+          # `spctl --assess` is what Gatekeeper itself runs.
+          codesign --verify --deep --strict --verbose=2 "$dmg"
+          spctl --assess --type install --verbose=2 "$dmg"
+
+      - name: Upload workflow artifact
         uses: actions/upload-artifact@v6
         with:
-          name: toolport-studio-${{ inputs.version }}-windows-x64
-          path: |
-            ${{ steps.release.outputs.installer }}
-            ${{ steps.release.outputs.blockmap }}
+          name: toolport-studio-${{ inputs.version }}-${{ matrix.artifact }}
+          path: ${{ steps.paths.outputs.output_dir }}
           if-no-files-found: error
           retention-days: 14
 
+  publish:
+    name: Publish prerelease
+    needs: [preflight, build]
+    # `always()` so a release still ships when one platform failed. Guarded on
+    # preflight succeeding, because without a validated tag there is nothing to
+    # publish into.
+    if: always() && needs.preflight.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Download built assets
+        uses: actions/download-artifact@v6
+        with:
+          path: artifacts
+          pattern: toolport-studio-${{ inputs.version }}-*
+          merge-multiple: true
+
+      - name: Assemble release body
+        id: body
+        env:
+          VERSION: ${{ inputs.version }}
+          RELEASE_NOTES: ${{ inputs.release_notes }}
+          BUILD_RESULT: ${{ needs.build.result }}
+        run: |
+          shopt -s nullglob
+          assets=()
+          for path in artifacts/*; do
+            case "$path" in
+              *.exe|*.dmg|*.AppImage|*.deb|*.rpm) assets+=("$path") ;;
+            esac
+          done
+          if [ ${#assets[@]} -eq 0 ]; then
+            echo "No installers were produced by any platform." >&2
+            exit 1
+          fi
+
+          # A Windows installer is the one asset every existing user expects, so
+          # its absence fails the release rather than quietly shipping a
+          # macOS-only build under the same tag.
+          if ! ls artifacts/*.exe >/dev/null 2>&1; then
+            echo "No Windows installer present; refusing to publish." >&2
+            exit 1
+          fi
+
+          {
+            echo "## Toolport Studio $VERSION"
+            echo
+            echo "$RELEASE_NOTES"
+            echo
+            echo "### Install"
+            echo
+            for path in "${assets[@]}"; do
+              name="$(basename "$path")"
+              case "$name" in
+                *.exe) echo "- Windows: download \`$name\` and run it." ;;
+                *.dmg) echo "- macOS: download \`$name\`, open it, drag the app to Applications." ;;
+                *.AppImage) echo "- Linux: download \`$name\`, \`chmod +x\` it, and run it." ;;
+                *.deb) echo "- Debian/Ubuntu: \`sudo dpkg -i $name\`" ;;
+                *.rpm) echo "- Fedora/RHEL: \`sudo rpm -i $name\`" ;;
+              esac
+            done
+            echo
+            echo "### Checksums"
+            echo
+            echo '```'
+            ( cd artifacts && sha256sum "$(basename "${assets[0]}")" )
+            for path in "${assets[@]:1}"; do
+              ( cd artifacts && sha256sum "$(basename "$path")" )
+            done
+            echo '```'
+            echo
+            if [ "$BUILD_RESULT" != "success" ]; then
+              echo "> Not every platform built for this release. See the workflow run for details."
+              echo
+            fi
+            echo "Built from \`$GITHUB_SHA\`."
+          } > release-body.md
+
+          cat release-body.md
+
       - name: Publish GitHub prerelease
-        shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.release.outputs.tag }}
+          TAG: ${{ needs.preflight.outputs.tag }}
           VERSION: ${{ inputs.version }}
-          INSTALLER: ${{ steps.release.outputs.installer }}
-          BLOCKMAP: ${{ steps.release.outputs.blockmap }}
-          CHECKSUM: ${{ steps.verify.outputs.checksum }}
-          PUBLISHER: ${{ steps.verify.outputs.publisher }}
-          RELEASE_NOTES: ${{ inputs.release_notes }}
+          REPO: ${{ github.repository }}
         run: |
-          @"
-          ## Toolport Studio $env:VERSION
+          shopt -s nullglob
+          uploads=()
+          for path in artifacts/*; do
+            case "$path" in
+              *.exe|*.exe.blockmap|*.dmg|*.dmg.blockmap|*.AppImage|*.deb|*.rpm|*.zip|*latest*.yml)
+                uploads+=("$path") ;;
+            esac
+          done
 
-          $env:RELEASE_NOTES
-
-          ### Install
-
-          Download ``Toolport-Studio-$env:VERSION-x64.exe`` and run it.
-
-          The installer is signed by ``$env:PUBLISHER`` using Microsoft Azure Artifact Signing.
-
-          ### Checksum
-
-          - ``Toolport-Studio-$env:VERSION-x64.exe`` SHA-256: ``$env:CHECKSUM``
-
-          Built from ``$env:GITHUB_SHA``.
-          "@ | Set-Content -LiteralPath release-body.md -Encoding utf8
-
-          gh release create $env:TAG `
-            $env:INSTALLER `
-            $env:BLOCKMAP `
-            --repo $env:GITHUB_REPOSITORY `
-            --target $env:GITHUB_SHA `
-            --title "Toolport Studio $env:VERSION" `
-            --notes-file release-body.md `
+          gh release create "$TAG" \
+            "${uploads[@]}" \
+            --repo "$REPO" \
+            --target "$GITHUB_SHA" \
+            --title "Toolport Studio $VERSION" \
+            --notes-file release-body.md \
             --prerelease
