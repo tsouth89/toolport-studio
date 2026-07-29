@@ -60,6 +60,7 @@ const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
   {
     slug: "claude-fable-5",
     name: "Claude Fable 5",
+    shortName: "Fable 5",
     isCustom: false,
     capabilities: createModelCapabilities({
       optionDescriptors: [
@@ -91,6 +92,7 @@ const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
   {
     slug: "claude-opus-5",
     name: "Claude Opus 5",
+    shortName: "Opus 5",
     isCustom: false,
     capabilities: createModelCapabilities({
       optionDescriptors: [
@@ -127,6 +129,7 @@ const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
   {
     slug: "claude-opus-4-8",
     name: "Claude Opus 4.8",
+    shortName: "Opus 4.8",
     isCustom: false,
     capabilities: createModelCapabilities({
       optionDescriptors: [
@@ -154,6 +157,7 @@ const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
   {
     slug: "claude-opus-4-7",
     name: "Claude Opus 4.7",
+    shortName: "Opus 4.7",
     isCustom: false,
     capabilities: createModelCapabilities({
       optionDescriptors: [
@@ -180,6 +184,7 @@ const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
   {
     slug: "claude-opus-4-6",
     name: "Claude Opus 4.6",
+    shortName: "Opus 4.6",
     isCustom: false,
     capabilities: createModelCapabilities({
       optionDescriptors: [
@@ -213,6 +218,7 @@ const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
   {
     slug: "claude-opus-4-5",
     name: "Claude Opus 4.5",
+    shortName: "Opus 4.5",
     isCustom: false,
     capabilities: createModelCapabilities({
       optionDescriptors: [
@@ -236,6 +242,7 @@ const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
   {
     slug: "claude-sonnet-5",
     name: "Claude Sonnet 5",
+    shortName: "Sonnet 5",
     isCustom: false,
     capabilities: createModelCapabilities({
       optionDescriptors: [
@@ -267,6 +274,7 @@ const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
   {
     slug: "claude-sonnet-4-6",
     name: "Claude Sonnet 4.6",
+    shortName: "Sonnet 4.6",
     isCustom: false,
     capabilities: createModelCapabilities({
       optionDescriptors: [
@@ -297,6 +305,7 @@ const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
   {
     slug: "claude-haiku-4-5",
     name: "Claude Haiku 4.5",
+    shortName: "Haiku 4.5",
     isCustom: false,
     capabilities: createModelCapabilities({
       optionDescriptors: [
