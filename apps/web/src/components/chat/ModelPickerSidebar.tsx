@@ -1,6 +1,6 @@
 import { type ProviderInstanceId } from "@toolport-studio/contracts";
 import { memo, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { SparklesIcon, StarIcon } from "lucide-react";
+import { LockIcon, SparklesIcon, StarIcon } from "lucide-react";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { cn } from "~/lib/utils";
@@ -30,6 +30,8 @@ const SELECTED_INDICATOR_CLASS =
 const BADGE_BASE_CLASS =
   "pointer-events-none absolute -right-0.5 top-0.5 z-10 flex size-3.5 items-center justify-center rounded-full bg-transparent shadow-sm ";
 const NEW_BADGE_CLASS = `${BADGE_BASE_CLASS} text-amber-600  dark:text-amber-300 `;
+/** Thread is pinned to another provider. Visible without hovering. */
+const LOCK_BADGE_CLASS = `${BADGE_BASE_CLASS} text-muted-foreground`;
 
 /** Opens toward the rail so the list stays readable (not over the model names). */
 const PICKER_TOOLTIP_SIDE = "left" as const;
@@ -205,7 +207,13 @@ export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
                 data-model-picker-provider={entry.instanceId}
                 className={cn(
                   "relative isolate flex w-full cursor-pointer aspect-square items-center justify-center rounded-md transition-colors hover:bg-[color-mix(in_srgb,var(--popover)_90%,var(--foreground))] focus-visible:bg-[color-mix(in_srgb,var(--popover)_90%,var(--foreground))] focus-visible:outline-none",
+                  // The 0.75px edge indicator alone was too quiet to answer
+                  // "which provider am I looking at" at a glance.
+                  isSelected && !isDisabled && "bg-foreground/10",
                   isDisabled && "opacity-50 cursor-not-allowed hover:bg-transparent",
+                  // Locked by the thread rather than broken. Dimming alone read
+                  // as "still loading", so mark it.
+                  isContextDisabled && "opacity-40",
                 )}
                 data-provider-accent-color={entry.accentColor}
                 onClick={() => !isDisabled && handleSelect(entry.instanceId)}
@@ -248,6 +256,11 @@ export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
                 {showNewBadge ? (
                   <span className={NEW_BADGE_CLASS} aria-hidden>
                     <SparklesIcon className="size-2" />
+                  </span>
+                ) : null}
+                {isContextDisabled ? (
+                  <span className={LOCK_BADGE_CLASS} aria-hidden>
+                    <LockIcon className="size-2" />
                   </span>
                 ) : null}
               </button>

@@ -227,6 +227,9 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
 
   const isLocked = props.lockedProvider !== null;
   const isSearching = searchQuery.trim().length > 0;
+  /** Whether the visible list can contain models from more than one provider. */
+  const isCrossProviderList =
+    isSearching || selectedInstanceId === "recommended" || selectedInstanceId === "favorites";
   const lockedDisabledInstanceIds = useMemo(() => {
     if (!isLocked) {
       return undefined;
@@ -648,7 +651,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
             {/* Model list */}
             <div className="relative min-h-0 flex-1 overflow-hidden">
               {!isSearching ? (
-                <div className="flex items-center justify-between gap-3 px-4 pb-1 pt-2 text-[11px] font-medium text-muted-foreground">
+                <div className="flex items-center justify-between gap-3 border-b border-border/50 px-4 pb-1.5 pt-2.5 text-[10.5px] font-semibold uppercase tracking-wide text-muted-foreground/80">
                   <span>
                     {selectedInstanceId === "recommended"
                       ? "Recommended"
@@ -691,7 +694,11 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                         providerAccentColor={model.instanceAccentColor}
                         isFavorite={favoritesSet.has(modelKey)}
                         isSelected={modelKey === `${props.activeInstanceId}:${props.model}`}
-                        showProvider
+                        // Only where the list actually spans providers. Inside
+                        // "All Codex models" every row repeated "Codex" under
+                        // the name, which cost a line per row and told the user
+                        // nothing they had not just chosen.
+                        showProvider={isCrossProviderList}
                         preferShortName={!isLocked}
                         useTriggerLabel={false}
                         showNewBadge={isModelPickerNewModel(model.driverKind, model.slug)}
