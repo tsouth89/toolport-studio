@@ -7,6 +7,7 @@
  */
 import { useAtomValue } from "@effect/atom-react";
 import { scopedThreadKey } from "@toolport-studio/client-runtime/environment";
+import { isChatOnlyShellWindow } from "./shellMode";
 import {
   type DesktopPreviewColorScheme,
   type PreviewEvent,
@@ -411,6 +412,12 @@ export function removePreviewThread(ref: ScopedThreadRef): void {
 
 export function isPreviewSupportedInRuntime(): boolean {
   if (typeof window === "undefined") return false;
+  // A chat-only pop-out is a conversation view, not a workspace: it has no
+  // preview surface, and its BrowserWindow is created with webviewTag disabled,
+  // so a <webview> could not mount even if something tried (SOU-476). Gating at
+  // this one seam covers every entry point — the preview panel, the markdown
+  // "open in preview" affordance, and file previews.
+  if (isChatOnlyShellWindow()) return false;
   return Boolean(window.desktopBridge?.preview);
 }
 
