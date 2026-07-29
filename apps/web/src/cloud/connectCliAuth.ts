@@ -9,7 +9,7 @@ import { clerkFrontendApiUrlFromPublishableKey } from "@toolport-studio/shared/r
 import { configuredHostedAppUrl, isHostedStaticApp } from "../hostedPairing";
 import { hasCloudPublicConfig, resolveCloudPublicConfig, trimNonEmpty } from "./publicConfig";
 
-const CONNECT_CLI_AUTH_STATE_STORAGE_KEY = "t3code-connect-cli-auth-state";
+const CONNECT_CLI_AUTH_STATE_STORAGE_KEY = "toolport-studio-connect-cli-auth-state";
 
 export function resolveConnectCliOAuthClientId(): string | null {
   return trimNonEmpty(import.meta.env.VITE_CLERK_CLI_OAUTH_CLIENT_ID as string | undefined);

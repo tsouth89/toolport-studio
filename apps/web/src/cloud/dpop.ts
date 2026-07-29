@@ -21,6 +21,10 @@ export class BrowserDpopError extends Data.TaggedError("BrowserDpopError")<{
   readonly cause?: unknown;
 }> {}
 
+// Deliberately still t3code:. Unlike a localStorage key, an IndexedDB database
+// cannot be renamed in place — opening a new name creates an empty database and
+// silently strands the DPoP keys in the old one, forcing re-authentication.
+// Renaming this needs an explicit open-copy-delete migration.
 const DPOP_DATABASE_NAME = "t3code:cloud-auth";
 const DPOP_DATABASE_VERSION = 1;
 const DPOP_KEY_STORE_NAME = "keys";

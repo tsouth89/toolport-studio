@@ -2,7 +2,7 @@ import { ClientSettingsSchema, type ClientSettings } from "@toolport-studio/cont
 
 import { getLocalStorageItem, setLocalStorageItem } from "./hooks/useLocalStorage";
 
-export const CLIENT_SETTINGS_STORAGE_KEY = "t3code:client-settings:v1";
+export const CLIENT_SETTINGS_STORAGE_KEY = "toolport-studio:client-settings:v1";
 
 function hasWindow(): boolean {
   return typeof window !== "undefined";

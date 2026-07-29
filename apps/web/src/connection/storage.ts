@@ -33,6 +33,9 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 
+// Deliberately still t3code:. See dpop.ts — an IndexedDB database cannot be
+// renamed in place, so this waits on an explicit copy migration rather than
+// silently starting from an empty store.
 const DATABASE_NAME = "t3code:connection-runtime";
 const DATABASE_VERSION = 4;
 const CATALOG_STORE_NAME = "catalog";
