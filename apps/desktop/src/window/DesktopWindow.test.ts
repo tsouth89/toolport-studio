@@ -1007,7 +1007,7 @@ describe("DesktopWindow", () => {
           const desktopWindow = yield* DesktopWindow.DesktopWindow;
 
           // 1. WSL-only boot shows the connecting splash.
-          yield* desktopWindow.showConnectingSplash;
+          yield* desktopWindow.showConnectingSplash("Connecting…");
           assert.equal(yield* Ref.get(scenario.createCalls), 1);
 
           // 2. Backend reports ready, but opening the real main fails. The pool
@@ -1043,7 +1043,7 @@ describe("DesktopWindow", () => {
         yield* Effect.gen(function* () {
           const desktopWindow = yield* DesktopWindow.DesktopWindow;
 
-          yield* desktopWindow.showConnectingSplash;
+          yield* desktopWindow.showConnectingSplash("Connecting…");
           assert.equal(yield* Ref.get(scenario.createCalls), 1);
 
           // Taskbar/dock activation during cold boot must bring the splash back
@@ -1064,7 +1064,7 @@ describe("DesktopWindow", () => {
       yield* Effect.gen(function* () {
         const desktopWindow = yield* DesktopWindow.DesktopWindow;
 
-        yield* desktopWindow.showConnectingSplash;
+        yield* desktopWindow.showConnectingSplash("Connecting…");
         yield* desktopWindow.dispatchMenuAction("open-settings");
 
         assert.equal(yield* Ref.get(scenario.createCalls), 1);
@@ -1083,7 +1083,7 @@ describe("DesktopWindow", () => {
       yield* Effect.gen(function* () {
         const desktopWindow = yield* DesktopWindow.DesktopWindow;
 
-        yield* desktopWindow.showConnectingSplash;
+        yield* desktopWindow.showConnectingSplash("Connecting…");
         const readyExit = yield* Effect.exit(
           desktopWindow.handleBackendReady(new URL("http://127.0.0.1:3773")),
         );
@@ -1096,4 +1096,29 @@ describe("DesktopWindow", () => {
       }).pipe(Effect.provide(scenario.layer));
     }),
   );
+});
+
+describe("escapeSplashLabel", () => {
+  it("passes normal splash copy through unchanged", () => {
+    assert.equal(
+      DesktopWindow.escapeSplashLabel("Starting Toolport Studio…"),
+      "Starting Toolport Studio…",
+    );
+    assert.equal(DesktopWindow.escapeSplashLabel("Connecting to WSL…"), "Connecting to WSL…");
+  });
+
+  it("neutralises anything that would become markup", () => {
+    // The label is interpolated straight into the splash HTML data URL, so a
+    // label that ever becomes dynamic must not be able to inject elements.
+    assert.equal(
+      DesktopWindow.escapeSplashLabel('<img src=x onerror="alert(1)">'),
+      "&lt;img src=x onerror=&quot;alert(1)&quot;&gt;",
+    );
+    assert.equal(DesktopWindow.escapeSplashLabel("a & b"), "a &amp; b");
+  });
+
+  it("escapes ampersands before the entities it introduces", () => {
+    // Naive ordering would double-encode into &amp;lt;.
+    assert.equal(DesktopWindow.escapeSplashLabel("<"), "&lt;");
+  });
 });

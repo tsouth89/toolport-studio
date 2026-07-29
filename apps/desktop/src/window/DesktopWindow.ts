@@ -68,10 +68,11 @@ export class DesktopWindow extends Context.Service<
     readonly revealOrCreateMain: Effect.Effect<Electron.BrowserWindow, DesktopWindowError>;
     readonly activate: Effect.Effect<void, DesktopWindowError>;
     readonly createMainIfBackendReady: Effect.Effect<void, DesktopWindowError>;
-    // Show a lightweight "Connecting to WSL" splash window immediately (wsl-only
-    // mode), before the WSL backend that serves the renderer is ready. It is
-    // dismissed automatically once the real main window reveals.
-    readonly showConnectingSplash: Effect.Effect<void>;
+    // Show a lightweight splash window immediately, before the backend that
+    // serves the renderer is ready. Dismissed automatically once the real main
+    // window reveals. Traces put the primary backend's HTTP readiness at ~10.1s
+    // on a cold start, so this is not WSL-specific (SOU-463).
+    readonly showConnectingSplash: (label: string) => Effect.Effect<void>;
     /**
      * SOU-395: open or focus a lightweight session pop-out (chat-only shell).
      * Same app process; closing the window does not stop the provider session.
@@ -172,15 +173,24 @@ export function resolveInitialMainWindowBounds(
   return DesktopAppSettings.DEFAULT_MAIN_WINDOW_SIZE;
 }
 
-// A self-contained "Connecting to WSL" splash, shown immediately in wsl-only
-// mode while the WSL backend (which serves the renderer) cold-boots. Inlined as
-// a data URL so it needs no bundled asset and no backend — pure CSS, no JS.
-function buildConnectingSplashDataUrl(shouldUseDarkColors: boolean): string {
+/** Static label, but it lands inside HTML — never let it become markup. */
+export function escapeSplashLabel(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+// A self-contained connecting splash, shown immediately on cold start while the
+// backend that serves the renderer boots. Inlined as a data URL so it needs no
+// bundled asset and no backend — pure CSS, no JS.
+function buildConnectingSplashDataUrl(shouldUseDarkColors: boolean, label: string): string {
   const background = getInitialWindowBackgroundColor(shouldUseDarkColors);
-  const label = shouldUseDarkColors ? "#9ca3af" : "#6b7280";
+  const labelColor = shouldUseDarkColors ? "#9ca3af" : "#6b7280";
   const accent = shouldUseDarkColors ? "#f8fafc" : "#1f2937";
   const track = shouldUseDarkColors ? "rgba(248,250,252,0.18)" : "rgba(31,41,55,0.18)";
-  const html = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'"><style>html,body{margin:0;height:100%}body{background:${background};color:${label};font-family:system-ui,-apple-system,'Segoe UI',sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;-webkit-user-select:none;user-select:none;-webkit-app-region:drag}.spinner{width:26px;height:26px;border:3px solid ${track};border-top-color:${accent};border-radius:50%;animation:spin .8s linear infinite}.label{font-size:13px}@keyframes spin{to{transform:rotate(360deg)}}</style></head><body><div class="spinner"></div><div class="label">Connecting to WSL…</div></body></html>`;
+  const html = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'"><style>html,body{margin:0;height:100%}body{background:${background};color:${labelColor};font-family:system-ui,-apple-system,'Segoe UI',sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;-webkit-user-select:none;user-select:none;-webkit-app-region:drag}.spinner{width:26px;height:26px;border:3px solid ${track};border-top-color:${accent};border-radius:50%;animation:spin .8s linear infinite}.label{font-size:13px}@keyframes spin{to{transform:rotate(360deg)}}</style></head><body><div class="spinner"></div><div class="label">${escapeSplashLabel(label)}</div></body></html>`;
   return `data:text/html;charset=utf-8,${encodeURIComponent(html)}`;
 }
 
@@ -727,50 +737,50 @@ export const make = Effect.gen(function* () {
     yield* createMain;
   }).pipe(Effect.withSpan("desktop.window.createMainIfBackendReady"));
 
-  const showConnectingSplash = Effect.gen(function* () {
-    // Only when nothing is shown yet: no real window, no existing splash.
-    const existingSplash = yield* Ref.get(splashWindowRef);
-    if (Option.isSome(existingSplash)) return;
-    const existingWindow = yield* electronWindow.currentMainOrFirst;
-    if (Option.isSome(existingWindow)) return;
+  const showConnectingSplash = Effect.fn("desktop.window.showConnectingSplash")(
+    function* (label: string) {
+      // Only when nothing is shown yet: no real window, no existing splash.
+      const existingSplash = yield* Ref.get(splashWindowRef);
+      if (Option.isSome(existingSplash)) return;
+      const existingWindow = yield* electronWindow.currentMainOrFirst;
+      if (Option.isSome(existingWindow)) return;
 
-    const shouldUseDarkColors = yield* electronTheme.shouldUseDarkColors;
-    const splash = yield* electronWindow.create({
-      width: 360,
-      height: 220,
-      resizable: false,
-      minimizable: false,
-      maximizable: false,
-      fullscreenable: false,
-      frame: false,
-      center: true,
-      show: false,
-      skipTaskbar: false,
-      backgroundColor: getInitialWindowBackgroundColor(shouldUseDarkColors),
-      title: environment.displayName,
-      webPreferences: {
-        contextIsolation: true,
-        nodeIntegration: false,
-        sandbox: true,
-      },
-    });
-    yield* Ref.set(splashWindowRef, Option.some(splash));
-    splash.once("closed", () => {
-      void runPromise(Ref.set(splashWindowRef, Option.none()));
-    });
-    splash.once("ready-to-show", () => {
-      if (!splash.isDestroyed()) {
-        splash.show();
-      }
-    });
-    void splash.loadURL(buildConnectingSplashDataUrl(shouldUseDarkColors));
-    yield* logWindowInfo("connecting splash shown");
-  }).pipe(
+      const shouldUseDarkColors = yield* electronTheme.shouldUseDarkColors;
+      const splash = yield* electronWindow.create({
+        width: 360,
+        height: 220,
+        resizable: false,
+        minimizable: false,
+        maximizable: false,
+        fullscreenable: false,
+        frame: false,
+        center: true,
+        show: false,
+        skipTaskbar: false,
+        backgroundColor: getInitialWindowBackgroundColor(shouldUseDarkColors),
+        title: environment.displayName,
+        webPreferences: {
+          contextIsolation: true,
+          nodeIntegration: false,
+          sandbox: true,
+        },
+      });
+      yield* Ref.set(splashWindowRef, Option.some(splash));
+      splash.once("closed", () => {
+        void runPromise(Ref.set(splashWindowRef, Option.none()));
+      });
+      splash.once("ready-to-show", () => {
+        if (!splash.isDestroyed()) {
+          splash.show();
+        }
+      });
+      void splash.loadURL(buildConnectingSplashDataUrl(shouldUseDarkColors, label));
+      yield* logWindowInfo("connecting splash shown");
+    },
     // The splash is best-effort UX — never let it fail startup.
     Effect.catch((error) =>
       logWindowWarning("failed to show connecting splash", { message: error.message }),
     ),
-    Effect.withSpan("desktop.window.showConnectingSplash"),
   );
 
   const createOrFocusSessionPopOut = Effect.fn("desktop.window.createOrFocusSessionPopOut")(
