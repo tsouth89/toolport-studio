@@ -49,21 +49,23 @@ describe("ClientSettings glass opacity", () => {
   });
 });
 
-describe("ClientSettings sidebar", () => {
-  it("defaults auto-settle off (Archive is the soft-done path)", () => {
-    const settings = decodeClientSettings({});
-    expect(settings.sidebarAutoSettleAfterDays).toBeNull();
+describe("ClientSettings retired keys", () => {
+  // Settings written by an older build must keep decoding after a key is dropped,
+  // otherwise an upgrade wipes the user's whole settings file.
+  it.each([
+    ["sidebarAutoSettleAfterDays", 3],
+    ["dismissedProviderUpdateNotificationKeys", ["codex@1.0.0"]],
+  ])("decodes a stored settings file that still carries %s", (key, value) => {
+    const decoded = decodeClientSettings({ [key]: value, wordWrap: false });
+
+    expect(decoded).not.toHaveProperty(key);
+    expect(decoded.wordWrap).toBe(false);
   });
 
-  it("allows auto-settle by inactivity to be disabled", () => {
-    expect(
-      decodeClientSettings({ sidebarAutoSettleAfterDays: null }).sidebarAutoSettleAfterDays,
-    ).toBeNull();
-  });
+  it("ignores retired keys in a patch", () => {
+    const patch = decodeClientSettingsPatch({ sidebarAutoSettleAfterDays: 3 });
 
-  it.each([-1, 0, 91])("rejects an auto-settle threshold outside 1..90: %s", (value) => {
-    expect(() => decodeClientSettings({ sidebarAutoSettleAfterDays: value })).toThrow();
-    expect(() => decodeClientSettingsPatch({ sidebarAutoSettleAfterDays: value })).toThrow();
+    expect(patch).not.toHaveProperty("sidebarAutoSettleAfterDays");
   });
 });
 

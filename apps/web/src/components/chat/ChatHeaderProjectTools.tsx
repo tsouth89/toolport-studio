@@ -11,11 +11,10 @@ import type {
   ThreadId,
 } from "@toolport-studio/contracts";
 import { MoreHorizontalIcon } from "lucide-react";
-import { memo } from "react";
+import { memo, type ReactNode } from "react";
 
 import type { DraftId } from "~/composerDraftStore";
 import { useT3ProjectFileScripts } from "~/hooks/useT3ProjectFileScripts";
-import { cn } from "~/lib/utils";
 import GitActionsControl from "../GitActionsControl";
 import ProjectScriptsControl, {
   type NewProjectScriptInput,
@@ -27,11 +26,20 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { shouldShowOpenInPicker } from "./ChatHeader.logic";
 import { OpenInPicker } from "./OpenInPicker";
 
-function SectionLabel({ children }: { children: string }) {
+/**
+ * Label and controls share a line. Stacking them left/right put the label in one
+ * corner and a single icon button in the other, which read as an empty menu.
+ */
+function ToolRow({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <p className="px-0.5 text-[10.5px] font-medium tracking-wide text-muted-foreground/90 uppercase">
-      {children}
-    </p>
+    <div className="flex min-w-0 items-center justify-between gap-4 px-1.5 py-1.5">
+      <p className="shrink-0 text-[10.5px] font-medium tracking-wide text-muted-foreground/80 uppercase">
+        {label}
+      </p>
+      <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-1.5">
+        {children}
+      </div>
+    </div>
   );
 }
 
@@ -116,53 +124,44 @@ export const ChatHeaderProjectTools = memo(function ChatHeaderProjectTools({
         align="end"
         side="bottom"
         sideOffset={6}
-        className="w-[min(18.5rem,calc(100vw-1.5rem))]"
-        viewportClassName="space-y-3 p-2.5 [--viewport-inline-padding:0px]"
+        className="w-[min(15.5rem,calc(100vw-1.5rem))]"
+        viewportClassName="divide-y divide-border/50 p-1 [--viewport-inline-padding:0px]"
       >
         {showScripts ? (
-          <section className="min-w-0 space-y-1.5">
-            <SectionLabel>Actions</SectionLabel>
-            <div className={cn("flex min-w-0 flex-wrap items-center justify-end gap-1.5")}>
-              <ProjectScriptsControl
-                scripts={activeProjectScripts ?? []}
-                fileScripts={fileScripts}
-                keybindings={keybindings}
-                preferredScriptId={preferredScriptId}
-                onRunScript={onRunProjectScript}
-                onAddScript={onAddProjectScript}
-                onUpdateScript={onUpdateProjectScript}
-                onDeleteScript={onDeleteProjectScript}
-              />
-            </div>
-          </section>
+          <ToolRow label="Actions">
+            <ProjectScriptsControl
+              scripts={activeProjectScripts ?? []}
+              fileScripts={fileScripts}
+              keybindings={keybindings}
+              preferredScriptId={preferredScriptId}
+              onRunScript={onRunProjectScript}
+              onAddScript={onAddProjectScript}
+              onUpdateScript={onUpdateProjectScript}
+              onDeleteScript={onDeleteProjectScript}
+            />
+          </ToolRow>
         ) : null}
 
         {showOpenIn ? (
-          <section className="min-w-0 space-y-1.5">
-            <SectionLabel>Open in</SectionLabel>
-            <div className="flex min-w-0 flex-wrap items-center justify-end gap-1.5">
-              <OpenInPicker
-                environmentId={activeThreadEnvironmentId}
-                keybindings={keybindings}
-                availableEditors={availableEditors}
-                openInCwd={openInCwd}
-                compact
-              />
-            </div>
-          </section>
+          <ToolRow label="Open in">
+            <OpenInPicker
+              environmentId={activeThreadEnvironmentId}
+              keybindings={keybindings}
+              availableEditors={availableEditors}
+              openInCwd={openInCwd}
+              compact
+            />
+          </ToolRow>
         ) : null}
 
         {showGit ? (
-          <section className="min-w-0 space-y-1.5">
-            <SectionLabel>Git</SectionLabel>
-            <div className="flex min-w-0 flex-wrap items-center justify-end gap-1.5">
-              <GitActionsControl
-                gitCwd={gitCwd}
-                activeThreadRef={scopeThreadRef(activeThreadEnvironmentId, activeThreadId)}
-                {...(draftId ? { draftId } : {})}
-              />
-            </div>
-          </section>
+          <ToolRow label="Git">
+            <GitActionsControl
+              gitCwd={gitCwd}
+              activeThreadRef={scopeThreadRef(activeThreadEnvironmentId, activeThreadId)}
+              {...(draftId ? { draftId } : {})}
+            />
+          </ToolRow>
         ) : null}
       </PopoverPopup>
     </Popover>
