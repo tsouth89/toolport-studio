@@ -52,6 +52,9 @@ export const ModelListRow = memo(function ModelListRow(props: {
       className={cn(
         "group relative w-full !min-w-0 max-w-full cursor-pointer rounded-md px-2 py-2.5 transition-[background-color,box-shadow,color]",
         "hover:bg-[color-mix(in_srgb,var(--popover)_90%,var(--foreground))] data-highlighted:bg-[color-mix(in_srgb,var(--popover)_90%,var(--foreground))] data-selected:bg-foreground/[0.08] data-selected:text-foreground data-selected:ring-0 [&[data-highlighted][data-selected]]:bg-[color-mix(in_srgb,var(--popover)_90%,var(--foreground))]",
+        // The current model was distinguishable only by a faint background, so
+        // it read the same as a hovered row. Give it an edge marker instead.
+        "data-selected:before:absolute data-selected:before:left-0 data-selected:before:top-1/2 data-selected:before:h-4 data-selected:before:w-0.5 data-selected:before:-translate-y-1/2 data-selected:before:rounded-r-full data-selected:before:bg-primary",
         props.disabledReason &&
           "data-disabled:pointer-events-auto data-disabled:cursor-not-allowed data-disabled:hover:bg-transparent",
       )}
@@ -87,7 +90,12 @@ export const ModelListRow = memo(function ModelListRow(props: {
 
       <div className="flex shrink-0 items-center gap-1.5">
         {props.jumpLabel ? (
-          <Kbd className="h-4 min-w-0 rounded-sm px-1.5 text-[10px]">{props.jumpLabel}</Kbd>
+          // Held back until the row is in play. These sat at full strength on
+          // every row, competing with the favourite stars along the same edge
+          // and making the list look busier than it is.
+          <Kbd className="h-4 min-w-0 rounded-sm px-1.5 text-[10px] opacity-0 transition-opacity group-hover:opacity-100 group-data-highlighted:opacity-100 group-data-selected:opacity-100">
+            {props.jumpLabel}
+          </Kbd>
         ) : null}
         <Tooltip>
           <TooltipTrigger
