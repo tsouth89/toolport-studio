@@ -496,7 +496,7 @@ export function formatElapsed(startIso: string, endIso: string | undefined): str
 
 type LatestTurnTiming = Pick<
   OrchestrationLatestTurn,
-  "turnId" | "startedAt" | "completedAt" | "requestedAt"
+  "turnId" | "state" | "startedAt" | "completedAt" | "requestedAt"
 >;
 type SessionActivityState = Pick<
   NonNullable<Thread["session"]>,
@@ -524,6 +524,14 @@ export function isLatestTurnSettled(
   // queue drain, and hide plan banners even though the turn had finished.
   // Live work is tracked separately via session phase / isWorking.
   if (!latestTurn?.startedAt) return false;
+  // ...but completedAt alone does not mean settled: every mid-turn checkpoint
+  // diff stamps a PLACEHOLDER completedAt on a turn that is still running (see
+  // the thread.session-set branch in threadReducer). Reading the timestamp
+  // without the state made the first checkpoint of a turn settle it — the
+  // Working row vanished while the provider kept streaming, and never came
+  // back because the placeholder is retained for the rest of the turn.
+  // `state` is the authoritative lifecycle signal; the timestamp is not.
+  if (latestTurn.state === "running") return false;
   return latestTurn.completedAt != null;
 }
 
@@ -1853,6 +1861,11 @@ export function derivePhase(session: ThreadSession | null): SessionPhase {
  * session.status stuck on "running" for a turn that already has completedAt
  * (Grok hang after tokens stop), treat the session as ready so Enter sends
  * instead of queueing forever and the queue can drain.
+ *
+ * The escape hatch must not fire on a turn that is genuinely still running: a
+ * mid-turn checkpoint diff stamps a placeholder completedAt while state stays
+ * "running", which satisfied every other condition here and downgraded live
+ * Codex turns to "ready" (Working row gone, output still streaming).
  */
 export function deriveComposerPhase(
   session: ThreadSession | null,
@@ -1865,6 +1878,7 @@ export function deriveComposerPhase(
   if (
     latestTurn?.startedAt != null &&
     latestTurn.completedAt != null &&
+    latestTurn.state !== "running" &&
     session?.activeTurnId != null &&
     session.activeTurnId === latestTurn.turnId
   ) {
