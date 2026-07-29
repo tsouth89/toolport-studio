@@ -580,7 +580,44 @@ interface StagePackageJson {
 }
 
 export const STAGE_INSTALL_ARGS = ["install", "--prod"] as const;
-export const DESKTOP_ASAR_UNPACK = ["node_modules/@ff-labs/fff-bin-*/**/*"] as const;
+/**
+ * Native packages that must sit on the real filesystem rather than inside the
+ * asar. Covers every platform, not just the host: the WSL backend runs Linux
+ * Node against the same tree, so its natives have to be unpacked too.
+ *
+ * A .node/.dll binary cannot be read from inside an asar, so these are the only
+ * things that genuinely need to be loose. Everything else the server needs is
+ * inlined into the CLI bundle (see apps/server/vite.config.ts).
+ */
+/**
+ * Every package the CLI bundle leaves external, so it must exist as a real file.
+ *
+ * This list has to stay in lockstep with `externalPackagePrefixes` in
+ * apps/server/vite.config.ts. Anything external but not unpacked resolves fine
+ * on the Windows primary (ELECTRON_RUN_AS_NODE reads the asar) and then fails
+ * under WSL, where plain `node` cannot. That asymmetry is why the WSL path is
+ * the one to verify — a missing entry here is invisible on Windows.
+ *
+ * Native addon wrappers count: `@ff-labs/fff-node` and `ffi-rs` are JS, but they
+ * are external because they dlopen a binary, so they need to be on disk too.
+ */
+const DESKTOP_EXTERNAL_PACKAGE_GLOBS = [
+  "node-pty",
+  "ffi-rs",
+  "node-addon-api",
+  "@yuuang/ffi-rs-*",
+  "@ff-labs/*",
+  "@clerk/electron-passkeys*",
+  "@msgpackr-extract/*",
+  "@effect/platform-bun",
+  "@effect/sql-sqlite-bun",
+] as const;
+
+// pnpm stores the real files under .pnpm and symlinks the top-level names, so
+// both paths need unpacking for the link target to exist on disk.
+export const DESKTOP_ASAR_UNPACK = DESKTOP_EXTERNAL_PACKAGE_GLOBS.flatMap(
+  (pkg) => [`node_modules/${pkg}/**/*`, `node_modules/.pnpm/**/node_modules/${pkg}/**/*`] as const,
+);
 export const STAGE_IGNORED_OPTIONAL_DEPENDENCIES = [
   // Every Claude SDK query is given pathToClaudeCodeExecutable, pointing at the
   // user's authenticated Claude CLI. The SDK's optional bundled executables are
@@ -1420,16 +1457,18 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     // ELECTRON_RUN_AS_NODE (asar-aware), so it reads bin.mjs straight out of
     // app.asar. The WSL backend instead launches plain `wsl.exe -- node`, which
     // cannot read inside an asar archive, so everything it loads must be on the
-    // real filesystem. The server bundle externalizes its runtime dependencies
-    // (effect, @effect/*, node-pty, ...) to node_modules rather than inlining
-    // them, so unpacking just the bundle + node-pty isn't enough — the Linux Node
-    // fails with ERR_MODULE_NOT_FOUND (e.g. "Cannot find package 'effect'") before
-    // it even reaches node-pty. Unpack the server bundle AND the whole
-    // node_modules tree so every import resolves (this also covers the fff native
-    // binaries in DESKTOP_ASAR_UNPACK). The Windows primary keeps reading the same
-    // files through the asar (transparently redirected to the unpacked copy), so
-    // there's no duplication.
-    asarUnpack: [...DESKTOP_ASAR_UNPACK, "apps/server/dist/**", "**/node_modules/**"],
+    // real filesystem.
+    //
+    // This used to unpack `**\/node_modules\/**` wholesale, because the server
+    // bundle externalized its runtime dependencies and the Linux Node would fail
+    // with ERR_MODULE_NOT_FOUND before it even reached node-pty. A staged Windows
+    // build measured 22,155 unpacked files for 29 genuinely native ones, and NSIS
+    // install time tracks file count, so that was the install cost (SOU-467).
+    //
+    // The CLI bundle now inlines its JS dependencies, so the only things that
+    // still have to be loose are the server bundle itself and the native addons
+    // in DESKTOP_ASAR_UNPACK. Everything else rides inside the asar as one file.
+    asarUnpack: [...DESKTOP_ASAR_UNPACK, "apps/server/dist/**"],
   };
   const updateChannel = resolveDesktopUpdateChannel(version);
   const publishConfig = yield* resolveGitHubPublishConfig(updateChannel);

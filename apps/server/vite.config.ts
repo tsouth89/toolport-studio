@@ -5,15 +5,42 @@ import baseConfig from "../../vite.config.ts";
 import { loadRepoEnv } from "../../scripts/lib/public-config.ts";
 import packageJson from "./package.json" with { type: "json" };
 
-const bundledPackagePrefixes = [
-  "@pierre/diffs",
-  "@toolport-studio/",
-  "effect-acp",
-  "effect-codex-app-server",
+/**
+ * Packages the CLI bundle must NOT inline. Everything else is bundled.
+ *
+ * The list used to be the other way round — an allowlist of workspace packages —
+ * which left every third-party runtime dep external. External deps have to exist
+ * on the real filesystem because the WSL backend launches plain `wsl.exe -- node`,
+ * which cannot read inside an asar, so the desktop build unpacks
+ * `**\/node_modules\/**` wholesale. A staged Windows build measured 22,155
+ * unpacked files, of which only 29 were actually native (SOU-467). NSIS install
+ * time tracks file count, so those 22,126 pure-JS files were the install cost.
+ *
+ * Two reasons a package earns a place here:
+ *
+ * - Native addons. A .node binary cannot be inlined into JS, and must sit on
+ *   disk for both the Windows primary and the Linux Node inside WSL.
+ * - Bun-only entry points. `@effect/platform-bun` and `@effect/sql-sqlite-bun`
+ *   are reached through a runtime-conditional dynamic import and resolve
+ *   `bun:sqlite`, which does not exist when bundling for Node.
+ */
+const externalPackagePrefixes = [
+  // Native addons (.node)
+  "node-pty",
+  "ffi-rs",
+  "@yuuang/",
+  "@ff-labs/",
+  "@clerk/electron-passkeys",
+  "@msgpackr-extract/",
+  "node-addon-api",
+  // Bun-only: dynamically imported, resolves bun:* specifiers
+  "@effect/platform-bun",
+  "@effect/sql-sqlite-bun",
 ];
 
 export function shouldBundleCliDependency(id: string): boolean {
-  return bundledPackagePrefixes.some((prefix) => id.startsWith(prefix));
+  if (id.startsWith("node:")) return false;
+  return !externalPackagePrefixes.some((prefix) => id.startsWith(prefix));
 }
 
 const repoEnv = loadRepoEnv();
