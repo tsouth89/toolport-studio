@@ -40,6 +40,7 @@ import {
   type ProviderRuntimeIngestionShape,
 } from "../Services/ProviderRuntimeIngestion.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import { sanitizeToolActivityDataValue, truncateDetail } from "../toolActivitySanitize.ts";
 
 const providerTurnKey = (threadId: ThreadId, turnId: TurnId) => `${threadId}:${turnId}`;
 const providerTaskKey = (threadId: ThreadId, taskId: string) => `${threadId}:${taskId}`;
@@ -300,65 +301,6 @@ function maxCheckpointTurnCount(
     }
   }
   return maxTurnCount;
-}
-
-function truncateDetail(value: string, limit = 180): string {
-  return value.length > limit ? `${value.slice(0, limit - 3)}...` : value;
-}
-
-/**
- * Tool activity rows used to persist full ACP `rawOutput` / `content` blobs
- * (often 20–400KB per update). That ballooned `state.sqlite` (orchestration
- * events + activities) and made multi-session streaming feel token-throttled
- * under SQLite/WS write pressure. Keep presentation fields; truncate heavies.
- */
-const TOOL_ACTIVITY_HEAVY_DATA_KEYS = new Set([
-  "rawOutput",
-  "rawInput",
-  "content",
-  "output",
-  "result",
-  "stdout",
-  "stderr",
-  "diff",
-  "patch",
-  "fileContent",
-  "body",
-]);
-/** Soft cap for free-form strings kept on the activity row. */
-const TOOL_ACTIVITY_MAX_STRING_CHARS = 400;
-/** Soft cap for JSON-encoded heavy objects kept for dogfood previews. */
-const TOOL_ACTIVITY_MAX_JSON_CHARS = 800;
-
-export function sanitizeToolActivityDataValue(key: string, value: unknown): unknown {
-  if (value === null || value === undefined) {
-    return value;
-  }
-  if (typeof value === "string") {
-    const limit = TOOL_ACTIVITY_HEAVY_DATA_KEYS.has(key)
-      ? TOOL_ACTIVITY_MAX_STRING_CHARS
-      : TOOL_ACTIVITY_MAX_STRING_CHARS * 2;
-    return truncateDetail(value, limit);
-  }
-  if (!TOOL_ACTIVITY_HEAVY_DATA_KEYS.has(key)) {
-    return value;
-  }
-  try {
-    const encoded = JSON.stringify(value);
-    if (encoded === undefined) {
-      return { _truncated: true };
-    }
-    if (encoded.length <= TOOL_ACTIVITY_MAX_JSON_CHARS) {
-      return value;
-    }
-    return {
-      _truncated: true,
-      approxChars: encoded.length,
-      preview: `${encoded.slice(0, TOOL_ACTIVITY_MAX_STRING_CHARS - 3)}...`,
-    };
-  } catch {
-    return { _truncated: true };
-  }
 }
 
 /**
