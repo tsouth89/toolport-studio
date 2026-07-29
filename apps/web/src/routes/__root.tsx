@@ -14,7 +14,7 @@ import { APP_BASE_NAME, APP_DISPLAY_NAME, APP_STAGE_LABEL } from "../branding";
 import { resolveServerBackedAppDisplayName } from "../branding.logic";
 import { AppSidebarLayout } from "../components/AppSidebarLayout";
 import { CommandPalette } from "../components/CommandPalette";
-import { isChatOnlyShellHref } from "../shellMode";
+import { isChatOnlyShellHref, isChatOnlyShellWindow } from "../shellMode";
 import { ConnectOnboardingDialog } from "../components/cloud/ConnectOnboardingDialog";
 import { RelayClientInstallDialog } from "../components/cloud/RelayClientInstallDialog";
 import { SshPasswordPromptDialog } from "../components/desktop/SshPasswordPromptDialog";
@@ -157,6 +157,20 @@ function GlassAppearanceSync() {
   useEffect(() => {
     document.documentElement.style.setProperty("--glass-opacity", `${glassOpacity}%`);
   }, [glassOpacity]);
+
+  // Marks the document so CSS can drop backdrop-filter in pop-outs. The composer
+  // glass is on screen for the entire life of a chat view, and backdrop-filter
+  // makes the compositor re-blur everything behind it every frame — a cost paid
+  // continuously, whether or not anything is happening. A second window with its
+  // own permanent blur surface was enough to make dragging unrelated windows
+  // stutter before a single message had been sent (SOU-476).
+  useEffect(() => {
+    if (!isChatOnlyShellWindow()) return;
+    document.documentElement.dataset.shell = "chat";
+    return () => {
+      delete document.documentElement.dataset.shell;
+    };
+  }, []);
 
   return null;
 }

@@ -1623,3 +1623,31 @@ label:has(> select#reasoning-effort) select {
   opacity: 0.3;
   pointer-events: none;
 }
+
+/*
+ * Chat-only pop-out windows drop backdrop blur (SOU-476).
+ *
+ * backdrop-filter makes the compositor re-sample and blur everything behind the
+ * element every frame it is on screen. The composer glass is present for the
+ * whole life of a chat view, so a pop-out adds a second permanent blur surface —
+ * enough to make dragging unrelated windows stutter with nothing happening in
+ * the app at all.
+ *
+ * The surfaces keep their colour by compositing the same tint over the
+ * background at full opacity, so the pop-out reads as a flat version of the same
+ * design rather than a transparent panel with no blur behind it.
+ */
+:root[data-shell="chat"] .chat-composer-glass,
+:root[data-shell="chat"] .dialog-glass,
+:root[data-shell="chat"] .alert-glass {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+:root[data-shell="chat"] .chat-composer-glass {
+  background: color-mix(in srgb, var(--background) 100%, transparent);
+}
+
+:root[data-shell="chat"] .dialog-glass {
+  background: color-mix(in srgb, var(--background) 100%, transparent);
+}
