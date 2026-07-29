@@ -502,6 +502,42 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     return mapping.size > 0 ? mapping : EMPTY_MODEL_JUMP_LABELS;
   }, [keybindings, modelJumpCommandByKey, modelJumpShortcutContext]);
 
+  /**
+   * Everything `renderItem` reads from its closure, bundled so the list
+   * can see it change.
+   *
+   * LegendList caches each rendered row and only re-invokes `renderItem`
+   * when that row's key, that row's own item data, or `extraData`
+   * changes. Our items are plain model-key strings, so for any row whose
+   * key survives a view switch — a favourited model also listed under
+   * its own provider — key and item data are both identical and the row
+   * is served from cache with the markup it was first built with. That
+   * stranded the provider footer in the wrong state (shown under "All
+   * Claude models", hidden under Favorites, depending on which list
+   * rendered it first) and would do the same to jump labels, disabled
+   * reasons, and the selected-row marker.
+   */
+  const rowRenderInputs = useMemo(
+    () => ({
+      favoritesSet,
+      isCrossProviderList,
+      isLocked,
+      modelJumpLabelByKey,
+      getModelDisabledReason,
+      activeInstanceId: props.activeInstanceId,
+      activeModel: props.model,
+    }),
+    [
+      favoritesSet,
+      isCrossProviderList,
+      isLocked,
+      modelJumpLabelByKey,
+      getModelDisabledReason,
+      props.activeInstanceId,
+      props.model,
+    ],
+  );
+
   useEffect(() => {
     const onWindowKeyDown = (event: globalThis.KeyboardEvent) => {
       if (event.defaultPrevented || event.repeat) {
@@ -674,7 +710,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                 <LegendList<string>
                   ref={modelListRef}
                   data={filteredModelKeys}
-                  extraData={favoritesSet}
+                  extraData={rowRenderInputs}
                   keyExtractor={(modelKey) => modelKey}
                   renderItem={({ item: modelKey, index }) => {
                     const model = filteredModelByKey.get(modelKey);
