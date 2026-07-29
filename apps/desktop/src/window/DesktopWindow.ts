@@ -793,7 +793,10 @@ export const make = Effect.gen(function* () {
         return existing;
       }
 
-      yield* previewManager.getBrowserSession();
+      // No getBrowserSession() here, unlike the main window: that exists to have
+      // the preview partition ready before a <webview> mounts, and a chat-only
+      // pop-out has no preview surface. Creating it eagerly built browser session
+      // infrastructure for a window that never uses it (SOU-476).
       const applicationUrl = buildSessionPopOutUrl({
         isDevelopment: environment.isDevelopment,
         environmentId: input.environmentId,
@@ -819,7 +822,11 @@ export const make = Effect.gen(function* () {
           contextIsolation: true,
           nodeIntegration: false,
           sandbox: true,
-          webviewTag: true,
+          // Deliberately off, unlike the main window. A pop-out is a chat-only
+          // view with no preview panel, so it never mounts a <webview>. Leaving
+          // it enabled let a window that shows only a conversation carry the
+          // machinery for embedding a browser (SOU-476).
+          webviewTag: false,
         },
       });
 
