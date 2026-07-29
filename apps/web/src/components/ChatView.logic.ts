@@ -730,3 +730,31 @@ export function shouldAutoDrainQueuedTurn(input: {
     input.composerReady !== false
   );
 }
+
+/**
+ * A thread's error is either local (an action that failed in this client) or
+ * server-reported (`session.lastError`). Dismissing has to reconcile the two.
+ *
+ * The naive `local ?? server` chain makes the dismiss button a no-op: clearing
+ * the local entry just falls through to the server error, which is still set,
+ * so the banner re-renders identically. Recording *which* server error was
+ * dismissed suppresses that one specifically, and a different error later still
+ * surfaces — dismissing means "I have seen this", not "stop telling me things".
+ */
+export interface LocalThreadErrorState {
+  readonly message: string | null;
+  /** Server error suppressed by an explicit dismiss, if any. */
+  readonly dismissedServerError?: string | null;
+}
+
+export function resolveThreadError(input: {
+  readonly local: LocalThreadErrorState | undefined;
+  readonly serverError: string | null;
+}): string | null {
+  const localMessage = input.local?.message ?? null;
+  if (localMessage !== null) return localMessage;
+  if (input.serverError === null) return null;
+  // Only the exact dismissed error stays hidden.
+  if (input.local?.dismissedServerError === input.serverError) return null;
+  return input.serverError;
+}

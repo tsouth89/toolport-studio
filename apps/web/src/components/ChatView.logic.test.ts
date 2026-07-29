@@ -13,6 +13,7 @@ import {
   MAX_HIDDEN_MOUNTED_PREVIEW_THREADS,
   MAX_HIDDEN_MOUNTED_TERMINAL_THREADS,
   branchMismatchKey,
+  resolveThreadError,
   buildExpiredTerminalContextToastCopy,
   buildThreadTurnInterruptInput,
   createLocalDispatchSnapshot,
@@ -938,5 +939,53 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
         nowMs: startedMs + 45_000,
       }),
     ).toBe(true);
+  });
+});
+
+describe("resolveThreadError", () => {
+  it("prefers a local error over the server one", () => {
+    expect(
+      resolveThreadError({ local: { message: "local boom" }, serverError: "server boom" }),
+    ).toBe("local boom");
+  });
+
+  it("falls back to the server error when there is no local one", () => {
+    expect(resolveThreadError({ local: undefined, serverError: "server boom" })).toBe(
+      "server boom",
+    );
+    expect(resolveThreadError({ local: { message: null }, serverError: "server boom" })).toBe(
+      "server boom",
+    );
+  });
+
+  it("hides a dismissed server error", () => {
+    // The regression: clearing the local entry alone left `local ?? server`
+    // resolving straight back to the server error, so the X did nothing.
+    expect(
+      resolveThreadError({
+        local: { message: null, dismissedServerError: "server boom" },
+        serverError: "server boom",
+      }),
+    ).toBeNull();
+  });
+
+  it("surfaces a different server error after a dismiss", () => {
+    // Dismiss means "I have seen this one", not "stop reporting errors".
+    expect(
+      resolveThreadError({
+        local: { message: null, dismissedServerError: "old boom" },
+        serverError: "new boom",
+      }),
+    ).toBe("new boom");
+  });
+
+  it("returns null when there is nothing to show", () => {
+    expect(resolveThreadError({ local: undefined, serverError: null })).toBeNull();
+    expect(
+      resolveThreadError({
+        local: { message: null, dismissedServerError: "old boom" },
+        serverError: null,
+      }),
+    ).toBeNull();
   });
 });
