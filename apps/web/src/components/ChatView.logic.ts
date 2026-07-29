@@ -437,12 +437,60 @@ export function threadHasStarted(thread: Thread | null | undefined): boolean {
 // "unknown driver -> unlocked" semantics. Callers that want the lock to track
 // a custom instance's underlying driver kind should resolve the instance id
 // upstream and pass the correlated kind.
+/**
+ * Whether a thread is mid-flight, so swapping providers underneath it would
+ * strand state that belongs to the current session.
+ *
+ * A pending approval or user-input request was raised by the running session and
+ * can only be answered there, so a switch would leave the user unable to resolve
+ * it. A live turn has the same problem in a simpler form.
+ */
+export function isThreadBusyForProviderSwitch(input: {
+  readonly thread: Thread | null | undefined;
+  readonly hasPendingApproval: boolean;
+  readonly hasPendingUserInput: boolean;
+}): boolean {
+  if (!input.thread) {
+    return false;
+  }
+  // Pending requests are derived from activities on the client rather than
+  // carried on the thread, so the caller supplies them.
+  if (input.hasPendingApproval || input.hasPendingUserInput) {
+    return true;
+  }
+  const status = input.thread.session?.status ?? null;
+  return status === "running" || status === "starting";
+}
+
+/**
+ * The driver a started thread is pinned to, or null when the user is free to
+ * choose.
+ *
+ * Switching provider mid-thread is supported (SOU-480): the server restarts the
+ * session on the new driver and hands it an envelope describing the state of the
+ * work. So a started thread no longer pins the provider on that basis alone.
+ *
+ * It still pins while a turn is in flight. Swapping the provider out from under
+ * a running turn has no coherent meaning, and pending approvals or user-input
+ * requests belong to the session that raised them, so they would be stranded.
+ */
 export function deriveLockedProvider(input: {
   thread: Thread | null | undefined;
   selectedProvider: string | null;
   threadProvider: string | null;
+  hasPendingApproval?: boolean;
+  hasPendingUserInput?: boolean;
 }): ProviderDriverKind | null {
   if (!threadHasStarted(input.thread)) {
+    return null;
+  }
+  if (
+    !isThreadBusyForProviderSwitch({
+      thread: input.thread,
+      hasPendingApproval: input.hasPendingApproval ?? false,
+      hasPendingUserInput: input.hasPendingUserInput ?? false,
+    })
+  ) {
     return null;
   }
   const sessionProvider = input.thread?.session?.providerName ?? null;

@@ -1921,10 +1921,16 @@ function ChatViewContent(props: ChatViewProps) {
     activeThread?.modelSelection.instanceId ??
     activeProject?.defaultModelSelection?.instanceId ??
     null;
+  // Derived here from the thread's own activities rather than the memoised
+  // pendingApprovals/pendingUserInputs below, which are defined after this and
+  // after lockedProvider's first consumer.
+  const lockedProviderActivities = activeThread?.activities ?? EMPTY_ACTIVITIES;
   const lockedProvider = deriveLockedProvider({
     thread: activeThread,
     selectedProvider: selectedProviderByThreadId,
     threadProvider,
+    hasPendingApproval: derivePendingApprovals(lockedProviderActivities).length > 0,
+    hasPendingUserInput: derivePendingUserInputs(lockedProviderActivities).length > 0,
   });
   // Once a thread selects an environment, never substitute the primary
   // environment's config while the selected environment is still loading.

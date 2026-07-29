@@ -14,6 +14,8 @@ import {
   MAX_HIDDEN_MOUNTED_TERMINAL_THREADS,
   branchMismatchKey,
   resolveThreadError,
+  isThreadBusyForProviderSwitch,
+  deriveLockedProvider,
   buildExpiredTerminalContextToastCopy,
   buildThreadTurnInterruptInput,
   createLocalDispatchSnapshot,
@@ -987,5 +989,109 @@ describe("resolveThreadError", () => {
         serverError: null,
       }),
     ).toBeNull();
+  });
+});
+
+describe("isThreadBusyForProviderSwitch", () => {
+  const idle = { session: { status: "ready" } } as never;
+
+  it("is not busy when the session is idle", () => {
+    expect(
+      isThreadBusyForProviderSwitch({
+        thread: idle,
+        hasPendingApproval: false,
+        hasPendingUserInput: false,
+      }),
+    ).toBe(false);
+  });
+
+  it("is busy while a turn is running or starting", () => {
+    for (const status of ["running", "starting"]) {
+      expect(
+        isThreadBusyForProviderSwitch({
+          thread: { session: { status } } as never,
+          hasPendingApproval: false,
+          hasPendingUserInput: false,
+        }),
+      ).toBe(true);
+    }
+  });
+
+  it("is busy with an outstanding approval or user-input request", () => {
+    // These belong to the session that raised them. Switching provider would
+    // leave the user unable to answer.
+    expect(
+      isThreadBusyForProviderSwitch({
+        thread: idle,
+        hasPendingApproval: true,
+        hasPendingUserInput: false,
+      }),
+    ).toBe(true);
+    expect(
+      isThreadBusyForProviderSwitch({
+        thread: idle,
+        hasPendingApproval: false,
+        hasPendingUserInput: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("is not busy without a thread", () => {
+    expect(
+      isThreadBusyForProviderSwitch({
+        thread: null,
+        hasPendingApproval: true,
+        hasPendingUserInput: true,
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("deriveLockedProvider provider switching", () => {
+  const startedThread = {
+    session: { status: "ready", providerName: "claudeAgent" },
+    messages: [{ role: "user", text: "hi" }],
+    latestTurn: { turnId: "t1", state: "completed", completedAt: "2026-01-01T00:00:00.000Z" },
+  } as never;
+
+  it("leaves a settled started thread unlocked so the provider can change", () => {
+    // SOU-480: a started thread used to pin its driver forever.
+    expect(
+      deriveLockedProvider({
+        thread: startedThread,
+        selectedProvider: null,
+        threadProvider: null,
+        hasPendingApproval: false,
+        hasPendingUserInput: false,
+      }),
+    ).toBeNull();
+  });
+
+  it("locks to the session provider while a turn is in flight", () => {
+    expect(
+      deriveLockedProvider({
+        thread: {
+          session: { status: "running", providerName: "claudeAgent" },
+          messages: [{ role: "user", text: "hi" }],
+          latestTurn: { turnId: "t1", state: "running", completedAt: null },
+        } as never,
+        selectedProvider: null,
+        threadProvider: null,
+        hasPendingApproval: false,
+        hasPendingUserInput: false,
+      }),
+    ).toBe("claudeAgent");
+  });
+
+  it("locks while an approval is outstanding", () => {
+    expect(
+      deriveLockedProvider({
+        thread: startedThread,
+        selectedProvider: null,
+        threadProvider: null,
+        hasPendingApproval: true,
+        hasPendingUserInput: false,
+      }),
+    ).toBe("claudeAgent");
   });
 });
