@@ -1462,6 +1462,58 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("does not report a provider error for a result that lands after Stop", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+      const collector = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          runtimeEvents.push(event);
+        }),
+      ).pipe(Effect.forkChild);
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      const turn = yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "hello",
+        attachments: [],
+      });
+
+      // User pressed Stop: the turn force-settles and turnState is cleared.
+      yield* adapter.interruptTurn(THREAD_ID, turn.turnId);
+
+      // Claude then delivers its result. Stopping early yields a diagnostic with
+      // none of the words isInterruptedResult looks for, so it classifies as
+      // "failed" — but we already settled this turn ourselves and must not raise
+      // a user-facing error for it.
+      harness.query.emit({
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: false,
+        errors: ["[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=tool_use"],
+        stop_reason: "tool_use",
+        session_id: "sdk-session-late-result",
+        uuid: "result-late",
+      } as unknown as SDKMessage);
+
+      yield* Effect.yieldNow;
+      yield* Fiber.interrupt(collector).pipe(Effect.ignore);
+
+      assert.equal(
+        runtimeEvents.some((event) => event.type === "runtime.error"),
+        false,
+      );
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("force-settles the turn on interrupt even when the SDK stream stays open", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

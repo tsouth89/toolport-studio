@@ -2875,8 +2875,29 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     const status = turnStatusFromResult(message);
     const errorMessage = message.subtype === "success" ? undefined : message.errors[0];
 
-    if (status === "failed") {
+    // A result with no live turn is the tail of a turn we already settled —
+    // interruptTurn force-settles and clears turnState before the SDK's result
+    // arrives. completeTurn already guards against double-firing turn.completed
+    // here, but emitRuntimeError ran ahead of it with no such guard, so stopping
+    // a turn surfaced a red banner carrying whatever diagnostic the provider
+    // happened to emit.
+    //
+    // turnStatusFromResult cannot classify these correctly on its own: it infers
+    // interruption by looking for "interrupt"/"aborted" in the provider's error
+    // text, and a stop early in a turn yields text with none of those words
+    // (observed: "[ede_diagnostic] result_type=user last_content_type=n/a
+    // stop_reason=tool_use"), so it reads as a failure. We initiated the stop and
+    // already recorded it; the provider's parting diagnostic is not news.
+    const turnAlreadySettled = context.turnState === undefined;
+
+    if (status === "failed" && !turnAlreadySettled) {
       yield* emitRuntimeError(context, errorMessage ?? "Claude turn failed.");
+    } else if (status === "failed") {
+      yield* Effect.logDebug("Claude result arrived after the turn was already settled", {
+        threadId: context.session.threadId,
+        subtype: message.subtype,
+        ...(errorMessage ? { errorMessage } : {}),
+      });
     }
 
     yield* completeTurn(context, status, errorMessage, message);

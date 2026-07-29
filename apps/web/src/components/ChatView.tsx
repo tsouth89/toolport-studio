@@ -252,6 +252,7 @@ import {
 import {
   MAX_HIDDEN_MOUNTED_TERMINAL_THREADS,
   branchMismatchKey,
+  resolveThreadError,
   buildExpiredTerminalContextToastCopy,
   buildLocalDraftThread,
   buildThreadTurnInterruptInput,
@@ -1199,6 +1200,13 @@ const PersistentThreadTerminalPanel = memo(function PersistentThreadTerminalPane
 type LocalThreadErrorEntry = {
   readonly message: string | null;
   readonly at: number;
+  /**
+   * Server error this entry explicitly dismissed. Clearing `message` alone is
+   * not enough: the resolver falls back to `session.lastError`, which the server
+   * still holds, so the banner would re-render identically and the X would look
+   * broken. See resolveThreadError.
+   */
+  readonly dismissedServerError?: string | null;
 };
 
 function chatActionErrorMessage(error: unknown): string {
@@ -1463,7 +1471,6 @@ function ChatViewContent(props: ChatViewProps) {
   const localDraftError = serverThread
     ? null
     : ((draftId ? localDraftErrorsByDraftId[draftId]?.message : null) ?? null);
-  const localServerError = localServerErrorsByThreadKey[routeThreadKey]?.message ?? null;
   // Draft errors are keyed by draftId while server errors are keyed by thread
   // key, so a pending draft entry must migrate when the server thread loads or
   // a failed send would silently disappear on promotion. When both keys hold
@@ -1516,7 +1523,10 @@ function ChatViewContent(props: ChatViewProps) {
   const isServerThread = serverThread !== null;
   const activeThread = isServerThread ? serverThread : localDraftThread;
   const threadError = isServerThread
-    ? (localServerError ?? serverThread?.session?.lastError ?? null)
+    ? resolveThreadError({
+        local: localServerErrorsByThreadKey[routeThreadKey],
+        serverError: serverThread?.session?.lastError ?? null,
+      })
     : localDraftError;
   const runtimeMode = composerRuntimeMode ?? activeThread?.runtimeMode ?? DEFAULT_RUNTIME_MODE;
   const interactionMode =
@@ -2712,6 +2722,35 @@ function ChatViewContent(props: ChatViewProps) {
     },
     [draftId, routeThreadKey, routeThreadRef, serverThread],
   );
+
+  /**
+   * Dismiss whatever the banner is currently showing.
+   *
+   * Clearing the local message is not sufficient on its own — the resolver falls
+   * back to `session.lastError`, which the server keeps until the next turn — so
+   * record the exact server error being dismissed. A different error later still
+   * surfaces.
+   */
+  const dismissThreadError = useCallback(() => {
+    const serverError = serverThread?.session?.lastError ?? null;
+    if (serverThread && serverThread.id === routeThreadRef.threadId) {
+      setLocalServerErrorsByThreadKey((existing) => ({
+        ...existing,
+        [routeThreadKey]: {
+          message: null,
+          at: Date.now(),
+          dismissedServerError: serverError,
+        },
+      }));
+      return;
+    }
+    const localDraftErrorKey = draftId ?? activeThreadIdRef.current;
+    if (!localDraftErrorKey) return;
+    setLocalDraftErrorsByDraftId((existing) => ({
+      ...existing,
+      [localDraftErrorKey]: { message: null, at: Date.now() },
+    }));
+  }, [draftId, routeThreadKey, routeThreadRef, serverThread]);
 
   const focusComposer = useCallback(() => {
     composerRef.current?.focusAtEnd();
@@ -6121,7 +6160,7 @@ function ChatViewContent(props: ChatViewProps) {
 
         <ThreadErrorBanner
           error={threadError}
-          onDismiss={() => setThreadError(activeThread.id, null)}
+          onDismiss={dismissThreadError}
           {...(canRetryLastUserMessage ? { onRetry: onRetryLastUserMessage } : {})}
         />
         {/* Main content area with optional plan sidebar */}
