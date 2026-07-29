@@ -1582,7 +1582,7 @@ describe("ProviderCommandReactor", () => {
     expect(thread?.session?.runtimeMode).toBe("full-access");
   });
 
-  it("rejects provider changes after a thread is already bound to a session provider", async () => {
+  it("hands a bound thread over to the requested driver instead of rejecting", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
 
@@ -1627,34 +1627,25 @@ describe("ProviderCommandReactor", () => {
       }),
     );
 
+    // Wait for the handoff to land rather than for a failure that no longer
+    // occurs.
     await waitFor(async () => {
       const readModel = await harness.readModel();
       const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
-      return (
-        thread?.activities.some((activity) => activity.kind === "provider.turn.start.failed") ??
-        false
-      );
+      return thread?.session?.providerName === "claudeAgent";
     });
 
-    expect(harness.startSession.mock.calls.length).toBe(1);
-    expect(harness.sendTurn.mock.calls.length).toBe(1);
-    expect(harness.stopSession.mock.calls.length).toBe(0);
-
+    // SOU-480: a driver change is a handoff, not an error. The turn no longer
+    // fails, and the thread ends up on the requested driver.
     const readModel = await harness.readModel();
     const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
-    expect(thread?.session?.threadId).toBe("thread-1");
-    expect(thread?.session?.providerName).toBe("codex");
-    expect(thread?.session?.runtimeMode).toBe("approval-required");
     expect(
       thread?.activities.find((activity) => activity.kind === "provider.turn.start.failed"),
-    ).toMatchObject({
-      payload: {
-        detail: expect.stringContaining("cannot switch to 'claudeAgent'"),
-      },
-    });
+    ).toBeUndefined();
+    expect(thread?.session?.providerName).toBe("claudeAgent");
   });
 
-  it("rejects cross-driver provider changes after the existing thread session has stopped", async () => {
+  it("hands over to another driver after the existing thread session has stopped", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
 
@@ -1701,23 +1692,16 @@ describe("ProviderCommandReactor", () => {
     await waitFor(async () => {
       const readModel = await harness.readModel();
       const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
-      return (
-        thread?.activities.some((activity) => activity.kind === "provider.turn.start.failed") ??
-        false
-      );
+      return thread?.session?.providerName === "claudeAgent";
     });
 
-    expect(harness.startSession.mock.calls.length).toBe(0);
-    expect(harness.sendTurn.mock.calls.length).toBe(0);
+    // SOU-480: a stopped session is no obstacle to changing driver. Nothing is
+    // being interrupted, so the turn proceeds on the requested provider.
     const readModel = await harness.readModel();
     const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
     expect(
       thread?.activities.find((activity) => activity.kind === "provider.turn.start.failed"),
-    ).toMatchObject({
-      payload: {
-        detail: expect.stringContaining("cannot switch to 'claudeAgent'"),
-      },
-    });
+    ).toBeUndefined();
   });
 
   it("reacts to thread.turn.interrupt-requested by calling provider interrupt", async () => {

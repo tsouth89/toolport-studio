@@ -204,6 +204,10 @@
     "./providerError": {
       "types": "./src/providerError.ts",
       "import": "./src/providerError.ts"
+    },
+    "./providerHandoff": {
+      "types": "./src/providerHandoff.ts",
+      "import": "./src/providerHandoff.ts"
     }
   },
   "scripts": {

@@ -26,6 +26,13 @@ import * as Stream from "effect/Stream";
 import { makeDrainableWorker } from "@toolport-studio/shared/DrainableWorker";
 
 import { resolveThreadWorkspaceCwd } from "../../checkpointing/Utils.ts";
+import { buildProviderHandoff } from "@toolport-studio/shared/providerHandoff";
+import {
+  resolveProviderSessionContinuity,
+  shouldCarryResumeCursor,
+  shouldSendConversationHistory,
+  type ProviderSessionContinuity,
+} from "../providerSwitch.ts";
 import { increment, orchestrationEventsProcessedTotal } from "../../observability/Metrics.ts";
 import { ProviderAdapterRequestError } from "../../provider/Errors.ts";
 import type { ProviderServiceError } from "../../provider/Errors.ts";
@@ -87,6 +94,28 @@ const HANDLED_TURN_START_KEY_MAX = 10_000;
 const HANDLED_TURN_START_KEY_TTL = Duration.minutes(30);
 const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
 const DEFAULT_THREAD_TITLE = "New thread";
+
+/** First user message in the thread. Establishes what is being attempted. */
+function firstUserMessageText(
+  messages: ReadonlyArray<{ readonly role: string; readonly text: string }>,
+): string | null {
+  return (
+    messages.find((entry) => entry.role === "user" && entry.text.trim().length > 0)?.text ?? null
+  );
+}
+
+/** Most recent user message, used only when the turn itself carries no text. */
+function lastUserMessageText(
+  messages: ReadonlyArray<{ readonly role: string; readonly text: string }>,
+): string | null {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const entry = messages[index];
+    if (entry && entry.role === "user" && entry.text.trim().length > 0) {
+      return entry.text;
+    }
+  }
+  return null;
+}
 
 export function providerErrorLabel(value: string | undefined): string {
   const normalized = value?.trim();
@@ -213,6 +242,13 @@ const make = Effect.gen(function* () {
     );
 
   const threadModelSelections = new Map<string, ModelSelection>();
+  /**
+   * Threads whose session was just restarted onto a different driver, waiting
+   * for the turn that follows to carry the handoff. Set by ensureSessionForThread
+   * and consumed once by the next buildSendTurnRequestForThread, so a handoff is
+   * described to the incoming provider exactly once rather than on every turn.
+   */
+  const pendingProviderHandoffs = new Map<string, { readonly fromDriverKind: string }>();
 
   const appendProviderFailureActivity = (input: {
     readonly threadId: ThreadId;
@@ -526,16 +562,14 @@ const make = Effect.gen(function* () {
       requestedModelSelection !== undefined &&
       requestedModelSelection.instanceId !== currentInstanceId
     ) {
-      if (currentInfo.driverKind !== desiredInfo.driverKind) {
-        return yield* new ProviderAdapterRequestError({
-          provider: preferredProvider,
-          method: "thread.turn.start",
-          detail: `Thread '${threadId}' is bound to driver '${currentInfo.driverKind}' and cannot switch to '${desiredInfo.driverKind}'.`,
-        });
-      }
+      // A driver change is a handoff, not an error (SOU-480). The old rejection
+      // treated provider-private resume state as if it made the switch itself
+      // impossible; it only makes *resuming* impossible. The session restart
+      // below starts clean and the turn carries a handoff envelope instead.
       if (
+        currentInfo.driverKind === desiredInfo.driverKind &&
         currentInfo.continuationIdentity.continuationKey !==
-        desiredInfo.continuationIdentity.continuationKey
+          desiredInfo.continuationIdentity.continuationKey
       ) {
         return yield* new ProviderAdapterRequestError({
           provider: preferredProvider,
@@ -623,9 +657,17 @@ const make = Effect.gen(function* () {
         return existingSessionThreadId;
       }
 
-      const resumeCursor = shouldRestartForModelChange
-        ? undefined
-        : (activeSession?.resumeCursor ?? undefined);
+      const continuity = resolveProviderSessionContinuity({
+        currentDriverKind: currentInfo.driverKind,
+        desiredDriverKind: desiredInfo.driverKind,
+      });
+      // A resume cursor is provider-private, so it never survives a handoff.
+      // Carrying one across drivers either fails outright or silently resumes
+      // the wrong conversation.
+      const resumeCursor =
+        shouldRestartForModelChange || !shouldCarryResumeCursor(continuity)
+          ? undefined
+          : (activeSession?.resumeCursor ?? undefined);
       yield* Effect.logInfo("provider command reactor restarting provider session", {
         threadId,
         existingSessionThreadId,
@@ -656,6 +698,9 @@ const make = Effect.gen(function* () {
         runtimeMode: restartedSession.runtimeMode,
         cwd: restartedSession.cwd,
       });
+      if (continuity.kind === "handoff") {
+        pendingProviderHandoffs.set(threadId, { fromDriverKind: continuity.fromDriverKind });
+      }
       yield* bindSessionToThread(restartedSession);
       return restartedSession.threadId;
     }
@@ -746,14 +791,50 @@ const make = Effect.gen(function* () {
       .filter((summary) => summary.length > 0)
       .slice(-20);
 
+    // Consumed once: the incoming provider is told where the work stands on its
+    // first turn, not on every subsequent one.
+    const handoff = pendingProviderHandoffs.get(input.threadId);
+    pendingProviderHandoffs.delete(input.threadId);
+    const continuity: ProviderSessionContinuity =
+      handoff === undefined
+        ? { kind: "continue" }
+        : {
+            kind: "handoff",
+            fromDriverKind: handoff.fromDriverKind,
+            toDriverKind: String(activeSession?.provider ?? ""),
+          };
+
+    const handoffEnvelope =
+      handoff === undefined
+        ? null
+        : buildProviderHandoff({
+            previousProviderLabel: providerErrorLabel(handoff.fromDriverKind),
+            firstUserMessage: firstUserMessageText(thread.messages),
+            lastUserMessage: normalizedInput ?? lastUserMessageText(thread.messages),
+            ...(activeSession?.cwd ? { cwd: activeSession.cwd } : {}),
+          });
+
+    // The user's own message goes last so it reads as the current instruction
+    // rather than an afterthought appended to a wall of context.
+    const inputWithHandoff =
+      handoffEnvelope === null
+        ? normalizedInput
+        : normalizedInput
+          ? `${handoffEnvelope}\n\n---\n\n${normalizedInput}`
+          : handoffEnvelope;
+
     return {
       threadId: input.threadId,
-      ...(normalizedInput ? { input: normalizedInput } : {}),
+      ...(inputWithHandoff ? { input: inputWithHandoff } : {}),
       ...(normalizedAttachments.length > 0 ? { attachments: normalizedAttachments } : {}),
       ...(modelForTurn !== undefined ? { modelSelection: modelForTurn } : {}),
       ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
-      ...(conversationHistory.length > 0 ? { conversationHistory } : {}),
-      ...(recentToolSummaries.length > 0 ? { recentToolSummaries } : {}),
+      ...(conversationHistory.length > 0 && shouldSendConversationHistory(continuity)
+        ? { conversationHistory }
+        : {}),
+      ...(recentToolSummaries.length > 0 && shouldSendConversationHistory(continuity)
+        ? { recentToolSummaries }
+        : {}),
     };
   });
 
