@@ -46,6 +46,7 @@ import { RedactedSensitiveText } from "./RedactedSensitiveText";
 import {
   getProviderVersionAdvisoryPresentation,
   PROVIDER_STATUS_STYLES,
+  getProviderRefreshNote,
   getProviderSummary,
   getProviderVersionLabel,
   type ProviderStatusKey,
@@ -409,6 +410,7 @@ export function ProviderInstanceCard({
     ? (liveProvider?.auth.label ?? liveProvider?.auth.type ?? null)
     : null;
   const summary = rawSummary;
+  const refreshNote = getProviderRefreshNote(liveProvider);
   const versionLabel = getProviderVersionLabel(liveProvider?.version);
   const versionAdvisory = getProviderVersionAdvisoryPresentation(liveProvider?.versionAdvisory);
   const updateCommand = versionAdvisory?.updateCommand ?? null;
@@ -592,6 +594,11 @@ export function ProviderInstanceCard({
         </>
       )}
       {summary.detail ? <span>- {summary.detail}</span> : null}
+      {refreshNote ? (
+        // Dimmer than the status itself: the provider is still usable and this
+        // is a note about our last check, not a fault to act on.
+        <span className="text-muted-foreground/60">· {refreshNote}</span>
+      ) : null}
     </p>
   );
 

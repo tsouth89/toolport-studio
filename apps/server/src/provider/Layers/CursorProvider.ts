@@ -1032,6 +1032,9 @@ export const checkCursorProviderStatus = Effect.fn("checkCursorProviderStatus")(
         version: null,
         status: "error",
         auth: { status: "unknown" },
+        // A missing binary is a fact; any other spawn failure is us failing to
+        // look, so it must not overwrite what we last knew.
+        ...(isCommandMissingCause(error) ? {} : { indeterminate: true }),
         message: isCommandMissingCause(error)
           ? buildCursorCliCommandMissingMessage(cursorSettings.binaryPath)
           : "Failed to execute Cursor Agent CLI health check.",
@@ -1050,6 +1053,7 @@ export const checkCursorProviderStatus = Effect.fn("checkCursorProviderStatus")(
         version: null,
         status: "error",
         auth: { status: "unknown" },
+        indeterminate: true,
         message: "Cursor Agent CLI is installed but timed out while running `agent about`.",
       },
     });

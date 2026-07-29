@@ -880,6 +880,9 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
         version: null,
         status: "error",
         auth: { status: "unknown" },
+        // A missing binary is a fact; any other spawn failure is us failing to
+        // look, so it must not overwrite what we last knew.
+        ...(isCommandMissingCause(error) ? {} : { indeterminate: true }),
         message: isCommandMissingCause(error)
           ? "Claude Agent CLI (`claude`) is not installed or not on PATH."
           : "Failed to execute Claude Agent CLI health check.",
@@ -898,6 +901,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
         version: null,
         status: "error",
         auth: { status: "unknown" },
+        indeterminate: true,
         message:
           "Claude Agent CLI is installed but failed to run. Timed out while running command.",
       },

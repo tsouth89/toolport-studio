@@ -50,6 +50,14 @@ export interface ProviderProbeResult {
   readonly status: Exclude<ServerProviderState, "disabled">;
   readonly auth: ServerProviderAuth;
   readonly message?: string;
+  /**
+   * Set when the probe failed to observe state rather than observing a bad
+   * state: a timeout, or a spawn that errored for a reason other than the
+   * binary being absent. Such a result carries no information about the
+   * provider, so it must not be allowed to overwrite what we last knew. See
+   * the `indeterminate` field on `ServerProvider`.
+   */
+  readonly indeterminate?: boolean;
 }
 
 export interface ServerProviderPresentation {
@@ -240,6 +248,7 @@ export function buildServerProvider(input: {
     auth: input.probe.auth,
     checkedAt: input.checkedAt,
     ...(input.probe.message ? { message: input.probe.message } : {}),
+    ...(input.probe.indeterminate ? { indeterminate: true } : {}),
     models: input.models,
     slashCommands: [...(input.slashCommands ?? [])],
     skills: [...(input.skills ?? [])],

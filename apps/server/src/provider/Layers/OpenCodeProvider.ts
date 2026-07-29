@@ -322,6 +322,11 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
         version,
         status: "error",
         auth: { status: "unknown" },
+        // `installed: false` here means the CLI or server could not be found,
+        // which is a fact. Any other failure against something that is present
+        // (a dropped connection, a server that stopped answering) is us failing
+        // to look, so it must not overwrite what we last knew.
+        ...(failure.installed ? { indeterminate: true } : {}),
         message: failure.message,
       },
     });

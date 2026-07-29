@@ -30,6 +30,7 @@ import {
   type ServerProviderUpdateState,
 } from "@toolport-studio/contracts";
 import * as Cause from "effect/Cause";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
 import * as FileSystem from "effect/FileSystem";
@@ -133,6 +134,80 @@ export const mergeProviderSnapshot = (
         ...nextProvider,
         models: mergeProviderModels(nextProvider, previousProvider.models, nextProvider.models),
       };
+
+/**
+ * How many consecutive indeterminate probes are absorbed before the failure is
+ * reported as the provider's status. One, so a single blip is invisible and a
+ * second consecutive miss surfaces.
+ */
+export const INDETERMINATE_TOLERANCE = 1;
+
+/** A snapshot we actually managed to observe, and would rather not lose. */
+const isObservedSnapshot = (provider: ServerProvider): boolean =>
+  provider.status === "ready" || provider.status === "warning";
+
+const withoutTransientFields = (provider: ServerProvider): ServerProvider => {
+  const { indeterminate: _indeterminate, refreshFailure: _refreshFailure, ...rest } = provider;
+  return rest;
+};
+
+/**
+ * Decide what an indeterminate probe result is allowed to do to what we already
+ * knew.
+ *
+ * A timeout says nothing about a provider, but it used to be published as
+ * `status: "error"` — indistinguishable from "not installed". Because
+ * `isProviderInstancePickerReady` requires `status === "ready"`, one 4s blip on
+ * a CLI that normally answers in 200ms made the provider unselectable, and once
+ * the boot cache started restoring last known status that error persisted across
+ * restarts until a probe happened to succeed.
+ *
+ * So an indeterminate result carries the previous snapshot's observed values
+ * forward and records a `refreshFailure` alongside them, up to
+ * {@link INDETERMINATE_TOLERANCE} consecutive times. Past that it is published
+ * as-is: tolerating failures forever would mean a genuinely broken CLI reports
+ * `ready` indefinitely, which is a worse lie than a spurious error.
+ *
+ * Only an *observed* previous snapshot is worth protecting. If the provider was
+ * already failing, there is nothing to preserve and the new result goes straight
+ * through.
+ */
+export const resolveIndeterminateSnapshot = (input: {
+  readonly previous: ServerProvider | undefined;
+  readonly next: ServerProvider;
+  readonly consecutiveFailures: number;
+  readonly now: string;
+}): { readonly provider: ServerProvider; readonly consecutiveFailures: number } => {
+  if (input.next.indeterminate !== true) {
+    // A determinate result is the truth, whatever it says. Clear the streak and
+    // drop any carried-over failure marker.
+    return { provider: withoutTransientFields(input.next), consecutiveFailures: 0 };
+  }
+
+  const consecutiveFailures = input.consecutiveFailures + 1;
+  const previous = input.previous;
+  if (
+    previous === undefined ||
+    !isObservedSnapshot(previous) ||
+    consecutiveFailures > INDETERMINATE_TOLERANCE
+  ) {
+    return { provider: withoutTransientFields(input.next), consecutiveFailures };
+  }
+
+  // The previous snapshot carries its own models, slash commands, and skills,
+  // which is what we want: an indeterminate probe only ever returns the
+  // settings-derived fallback inventory, so those would otherwise regress too.
+  return {
+    provider: {
+      ...withoutTransientFields(previous),
+      refreshFailure: {
+        at: input.now,
+        message: input.next.message ?? "The provider check did not complete.",
+      },
+    },
+    consecutiveFailures,
+  };
+};
 
 export const mergeProviderSnapshots = (
   previousProviders: ReadonlyArray<ServerProvider>,
@@ -292,6 +367,13 @@ export const ProviderRegistryLive = Layer.effect(
     const maintenanceActionStatesRef = yield* Ref.make<
       ReadonlyMap<ProviderInstanceId, { readonly update?: ServerProviderUpdateState | undefined }>
     >(new Map());
+    // Consecutive indeterminate probe results per instance. Reset by any
+    // determinate result, and consulted by `resolveIndeterminateSnapshot` to
+    // decide when a run of failures stops being absorbed. Deliberately not
+    // persisted: a fresh process has not failed to check anything yet.
+    const indeterminateStreaksRef = yield* Ref.make<ReadonlyMap<ProviderInstanceId, number>>(
+      new Map(),
+    );
 
     // Live-source registry — the dynamic counterpart to the boot-time
     // `bootSources`. Keyed by `instanceId`; the stored `ProviderInstance`
@@ -321,7 +403,14 @@ export const ProviderRegistryLive = Layer.effect(
           cacheDir: config.providerStatusCacheDir,
           instanceId: key,
         }).pipe(Effect.provideService(Path.Path, path));
-        yield* writeProviderStatusCache({ filePath, provider }).pipe(
+        // Persist observed values only. `refreshFailure` describes this
+        // process's failure to re-check and would be stale and misleading on the
+        // next boot, and `indeterminate` is a probe input the registry has
+        // already acted on.
+        yield* writeProviderStatusCache({
+          filePath,
+          provider: withoutTransientFields(provider),
+        }).pipe(
           Effect.provideService(FileSystem.FileSystem, fileSystem),
           Effect.provideService(Path.Path, path),
           Effect.tapError(Effect.logError),
@@ -359,6 +448,82 @@ export const ProviderRegistryLive = Layer.effect(
           concurrency: "unbounded",
         },
       );
+
+      // Absorb transient probe failures before they reach `providersRef`.
+      //
+      // Skipped for `replace`, which carries unavailable-driver shadows rather
+      // than probe results. The read-resolve-write across two Refs is not one
+      // atomic step, but the state is per-instance and each instance's
+      // publishes are already serialised by its own refresh semaphore, so two
+      // updates for the same instance cannot interleave here.
+      const resolvedNextProviders = yield* Effect.gen(function* () {
+        if (options?.replace === true) {
+          return nextProvidersWithUpdateState;
+        }
+        const now = DateTime.formatIso(yield* DateTime.now);
+        const previousByKey = new Map(
+          (yield* Ref.get(providersRef)).map(
+            (provider) => [snapshotInstanceKey(provider), provider] as const,
+          ),
+        );
+        const streaks = yield* Ref.get(indeterminateStreaksRef);
+        const nextStreaks = new Map(streaks);
+        const resolved: Array<ServerProvider> = [];
+        const notices: Array<{
+          readonly carried: boolean;
+          readonly key: ProviderInstanceId;
+          readonly driver: ProviderDriverKind;
+          readonly consecutiveFailures: number;
+          readonly message: string | null;
+        }> = [];
+
+        for (const provider of nextProvidersWithUpdateState) {
+          const key = snapshotInstanceKey(provider);
+          const outcome = resolveIndeterminateSnapshot({
+            previous: previousByKey.get(key),
+            next: provider,
+            consecutiveFailures: streaks.get(key) ?? 0,
+            now,
+          });
+          if (outcome.consecutiveFailures === 0) {
+            nextStreaks.delete(key);
+          } else {
+            nextStreaks.set(key, outcome.consecutiveFailures);
+          }
+          if (provider.indeterminate === true) {
+            notices.push({
+              carried: outcome.provider.refreshFailure !== undefined,
+              key,
+              driver: provider.driver,
+              consecutiveFailures: outcome.consecutiveFailures,
+              message: provider.message ?? null,
+            });
+          }
+          resolved.push(outcome.provider);
+        }
+
+        yield* Ref.set(indeterminateStreaksRef, nextStreaks);
+        // Logged rather than silent: an absorbed failure is invisible in the UI
+        // by design, so this is the only record that the probe is struggling.
+        yield* Effect.forEach(
+          notices,
+          (notice) =>
+            Effect.logInfo(
+              notice.carried
+                ? "provider probe was indeterminate, keeping last known status"
+                : "provider probe was indeterminate past tolerance, reporting failure",
+            ).pipe(
+              Effect.annotateLogs({
+                instanceId: notice.key,
+                driver: notice.driver,
+                consecutiveFailures: notice.consecutiveFailures,
+                probeMessage: notice.message,
+              }),
+            ),
+          { discard: true },
+        );
+        return resolved;
+      });
       const [previousProviders, providers, providersToPersist] = yield* Ref.modify(
         providersRef,
         (previousProviders) => {
@@ -367,7 +532,7 @@ export const ProviderRegistryLive = Layer.effect(
           );
           const updatedKeys = new Set<ProviderInstanceId>();
 
-          for (const provider of nextProvidersWithUpdateState) {
+          for (const provider of resolvedNextProviders) {
             const key = snapshotInstanceKey(provider);
             updatedKeys.add(key);
             mergedProviders.set(

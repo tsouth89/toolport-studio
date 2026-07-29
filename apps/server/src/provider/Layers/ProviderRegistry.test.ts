@@ -39,8 +39,10 @@ import * as ProviderEventLoggers from "./ProviderEventLoggers.ts";
 import { ProviderInstanceRegistryHydrationLive } from "./ProviderInstanceRegistryHydration.ts";
 import {
   haveProvidersChanged,
+  INDETERMINATE_TOLERANCE,
   mergeProviderSnapshot,
   mergeProviderSnapshots,
+  resolveIndeterminateSnapshot,
   ProviderRegistryLive,
   selectProvidersByKind,
 } from "./ProviderRegistry.ts";
@@ -518,6 +520,159 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
           assert.strictEqual(yield* Ref.get(killCalls), 1);
         }),
       );
+    });
+
+    describe("resolveIndeterminateSnapshot", () => {
+      const observed = {
+        instanceId: ProviderInstanceId.make("claudeAgent"),
+        driver: ProviderDriverKind.make("claudeAgent"),
+        status: "ready",
+        enabled: true,
+        installed: true,
+        auth: { status: "authenticated" },
+        checkedAt: "2026-04-14T00:00:00.000Z",
+        version: "2.1.220",
+        models: [
+          { slug: "claude-opus-5", name: "Claude Opus 5", isCustom: false, capabilities: null },
+        ],
+        slashCommands: [],
+        skills: [],
+      } as const satisfies ServerProvider;
+
+      /** What a timed-out probe produces: an error that knows nothing. */
+      const timedOut = {
+        ...observed,
+        status: "error",
+        installed: true,
+        version: null,
+        auth: { status: "unknown" },
+        checkedAt: "2026-04-14T00:05:00.000Z",
+        models: [],
+        indeterminate: true,
+        message:
+          "Claude Agent CLI is installed but failed to run. Timed out while running command.",
+      } as const satisfies ServerProvider;
+
+      const now = "2026-04-14T00:05:00.000Z";
+
+      it("keeps the last observed status on a first indeterminate probe", () => {
+        const outcome = resolveIndeterminateSnapshot({
+          previous: observed,
+          next: timedOut,
+          consecutiveFailures: 0,
+          now,
+        });
+
+        // The whole point: a blip must not make the provider unselectable.
+        assert.strictEqual(outcome.provider.status, "ready");
+        assert.strictEqual(outcome.provider.auth.status, "authenticated");
+        assert.strictEqual(outcome.provider.version, "2.1.220");
+        assert.strictEqual(outcome.provider.checkedAt, observed.checkedAt);
+        assert.deepStrictEqual(outcome.provider.models, [...observed.models]);
+        assert.deepStrictEqual(outcome.provider.refreshFailure, {
+          at: now,
+          message: timedOut.message,
+        });
+        assert.strictEqual(outcome.consecutiveFailures, 1);
+      });
+
+      it("reports the failure once the streak passes the tolerance", () => {
+        const outcome = resolveIndeterminateSnapshot({
+          previous: observed,
+          next: timedOut,
+          consecutiveFailures: INDETERMINATE_TOLERANCE,
+          now,
+        });
+
+        // Absorbing forever would let a permanently broken CLI report ready.
+        assert.strictEqual(outcome.provider.status, "error");
+        assert.strictEqual(outcome.provider.message, timedOut.message);
+        assert.strictEqual(outcome.provider.refreshFailure, undefined);
+        assert.strictEqual(outcome.consecutiveFailures, INDETERMINATE_TOLERANCE + 1);
+      });
+
+      it("clears the streak and the marker on any determinate result", () => {
+        const outcome = resolveIndeterminateSnapshot({
+          previous: { ...observed, refreshFailure: { at: now, message: "stale" } },
+          next: { ...observed, checkedAt: "2026-04-14T00:06:00.000Z" },
+          consecutiveFailures: 3,
+          now,
+        });
+
+        assert.strictEqual(outcome.provider.status, "ready");
+        assert.strictEqual(outcome.provider.checkedAt, "2026-04-14T00:06:00.000Z");
+        assert.strictEqual(outcome.provider.refreshFailure, undefined);
+        assert.strictEqual(outcome.consecutiveFailures, 0);
+      });
+
+      it("passes a determinate failure straight through", () => {
+        const notInstalled = {
+          ...observed,
+          status: "error",
+          installed: false,
+          version: null,
+          auth: { status: "unknown" },
+          message: "Claude Agent CLI (`claude`) is not installed or not on PATH.",
+        } as const satisfies ServerProvider;
+
+        const outcome = resolveIndeterminateSnapshot({
+          previous: observed,
+          next: notInstalled,
+          consecutiveFailures: 0,
+          now,
+        });
+
+        // A missing binary is a fact, not a failure to look.
+        assert.strictEqual(outcome.provider.status, "error");
+        assert.strictEqual(outcome.provider.installed, false);
+        assert.strictEqual(outcome.consecutiveFailures, 0);
+      });
+
+      it("does not invent state when nothing was observed before", () => {
+        const outcome = resolveIndeterminateSnapshot({
+          previous: undefined,
+          next: timedOut,
+          consecutiveFailures: 0,
+          now,
+        });
+
+        assert.strictEqual(outcome.provider.status, "error");
+        assert.strictEqual(outcome.provider.refreshFailure, undefined);
+        assert.strictEqual(outcome.consecutiveFailures, 1);
+      });
+
+      it("does not carry forward a previous snapshot that was itself failing", () => {
+        const previouslyUnauthenticated = {
+          ...observed,
+          status: "error",
+          auth: { status: "unauthenticated" },
+          message: "Claude is not authenticated. Run `claude auth login` and try again.",
+        } as const satisfies ServerProvider;
+
+        const outcome = resolveIndeterminateSnapshot({
+          previous: previouslyUnauthenticated,
+          next: timedOut,
+          consecutiveFailures: 0,
+          now,
+        });
+
+        // Nothing good to protect, so the new result wins rather than pinning a
+        // stale "not authenticated" that may no longer be true.
+        assert.strictEqual(outcome.provider.message, timedOut.message);
+        assert.strictEqual(outcome.provider.refreshFailure, undefined);
+      });
+
+      it("never leaks the indeterminate input flag onto a published snapshot", () => {
+        for (const consecutiveFailures of [0, INDETERMINATE_TOLERANCE + 1]) {
+          const outcome = resolveIndeterminateSnapshot({
+            previous: observed,
+            next: timedOut,
+            consecutiveFailures,
+            now,
+          });
+          assert.strictEqual(outcome.provider.indeterminate, undefined);
+        }
+      });
     });
 
     describe("ProviderRegistryLive", () => {
