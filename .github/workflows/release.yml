@@ -126,7 +126,18 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y imagemagick
-          magick -version
+          # Ubuntu 24.04 packages ImageMagick 6, which provides `convert` but no
+          # `magick` binary. Assert on the pair the build script actually tries,
+          # in its order, rather than on `magick` alone: verifying only the v7
+          # name fails on a working v6 install with a bare "command not found".
+          if command -v magick >/dev/null 2>&1; then
+            magick -version
+          elif command -v convert >/dev/null 2>&1; then
+            convert -version
+          else
+            echo "Neither magick nor convert is on PATH after installing imagemagick." >&2
+            exit 1
+          fi
 
       - name: Resolve output directory
         id: paths
