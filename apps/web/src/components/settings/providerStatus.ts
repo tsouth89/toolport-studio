@@ -1,5 +1,7 @@
 import type { ServerProvider, ServerProviderVersionAdvisory } from "@toolport-studio/contracts";
 
+import { formatRelativeTimeLabel } from "~/timestampFormat";
+
 /**
  * Visual treatment for each server-reported provider status. Centralized so
  * the default-driver card and per-instance cards share the same language.
@@ -79,6 +81,27 @@ export function getProviderSummary(provider: ServerProvider | undefined) {
     headline: "Available",
     detail: provider.message ?? "Installed and ready, but authentication could not be verified.",
   };
+}
+
+/**
+ * A short note for a provider whose displayed state is carried over because the
+ * last probe could not confirm it.
+ *
+ * Deliberately quiet. The status shown is the last thing we actually observed
+ * and the provider is still usable, so this reads as "not re-checked" rather
+ * than as a fault — a single timeout should not look like a broken install. The
+ * reason the probe gave is deliberately not repeated here: at this point it is
+ * always a timeout or a spawn hiccup, and the raw text ("Timed out while
+ * running command") reads as an error when the provider is in fact fine.
+ *
+ * Returns null for a snapshot whose values were freshly observed.
+ */
+export function getProviderRefreshNote(provider: ServerProvider | undefined): string | null {
+  if (!provider?.refreshFailure) return null;
+  const checkedLabel = formatRelativeTimeLabel(provider.checkedAt);
+  return checkedLabel
+    ? `Couldn't re-check just now — showing status from ${checkedLabel}.`
+    : "Couldn't re-check just now — showing the last known status.";
 }
 
 /**

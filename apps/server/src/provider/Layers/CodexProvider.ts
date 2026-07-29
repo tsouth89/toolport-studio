@@ -562,6 +562,9 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
         version: null,
         status: "error",
         auth: { status: "unknown" },
+        // A missing binary is a fact; a probe that threw against an installed
+        // CLI is us failing to look, so it must not overwrite what we knew.
+        ...(installed ? { indeterminate: true } : {}),
         message: installed
           ? `Codex app-server provider probe failed: ${error.message}.`
           : "Codex CLI (`codex`) is not installed or not on PATH.",
@@ -581,6 +584,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
         version: null,
         status: "error",
         auth: { status: "unknown" },
+        indeterminate: true,
         message: "Timed out while checking Codex app-server provider status.",
       },
     });

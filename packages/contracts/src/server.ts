@@ -154,6 +154,22 @@ export const ServerProviderUpdateState = Schema.Struct({
 });
 export type ServerProviderUpdateState = typeof ServerProviderUpdateState.Type;
 
+/**
+ * Recorded when the most recent probe could not determine a provider's state
+ * (it timed out, or the spawn itself failed) and the snapshot's `status`,
+ * `auth`, and `version` are therefore carried over from the last successful
+ * check rather than freshly observed. `checkedAt` still refers to that earlier
+ * successful check, so the pair says "this is what we last knew, and here is
+ * when we stopped being able to confirm it".
+ *
+ * Absent on a snapshot whose values were actually observed.
+ */
+export const ServerProviderRefreshFailure = Schema.Struct({
+  at: IsoDateTime,
+  message: TrimmedNonEmptyString,
+});
+export type ServerProviderRefreshFailure = typeof ServerProviderRefreshFailure.Type;
+
 export const ServerProvider = Schema.Struct({
   // Routing key for the configured instance this snapshot represents. This
   // is the only stable identity consumers may use for provider routing.
@@ -183,6 +199,21 @@ export const ServerProvider = Schema.Struct({
   // Human-readable reason populated when `availability === "unavailable"`.
   // Surfaces in the UI alongside the missing-driver affordance.
   unavailableReason: Schema.optional(TrimmedNonEmptyString),
+  /**
+   * Set by the probe when it could not determine state, rather than
+   * determining a bad one. A timeout means "unknown", not "broken", and the
+   * two must not collapse: `installed: false` from a missing binary is a fact,
+   * while a 4s timeout on a CLI that normally answers in 200ms is a failure to
+   * observe. The registry consumes this to decide whether a result may
+   * downgrade a known-good snapshot, and does not republish it.
+   */
+  indeterminate: Schema.optional(Schema.Boolean),
+  /**
+   * Present when `status`/`auth`/`version` are carried over from an earlier
+   * check because the latest probe was indeterminate. See
+   * {@link ServerProviderRefreshFailure}.
+   */
+  refreshFailure: Schema.optional(ServerProviderRefreshFailure),
   models: Schema.Array(ServerProviderModel),
   slashCommands: Schema.Array(ServerProviderSlashCommand).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),

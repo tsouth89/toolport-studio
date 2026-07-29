@@ -353,6 +353,9 @@ export const checkGrokProviderStatus = Effect.fn("checkGrokProviderStatus")(func
         version: null,
         status: "error",
         auth: { status: "unknown" },
+        // A missing binary is a fact; any other spawn failure is us failing to
+        // look, so it must not overwrite what we last knew.
+        ...(isCommandMissingCause(error) ? {} : { indeterminate: true }),
         message: isCommandMissingCause(error)
           ? "Grok CLI (`grok`) is not installed or not on PATH."
           : "Failed to execute Grok CLI health check.",
@@ -371,6 +374,7 @@ export const checkGrokProviderStatus = Effect.fn("checkGrokProviderStatus")(func
         version: null,
         status: "error",
         auth: { status: "unknown" },
+        indeterminate: true,
         message: "Grok CLI is installed but timed out while running `grok --version`.",
       },
     });
