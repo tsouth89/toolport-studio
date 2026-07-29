@@ -323,8 +323,44 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     );
   });
 
-  it("unpacks the fff shared library for filesystem and FFI access", () => {
-    assert.deepStrictEqual(DESKTOP_ASAR_UNPACK, ["node_modules/@ff-labs/fff-bin-*/**/*"]);
+  it("unpacks every externalized package, on both the direct and .pnpm paths", () => {
+    // Must mirror externalPackagePrefixes in apps/server/vite.config.ts. An
+    // external that is not unpacked still resolves on the Windows primary (which
+    // reads the asar) and fails only under WSL, so a gap here is invisible until
+    // someone runs the WSL backend. `@ff-labs/fff-node` and `ffi-rs` are JS
+    // wrappers, not binaries, and were exactly that gap in the first draft.
+    for (const pkg of [
+      "node-pty",
+      "ffi-rs",
+      "node-addon-api",
+      "@yuuang/ffi-rs-*",
+      "@ff-labs/*",
+      "@clerk/electron-passkeys*",
+      "@msgpackr-extract/*",
+      "@effect/platform-bun",
+      "@effect/sql-sqlite-bun",
+    ]) {
+      assert.ok(
+        DESKTOP_ASAR_UNPACK.some((entry) => entry === `node_modules/${pkg}/**/*`),
+        `missing direct unpack entry for ${pkg}`,
+      );
+      assert.ok(
+        DESKTOP_ASAR_UNPACK.some(
+          (entry) => entry === `node_modules/.pnpm/**/node_modules/${pkg}/**/*`,
+        ),
+        `missing .pnpm unpack entry for ${pkg}`,
+      );
+    }
+  });
+
+  it("never unpacks node_modules wholesale", () => {
+    // SOU-467: a blanket glob wrote 22,155 loose files at install for 29 native
+    // ones. NSIS install time tracks file count, so this is the regression guard.
+    for (const entry of DESKTOP_ASAR_UNPACK) {
+      assert.notEqual(entry, "**/node_modules/**");
+      assert.notEqual(entry, "node_modules/**");
+      assert.notEqual(entry, "node_modules/**/*");
+    }
   });
 
   it.effect("preserves both Linux icon resize failures with structural context", () => {
