@@ -34,6 +34,25 @@ export function getRowBottom(state: TimelineListMeasurementState, index: number)
   return top + Math.max(1, height);
 }
 
+/**
+ * LegendList resolves a scrollToEnd target through `state.positions[index] || 0`,
+ * so a last row whose position has not been computed yet resolves to offset 0 —
+ * the top of the thread — instead of the end. Positions are filled lazily and the
+ * fill loop breaks a few rows past the visible area, so only virtualized (long)
+ * threads reach that state, and only in the frames right after a row is appended.
+ * The library's own readiness gate for this only arms when `anchoredEndSpace` is
+ * set, which the timeline does not use.
+ */
+export function isTimelineEndPositionKnown(state: TimelineListMeasurementState): boolean {
+  const lastIndex = state.data.length - 1;
+  if (lastIndex < 0) {
+    return false;
+  }
+
+  const lastTop = state.positionAtIndex(lastIndex);
+  return typeof lastTop === "number" && Number.isFinite(lastTop);
+}
+
 export function getAnchoredTurnMetrics({
   state,
   anchorIndex,

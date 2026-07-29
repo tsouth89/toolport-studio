@@ -93,7 +93,11 @@ import {
   isPendingRequestTimeoutWarningMessage,
 } from "../session-logic";
 import { type LegendListRef } from "@legendapp/list/react";
-import { getAnchoredTurnMetrics, type TimelineScrollMode } from "./chat/timelineScrollAnchoring";
+import {
+  getAnchoredTurnMetrics,
+  isTimelineEndPositionKnown,
+  type TimelineScrollMode,
+} from "./chat/timelineScrollAnchoring";
 import {
   buildPendingUserInputAnswers,
   derivePendingUserInputProgress,
@@ -462,6 +466,8 @@ function formatOutgoingPrompt(params: {
 }
 const SCRIPT_TERMINAL_COLS = 120;
 const SCRIPT_TERMINAL_ROWS = 30;
+/** Frames to wait for an appended timeline row to get a real position before giving up. */
+const TIMELINE_END_SCROLL_MAX_FRAMES = 12;
 
 type ChatViewProps =
   | {
@@ -3667,6 +3673,7 @@ function ChatViewContent(props: ChatViewProps) {
     readonly userScrollGeneration: number;
   } | null>(null);
   const anchorScrollRestoreFrameRef = useRef<number | null>(null);
+  const endScrollFrameRef = useRef<number | null>(null);
   const cancelTimelineLiveFollowForUserNavigation = useCallback(() => {
     anchorUserScrollGenerationRef.current += 1;
     timelineScrollModeRef.current = "free-scrolling";
@@ -3679,6 +3686,11 @@ function ChatViewContent(props: ChatViewProps) {
     if (anchorScrollRestoreFrameRef.current !== null) {
       cancelAnimationFrame(anchorScrollRestoreFrameRef.current);
       anchorScrollRestoreFrameRef.current = null;
+    }
+    // A queued end-scroll would fight the gesture that just opted out of live-follow.
+    if (endScrollFrameRef.current !== null) {
+      cancelAnimationFrame(endScrollFrameRef.current);
+      endScrollFrameRef.current = null;
     }
   }, []);
   const cancelTimelineLiveFollowForUserNavigationRef = useRef(
@@ -3706,18 +3718,58 @@ function ChatViewContent(props: ChatViewProps) {
     },
     [composerOverlayHeight],
   );
+  // Never hand LegendList a scrollToEnd it cannot resolve: an appended row with no
+  // computed position makes it target offset 0, which reads as "thrown to the top of
+  // the thread for the whole response". Wait for the position instead, and if it never
+  // arrives leave the scroll alone — maintainScrollAtEnd still pins us, and staying
+  // put is always better than jumping to the oldest message.
+  const cancelPendingTimelineEndScroll = useCallback(() => {
+    if (endScrollFrameRef.current !== null) {
+      cancelAnimationFrame(endScrollFrameRef.current);
+      endScrollFrameRef.current = null;
+    }
+  }, []);
+  const requestTimelineScrollToEnd = useCallback(
+    (animated: boolean) => {
+      cancelPendingTimelineEndScroll();
+      const attempt = (remainingAttempts: number) => {
+        const list = legendListRef.current;
+        if (!list) {
+          return;
+        }
+        if (isTimelineEndPositionKnown(list.getState())) {
+          void list.scrollToEnd?.({ animated });
+          return;
+        }
+        if (remainingAttempts <= 0) {
+          return;
+        }
+        endScrollFrameRef.current = requestAnimationFrame(() => {
+          endScrollFrameRef.current = null;
+          attempt(remainingAttempts - 1);
+        });
+      };
+      attempt(TIMELINE_END_SCROLL_MAX_FRAMES);
+    },
+    [cancelPendingTimelineEndScroll],
+  );
+  useEffect(() => cancelPendingTimelineEndScroll, [cancelPendingTimelineEndScroll]);
+
   // Live-follow stays active after send/thread-open until an actual list scroll
   // gesture opts out.
-  const scrollToEnd = useCallback((animated = false) => {
-    isAtEndRef.current = true;
-    timelineScrollModeRef.current = "following-end";
-    liveFollowUserScrollGenerationRef.current = anchorUserScrollGenerationRef.current;
-    pendingTimelineAnchorRef.current = null;
-    activeTimelineAnchorIndexRef.current = null;
-    showScrollDebouncer.current.cancel();
-    setShowScrollToBottom(false);
-    void legendListRef.current?.scrollToEnd?.({ animated });
-  }, []);
+  const scrollToEnd = useCallback(
+    (animated = false) => {
+      isAtEndRef.current = true;
+      timelineScrollModeRef.current = "following-end";
+      liveFollowUserScrollGenerationRef.current = anchorUserScrollGenerationRef.current;
+      pendingTimelineAnchorRef.current = null;
+      activeTimelineAnchorIndexRef.current = null;
+      showScrollDebouncer.current.cancel();
+      setShowScrollToBottom(false);
+      requestTimelineScrollToEnd(animated);
+    },
+    [requestTimelineScrollToEnd],
+  );
   useEffect(() => {
     let removeListeners: (() => void) | null = null;
     const frame = requestAnimationFrame(() => {
@@ -3909,9 +3961,9 @@ function ChatViewContent(props: ChatViewProps) {
         if (timelineScrollModeRef.current !== "following-end") {
           return;
         }
-        // Always pin to end while following. Skipping when overflow metrics are
-        // not ready left scroll at 0 while rows grew (jump to oldest messages).
-        void list.scrollToEnd?.({ animated: false });
+        // Pin to end while following, but only once the appended row has a real
+        // position — see requestTimelineScrollToEnd.
+        requestTimelineScrollToEnd(false);
       });
     });
 
@@ -3921,7 +3973,7 @@ function ChatViewContent(props: ChatViewProps) {
         cancelAnimationFrame(secondFrame);
       }
     };
-  }, [activeThread?.id, timelineEntries, getActiveTimelineTurnMetrics]);
+  }, [activeThread?.id, timelineEntries, getActiveTimelineTurnMetrics, requestTimelineScrollToEnd]);
 
   useEffect(() => {
     setPullRequestDialogState(null);

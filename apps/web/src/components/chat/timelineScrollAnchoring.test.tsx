@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vite-plus/test";
-import { getAnchoredTurnMetrics, getRowBottom } from "./timelineScrollAnchoring";
+import {
+  getAnchoredTurnMetrics,
+  getRowBottom,
+  isTimelineEndPositionKnown,
+} from "./timelineScrollAnchoring";
 
 function buildState({
   positions,
@@ -134,5 +138,39 @@ describe("timeline scroll anchoring", () => {
 
     expect(withoutComposer?.overflowsUsableViewport).toBe(false);
     expect(withComposer?.overflowsUsableViewport).toBe(true);
+  });
+
+  describe("end position readiness", () => {
+    function buildEndState(positions: readonly (number | undefined)[], rowCount: number) {
+      return {
+        data: Array.from({ length: rowCount }, (_, index) => index),
+        scroll: 0,
+        scrollLength: 700,
+        positionAtIndex: (index: number) => positions[index],
+        sizeAtIndex: () => 80,
+      };
+    }
+
+    it("reports ready when the last row has a computed position", () => {
+      expect(isTimelineEndPositionKnown(buildEndState([0, 120, 240], 3))).toBe(true);
+    });
+
+    it("reports not ready for a row appended before positions are filled in", () => {
+      // The streaming row exists in data but LegendList has not positioned it yet;
+      // scrolling now would resolve to offset 0 and jump to the top of the thread.
+      expect(isTimelineEndPositionKnown(buildEndState([0, 120, 240], 4))).toBe(false);
+    });
+
+    it("reports not ready when the last position is not finite", () => {
+      expect(isTimelineEndPositionKnown(buildEndState([0, 120, Number.NaN], 3))).toBe(false);
+    });
+
+    it("reports not ready for an empty timeline", () => {
+      expect(isTimelineEndPositionKnown(buildEndState([], 0))).toBe(false);
+    });
+
+    it("treats a genuine zero position as ready", () => {
+      expect(isTimelineEndPositionKnown(buildEndState([0], 1))).toBe(true);
+    });
   });
 });
