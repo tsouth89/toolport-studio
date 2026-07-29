@@ -4,6 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
@@ -27,6 +28,7 @@ import * as PlatformError from "effect/PlatformError";
 import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import { deepMerge } from "@toolport-studio/shared/Struct";
+import { HostProcessPlatform } from "@toolport-studio/shared/hostProcess";
 import { createModelCapabilities } from "@toolport-studio/shared/model";
 import { applyServerSettingsPatch } from "@toolport-studio/shared/serverSettings";
 
@@ -136,6 +138,26 @@ function mockHandle(result: { stdout: string; stderr: string; code: number }) {
   });
 }
 
+/**
+ * Pin the host platform for command resolution.
+ *
+ * `HostProcessPlatform` is a `Context.Reference` that defaults to the live
+ * `process.platform`, and `resolveSpawnCommand` branches on it: on win32 it
+ * resolves the binary through PATH + PATHEXT and, when that lands on a `.cmd`
+ * or `.bat` shim, switches to shell mode and escapes every argument for
+ * cmd.exe. So on a Windows host with the provider CLIs installed, a spawn these
+ * tests expect to see as `--version` arrives as `^"--version^"`, and the
+ * handlers below throw `Unexpected args`.
+ *
+ * That made the suite depend on both the developer's OS and whether they happen
+ * to have `claude.cmd` on PATH — green on Linux CI, 18 failures on a Windows
+ * machine with Claude Code installed. Pinning to linux short-circuits
+ * `resolveSpawnCommand` before any of that, so these tests exercise provider
+ * status logic on every host. The Windows escaping itself is covered by
+ * `packages/shared/src/shell.test.ts`, which pins the platform the same way.
+ */
+const hostPlatformLayer = Layer.succeed(HostProcessPlatform, "linux");
+
 function mockSpawnerLayer(
   handler: (args: ReadonlyArray<string>) => {
     stdout: string;
@@ -143,12 +165,15 @@ function mockSpawnerLayer(
     code: number;
   },
 ) {
-  return Layer.succeed(
-    ChildProcessSpawner.ChildProcessSpawner,
-    ChildProcessSpawner.make((command) => {
-      const cmd = command as unknown as { args: ReadonlyArray<string> };
-      return Effect.succeed(mockHandle(handler(cmd.args)));
-    }),
+  return Layer.merge(
+    hostPlatformLayer,
+    Layer.succeed(
+      ChildProcessSpawner.ChildProcessSpawner,
+      ChildProcessSpawner.make((command) => {
+        const cmd = command as unknown as { args: ReadonlyArray<string> };
+        return Effect.succeed(mockHandle(handler(cmd.args)));
+      }),
+    ),
   );
 }
 
@@ -163,18 +188,21 @@ function recordingMockSpawnerLayer(
     readonly args: ReadonlyArray<string>;
     readonly env: NodeJS.ProcessEnv | undefined;
   }> = [];
-  const layer = Layer.succeed(
-    ChildProcessSpawner.ChildProcessSpawner,
-    ChildProcessSpawner.make((command) => {
-      const cmd = command as unknown as {
-        args: ReadonlyArray<string>;
-        options?: {
-          readonly env?: NodeJS.ProcessEnv;
+  const layer = Layer.merge(
+    hostPlatformLayer,
+    Layer.succeed(
+      ChildProcessSpawner.ChildProcessSpawner,
+      ChildProcessSpawner.make((command) => {
+        const cmd = command as unknown as {
+          args: ReadonlyArray<string>;
+          options?: {
+            readonly env?: NodeJS.ProcessEnv;
+          };
         };
-      };
-      commands.push({ args: cmd.args, env: cmd.options?.env });
-      return Effect.succeed(mockHandle(handler(cmd.args)));
-    }),
+        commands.push({ args: cmd.args, env: cmd.options?.env });
+        return Effect.succeed(mockHandle(handler(cmd.args)));
+      }),
+    ),
   );
   return { layer, commands };
 }
@@ -185,15 +213,18 @@ function mockCommandSpawnerLayer(
     args: ReadonlyArray<string>,
   ) => { stdout: string; stderr: string; code: number },
 ) {
-  return Layer.succeed(
-    ChildProcessSpawner.ChildProcessSpawner,
-    ChildProcessSpawner.make((command) => {
-      const cmd = command as unknown as {
-        command: string;
-        args: ReadonlyArray<string>;
-      };
-      return Effect.succeed(mockHandle(handler(cmd.command, cmd.args)));
-    }),
+  return Layer.merge(
+    hostPlatformLayer,
+    Layer.succeed(
+      ChildProcessSpawner.ChildProcessSpawner,
+      ChildProcessSpawner.make((command) => {
+        const cmd = command as unknown as {
+          command: string;
+          args: ReadonlyArray<string>;
+        };
+        return Effect.succeed(mockHandle(handler(cmd.command, cmd.args)));
+      }),
+    ),
   );
 }
 
@@ -2140,6 +2171,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
         });
 
         return Effect.gen(function* () {
+          const path = yield* Path.Path;
           const status = yield* checkClaudeProviderStatus(
             {
               ...defaultClaudeSettings,
@@ -2148,9 +2180,14 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             claudeCapabilities(),
           );
           assert.strictEqual(status.status, "ready");
+          // `resolveClaudeHomePath` resolves the configured path to absolute, so
+          // the POSIX literal above arrives as `C:\tmp\...` on Windows. Compare
+          // against the platform's own resolution rather than the raw literal:
+          // the point of the test is that `homePath` reaches the probe as
+          // `CLAUDE_CONFIG_DIR`, not that the string passes through untouched.
           assert.deepStrictEqual(
             recorded.commands.map((command) => command.env?.CLAUDE_CONFIG_DIR),
-            [claudeConfigDir],
+            [path.resolve(claudeConfigDir)],
           );
         }).pipe(Effect.provide(recorded.layer));
       });
