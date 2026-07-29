@@ -33,6 +33,18 @@ export interface ProviderHandoffInput {
   readonly diffStat?: string | null;
   /** Files touched during the thread, from per-turn checkpoints. */
   readonly filesInPlay?: readonly string[] | null;
+  /**
+   * Tail of the conversation, oldest first, text only.
+   *
+   * Without this the incoming provider knows what was *asked* but not what was
+   * *answered*. For coding work the diff covers that gap, since the answer is
+   * visible in the tree. For an informational turn there is no diff and the
+   * reply itself was the entire result, so omitting it makes the handoff
+   * useless exactly where state-based context has nothing to say.
+   */
+  readonly recentExchange?:
+    | readonly { readonly role: "user" | "assistant"; readonly text: string }[]
+    | null;
 }
 
 export interface ProviderHandoffLimits {
@@ -40,6 +52,8 @@ export interface ProviderHandoffLimits {
   readonly maxDiffStatChars: number;
   readonly maxFilesInPlay: number;
   readonly maxTotalChars: number;
+  readonly maxExchangeTurns: number;
+  readonly maxExchangeCharsPerTurn: number;
 }
 
 export const DEFAULT_PROVIDER_HANDOFF_LIMITS: ProviderHandoffLimits = {
@@ -47,6 +61,8 @@ export const DEFAULT_PROVIDER_HANDOFF_LIMITS: ProviderHandoffLimits = {
   maxDiffStatChars: 2_000,
   maxFilesInPlay: 40,
   maxTotalChars: 8_000,
+  maxExchangeTurns: 6,
+  maxExchangeCharsPerTurn: 1_200,
 };
 
 function truncate(value: string, limit: number): string {
@@ -107,9 +123,14 @@ export function buildProviderHandoff(
 ): string {
   const sections: string[] = [];
 
+  // Wording matters more than it looks. The first version said "you do not have
+  // its history", and the incoming provider quoted that back as its reason for
+  // redoing work it had just been handed. Say what is present, not what is
+  // missing, and tell it to use what it has.
   sections.push(
-    `You are taking over a conversation that was being handled by ${input.previousProviderLabel}. ` +
-      `You do not have its history. What follows is the current state of the work, not a transcript.`,
+    `You are continuing a conversation that ${input.previousProviderLabel} was handling. ` +
+      `Below is the state of the work and how the conversation ended. ` +
+      `Treat it as your own context and carry on from it rather than starting over.`,
   );
 
   const first = nonEmpty(input.firstUserMessage);
@@ -143,6 +164,20 @@ export function buildProviderHandoff(
     const list = files.map((file) => `- ${file}`).join("\n");
     const suffix = omitted > 0 ? `\n- ...and ${omitted} more` : "";
     sections.push(`## Files touched so far\n\n${list}${suffix}`);
+  }
+
+  const exchange = (input.recentExchange ?? [])
+    .filter((entry) => entry.text.trim().length > 0)
+    .slice(-limits.maxExchangeTurns);
+  if (exchange.length > 0) {
+    const rendered = exchange
+      .map(
+        (entry) =>
+          `**${entry.role === "user" ? "User" : "Previous assistant"}:** ` +
+          truncate(entry.text, limits.maxExchangeCharsPerTurn),
+      )
+      .join("\n\n");
+    sections.push(`## How the conversation ended\n\n${rendered}`);
   }
 
   sections.push(

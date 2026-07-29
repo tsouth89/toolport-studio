@@ -869,6 +869,11 @@ const make = Effect.gen(function* () {
             firstUserMessage: firstUserMessageText(thread.messages),
             lastUserMessage: normalizedInput ?? lastUserMessageText(thread.messages),
             ...(activeSession?.cwd ? { cwd: activeSession.cwd } : {}),
+            // The tail of the conversation, so the incoming provider knows what
+            // was answered and not only what was asked. conversationHistory is
+            // already user/assistant text with tool payloads stripped, which is
+            // exactly the shape wanted here; the envelope caps it.
+            recentExchange: conversationHistory,
           });
 
     // The user's own message goes last so it reads as the current instruction
