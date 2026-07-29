@@ -116,6 +116,18 @@ jobs:
       - name: Setup pnpm for packaging
         run: npm install --global pnpm@11.10.0
 
+      # The Linux icon pipeline resizes the desktop PNG with `magick`, falling
+      # back to `convert`. ubuntu-24.04 runners ship neither, so the very first
+      # matrix run failed with `spawn magick ENOENT` before electron-builder was
+      # even reached. macOS uses `sips`, which is built in, and Windows uses a
+      # prebuilt .ico, so only Linux needs this.
+      - name: Install ImageMagick for Linux icon resizing
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y imagemagick
+          magick -version
+
       - name: Resolve output directory
         id: paths
         shell: bash
