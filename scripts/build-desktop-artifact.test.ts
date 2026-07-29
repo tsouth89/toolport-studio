@@ -86,7 +86,12 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
   });
 
   it("switches desktop packaging product names to nightly for nightly builds", () => {
-    assert.equal(resolveDesktopProductName("0.0.17"), "Toolport Studio (Alpha)");
+    // Only nightly carries a channel suffix. The release channel lives in the
+    // version, not the installed app name, so moving alpha -> beta -> stable
+    // does not rename the install directory or Start Menu entry each time.
+    assert.equal(resolveDesktopProductName("0.0.17"), "Toolport Studio");
+    assert.equal(resolveDesktopProductName("0.1.0-beta.1"), "Toolport Studio");
+    assert.equal(resolveDesktopProductName("0.1.0-alpha.22"), "Toolport Studio");
     assert.equal(
       resolveDesktopProductName("0.0.17-nightly.20260413.42"),
       "Toolport Studio (Nightly)",

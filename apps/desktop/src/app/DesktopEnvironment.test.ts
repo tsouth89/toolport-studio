@@ -35,6 +35,24 @@ const makeEnvironment = (
   DesktopEnvironment.DesktopEnvironment.pipe(Effect.provide(makeEnvironmentLayer(overrides, env)));
 
 describe("DesktopEnvironment", () => {
+  it.effect("derives the stage label from the version, not a pinned channel", () =>
+    Effect.gen(function* () {
+      // The window title and About panel read from displayName. Pinning this to
+      // "Alpha" meant cutting a beta still shipped an app calling itself Alpha.
+      const beta = yield* makeEnvironment({ appVersion: "0.1.0-beta.1", isPackaged: true });
+      assert.equal(beta.displayName, "Toolport Studio (Beta)");
+
+      const alpha = yield* makeEnvironment({ appVersion: "0.1.0-alpha.22", isPackaged: true });
+      assert.equal(alpha.displayName, "Toolport Studio (Alpha)");
+
+      const nightly = yield* makeEnvironment({
+        appVersion: "0.1.0-nightly.20260413.42",
+        isPackaged: true,
+      });
+      assert.equal(nightly.displayName, "Toolport Studio (Nightly)");
+    }),
+  );
+
   it.effect("derives state paths and development identity inside Effect", () =>
     Effect.gen(function* () {
       const environment = yield* makeEnvironment(

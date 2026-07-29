@@ -85,8 +85,15 @@ function resolveDesktopAppStageLabel(input: {
   if (input.isDevelopment) {
     return "Dev";
   }
+  if (isNightlyDesktopVersion(input.appVersion)) {
+    return "Nightly";
+  }
 
-  return isNightlyDesktopVersion(input.appVersion) ? "Nightly" : "Alpha";
+  // Derived from the version rather than pinned, so cutting a beta does not
+  // leave the window title and About panel still reading "Alpha". Anything
+  // without a recognised prerelease tag falls back to Alpha, which is the
+  // conservative answer while there is no stable channel yet.
+  return /-beta\./.test(input.appVersion) ? "Beta" : "Alpha";
 }
 
 function resolveDesktopAppBranding(input: {
