@@ -24,6 +24,13 @@ import { mergeGitStatusParts } from "@toolport-studio/shared/git";
 
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
 
+/**
+ * Wake cadence when automatic fetching is disabled (configured interval zero).
+ * The loop skips the actual refresh in that case, so this only decides how
+ * often it re-checks the setting — it is not the polling cadence, and is
+ * deliberately left alone. The real interval is
+ * DEFAULT_AUTOMATIC_GIT_FETCH_INTERVAL in contracts/settings.
+ */
 const DEFAULT_VCS_STATUS_REFRESH_INTERVAL = Duration.seconds(30);
 const VCS_STATUS_REFRESH_FAILURE_BASE_DELAY = Duration.seconds(30);
 const VCS_STATUS_REFRESH_FAILURE_MAX_DELAY = Duration.minutes(15);
