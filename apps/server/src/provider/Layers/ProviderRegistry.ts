@@ -581,10 +581,23 @@ export const ProviderRegistryLive = Layer.effect(
         // or HTTP server construction path.
         yield* Effect.forEach(
           newlyAdded,
-          ([, instance]) =>
+          ([instanceId, instance]) =>
             Effect.gen(function* () {
               const source = buildSnapshotSource(instance);
               const provider = yield* source.getSnapshot;
+              // A snapshot still identical to the one read at boot means
+              // this instance's probe has not produced a result yet, so
+              // we are holding the driver's pre-probe placeholder. It
+              // carries strictly less information than a hydrated cache
+              // entry, and `mergeProviderSnapshot` is next-wins, so
+              // upserting it would replace the on-disk `status`/`auth`/
+              // `version` with "has not been checked in this session
+              // yet" and strand the picker on that warning for the whole
+              // probe. Leave `providersRef` alone — the subscription
+              // attached above delivers the real result when it lands.
+              if (Equal.equals(fallbackByInstance.get(instanceId), provider)) {
+                return;
+              }
               yield* correlateSnapshotWithSource(source, provider).pipe(
                 Effect.flatMap(syncProvider),
               );
@@ -646,10 +659,32 @@ export const ProviderRegistryLive = Layer.effect(
     // Seed `providersRef` with the boot-time fallback snapshots so
     // consumers calling `getProviders` immediately after layer build see
     // a populated list — even before the first `syncLiveSources` refresh
-    // resolves. Cached snapshots (already in `providersRef`) merge with
-    // these via `upsertProviders` so on-disk state wins where present
-    // and pending fallbacks fill the gaps.
-    yield* upsertProviders(fallbackProviders, { publish: false });
+    // resolves.
+    //
+    // Seed only the instances hydration did not already cover.
+    // `upsertProviders` merges through `mergeProviderSnapshot`, which is
+    // next-wins on every field except `models`, so re-seeding a hydrated
+    // instance overwrites its on-disk `status`/`auth`/`version` with the
+    // driver's pre-probe placeholder ("has not been checked in this
+    // session yet") and strands the picker on that warning for the whole
+    // probe. Nothing is lost by skipping them: `hydrateCachedProvider`
+    // builds each hydrated entry by spreading this same fallback
+    // snapshot, so presentation, models, and enablement are already
+    // carried over with the cached status layered on top.
+    //
+    // `persist: false` — these are pre-probe placeholders. Writing them
+    // back would destroy a good cache entry if the process exits before
+    // the first probe resolves.
+    const hydratedInstanceIds = new Set((yield* Ref.get(providersRef)).map(snapshotInstanceKey));
+    const unhydratedFallbackProviders = fallbackProviders.filter(
+      (provider) => !hydratedInstanceIds.has(snapshotInstanceKey(provider)),
+    );
+    if (unhydratedFallbackProviders.length > 0) {
+      yield* upsertProviders(unhydratedFallbackProviders, {
+        publish: false,
+        persist: false,
+      });
+    }
     // Subscribe to registry mutations BEFORE running the initial sync.
     // `subscribeChanges` acquires the dequeue synchronously in this
     // fibre; the subscription is active the instant this `yield*`
