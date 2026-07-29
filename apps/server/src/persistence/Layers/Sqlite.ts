@@ -6,6 +6,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import type { SqlError } from "effect/unstable/sql/SqlError";
 
 import { runMigrations } from "../Migrations.ts";
+import { vacuumIfWorthwhile } from "../databaseMaintenance.ts";
 import { ServerConfig } from "../../config.ts";
 
 type RuntimeSqliteLayerConfig = {
@@ -36,6 +37,10 @@ const setup = Layer.effectDiscard(
     yield* sql`PRAGMA journal_mode = WAL;`;
     yield* sql`PRAGMA foreign_keys = ON;`;
     yield* runMigrations();
+    // After migrations, so a backfill that frees a lot of pages (035) can have
+    // that space reclaimed in the same boot rather than a later one. Also has
+    // to be outside any migration transaction — VACUUM cannot run in one.
+    yield* vacuumIfWorthwhile();
   }),
 );
 
