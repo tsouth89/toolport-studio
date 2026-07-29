@@ -6,12 +6,12 @@ on:
       version:
         description: Prerelease version without the v prefix
         required: true
-        default: 0.1.0-alpha.6
+        default: 0.1.0-beta.1
         type: string
       release_notes:
         description: Short release summary
         required: true
-        default: Grok reliability, projectless conversations, and smoother folder handoff.
+        default: Summarise what changed in this build.
         type: string
 
 permissions:
@@ -51,8 +51,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ inputs.version }}
         run: |
-          if ($env:VERSION -notmatch '^\d+\.\d+\.\d+-alpha\.\d+$') {
-            throw "Expected an alpha version such as 0.1.0-alpha.4; got '$env:VERSION'."
+          # Any supported prerelease channel, not just alpha. Pinning this to
+          # alpha meant the first beta failed validation after the version had
+          # already been bumped and pushed.
+          if ($env:VERSION -notmatch '^\d+\.\d+\.\d+-(alpha|beta|rc)\.\d+$' -and
+              $env:VERSION -notmatch '^\d+\.\d+\.\d+-nightly\.\d{8}\.\d+$') {
+            throw "Expected a prerelease version such as 0.1.0-beta.1, 0.1.0-alpha.4, or 0.1.0-nightly.20260413.42; got '$env:VERSION'."
           }
 
           $tag = "v$env:VERSION"
