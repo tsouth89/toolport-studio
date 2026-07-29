@@ -36,5 +36,5 @@
     "tailwindcss": "^4.0.0",
     "vite-plus": "catalog:"
   },
-  "productName": "Toolport Studio (Alpha)"
+  "productName": "Toolport Studio"
 }
