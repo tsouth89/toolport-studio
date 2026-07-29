@@ -380,7 +380,21 @@ export const ObservabilitySettings = Schema.Struct({
 });
 export type ObservabilitySettings = typeof ObservabilitySettings.Type;
 
-export const DEFAULT_AUTOMATIC_GIT_FETCH_INTERVAL = Duration.seconds(30);
+/**
+ * Drives the per-cwd remote status poller (fetch, ahead/behind, PR lookup).
+ *
+ * At 30s this was an ~18% duty cycle per open repo: traces measured
+ * refreshRemoteStatus at 5382ms average and 9507ms worst case, so the server
+ * spent 5+ seconds shelling out to git and gh every half minute, forever, per
+ * repo. 530 subprocess spawns in 12.8 minutes.
+ *
+ * Nothing here is latency-sensitive: ahead/behind counts and PR state do not
+ * change on a 30-second cadence, and local status (dirty files, branch changes)
+ * refreshes on its own path, so the UI stays responsive to the user's own work
+ * regardless of this value. Users who want tighter remote polling can still set
+ * automaticGitFetchInterval.
+ */
+export const DEFAULT_AUTOMATIC_GIT_FETCH_INTERVAL = Duration.minutes(5);
 
 export const ServerSettings = Schema.Struct({
   enableAssistantStreaming: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
