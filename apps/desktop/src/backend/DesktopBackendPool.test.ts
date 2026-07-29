@@ -74,7 +74,7 @@ function makePoolLayer(
           createOrFocusSessionPopOut: () => Effect.die("unexpected session pop-out"),
           activate: Effect.die("unexpected window activate"),
           createMainIfBackendReady: Effect.die("unexpected window create"),
-          showConnectingSplash: Effect.void,
+          showConnectingSplash: () => Effect.void,
           handleBackendReady: () => Effect.void,
           handleBackendNotReady: Effect.void,
           flushMainWindowBounds: Effect.void,

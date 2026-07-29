@@ -207,13 +207,15 @@ const bootstrap = Effect.gen(function* () {
   yield* logBootstrapInfo("bootstrap ipc handlers registered");
 
   if (!(yield* Ref.get(state.quitting))) {
-    // In wsl-only mode the renderer is served by the WSL backend, which can be
-    // slow to cold-boot — show a "Connecting to WSL" splash immediately so the
-    // app feels responsive instead of presenting no window until WSL is ready.
-    // (Dual mode opens fast off the Windows primary, so no splash there.)
-    if (settings.wslOnly === true && settings.wslBackendEnabled === true) {
-      yield* desktopWindow.showConnectingSplash;
-    }
+    // Show a splash immediately, whatever the backend mode. This used to be
+    // wsl-only on the assumption that "dual mode opens fast off the Windows
+    // primary" — launch traces disprove that: waitForHttpReady measured 10103ms,
+    // and the main window is not created until it resolves, so the user got a
+    // blank screen for ten seconds (SOU-463).
+    const isWslOnly = settings.wslOnly === true && settings.wslBackendEnabled === true;
+    yield* desktopWindow.showConnectingSplash(
+      isWslOnly ? "Connecting to WSL…" : "Starting Toolport Studio…",
+    );
     yield* primaryBackend.start;
     const backendStartRequestedMs = markColdStart(ColdStartMark.backendStartRequested);
     yield* logBootstrapInfo("bootstrap backend start requested", {
