@@ -290,6 +290,47 @@ const make = Effect.gen(function* () {
       ),
     );
 
+  /**
+   * Record a provider handoff in the transcript.
+   *
+   * Without this the thread simply changes voice partway through with nothing
+   * to explain it, which is baffling on a re-read and leaves the user with
+   * nothing to point at when answer quality shifts. It also makes the feature
+   * debuggable: the switch is visible rather than inferred.
+   */
+  const appendProviderHandoffActivity = (input: {
+    readonly threadId: ThreadId;
+    readonly fromDriverKind: string;
+    readonly toDriverKind: string;
+    readonly turnId: TurnId | null;
+    readonly createdAt: string;
+  }) =>
+    Effect.all({
+      commandId: serverCommandId("provider-handoff-activity"),
+      eventId: serverEventId(),
+    }).pipe(
+      Effect.flatMap(({ commandId, eventId }) =>
+        orchestrationEngine.dispatch({
+          type: "thread.activity.append",
+          commandId,
+          threadId: input.threadId,
+          activity: {
+            id: eventId,
+            tone: "info",
+            kind: "provider.handoff",
+            summary: `Switched provider from ${providerErrorLabel(input.fromDriverKind)} to ${providerErrorLabel(input.toDriverKind)}`,
+            payload: {
+              fromDriverKind: input.fromDriverKind,
+              toDriverKind: input.toDriverKind,
+            },
+            turnId: input.turnId,
+            createdAt: input.createdAt,
+          },
+          createdAt: input.createdAt,
+        }),
+      ),
+    );
+
   const formatFailureDetail = (cause: Cause.Cause<unknown>): string => {
     const failReason = cause.reasons.find(Cause.isFailReason);
     const providerError = isProviderAdapterRequestError(failReason?.error)
@@ -700,6 +741,22 @@ const make = Effect.gen(function* () {
       });
       if (continuity.kind === "handoff") {
         pendingProviderHandoffs.set(threadId, { fromDriverKind: continuity.fromDriverKind });
+        yield* appendProviderHandoffActivity({
+          threadId,
+          fromDriverKind: continuity.fromDriverKind,
+          toDriverKind: continuity.toDriverKind,
+          turnId: null,
+          createdAt,
+        }).pipe(
+          // Best effort. A missing transcript marker must never fail the turn
+          // the user actually asked for.
+          Effect.catchCause((cause) =>
+            Effect.logWarning("failed to record provider handoff activity", {
+              threadId,
+              cause: Cause.pretty(cause),
+            }),
+          ),
+        );
       }
       yield* bindSessionToThread(restartedSession);
       return restartedSession.threadId;

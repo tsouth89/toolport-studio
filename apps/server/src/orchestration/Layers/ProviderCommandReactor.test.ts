@@ -1643,6 +1643,15 @@ describe("ProviderCommandReactor", () => {
       thread?.activities.find((activity) => activity.kind === "provider.turn.start.failed"),
     ).toBeUndefined();
     expect(thread?.session?.providerName).toBe("claudeAgent");
+
+    // The switch is recorded, so a reader can see why the voice changed rather
+    // than having to infer it.
+    expect(
+      thread?.activities.find((activity) => activity.kind === "provider.handoff"),
+    ).toMatchObject({
+      tone: "info",
+      payload: { fromDriverKind: "codex", toDriverKind: "claudeAgent" },
+    });
   });
 
   it("hands over to another driver after the existing thread session has stopped", async () => {
