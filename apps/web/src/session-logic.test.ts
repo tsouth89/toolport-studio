@@ -1802,6 +1802,7 @@ describe("deriveWorkLogEntries context window handling", () => {
 describe("isLatestTurnSettled", () => {
   const latestTurn = {
     turnId: TurnId.make("turn-1"),
+    state: "completed",
     requestedAt: "2026-02-27T21:09:58.000Z",
     startedAt: "2026-02-27T21:10:00.000Z",
     completedAt: "2026-02-27T21:10:06.000Z",
@@ -1842,6 +1843,7 @@ describe("isLatestTurnSettled", () => {
       isLatestTurnSettled(
         {
           turnId: TurnId.make("turn-1"),
+          state: "completed",
           requestedAt: "2026-02-27T21:09:58.000Z",
           startedAt: null,
           completedAt: "2026-02-27T21:10:06.000Z",
@@ -1850,11 +1852,35 @@ describe("isLatestTurnSettled", () => {
       ),
     ).toBe(false);
   });
+
+  // Regression (SOU-462 dogfood): a mid-turn checkpoint diff stamps a
+  // placeholder completedAt while the turn is still running. Reading the
+  // timestamp without the state settled the turn at its first checkpoint, so
+  // the Working row vanished while Codex kept streaming.
+  it("keeps a running turn unsettled despite a mid-turn placeholder completedAt", () => {
+    expect(
+      isLatestTurnSettled(
+        {
+          turnId: TurnId.make("turn-1"),
+          state: "running",
+          requestedAt: "2026-02-27T21:09:58.000Z",
+          startedAt: "2026-02-27T21:10:00.000Z",
+          completedAt: "2026-02-27T21:10:06.000Z",
+        },
+        {
+          status: "running",
+          activeTurnId: TurnId.make("turn-1"),
+          updatedAt: "2026-02-27T21:10:06.000Z",
+        },
+      ),
+    ).toBe(false);
+  });
 });
 
 describe("deriveComposerPhase", () => {
   const completedTurn = {
     turnId: TurnId.make("turn-1"),
+    state: "completed",
     requestedAt: "2026-02-27T21:09:58.000Z",
     startedAt: "2026-02-27T21:10:00.000Z",
     completedAt: "2026-02-27T21:10:06.000Z",
@@ -1883,11 +1909,28 @@ describe("deriveComposerPhase", () => {
       ),
     ).toBe("ready");
   });
+
+  // Regression: the sticky-running escape hatch must not fire on a turn that is
+  // genuinely still running. A mid-turn checkpoint placeholder satisfied every
+  // other condition here and downgraded live Codex turns to "ready", which
+  // cleared the Working row while output kept streaming.
+  it("stays running when the turn is still running with a placeholder completedAt", () => {
+    expect(
+      deriveComposerPhase(
+        {
+          status: "running",
+          activeTurnId: TurnId.make("turn-1"),
+        } as never,
+        { ...completedTurn, state: "running" },
+      ),
+    ).toBe("running");
+  });
 });
 
 describe("deriveActiveWorkStartedAt", () => {
   const latestTurn = {
     turnId: TurnId.make("turn-1"),
+    state: "completed",
     requestedAt: "2026-02-27T21:09:58.000Z",
     startedAt: "2026-02-27T21:10:00.000Z",
     completedAt: "2026-02-27T21:10:06.000Z",
@@ -1912,6 +1955,7 @@ describe("deriveActiveWorkStartedAt", () => {
       deriveActiveWorkStartedAt(
         {
           turnId: TurnId.make("turn-1"),
+          state: "running",
           requestedAt: "2026-02-27T21:09:58.000Z",
           startedAt: null,
           completedAt: null,
@@ -1973,6 +2017,7 @@ describe("deriveActiveWorkStartedAt", () => {
       deriveActiveWorkStartedAt(
         {
           turnId: TurnId.make("turn-1"),
+          state: "completed",
           requestedAt: "2026-02-27T21:09:58.000Z",
           startedAt: "2026-02-27T21:10:00.000Z",
           completedAt: "2026-02-27T21:10:06.000Z",
