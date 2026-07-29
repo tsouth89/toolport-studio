@@ -330,10 +330,17 @@ const installWindowsEnvironment = Effect.fn("desktop.shellEnvironment.installWin
   function* (
     config: ShellEnvironmentConfig,
   ): Effect.fn.Return<void, never, ChildProcessSpawner.ChildProcessSpawner> {
-    const noProfile = yield* readWindowsEnvironment(["PATH"], { loadProfile: false });
-    const profile = yield* readWindowsEnvironment(WINDOWS_PROFILE_ENV_NAMES, {
-      loadProfile: true,
-    });
+    // Concurrent, not sequential: these two probes are independent (only their
+    // results are combined below) and each spawns its own PowerShell. Run in
+    // series they were the whole cold start — 2718ms then 2066ms, at offset 0
+    // on the critical path, before anything else in desktop.startup.
+    const [noProfile, profile] = yield* Effect.all(
+      [
+        readWindowsEnvironment(["PATH"], { loadProfile: false }),
+        readWindowsEnvironment(WINDOWS_PROFILE_ENV_NAMES, { loadProfile: true }),
+      ],
+      { concurrency: 2 },
+    );
     const mergedPath = mergePaths("win32", [
       trimNonEmpty(profile.PATH),
       trimNonEmpty(knownWindowsCliDirs(config.env).join(";")),
