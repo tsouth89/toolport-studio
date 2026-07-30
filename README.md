@@ -80,13 +80,19 @@ Toolport Studio does not copy or re-store them.
 Adapters are not equally proven, and it would be misleading to present them as a
 flat list of supported providers.
 
-| Provider   | Coverage                                    |
-| ---------- | ------------------------------------------- |
-| Grok Build | Heavy. The most used path by a wide margin. |
-| Claude     | Light but regular real use.                 |
-| Codex      | Light but regular real use.                 |
-| Cursor     | Light.                                      |
-| OpenCode   | Minimal. Expect the roughest edges here.    |
+| Provider   | Coverage                                                                        |
+| ---------- | ------------------------------------------------------------------------------- |
+| Claude     | Strongest. Inherits T3 Code's test coverage, plus daily use                     |
+| Codex      | Strongest. Same inheritance as Claude                                           |
+| Grok Build | Most hands-on use by a wide margin. Started roughest, so it got the most fixing |
+| Cursor     | Lighter. Works, less driven in anger                                            |
+| OpenCode   | Thinnest. Expect the roughest edges here                                        |
+
+Every adapter runs the same core-loop contract, so a missing behaviour is a test
+failure rather than something discovered in use. Where a provider's test double
+cannot express a case, the contract records a named waiver that prints in test
+output instead of skipping quietly. See
+[`apps/server/src/provider/conformance`](./apps/server/src/provider/conformance).
 
 If you hit something broken on a lightly covered adapter, that is useful and
 worth reporting. It is where the gaps are most likely to be.
