@@ -1,10 +1,22 @@
-# Toolport Studio
+<p align="center">
+  <img src="assets/studio/generated/toolport-studio-mark-128.png" width="76" height="76" alt="" />
+</p>
 
-**One desktop home for Claude, Codex, Cursor, Grok, and the tools around them.**
+<h1 align="center">Toolport Studio</h1>
+
+<p align="center">
+  <strong>One desktop home for Claude, Codex, Cursor, Grok, and the tools around them.</strong>
+</p>
 
 Toolport Studio turns subscription-backed AI coding CLIs into a cohesive desktop
 workspace. Start with a normal conversation, paste screenshots, switch providers
 and models, then attach a folder when the work becomes a project.
+
+![The Toolport Studio composer with the model picker open, showing favorites across Claude, Codex, Cursor, Grok, and OpenCode](docs/images/model-picker.png)
+
+Five providers, one picker. Each row names the CLI behind the model, and the
+composer keeps reasoning effort, permission mode, and build mode next to the
+model itself rather than buried in settings.
 
 The goal is not to create separate "chat" and "coding" products. A conversation
 starts with as little context as you want and grows into a coding workspace when
@@ -30,15 +42,22 @@ subscription access.
 
 ## Install
 
-Windows builds are published on the
+Windows, macOS, and Linux builds are published on the
 [GitHub Releases page](https://github.com/tsouth89/toolport-studio/releases).
 
-Installers are signed with Azure Trusted Signing when published through the
-`Release` workflow. SmartScreen can still warn on first run. The release notes
-list a SHA-256 for the installer, and checking it is the reliable way to confirm
-you have the right file.
+| Platform | Download                        | Signing                                                        |
+| -------- | ------------------------------- | -------------------------------------------------------------- |
+| Windows  | `.exe` installer                | Azure Trusted Signing. SmartScreen can still warn on first run |
+| macOS    | `.dmg`, Apple Silicon and Intel | Developer ID signed and notarized by Apple                     |
+| Linux    | `.AppImage`, x86_64             | Unsigned, which is normal for AppImage                         |
 
-macOS and Linux are not published yet.
+Release notes list a SHA-256 for every installer, and checking it is the reliable
+way to confirm you have the right file.
+
+Passkey sign-in is not available in the macOS build yet. Every other sign-in
+method works. The build ships without the Associated Domains entitlement that
+macOS requires for passkeys, which is what keeps it free of a provisioning
+profile for now.
 
 ## Providers
 
@@ -61,13 +80,19 @@ Toolport Studio does not copy or re-store them.
 Adapters are not equally proven, and it would be misleading to present them as a
 flat list of supported providers.
 
-| Provider   | Coverage                                    |
-| ---------- | ------------------------------------------- |
-| Grok Build | Heavy. The most used path by a wide margin. |
-| Claude     | Light but regular real use.                 |
-| Codex      | Light but regular real use.                 |
-| Cursor     | Light.                                      |
-| OpenCode   | Minimal. Expect the roughest edges here.    |
+| Provider   | Coverage                                                                        |
+| ---------- | ------------------------------------------------------------------------------- |
+| Claude     | Strongest. Inherits T3 Code's test coverage, plus daily use                     |
+| Codex      | Strongest. Same inheritance as Claude                                           |
+| Grok Build | Most hands-on use by a wide margin. Started roughest, so it got the most fixing |
+| Cursor     | Lighter. Works, less driven in anger                                            |
+| OpenCode   | Thinnest. Expect the roughest edges here                                        |
+
+Every adapter runs the same core-loop contract, so a missing behaviour is a test
+failure rather than something discovered in use. Where a provider's test double
+cannot express a case, the contract records a named waiver that prints in test
+output instead of skipping quietly. See
+[`apps/server/src/provider/conformance`](./apps/server/src/provider/conformance).
 
 If you hit something broken on a lightly covered adapter, that is useful and
 worth reporting. It is where the gaps are most likely to be.
@@ -133,7 +158,7 @@ Useful commands:
 ```bash
 pnpm test:desktop-smoke
 pnpm build:desktop
-pnpm dist:desktop:win:x64
+pnpm dist:desktop:win:x64    # or :dmg:arm64, :dmg:x64, :linux
 ```
 
 The workspace publishes under `@toolport-studio/*`. One internal package is still
@@ -142,11 +167,16 @@ way by the root build scripts. That is a leftover from the fork rather than a
 product name, and renaming it touches the installed binary, so it is tracked
 separately.
 
-Publish a signed Windows build (maintainers):
+Publish a release (maintainers):
 
-1. Push a clean commit to `main`.
-2. Run the GitHub Actions **Release** workflow with the next version and a short
+1. Bump the workspace version and push a clean commit to `main`.
+2. Run the GitHub Actions **Release** workflow with that version and a short
    summary.
+
+The workflow builds Windows, macOS (both architectures), and Linux in parallel,
+then publishes once. A platform that fails does not take the others down, but the
+release is refused outright if a required platform produced no installer, so a
+release cannot quietly ship less than its notes claim.
 
 See [the documentation index](./docs/README.md) for architecture, provider, and
 release details. Release process: [docs/operations/release.md](./docs/operations/release.md).
