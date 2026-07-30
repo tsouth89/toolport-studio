@@ -111,7 +111,22 @@ class ScriptedCodexRuntime implements CodexSessionRuntimeShape {
 
   getSession = Effect.sync(() => this.session() as never);
 
-  sendTurn() {
+  /**
+   * Inbound prompt text, in arrival order.
+   *
+   * The only evidence a mid-turn send reached the provider: a steer reuses the
+   * live turn id, so runtime events cannot tell a delivered follow-up from a
+   * dropped one.
+   */
+  public readonly promptsSeen: Array<string> = [];
+
+  sendTurn(input?: { readonly input?: string }) {
+    // Declaring the parameter is the point. This previously took none, so the
+    // fake silently discarded the prompt the adapter passed and delivery could
+    // not be asserted for Codex at all.
+    if (typeof input?.input === "string") {
+      this.promptsSeen.push(input.input);
+    }
     // Models the real runtime's turn/steer path: while a turn is live the new
     // input folds into it and the same turn id comes back. Only an idle
     // session mints a new turn id via turn/start.
@@ -300,8 +315,6 @@ function playScript(
 export const codexConformanceBinding: ConformanceBinding = {
   provider: "codex",
   waivers: {
-    "follow-up-reaches-the-provider":
-      "binding exposes no promptsReceived hook yet; delivery is unasserted for this provider",
     "tool-name-survives-untitled-updates":
       "fake cannot emit an untitled update for an already-named tool",
   },
@@ -373,6 +386,10 @@ export const codexConformanceBinding: ConformanceBinding = {
             });
             yield* playScript(runtime, turnScript, result.turnId);
           }) as never,
+        // Snapshot, not the live array: the case polls this on a schedule, so
+        // handing out the mutable array would let a later push change a result
+        // the runner already read.
+        promptsReceived: Effect.sync(() => [...runtime.promptsSeen]),
         awaitEvent: (predicate, options) =>
           Ref.get(observed).pipe(
             Effect.map((events) => events.find(predicate)),
