@@ -12,11 +12,12 @@ Toolport Studio turns subscription-backed AI coding CLIs into a cohesive desktop
 workspace. Start with a normal conversation, paste screenshots, switch providers
 and models, then attach a folder when the work becomes a project.
 
-![The Toolport Studio composer with the model picker open, showing favorites across Claude, Codex, Cursor, Grok, and OpenCode](docs/images/model-picker.png)
+![Toolport Studio with projects and threads in the sidebar and the model picker open, showing favorites across Claude, Codex, Cursor, Grok, and OpenCode](docs/images/model-picker.png)
 
 Five providers, one picker. Each row names the CLI behind the model, and the
 composer keeps reasoning effort, permission mode, and build mode next to the
-model itself rather than buried in settings.
+model itself rather than buried in settings. Threads group under projects in the
+sidebar, and a thread does not need a project to exist.
 
 The goal is not to create separate "chat" and "coding" products. A conversation
 starts with as little context as you want and grows into a coding workspace when
