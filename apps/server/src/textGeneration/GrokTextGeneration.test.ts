@@ -16,39 +16,30 @@ import { GrokSettings, ProviderInstanceId } from "@toolport-studio/contracts";
 import * as ServerConfig from "../config.ts";
 import * as TextGeneration from "./TextGeneration.ts";
 import { makeGrokTextGeneration } from "./GrokTextGeneration.ts";
+import {
+  ACP_WRAPPER_FAKE_BODY,
+  FAKE_CLI_PRELUDE,
+  withInjectedSpec,
+  writeFakeAcpWrapperSync,
+} from "./testing/fakeProviderCli.ts";
 const decodeGrokSettings = Schema.decodeSync(GrokSettings);
 
 const __dirname = NodePath.dirname(NodeURL.fileURLToPath(import.meta.url));
 const mockAgentPath = NodePath.join(__dirname, "../../scripts/acp-mock-agent.ts");
-
-function shellSingleQuote(value: string): string {
-  return `'${value.replaceAll("'", `'"'"'`)}'`;
-}
 
 const GrokTextGenerationTestLayer = ServerConfig.ServerConfig.layerTest(process.cwd(), {
   prefix: "t3code-grok-text-generation-test-",
 }).pipe(Layer.provideMerge(NodeServices.layer));
 
 function makeAcpGrokWrapper(dir: string, env: Record<string, string>): string {
-  const binDir = NodePath.join(dir, "bin");
-  const grokPath = NodePath.join(binDir, "grok");
-  NodeFS.mkdirSync(binDir, { recursive: true });
-  NodeFS.writeFileSync(
-    grokPath,
-    [
-      "#!/bin/sh",
-      ...Object.entries(env).map(([key, value]) => `export ${key}=${shellSingleQuote(value)}`),
-      'if [ "$1" != "agent" ] || [ "$2" != "stdio" ]; then',
-      '  printf "%s\\n" "unexpected args: $*" >&2',
-      "  exit 11",
-      "fi",
-      `exec ${JSON.stringify(process.execPath)} ${JSON.stringify(mockAgentPath)}`,
-      "",
-    ].join("\n"),
-    "utf8",
-  );
-  NodeFS.chmodSync(grokPath, 0o755);
-  return grokPath;
+  return writeFakeAcpWrapperSync({
+    dir: NodePath.join(dir, "bin"),
+    name: "grok",
+    source: withInjectedSpec(
+      { env, expectedArgs: ["agent", "stdio"], nodePath: process.execPath, mockAgentPath },
+      `${FAKE_CLI_PRELUDE}${ACP_WRAPPER_FAKE_BODY}`,
+    ),
+  });
 }
 
 function withFakeAcpGrok<A, E, R>(
