@@ -353,6 +353,55 @@ jobs:
           pattern: toolport-studio-${{ inputs.version }}-*
           merge-multiple: true
 
+      - name: Verify every required platform produced an installer
+        env:
+          BUILD_RESULT: ${{ needs.build.result }}
+        run: |
+          # Keep REQUIRED and OPTIONAL in sync with the build matrix above.
+          #
+          # A per-platform list rather than "did the build job succeed", because
+          # macOS cannot build until its signing secrets exist and blocking every
+          # release on that would stop Windows and Linux shipping too. Moving a
+          # platform from OPTIONAL to REQUIRED is the one edit needed to start
+          # enforcing it.
+          #
+          # This exists because 0.1.0-beta.2 published Windows-only under release
+          # notes that promised a Linux AppImage: Linux had failed on a missing
+          # build dependency, and publish only checked for a Windows installer.
+          # A release that silently contains less than it claims is worse than a
+          # release that does not happen.
+          declare -A REQUIRED=( [Windows]="*.exe" [Linux]="*.AppImage" )
+          declare -A OPTIONAL=( [macOS]="*.dmg" )
+
+          shopt -s nullglob
+          missing=()
+          for name in "${!REQUIRED[@]}"; do
+            found=(artifacts/${REQUIRED[$name]})
+            if [ ${#found[@]} -eq 0 ]; then
+              missing+=("$name (${REQUIRED[$name]})")
+            else
+              echo "present: $name -> ${found[*]}"
+            fi
+          done
+          for name in "${!OPTIONAL[@]}"; do
+            found=(artifacts/${OPTIONAL[$name]})
+            if [ ${#found[@]} -eq 0 ]; then
+              echo "absent (optional): $name"
+            else
+              echo "present: $name -> ${found[*]}"
+            fi
+          done
+
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "" >&2
+            echo "Refusing to publish: required platform(s) produced no installer:" >&2
+            for entry in "${missing[@]}"; do echo "  - $entry" >&2; done
+            echo "" >&2
+            echo "The build job concluded '$BUILD_RESULT'. Fix the failing platform, or" >&2
+            echo "move it to OPTIONAL in this step if it is knowingly not shipping yet." >&2
+            exit 1
+          fi
+
       - name: Assemble release body
         id: body
         env:
@@ -367,18 +416,6 @@ jobs:
               *.exe|*.dmg|*.AppImage|*.deb|*.rpm) assets+=("$path") ;;
             esac
           done
-          if [ ${#assets[@]} -eq 0 ]; then
-            echo "No installers were produced by any platform." >&2
-            exit 1
-          fi
-
-          # A Windows installer is the one asset every existing user expects, so
-          # its absence fails the release rather than quietly shipping a
-          # macOS-only build under the same tag.
-          if ! ls artifacts/*.exe >/dev/null 2>&1; then
-            echo "No Windows installer present; refusing to publish." >&2
-            exit 1
-          fi
 
           {
             echo "## Toolport Studio $VERSION"
