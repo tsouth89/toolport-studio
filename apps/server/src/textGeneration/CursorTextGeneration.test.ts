@@ -18,40 +18,33 @@ import { CursorSettings, ProviderInstanceId } from "@toolport-studio/contracts";
 
 import * as ServerConfig from "../config.ts";
 import * as TextGeneration from "./TextGeneration.ts";
+import { isHostWindows } from "@toolport-studio/shared/hostProcess";
+
 import { makeCursorTextGeneration } from "./CursorTextGeneration.ts";
+import {
+  ACP_WRAPPER_FAKE_BODY,
+  FAKE_CLI_PRELUDE,
+  withInjectedSpec,
+  writeFakeAcpWrapperSync,
+} from "./testing/fakeProviderCli.ts";
 const decodeCursorSettings = Schema.decodeSync(CursorSettings);
 
 const __dirname = NodePath.dirname(NodeURL.fileURLToPath(import.meta.url));
 const mockAgentPath = NodePath.join(__dirname, "../../scripts/acp-mock-agent.ts");
-
-function shellSingleQuote(value: string): string {
-  return `'${value.replaceAll("'", `'"'"'`)}'`;
-}
 
 const CursorTextGenerationTestLayer = ServerConfig.ServerConfig.layerTest(process.cwd(), {
   prefix: "t3code-cursor-text-generation-test-",
 }).pipe(Layer.provideMerge(NodeServices.layer));
 
 function makeAcpAgentWrapper(dir: string, env: Record<string, string>): string {
-  const binDir = NodePath.join(dir, "bin");
-  const agentPath = NodePath.join(binDir, "agent");
-  NodeFS.mkdirSync(binDir, { recursive: true });
-  NodeFS.writeFileSync(
-    agentPath,
-    [
-      "#!/bin/sh",
-      ...Object.entries(env).map(([key, value]) => `export ${key}=${shellSingleQuote(value)}`),
-      'if [ "$1" != "acp" ]; then',
-      '  printf "%s\\n" "unexpected args: $*" >&2',
-      "  exit 11",
-      "fi",
-      `exec node ${JSON.stringify(mockAgentPath)}`,
-      "",
-    ].join("\n"),
-    "utf8",
-  );
-  NodeFS.chmodSync(agentPath, 0o755);
-  return agentPath;
+  return writeFakeAcpWrapperSync({
+    dir: NodePath.join(dir, "bin"),
+    name: "agent",
+    source: withInjectedSpec(
+      { env, expectedArgs: ["acp"], nodePath: process.execPath, mockAgentPath },
+      `${FAKE_CLI_PRELUDE}${ACP_WRAPPER_FAKE_BODY}`,
+    ),
+  });
 }
 
 function withFakeAcpAgent<A, E, R>(
@@ -84,6 +77,49 @@ function waitForFileContent(path: string): Effect.Effect<string> {
         if ((yield* Clock.currentTimeMillis) >= deadline) {
           return yield* Effect.die(result.cause);
         }
+      }
+      yield* Effect.sleep(25);
+    }
+  });
+}
+
+/**
+ * Asserts the adapter shut its ACP child down, using whichever evidence the
+ * platform can actually produce.
+ *
+ * POSIX reads the agent's own exit record. Windows cannot: `kill("SIGTERM")`
+ * maps to TerminateProcess there, so the agent's `SIGTERM` and `exit` handlers
+ * never run and the exit log is always empty however clean the shutdown was.
+ * Waiting on the pid instead checks the stronger property, that the process is
+ * gone, rather than skipping the case.
+ */
+function expectAcpChildClosed(exitLogPath: string): Effect.Effect<void> {
+  return Effect.gen(function* () {
+    if (!(yield* isHostWindows)) {
+      const exitLog = yield* waitForFileContent(exitLogPath);
+      expect(exitLog).toContain("exit:0");
+      return;
+    }
+
+    const pid = Number.parseInt(yield* waitForFileContent(`${exitLogPath}.pid`), 10);
+    expect(Number.isInteger(pid)).toBe(true);
+
+    const deadline = (yield* Clock.currentTimeMillis) + 5_000;
+    for (;;) {
+      // Signal 0 probes for existence without delivering anything.
+      const alive = yield* Effect.sync(() => {
+        try {
+          process.kill(pid, 0);
+          return true;
+        } catch {
+          return false;
+        }
+      });
+      if (!alive) {
+        return;
+      }
+      if ((yield* Clock.currentTimeMillis) >= deadline) {
+        return yield* Effect.die(`ACP child ${pid} was still running after generation completed`);
       }
       yield* Effect.sleep(25);
     }
@@ -266,8 +302,7 @@ it.layer(CursorTextGenerationTestLayer)("CursorTextGeneration", (it) => {
 
           expect(generated.subject).toBe("Close runtime after generation");
 
-          const exitLog = yield* waitForFileContent(exitLogPath);
-          expect(exitLog).toContain("exit:0");
+          yield* expectAcpChildClosed(exitLogPath);
 
           NodeFS.rmSync(exitLogDir, { recursive: true, force: true });
         }),

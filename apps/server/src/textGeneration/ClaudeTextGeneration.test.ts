@@ -1,3 +1,6 @@
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodePath from "node:path";
+
 import { ClaudeSettings, ProviderInstanceId } from "@toolport-studio/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
@@ -13,57 +16,64 @@ import * as ServerConfig from "../config.ts";
 import * as TextGeneration from "./TextGeneration.ts";
 import { sanitizeThreadTitle } from "./TextGenerationUtils.ts";
 import { makeClaudeTextGeneration } from "./ClaudeTextGeneration.ts";
+import {
+  FAKE_CLI_PRELUDE,
+  withInjectedSpec,
+  writeFakeProviderCli,
+} from "./testing/fakeProviderCli.ts";
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 
 const ClaudeTextGenerationTestLayer = ServerConfig.ServerConfig.layerTest(process.cwd(), {
   prefix: "t3code-claude-text-generation-test-",
 }).pipe(Layer.provideMerge(NodeServices.layer));
 
+/**
+ * Fake `claude` behaviour. Every expectation arrives through the environment the
+ * adapter passes at spawn time, so this body is fixed and needs no spec.
+ * Assertion order and exit codes mirror the shell fake this replaced.
+ */
+const CLAUDE_FAKE_BODY = `
+const stdinContent = readStdin();
+
+const requiredArgs = process.env.TOOLPORT_STUDIO_FAKE_CLAUDE_ARGS_MUST_CONTAIN;
+if (requiredArgs && !argsText.includes(requiredArgs)) {
+  fail("args missing expected content", 2);
+}
+
+const forbiddenArgs = process.env.TOOLPORT_STUDIO_FAKE_CLAUDE_ARGS_MUST_NOT_CONTAIN;
+if (forbiddenArgs && argsText.includes(forbiddenArgs)) {
+  fail("args contained forbidden content", 3);
+}
+
+const requiredStdin = process.env.TOOLPORT_STUDIO_FAKE_CLAUDE_STDIN_MUST_CONTAIN;
+if (requiredStdin && !stdinContent.includes(requiredStdin)) {
+  fail("stdin missing expected content", 4);
+}
+
+const requiredConfigDir = process.env.TOOLPORT_STUDIO_FAKE_CLAUDE_CONFIG_DIR_MUST_BE;
+if (requiredConfigDir && process.env.CLAUDE_CONFIG_DIR !== requiredConfigDir) {
+  fail("CLAUDE_CONFIG_DIR was " + process.env.CLAUDE_CONFIG_DIR, 5);
+}
+
+const stderrText = process.env.TOOLPORT_STUDIO_FAKE_CLAUDE_STDERR;
+if (stderrText) {
+  writeStderr(stderrText + "\\n");
+}
+
+// No trailing newline, matching the shell fake's \`printf "%s"\`.
+writeStdout(process.env.TOOLPORT_STUDIO_FAKE_CLAUDE_OUTPUT ?? "");
+process.exit(Number.parseInt(process.env.TOOLPORT_STUDIO_FAKE_CLAUDE_EXIT_CODE ?? "0", 10) || 0);
+`;
+
 function makeFakeClaudeBinary(dir: string) {
   return Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const binDir = path.join(dir, "bin");
-    const claudePath = path.join(binDir, "claude");
-    yield* fs.makeDirectory(binDir, { recursive: true });
-
-    yield* fs.writeFileString(
-      claudePath,
-      [
-        "#!/bin/sh",
-        'args="$*"',
-        'stdin_content="$(cat)"',
-        'if [ -n "$TOOLPORT_STUDIO_FAKE_CLAUDE_ARGS_MUST_CONTAIN" ]; then',
-        '  printf "%s" "$args" | grep -F -- "$TOOLPORT_STUDIO_FAKE_CLAUDE_ARGS_MUST_CONTAIN" >/dev/null || {',
-        '    printf "%s\\n" "args missing expected content" >&2',
-        "    exit 2",
-        "  }",
-        "fi",
-        'if [ -n "$TOOLPORT_STUDIO_FAKE_CLAUDE_ARGS_MUST_NOT_CONTAIN" ]; then',
-        '  if printf "%s" "$args" | grep -F -- "$TOOLPORT_STUDIO_FAKE_CLAUDE_ARGS_MUST_NOT_CONTAIN" >/dev/null; then',
-        '    printf "%s\\n" "args contained forbidden content" >&2',
-        "    exit 3",
-        "  fi",
-        "fi",
-        'if [ -n "$TOOLPORT_STUDIO_FAKE_CLAUDE_STDIN_MUST_CONTAIN" ]; then',
-        '  printf "%s" "$stdin_content" | grep -F -- "$TOOLPORT_STUDIO_FAKE_CLAUDE_STDIN_MUST_CONTAIN" >/dev/null || {',
-        '    printf "%s\\n" "stdin missing expected content" >&2',
-        "    exit 4",
-        "  }",
-        "fi",
-        'if [ -n "$TOOLPORT_STUDIO_FAKE_CLAUDE_CONFIG_DIR_MUST_BE" ] && [ "$CLAUDE_CONFIG_DIR" != "$TOOLPORT_STUDIO_FAKE_CLAUDE_CONFIG_DIR_MUST_BE" ]; then',
-        '  printf "%s\\n" "CLAUDE_CONFIG_DIR was $CLAUDE_CONFIG_DIR" >&2',
-        "  exit 5",
-        "fi",
-        'if [ -n "$TOOLPORT_STUDIO_FAKE_CLAUDE_STDERR" ]; then',
-        '  printf "%s\\n" "$TOOLPORT_STUDIO_FAKE_CLAUDE_STDERR" >&2',
-        "fi",
-        'printf "%s" "$TOOLPORT_STUDIO_FAKE_CLAUDE_OUTPUT"',
-        'exit "${TOOLPORT_STUDIO_FAKE_CLAUDE_EXIT_CODE:-0}"',
-        "",
-      ].join("\n"),
-    );
-    yield* fs.chmod(claudePath, 0o755);
+    yield* writeFakeProviderCli({
+      dir: binDir,
+      name: "claude",
+      source: withInjectedSpec({}, `${FAKE_CLI_PRELUDE}${CLAUDE_FAKE_BODY}`),
+    });
     return binDir;
   });
 }
@@ -97,7 +107,10 @@ function withFakeClaudeEnv<A, E, R>(
 
     yield* Effect.acquireRelease(
       Effect.sync(() => {
-        process.env.PATH = `${binDir}:${previousPath ?? ""}`;
+        // Windows separates PATH entries with `;`. Hardcoding `:` produced one
+        // malformed entry, so the fake was never found and the real `claude` on
+        // PATH answered instead.
+        process.env.PATH = `${binDir}${NodePath.delimiter}${previousPath ?? ""}`;
         process.env.TOOLPORT_STUDIO_FAKE_CLAUDE_OUTPUT = input.output;
 
         if (input.exitCode !== undefined) {

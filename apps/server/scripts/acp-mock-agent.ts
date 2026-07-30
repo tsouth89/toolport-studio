@@ -133,6 +133,15 @@ process.once("exit", (code) => {
   logExit(`exit:${code}`);
 });
 
+// Windows has no signal delivery: `child.kill("SIGTERM")` maps to
+// TerminateProcess, so neither handler above ever runs and the exit log stays
+// empty no matter how cleanly the adapter shuts the child down. Recording the
+// pid lets tests there assert the stronger property directly, that the process
+// is actually gone.
+if (exitLogPath) {
+  NodeFS.writeFileSync(`${exitLogPath}.pid`, String(process.pid), "utf8");
+}
+
 function configOptions(): ReadonlyArray<AcpSchema.SessionConfigOption> {
   if (parameterizedModelPicker) {
     const baseOptions: Array<AcpSchema.SessionConfigOption> = [
