@@ -20,7 +20,7 @@ import {
   FAKE_CLI_PRELUDE,
   withInjectedSpec,
   writeFakeProviderCli,
-} from "./testing/fakeProviderCli.ts";
+} from "../testing/fakeProviderCli.ts";
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 
 const ClaudeTextGenerationTestLayer = ServerConfig.ServerConfig.layerTest(process.cwd(), {

@@ -6,9 +6,7 @@ import * as NodeFS from "node:fs";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
-import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
-import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import { createModelSelection } from "@toolport-studio/shared/model";
@@ -18,15 +16,14 @@ import { CursorSettings, ProviderInstanceId } from "@toolport-studio/contracts";
 
 import * as ServerConfig from "../config.ts";
 import * as TextGeneration from "./TextGeneration.ts";
-import { isHostWindows } from "@toolport-studio/shared/hostProcess";
-
 import { makeCursorTextGeneration } from "./CursorTextGeneration.ts";
 import {
   ACP_WRAPPER_FAKE_BODY,
+  expectAcpChildClosed,
   FAKE_CLI_PRELUDE,
   withInjectedSpec,
-  writeFakeAcpWrapperSync,
-} from "./testing/fakeProviderCli.ts";
+  writeFakeProviderCliSync,
+} from "../testing/fakeProviderCli.ts";
 const decodeCursorSettings = Schema.decodeSync(CursorSettings);
 
 const __dirname = NodePath.dirname(NodeURL.fileURLToPath(import.meta.url));
@@ -37,7 +34,7 @@ const CursorTextGenerationTestLayer = ServerConfig.ServerConfig.layerTest(proces
 }).pipe(Layer.provideMerge(NodeServices.layer));
 
 function makeAcpAgentWrapper(dir: string, env: Record<string, string>): string {
-  return writeFakeAcpWrapperSync({
+  return writeFakeProviderCliSync({
     dir: NodePath.join(dir, "bin"),
     name: "agent",
     source: withInjectedSpec(
@@ -63,67 +60,6 @@ function withFakeAcpAgent<A, E, R>(
     const textGeneration = yield* makeCursorTextGeneration(config);
     return yield* effectFn(textGeneration);
   }).pipe(Effect.scoped);
-}
-
-function waitForFileContent(path: string): Effect.Effect<string> {
-  return Effect.gen(function* () {
-    const deadline = (yield* Clock.currentTimeMillis) + 5_000;
-    for (;;) {
-      const result = yield* Effect.exit(Effect.sync(() => NodeFS.readFileSync(path, "utf8")));
-      if (Exit.isSuccess(result)) {
-        return result.value;
-      }
-      {
-        if ((yield* Clock.currentTimeMillis) >= deadline) {
-          return yield* Effect.die(result.cause);
-        }
-      }
-      yield* Effect.sleep(25);
-    }
-  });
-}
-
-/**
- * Asserts the adapter shut its ACP child down, using whichever evidence the
- * platform can actually produce.
- *
- * POSIX reads the agent's own exit record. Windows cannot: `kill("SIGTERM")`
- * maps to TerminateProcess there, so the agent's `SIGTERM` and `exit` handlers
- * never run and the exit log is always empty however clean the shutdown was.
- * Waiting on the pid instead checks the stronger property, that the process is
- * gone, rather than skipping the case.
- */
-function expectAcpChildClosed(exitLogPath: string): Effect.Effect<void> {
-  return Effect.gen(function* () {
-    if (!(yield* isHostWindows)) {
-      const exitLog = yield* waitForFileContent(exitLogPath);
-      expect(exitLog).toContain("exit:0");
-      return;
-    }
-
-    const pid = Number.parseInt(yield* waitForFileContent(`${exitLogPath}.pid`), 10);
-    expect(Number.isInteger(pid)).toBe(true);
-
-    const deadline = (yield* Clock.currentTimeMillis) + 5_000;
-    for (;;) {
-      // Signal 0 probes for existence without delivering anything.
-      const alive = yield* Effect.sync(() => {
-        try {
-          process.kill(pid, 0);
-          return true;
-        } catch {
-          return false;
-        }
-      });
-      if (!alive) {
-        return;
-      }
-      if ((yield* Clock.currentTimeMillis) >= deadline) {
-        return yield* Effect.die(`ACP child ${pid} was still running after generation completed`);
-      }
-      yield* Effect.sleep(25);
-    }
-  });
 }
 
 it.layer(CursorTextGenerationTestLayer)("CursorTextGeneration", (it) => {
@@ -302,7 +238,7 @@ it.layer(CursorTextGenerationTestLayer)("CursorTextGeneration", (it) => {
 
           expect(generated.subject).toBe("Close runtime after generation");
 
-          yield* expectAcpChildClosed(exitLogPath);
+          yield* expectAcpChildClosed({ exitLogPath, posixReason: "exit:0" });
 
           NodeFS.rmSync(exitLogDir, { recursive: true, force: true });
         }),
