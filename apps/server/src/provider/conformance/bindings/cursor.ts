@@ -9,6 +9,8 @@
  * between ACP providers is exactly the class of gap this contract exists to
  * catch.
  */
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 
@@ -59,16 +61,21 @@ class CursorConformanceAdapter extends Context.Service<
 
 export const cursorConformanceBinding: ConformanceBinding = {
   provider: "cursor",
-  waivers: {
-    "follow-up-reaches-the-provider":
-      "binding exposes no promptsReceived hook yet; delivery is unasserted for this provider",
-  },
   sendWhileRunning: "steer",
   openSession: (script, options?: ConformanceOpenSessionOptions) =>
     Effect.gen(function* () {
+      // Raw inbound JSON-RPC log, the same seam Grok uses. Both bindings spawn
+      // `acp-mock-agent.ts`, so the agent already honours this env var; only the
+      // reading side was missing here. It is the only way to prove a mid-turn
+      // follow-up reached the agent rather than being dropped in the adapter.
+      const requestLogPath = NodePath.join(
+        NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-conformance-cursor-")),
+        "requests.log",
+      );
       const environment: NodeJS.ProcessEnv = {
         ...process.env,
         ...scriptToAcpEnv(script),
+        TOOLPORT_STUDIO_ACP_REQUEST_LOG_PATH: requestLogPath,
       };
 
       const layer = Layer.effect(
@@ -123,6 +130,14 @@ export const cursorConformanceBinding: ConformanceBinding = {
           adapter
             .sendTurn({ threadId: THREAD_ID, input: text, attachments: [] })
             .pipe(Effect.forkScoped, Effect.asVoid) as never,
+        promptsReceived: Effect.sync(() => {
+          if (!NodeFS.existsSync(requestLogPath)) {
+            return [];
+          }
+          return NodeFS.readFileSync(requestLogPath, "utf8")
+            .split("\n")
+            .filter((line) => line.includes("session/prompt"));
+        }),
         awaitEvent: (predicate, options) =>
           Ref.get(observed).pipe(
             Effect.map((events) => events.find(predicate)),

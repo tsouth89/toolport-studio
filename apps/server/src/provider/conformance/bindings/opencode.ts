@@ -234,7 +234,15 @@ function playScript(events: PushableEvents, script: ConformanceScript, seq: numb
   }
 }
 
-function makeRuntimeDouble(events: PushableEvents): OpenCodeRuntimeShape {
+function makeRuntimeDouble(
+  events: PushableEvents,
+  /**
+   * Inbound prompt text, in arrival order. The only evidence a mid-turn send
+   * reached the provider: a steer reuses the live turn id, so runtime events
+   * cannot tell a delivered follow-up from a dropped one.
+   */
+  promptsSeen: Array<string>,
+): OpenCodeRuntimeShape {
   const unusedInventory = (operation: string) =>
     Effect.fail(
       new OpenCodeRuntimeError({
@@ -269,7 +277,18 @@ function makeRuntimeDouble(events: PushableEvents): OpenCodeRuntimeShape {
               properties: { sessionID: SESSION_ID, status: { type: "idle" } },
             });
           },
-          promptAsync: async () => {},
+          // Declaring the parameter is the point: this previously took none, so
+          // the text the adapter sent was discarded and delivery could not be
+          // asserted for OpenCode. The adapter passes it as
+          // `parts: [{ type: "text", text }]`.
+          promptAsync: async (input?: { readonly parts?: ReadonlyArray<unknown> }) => {
+            for (const part of input?.parts ?? []) {
+              const text = (part as { text?: unknown } | undefined)?.text;
+              if (typeof text === "string") {
+                promptsSeen.push(text);
+              }
+            }
+          },
           messages: async () => ({ data: [] }),
           revert: async () => {},
         },
@@ -289,8 +308,6 @@ function makeRuntimeDouble(events: PushableEvents): OpenCodeRuntimeShape {
 export const openCodeConformanceBinding: ConformanceBinding = {
   provider: "opencode",
   waivers: {
-    "follow-up-reaches-the-provider":
-      "binding exposes no promptsReceived hook yet; delivery is unasserted for this provider",
     "tool-name-survives-untitled-updates":
       "fake cannot emit an untitled update for an already-named tool",
   },
@@ -298,12 +315,13 @@ export const openCodeConformanceBinding: ConformanceBinding = {
   openSession: (script, options?: ConformanceOpenSessionOptions) =>
     Effect.gen(function* () {
       const events = new PushableEvents();
+      const promptsSeen: Array<string> = [];
 
       const layer = Layer.effect(
         OpenCodeConformanceAdapter,
         makeOpenCodeAdapter(openCodeSettings),
       ).pipe(
-        Layer.provideMerge(Layer.succeed(OpenCodeRuntime, makeRuntimeDouble(events))),
+        Layer.provideMerge(Layer.succeed(OpenCodeRuntime, makeRuntimeDouble(events, promptsSeen))),
         Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
         Layer.provideMerge(ServerSettingsService.layerTest()),
         Layer.provideMerge(providerSessionDirectoryTestLayer),
@@ -363,6 +381,10 @@ export const openCodeConformanceBinding: ConformanceBinding = {
             turnSeq += 1;
             playScript(events, turnScript, turnSeq);
           }) as never,
+        // Snapshot, not the live array: the runner polls this on a schedule, so
+        // handing out the mutable array would let a later push change a result
+        // it already read.
+        promptsReceived: Effect.sync(() => [...promptsSeen]),
         awaitEvent: (predicate, options) =>
           Ref.get(observed).pipe(
             Effect.map((current) => current.find(predicate)),
