@@ -24,6 +24,12 @@ import {
   resolveCursorAcpBaseModelId,
   resolveCursorAcpConfigUpdates,
 } from "./CursorProvider.ts";
+import {
+  expectAcpChildClosed,
+  FAKE_CLI_PRELUDE,
+  withInjectedSpec,
+  writeFakeProviderCli,
+} from "../../testing/fakeProviderCli.ts";
 
 const runNode = <A, E>(
   effect: Effect.Effect<
@@ -63,51 +69,47 @@ function booleanDescriptor(id: string, label: string, currentValue?: boolean) {
   };
 }
 
-const makeMockAgentWrapper = Effect.fn("makeMockAgentWrapper")(function* (
-  extraEnv?: Record<string, string>,
-) {
-  const fileSystem = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  const mockAgentPath = yield* resolveMockAgentPath();
-  const dir = yield* fileSystem.makeTempDirectory({
-    directory: NodeOS.tmpdir(),
-    prefix: "cursor-provider-mock-",
-  });
-  const wrapperPath = path.join(dir, "fake-agent.sh");
-  const mockAgentCommand = ["node", mockAgentPath].map((arg) => JSON.stringify(arg)).join(" ");
-  const envExports = Object.entries(extraEnv ?? {})
-    .map(([key, value]) => `export ${key}=${JSON.stringify(value)}`)
-    .join("\n");
-  const script = `#!/bin/sh
-${envExports}
-exec ${mockAgentCommand} "$@"
-`;
-  yield* fileSystem.writeFileString(wrapperPath, script);
-  yield* fileSystem.chmod(wrapperPath, 0o755);
-  return wrapperPath;
-});
+/**
+ * Fake `cursor-agent` that forwards to the ACP mock agent, optionally answering
+ * `about` itself so the version probe has something to parse.
+ */
+const CURSOR_AGENT_FAKE_BODY = `
+if (SPEC.answerAbout && args[0] === "about") {
+  writeStdout("CLI Version         2026.04.09-f2b0fcd\\n");
+  writeStdout("User Email          cursor@example.com\\n");
+  process.exit(0);
+}
 
-const makeMockAgentWithAboutWrapper = Effect.fn("makeMockAgentWithAboutWrapper")(function* () {
+for (const [key, value] of Object.entries(SPEC.env)) {
+  process.env[key] = value;
+}
+
+require(SPEC.mockAgentPath);
+`;
+
+const makeCursorAgentFake = Effect.fn("makeCursorAgentFake")(function* (input: {
+  readonly prefix: string;
+  readonly answerAbout?: boolean;
+  readonly extraEnv?: Record<string, string>;
+}) {
   const fileSystem = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
   const mockAgentPath = yield* resolveMockAgentPath();
   const dir = yield* fileSystem.makeTempDirectory({
     directory: NodeOS.tmpdir(),
-    prefix: "cursor-provider-about-mock-",
+    prefix: input.prefix,
   });
-  const wrapperPath = path.join(dir, "fake-agent.sh");
-  const mockAgentCommand = ["node", mockAgentPath].map((arg) => JSON.stringify(arg)).join(" ");
-  const script = `#!/bin/sh
-if [ "$1" = "about" ]; then
-  printf 'CLI Version         2026.04.09-f2b0fcd\\n'
-  printf 'User Email          cursor@example.com\\n'
-  exit 0
-fi
-exec ${mockAgentCommand} "$@"
-`;
-  yield* fileSystem.writeFileString(wrapperPath, script);
-  yield* fileSystem.chmod(wrapperPath, 0o755);
-  return wrapperPath;
+  return yield* writeFakeProviderCli({
+    dir,
+    name: "cursor-agent",
+    source: withInjectedSpec(
+      {
+        mockAgentPath,
+        answerAbout: input.answerAbout ?? false,
+        env: input.extraEnv ?? {},
+      },
+      `${FAKE_CLI_PRELUDE}${CURSOR_AGENT_FAKE_BODY}`,
+    ),
+  });
 });
 
 const waitForFileContent = Effect.fn("waitForFileContent")(function* (
@@ -138,7 +140,10 @@ const makeProviderStatusEnvFixture = Effect.fn("makeProviderStatusEnvFixture")(f
   });
   return {
     requestLogPath: path.join(tempDir, "requests.ndjson"),
-    wrapperPath: yield* makeMockAgentWithAboutWrapper(),
+    wrapperPath: yield* makeCursorAgentFake({
+      prefix: "cursor-provider-about-mock-",
+      answerAbout: true,
+    }),
   };
 });
 
@@ -152,8 +157,9 @@ const makeExitLogFixture = Effect.fn("makeExitLogFixture")(function* (prefix: st
   const exitLogPath = path.join(tempDir, "exit.log");
   return {
     exitLogPath,
-    wrapperPath: yield* makeMockAgentWrapper({
-      TOOLPORT_STUDIO_ACP_EXIT_LOG_PATH: exitLogPath,
+    wrapperPath: yield* makeCursorAgentFake({
+      prefix: "cursor-provider-mock-",
+      extraEnv: { TOOLPORT_STUDIO_ACP_EXIT_LOG_PATH: exitLogPath },
     }),
   };
 });
@@ -476,7 +482,7 @@ describe("checkCursorProviderStatus", () => {
 
 describe("discoverCursorModelsViaAcp", () => {
   it("keeps the ACP probe runtime alive long enough to discover models", async () => {
-    const wrapperPath = await runNode(makeMockAgentWrapper());
+    const wrapperPath = await runNode(makeCursorAgentFake({ prefix: "cursor-provider-mock-" }));
 
     const models = await runNode(
       discoverCursorModelsViaAcp({
@@ -509,8 +515,7 @@ describe("discoverCursorModelsViaAcp", () => {
       }),
     );
 
-    const exitLog = await runNode(waitForFileContent(exitLogPath));
-    expect(exitLog).toContain("SIGTERM");
+    await runNode(expectAcpChildClosed({ exitLogPath, posixReason: "SIGTERM" }));
   });
 });
 

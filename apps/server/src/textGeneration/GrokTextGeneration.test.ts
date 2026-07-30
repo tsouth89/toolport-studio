@@ -20,8 +20,8 @@ import {
   ACP_WRAPPER_FAKE_BODY,
   FAKE_CLI_PRELUDE,
   withInjectedSpec,
-  writeFakeAcpWrapperSync,
-} from "./testing/fakeProviderCli.ts";
+  writeFakeProviderCliSync,
+} from "../testing/fakeProviderCli.ts";
 const decodeGrokSettings = Schema.decodeSync(GrokSettings);
 
 const __dirname = NodePath.dirname(NodeURL.fileURLToPath(import.meta.url));
@@ -32,7 +32,7 @@ const GrokTextGenerationTestLayer = ServerConfig.ServerConfig.layerTest(process.
 }).pipe(Layer.provideMerge(NodeServices.layer));
 
 function makeAcpGrokWrapper(dir: string, env: Record<string, string>): string {
-  return writeFakeAcpWrapperSync({
+  return writeFakeProviderCliSync({
     dir: NodePath.join(dir, "bin"),
     name: "grok",
     source: withInjectedSpec(

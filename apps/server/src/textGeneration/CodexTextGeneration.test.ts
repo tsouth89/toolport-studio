@@ -18,7 +18,7 @@ import {
   FAKE_CLI_PRELUDE,
   withInjectedSpec,
   writeFakeProviderCli,
-} from "./testing/fakeProviderCli.ts";
+} from "../testing/fakeProviderCli.ts";
 const decodeCodexSettings = Schema.decodeSync(CodexSettings);
 
 /**
