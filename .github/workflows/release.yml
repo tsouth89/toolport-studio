@@ -321,12 +321,32 @@ jobs:
           dmg="$(ls "$OUTPUT_DIR"/*.dmg 2>/dev/null | head -1)"
           if [ -z "$dmg" ]; then echo "No .dmg found in $OUTPUT_DIR" >&2; exit 1; fi
 
-          # A signed-but-unnotarized build still fails Gatekeeper on a user's
-          # machine with "damaged and can't be opened", so verifying the
-          # signature alone would let the exact failure we care about ship.
-          # `spctl --assess` is what Gatekeeper itself runs.
-          codesign --verify --deep --strict --verbose=2 "$dmg"
-          spctl --assess --type install --verbose=2 "$dmg"
+          # Verify the .app inside the dmg, not the dmg itself. electron-builder
+          # signs and staples the app bundle; the dmg is a plain container and is
+          # not a signed code object, so `codesign --verify` on it always reports
+          # "code object is not signed at all" no matter how good the build is.
+          #
+          # Mounting is also the honest check: this is the exact path a user
+          # takes, so what passes here is what Gatekeeper sees on their machine.
+          mnt="$(mktemp -d)"
+          hdiutil attach "$dmg" -nobrowse -readonly -mountpoint "$mnt" >/dev/null
+          trap 'hdiutil detach "$mnt" >/dev/null 2>&1 || true' EXIT
+
+          app="$(find "$mnt" -maxdepth 1 -name '*.app' | head -1)"
+          if [ -z "$app" ]; then
+            echo "No .app inside $dmg:" >&2
+            ls -la "$mnt" >&2
+            exit 1
+          fi
+          echo "verifying $(basename "$app")"
+
+          codesign --verify --deep --strict --verbose=2 "$app"
+
+          # Signing alone is not enough: a signed but unnotarized app fails on a
+          # user's machine with "damaged and can't be opened". stapler proves the
+          # notarization ticket is attached, and spctl is what Gatekeeper runs.
+          xcrun stapler validate "$app"
+          spctl --assess --type execute --verbose=2 "$app"
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v6
