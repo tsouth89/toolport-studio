@@ -379,19 +379,28 @@ jobs:
         run: |
           # Keep REQUIRED and OPTIONAL in sync with the build matrix above.
           #
-          # A per-platform list rather than "did the build job succeed", because
-          # macOS cannot build until its signing secrets exist and blocking every
-          # release on that would stop Windows and Linux shipping too. Moving a
-          # platform from OPTIONAL to REQUIRED is the one edit needed to start
-          # enforcing it.
+          # A per-platform list rather than "did the build job succeed", so a
+          # platform can be added to the matrix and shaken out before it gates
+          # releases. macOS started OPTIONAL for exactly that reason, and moved to
+          # REQUIRED once 0.1.0-beta.3 produced signed, notarized dmgs.
+          #
+          # The two macOS architectures are listed separately because they are two
+          # matrix jobs. A single "*.dmg" entry would be satisfied by either one,
+          # so an Intel build failing alone would ship a macOS release that Intel
+          # users cannot install, silently.
           #
           # This exists because 0.1.0-beta.2 published Windows-only under release
           # notes that promised a Linux AppImage: Linux had failed on a missing
           # build dependency, and publish only checked for a Windows installer.
           # A release that silently contains less than it claims is worse than a
           # release that does not happen.
-          declare -A REQUIRED=( [Windows]="*.exe" [Linux]="*.AppImage" )
-          declare -A OPTIONAL=( [macOS]="*.dmg" )
+          declare -A REQUIRED=(
+            [Windows]="*.exe"
+            [Linux]="*.AppImage"
+            [macOS-arm64]="*arm64.dmg"
+            [macOS-Intel]="*x64.dmg"
+          )
+          declare -A OPTIONAL=()
 
           shopt -s nullglob
           missing=()
