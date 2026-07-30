@@ -26,6 +26,27 @@ require(SPEC.mockAgentPath);
 `;
 
 /**
+ * Shebang line for the POSIX fakes.
+ *
+ * Interpolates the absolute interpreter path rather than using
+ * `#!/usr/bin/env node`. Some suites hand the adapter a replacement environment,
+ * and `env` resolves `node` through the PATH it is given, so the fake died with
+ * `/usr/bin/env: 'node': No such file or directory`. The old `#!/bin/sh` was an
+ * absolute path and needed no lookup; this keeps that property.
+ */
+const posixShebang = (): string => `#!${process.execPath}\n`;
+
+/**
+ * `.cmd` shim contents for the Windows fakes.
+ *
+ * Quotes the absolute interpreter path for the same reason {@link posixShebang}
+ * does: a bare `node` would be resolved through whatever PATH the adapter passes
+ * at spawn time, and some suites replace it.
+ */
+const windowsShim = (scriptName: string): string =>
+  `@"${process.execPath}" "%~dp0${scriptName}" %*\r\n`;
+
+/**
  * Writes a fake provider CLI that both POSIX and Windows can actually execute,
  * and returns the path to hand to `binaryPath`.
  *
@@ -38,8 +59,8 @@ require(SPEC.mockAgentPath);
  *
  * Only the launcher differs:
  *
- * - POSIX: one extensionless file with a `#!/usr/bin/env node` shebang, mode
- *   0755, spawned directly.
+ * - POSIX: one extensionless file with an absolute-interpreter shebang (see
+ *   {@link posixShebang}), mode 0755, spawned directly.
  * - Windows: `<name>.cjs` holds the logic and a `<name>.cmd` shim invokes Node.
  *   `.CJS` is not in PATHEXT and a direct spawn of one fails with `EFTYPE`, so a
  *   shim is the only way the command resolves. `resolveSpawnCommand` already
@@ -58,7 +79,7 @@ export const writeFakeProviderCli = Effect.fn("textGeneration.testing.writeFakeP
 
     if (!(yield* isHostWindows)) {
       const executablePath = path.join(input.dir, input.name);
-      yield* fs.writeFileString(executablePath, `#!/usr/bin/env node\n${input.source}`);
+      yield* fs.writeFileString(executablePath, `${posixShebang()}${input.source}`);
       yield* fs.chmod(executablePath, 0o755);
       return executablePath;
     }
@@ -66,7 +87,7 @@ export const writeFakeProviderCli = Effect.fn("textGeneration.testing.writeFakeP
     const scriptName = `${input.name}.cjs`;
     yield* fs.writeFileString(path.join(input.dir, scriptName), input.source);
     const shimPath = path.join(input.dir, `${input.name}.cmd`);
-    yield* fs.writeFileString(shimPath, `@node "%~dp0${scriptName}" %*\r\n`);
+    yield* fs.writeFileString(shimPath, windowsShim(scriptName));
     return shimPath;
   },
 );
@@ -102,7 +123,7 @@ export const writeFakeAcpWrapperSync = (input: {
   }
 
   const executablePath = NodePath.join(input.dir, input.name);
-  NodeFS.writeFileSync(executablePath, `#!/usr/bin/env node\n${input.source}`, "utf8");
+  NodeFS.writeFileSync(executablePath, `${posixShebang()}${input.source}`, "utf8");
   NodeFS.chmodSync(executablePath, 0o755);
   return executablePath;
 };
