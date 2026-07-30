@@ -149,6 +149,35 @@ class ScriptedClaudeQuery {
   }
 }
 
+/**
+ * Flatten one inbound `SDKUserMessage` to searchable text.
+ *
+ * `follow-up-reaches-the-provider` only asks whether a marker string arrived, so
+ * this favours not losing the marker over producing tidy output: recognised text
+ * blocks are joined, and anything unrecognised falls back to its JSON so a shape
+ * change cannot silently make the case pass by returning an empty string.
+ */
+function promptMessageToText(message: unknown): string {
+  const content = (message as { message?: { content?: unknown } } | undefined)?.message?.content;
+  if (typeof content === "string") {
+    return content;
+  }
+  if (Array.isArray(content)) {
+    const texts = content.flatMap((block) => {
+      const text = (block as { text?: unknown } | undefined)?.text;
+      return typeof text === "string" ? [text] : [];
+    });
+    if (texts.length > 0) {
+      return texts.join("\n");
+    }
+  }
+  try {
+    return JSON.stringify(message) ?? "";
+  } catch {
+    return "";
+  }
+}
+
 /** Translate the neutral script vocabulary into Claude SDK messages. */
 function playScript(query: ScriptedClaudeQuery, script: ConformanceScript, seq: number): void {
   let index = 0;
@@ -239,8 +268,6 @@ function playScript(query: ScriptedClaudeQuery, script: ConformanceScript, seq: 
 export const claudeConformanceBinding: ConformanceBinding = {
   provider: "claude",
   waivers: {
-    "follow-up-reaches-the-provider":
-      "binding exposes no promptsReceived hook yet; delivery is unasserted for this provider",
     "tool-name-survives-untitled-updates":
       "fake cannot emit an untitled update for an already-named tool",
   },
@@ -248,12 +275,32 @@ export const claudeConformanceBinding: ConformanceBinding = {
   openSession: (script, options?: ConformanceOpenSessionOptions) =>
     Effect.gen(function* () {
       const query = new ScriptedClaudeQuery();
+      // Inbound prompts, in arrival order. The only evidence that a mid-turn
+      // send reached the provider: a steer reuses the live turn id, so runtime
+      // events cannot tell a delivered follow-up from a dropped one.
+      const promptsSeen: Array<string> = [];
       const layer = Layer.effect(
         ClaudeConformanceAdapter,
         Effect.gen(function* () {
           const settings = decodeClaudeSettings({});
           return yield* makeClaudeAdapter(settings, {
-            createQuery: () => query as never,
+            createQuery: (input) => {
+              // The real SDK consumes this iterable; the fake previously did
+              // not, which both hid delivery and left the adapter writing into
+              // a stream nobody drained. Draining it here is the more faithful
+              // behaviour as well as the assertion surface.
+              void (async () => {
+                try {
+                  for await (const message of input.prompt) {
+                    promptsSeen.push(promptMessageToText(message));
+                  }
+                } catch {
+                  // The prompt stream is torn down when the session closes.
+                  // That race is expected and carries nothing to assert.
+                }
+              })();
+              return query as never;
+            },
           });
         }),
       ).pipe(
@@ -308,6 +355,10 @@ export const claudeConformanceBinding: ConformanceBinding = {
             turnSeq += 1;
             playScript(query, turnScript, turnSeq);
           }) as never,
+        // Snapshot, not the live array: the case polls this on a schedule, and
+        // handing out the mutable array would let a later push change a result
+        // the runner already read.
+        promptsReceived: Effect.sync(() => [...promptsSeen]),
         awaitEvent: (predicate, options) =>
           Ref.get(observed).pipe(
             Effect.map((events) => events.find(predicate)),
