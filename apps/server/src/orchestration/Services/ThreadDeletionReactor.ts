@@ -2,7 +2,7 @@
  * ThreadDeletionReactor - Thread deletion cleanup reactor service interface.
  *
  * Owns background workers that react to thread deletion domain events and
- * perform best-effort runtime cleanup for provider sessions and terminals.
+ * durably retry runtime cleanup for provider sessions and terminals.
  *
  * @module ThreadDeletionReactor
  */
@@ -27,6 +27,9 @@ export interface ThreadDeletionReactorShape {
    * Intended for test use to replace timing-sensitive sleeps.
    */
   readonly drain: Effect.Effect<void>;
+
+  /** Stop claiming new durable work and finish already-claimed items. */
+  readonly shutdown: Effect.Effect<void>;
 }
 
 /**

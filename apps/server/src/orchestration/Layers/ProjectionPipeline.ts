@@ -1597,26 +1597,24 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       };
 
       yield* sql.withTransaction(
-        projector.apply(event, attachmentSideEffects).pipe(
-          Effect.flatMap(() =>
-            projectionStateRepository.upsert({
-              projector: projector.name,
-              lastAppliedSequence: event.sequence,
-              updatedAt: event.occurredAt,
-            }),
-          ),
-        ),
-      );
+        Effect.gen(function* () {
+          yield* projector.apply(event, attachmentSideEffects);
 
-      yield* runAttachmentSideEffects(attachmentSideEffects).pipe(
-        Effect.catch((cause) =>
-          Effect.logWarning("failed to apply projected attachment side-effects", {
+          // Filesystem cleanup is idempotent and must finish before the
+          // durable projector cursor advances. A crash or partial failure
+          // therefore replays the event instead of silently losing cleanup.
+          yield* runAttachmentSideEffects(attachmentSideEffects).pipe(
+            Effect.mapError((cause) =>
+              toPersistenceSqlError("ProjectionPipeline.runAttachmentSideEffects")(cause),
+            ),
+          );
+
+          yield* projectionStateRepository.upsert({
             projector: projector.name,
-            sequence: event.sequence,
-            eventType: event.type,
-            cause,
-          }),
-        ),
+            lastAppliedSequence: event.sequence,
+            updatedAt: event.occurredAt,
+          });
+        }),
       );
     });
 

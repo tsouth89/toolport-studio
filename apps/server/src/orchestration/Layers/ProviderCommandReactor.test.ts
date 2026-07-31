@@ -363,6 +363,7 @@ describe("ProviderCommandReactor", () => {
     );
     const layer = makeProviderCommandReactorLayer(input?.reactorOptions).pipe(
       Layer.provideMerge(orchestrationLayer),
+      Layer.provideMerge(OrchestrationEventStoreLive.pipe(Layer.provide(SqlitePersistenceMemory))),
       Layer.provideMerge(projectionSnapshotLayer),
       Layer.provideMerge(Layer.succeed(ProviderService, service)),
       Layer.provideMerge(makeProviderRegistryLayer(providerSnapshots as never)),
@@ -607,15 +608,13 @@ describe("ProviderCommandReactor", () => {
         createdAt: "2026-01-01T00:00:02.000Z",
       });
       yield* Effect.promise(() =>
-        waitFor(() =>
-          harness.stopSession.mock.calls.some(
-            ([input]) =>
-              typeof input === "object" &&
-              input !== null &&
-              "threadId" in input &&
-              input.threadId === ThreadId.make("thread-2"),
-          ),
-        ),
+        waitFor(async () => {
+          const snapshot = await harness.readModel();
+          return (
+            snapshot.threads.find((entry) => entry.id === ThreadId.make("thread-2"))?.session
+              ?.status === "stopped"
+          );
+        }),
       ).pipe(Effect.timeout("5 seconds"));
       const whileBlocked = yield* Effect.promise(() => harness.readModel());
       expect(
@@ -2548,7 +2547,14 @@ describe("ProviderCommandReactor", () => {
       }),
     );
 
-    await waitFor(() => harness.stopSession.mock.calls.length === 1);
+    await waitFor(async () => {
+      const snapshot = await harness.readModel();
+      return (
+        harness.stopSession.mock.calls.length === 1 &&
+        snapshot.threads.find((entry) => entry.id === ThreadId.make("thread-1"))?.session
+          ?.status === "stopped"
+      );
+    });
     const readModel = await harness.readModel();
     const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
     expect(thread?.session).not.toBeNull();
