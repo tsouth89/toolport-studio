@@ -59,6 +59,10 @@
       "types": "./src/KeyedCoalescingWorker.ts",
       "import": "./src/KeyedCoalescingWorker.ts"
     },
+    "./KeyedSerialWorker": {
+      "types": "./src/KeyedSerialWorker.ts",
+      "import": "./src/KeyedSerialWorker.ts"
+    },
     "./schemaJson": {
       "types": "./src/schemaJson.ts",
       "import": "./src/schemaJson.ts"
