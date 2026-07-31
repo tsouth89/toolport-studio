@@ -229,6 +229,16 @@ export const confirm = DesktopIpc.makeIpcMethod({
   }),
 });
 
+export const setCloseConfirmationRequired = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.SET_CLOSE_CONFIRMATION_REQUIRED_CHANNEL,
+  payload: Schema.Boolean,
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.window.setCloseConfirmationRequired")(function* (required) {
+    const desktopWindow = yield* DesktopWindow.DesktopWindow;
+    yield* desktopWindow.setCloseConfirmationRequired(required);
+  }),
+});
+
 export const setTheme = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.SET_THEME_CHANNEL,
   payload: DesktopThemeSchema,

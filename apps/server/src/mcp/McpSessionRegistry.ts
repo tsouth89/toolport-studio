@@ -37,6 +37,8 @@ export class McpSessionRegistry extends Context.Service<
 >()("t3/mcp/McpSessionRegistry") {}
 
 interface CredentialRecord {
+  /** Kept only in process memory so duplicate session attachment can reuse the bearer. */
+  readonly rawToken: string;
   readonly tokenHash: string;
   readonly scope: McpInvocationContext.McpInvocationScope;
   readonly lastUsedAt: number;
@@ -52,8 +54,13 @@ export interface McpSessionRegistryOptions {
   readonly now?: () => number;
 }
 
-const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1_000;
-const DEFAULT_MAXIMUM_LIFETIME_MS = 8 * 60 * 60 * 1_000;
+// Provider sessions can remain alive for days, and the preview bearer is held by
+// their already-running Toolport gateway child. Expiring that bearer on a timer
+// strands the child with no refresh channel. Production credentials therefore
+// live until explicit provider-session revocation or server shutdown. Tests can
+// still supply finite limits to exercise expiry behavior.
+const DEFAULT_IDLE_TIMEOUT_MS = Number.MAX_SAFE_INTEGER;
+const DEFAULT_MAXIMUM_LIFETIME_MS = Number.MAX_SAFE_INTEGER;
 
 const bytesToHex = (bytes: Uint8Array): string =>
   Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -102,38 +109,66 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
     return next.size === records.size ? records : next;
   };
 
+  const issuedCredentialFromRecord = (record: CredentialRecord): McpIssuedCredential => ({
+    config: {
+      environmentId,
+      threadId: record.scope.threadId,
+      providerSessionId: record.scope.providerSessionId,
+      providerInstanceId: record.scope.providerInstanceId,
+      endpoint,
+      authorizationHeader: `Bearer ${record.rawToken}`,
+    },
+    expiresAt: record.scope.expiresAt,
+  });
+
   const issue: McpSessionRegistryShape["issue"] = Effect.fn("McpSessionRegistry.issue")(
     function* (request) {
       const issuedAt = yield* currentTimeMillis;
-      const providerSessionId = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
-      const rawToken = yield* crypto.randomBytes(32).pipe(Effect.map(tokenFromBytes), Effect.orDie);
-      const tokenHash = yield* hashToken(rawToken);
-      const expiresAt = issuedAt + maximumLifetimeMs;
-      const scope: McpInvocationContext.McpInvocationScope = {
-        environmentId,
-        threadId: ThreadId.make(request.threadId),
-        providerSessionId,
-        providerInstanceId: ProviderInstanceId.make(request.providerInstanceId),
-        capabilities: new Set(["preview"]),
-        issuedAt,
-        expiresAt,
-      };
-      yield* SynchronizedRef.update(state, ({ records }) => {
-        const next = new Map(pruneExpired(records, issuedAt));
-        next.set(tokenHash, { tokenHash, scope, lastUsedAt: issuedAt });
-        return { records: next };
-      });
-      return {
-        config: {
-          environmentId,
-          threadId: scope.threadId,
-          providerSessionId,
-          providerInstanceId: scope.providerInstanceId,
-          endpoint,
-          authorizationHeader: `Bearer ${rawToken}`,
-        },
-        expiresAt,
-      };
+      return yield* SynchronizedRef.modifyEffect(state, ({ records }) =>
+        Effect.gen(function* () {
+          const current = pruneExpired(records, issuedAt);
+          const existing = Array.from(current.values()).find(
+            (record) =>
+              record.scope.threadId === request.threadId &&
+              record.scope.providerInstanceId === request.providerInstanceId,
+          );
+          if (existing) {
+            const next = new Map(current);
+            const refreshed = { ...existing, lastUsedAt: issuedAt };
+            next.set(existing.tokenHash, refreshed);
+            return [issuedCredentialFromRecord(refreshed), { records: next }] as const;
+          }
+
+          const providerSessionId = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
+          const rawToken = yield* crypto
+            .randomBytes(32)
+            .pipe(Effect.map(tokenFromBytes), Effect.orDie);
+          const tokenHash = yield* hashToken(rawToken);
+          const expiresAt = Math.min(Number.MAX_SAFE_INTEGER, issuedAt + maximumLifetimeMs);
+          const scope: McpInvocationContext.McpInvocationScope = {
+            environmentId,
+            threadId: ThreadId.make(request.threadId),
+            providerSessionId,
+            providerInstanceId: ProviderInstanceId.make(request.providerInstanceId),
+            capabilities: new Set(["preview"]),
+            issuedAt,
+            expiresAt,
+          };
+          const record: CredentialRecord = {
+            rawToken,
+            tokenHash,
+            scope,
+            lastUsedAt: issuedAt,
+          };
+          const next = new Map(
+            Array.from(current).filter(
+              ([, candidate]) => candidate.scope.threadId !== request.threadId,
+            ),
+          );
+          next.set(tokenHash, record);
+          return [issuedCredentialFromRecord(record), { records: next }] as const;
+        }),
+      );
     },
   );
 
@@ -197,9 +232,7 @@ export const issueActiveMcpCredential = (
   request: McpCredentialRequest,
 ): Effect.Effect<McpIssuedCredential | undefined> =>
   activeMcpSessionRegistry
-    ? activeMcpSessionRegistry
-        .revokeThread(request.threadId)
-        .pipe(Effect.andThen(activeMcpSessionRegistry.issue(request)))
+    ? activeMcpSessionRegistry.issue(request)
     : Effect.sync((): McpIssuedCredential | undefined => undefined);
 
 export const revokeActiveMcpThread = (threadId: ThreadId): Effect.Effect<void> =>

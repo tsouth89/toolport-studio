@@ -10,6 +10,7 @@ import * as Electron from "electron";
 import * as DesktopAssets from "../app/DesktopAssets.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import { makeComponentLogger } from "../app/DesktopObservability.ts";
+import * as ElectronDialog from "../electron/ElectronDialog.ts";
 import * as ElectronMenu from "../electron/ElectronMenu.ts";
 import { getDesktopUrl } from "../electron/ElectronProtocol.ts";
 import * as ElectronShell from "../electron/ElectronShell.ts";
@@ -50,6 +51,7 @@ type DesktopWindowRuntimeServices =
   | DesktopEnvironment.DesktopEnvironment
   | DesktopAssets.DesktopAssets
   | DesktopAppSettings.DesktopAppSettings
+  | ElectronDialog.ElectronDialog
   | ElectronMenu.ElectronMenu
   | ElectronShell.ElectronShell
   | ElectronTheme.ElectronTheme
@@ -94,6 +96,7 @@ export class DesktopWindow extends Context.Service<
     // produce a stranded window pointing at nothing.
     readonly handleBackendNotReady: Effect.Effect<void>;
     readonly flushMainWindowBounds: Effect.Effect<void>;
+    readonly setCloseConfirmationRequired: (required: boolean) => Effect.Effect<void>;
     readonly dispatchMenuAction: (action: string) => Effect.Effect<void, DesktopWindowError>;
     readonly syncAppearance: Effect.Effect<void>;
   }
@@ -280,6 +283,7 @@ function bindFirstRevealTrigger(
 export const make = Effect.gen(function* () {
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
   const assets = yield* DesktopAssets.DesktopAssets;
+  const electronDialog = yield* ElectronDialog.ElectronDialog;
   const electronMenu = yield* ElectronMenu.ElectronMenu;
   const electronShell = yield* ElectronShell.ElectronShell;
   const electronTheme = yield* ElectronTheme.ElectronTheme;
@@ -301,7 +305,87 @@ export const make = Effect.gen(function* () {
   const context = yield* Effect.context<DesktopWindowRuntimeServices>();
   const runFork = Effect.runForkWith(context);
   const runPromise = Effect.runPromiseWith(context);
+  let closeConfirmationRequired = false;
+  const confirmedCloseWindows = new WeakSet<Electron.BrowserWindow>();
+  const closeConfirmationWindows = new WeakSet<Electron.BrowserWindow>();
   let flushMainWindowBounds: Effect.Effect<void> = Effect.void;
+
+  const bindRendererContextMenu = (window: Electron.BrowserWindow): void => {
+    window.webContents.on("context-menu", (event, params) => {
+      event.preventDefault();
+
+      const menuTemplate: Electron.MenuItemConstructorOptions[] = [];
+
+      if (params.misspelledWord) {
+        for (const suggestion of params.dictionarySuggestions.slice(0, 5)) {
+          menuTemplate.push({
+            label: suggestion,
+            click: () => window.webContents.replaceMisspelling(suggestion),
+          });
+        }
+        if (params.dictionarySuggestions.length === 0) {
+          menuTemplate.push({ label: "No suggestions", enabled: false });
+        }
+        menuTemplate.push({ type: "separator" });
+      }
+
+      if (Option.isSome(ElectronShell.parseSafeExternalUrl(params.linkURL))) {
+        menuTemplate.push(
+          {
+            label: "Copy Link",
+            click: () => {
+              void runPromise(electronShell.copyText(params.linkURL));
+            },
+          },
+          { type: "separator" },
+        );
+      }
+
+      if (params.mediaType === "image") {
+        menuTemplate.push({
+          label: "Copy Image",
+          click: () => window.webContents.copyImageAt(params.x, params.y),
+        });
+        menuTemplate.push({ type: "separator" });
+      }
+
+      menuTemplate.push(
+        { role: "cut", enabled: params.editFlags.canCut },
+        { role: "copy", enabled: params.editFlags.canCopy },
+        { role: "paste", enabled: params.editFlags.canPaste },
+        { role: "selectAll", enabled: params.editFlags.canSelectAll },
+      );
+
+      void runPromise(electronMenu.popupTemplate({ window, template: menuTemplate }));
+    });
+  };
+
+  const bindRendererExternalNavigation = (
+    window: Electron.BrowserWindow,
+    applicationUrl: string,
+  ): void => {
+    window.webContents.setWindowOpenHandler(({ url }) => {
+      if (Option.isSome(ElectronShell.parseSafeExternalUrl(url))) {
+        void runPromise(electronShell.openExternal(url));
+      }
+      return { action: "deny" };
+    });
+    window.webContents.on("will-navigate", (event, url) => {
+      if (
+        isSameOriginRendererNavigation({
+          applicationUrl,
+          navigationUrl: url,
+        })
+      ) {
+        return;
+      }
+
+      event.preventDefault();
+      if (Option.isSome(ElectronShell.parseSafeExternalUrl(url))) {
+        void runPromise(electronShell.openExternal(url));
+      }
+    });
+  };
 
   const dismissConnectingSplash = Effect.gen(function* () {
     const splash = yield* Ref.getAndSet(splashWindowRef, Option.none());
@@ -377,6 +461,7 @@ export const make = Effect.gen(function* () {
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: true,
+        spellcheck: true,
         webviewTag: true,
       },
     });
@@ -486,75 +571,8 @@ export const make = Effect.gen(function* () {
       webPreferences.contextIsolation = false;
     });
 
-    window.webContents.on("context-menu", (event, params) => {
-      event.preventDefault();
-
-      const menuTemplate: Electron.MenuItemConstructorOptions[] = [];
-
-      if (params.misspelledWord) {
-        for (const suggestion of params.dictionarySuggestions.slice(0, 5)) {
-          menuTemplate.push({
-            label: suggestion,
-            click: () => window.webContents.replaceMisspelling(suggestion),
-          });
-        }
-        if (params.dictionarySuggestions.length === 0) {
-          menuTemplate.push({ label: "No suggestions", enabled: false });
-        }
-        menuTemplate.push({ type: "separator" });
-      }
-
-      if (Option.isSome(ElectronShell.parseSafeExternalUrl(params.linkURL))) {
-        menuTemplate.push(
-          {
-            label: "Copy Link",
-            click: () => {
-              void runPromise(electronShell.copyText(params.linkURL));
-            },
-          },
-          { type: "separator" },
-        );
-      }
-
-      if (params.mediaType === "image") {
-        menuTemplate.push({
-          label: "Copy Image",
-          click: () => window.webContents.copyImageAt(params.x, params.y),
-        });
-        menuTemplate.push({ type: "separator" });
-      }
-
-      menuTemplate.push(
-        { role: "cut", enabled: params.editFlags.canCut },
-        { role: "copy", enabled: params.editFlags.canCopy },
-        { role: "paste", enabled: params.editFlags.canPaste },
-        { role: "selectAll", enabled: params.editFlags.canSelectAll },
-      );
-
-      void runPromise(electronMenu.popupTemplate({ window, template: menuTemplate }));
-    });
-
-    window.webContents.setWindowOpenHandler(({ url }) => {
-      if (Option.isSome(ElectronShell.parseSafeExternalUrl(url))) {
-        void runPromise(electronShell.openExternal(url));
-      }
-      return { action: "deny" };
-    });
-    window.webContents.on("will-navigate", (event, url) => {
-      if (
-        isSameOriginRendererNavigation({
-          applicationUrl,
-          navigationUrl: url,
-        })
-      ) {
-        return;
-      }
-
-      event.preventDefault();
-      if (Option.isSome(ElectronShell.parseSafeExternalUrl(url))) {
-        void runPromise(electronShell.openExternal(url));
-      }
-    });
+    bindRendererContextMenu(window);
+    bindRendererExternalNavigation(window, applicationUrl);
 
     window.on("page-title-updated", (event) => {
       event.preventDefault();
@@ -564,8 +582,44 @@ export const make = Effect.gen(function* () {
     window.on("move", scheduleBoundsPersist);
     window.on("maximize", scheduleBoundsPersist);
     window.on("unmaximize", scheduleBoundsPersist);
-    window.on("close", () => {
+    window.on("close", (event) => {
       runFork(flushBoundsPersist);
+      if (!closeConfirmationRequired || confirmedCloseWindows.delete(window)) {
+        return;
+      }
+
+      event.preventDefault();
+      if (closeConfirmationWindows.has(window)) {
+        return;
+      }
+      closeConfirmationWindows.add(window);
+      void runPromise(
+        Effect.gen(function* () {
+          const confirmed = yield* electronDialog.confirm({
+            owner: Option.some(window),
+            message: [
+              "A task is still running. Exit Toolport Studio anyway?",
+              "The running task may be interrupted.",
+            ].join("\n\n"),
+          });
+          if (!confirmed || window.isDestroyed()) {
+            return;
+          }
+          confirmedCloseWindows.add(window);
+          window.close();
+        }).pipe(
+          Effect.catch((error) =>
+            logWindowWarning("failed to confirm closing with a running task", {
+              message: error.message,
+            }),
+          ),
+          Effect.ensuring(
+            Effect.sync(() => {
+              closeConfirmationWindows.delete(window);
+            }),
+          ),
+        ),
+      );
     });
 
     if (environment.platform === "darwin") {
@@ -822,6 +876,7 @@ export const make = Effect.gen(function* () {
           contextIsolation: true,
           nodeIntegration: false,
           sandbox: true,
+          spellcheck: true,
           // Deliberately off, unlike the main window. A pop-out is a chat-only
           // view with no preview panel, so it never mounts a <webview>. Leaving
           // it enabled let a window that shows only a conversation carry the
@@ -834,17 +889,8 @@ export const make = Effect.gen(function* () {
         window.setAutoHideCursor(false);
       }
 
-      window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
-      window.webContents.on("will-navigate", (event, url) => {
-        if (
-          !isSameOriginRendererNavigation({
-            applicationUrl: getDesktopUrl(environment.isDevelopment),
-            navigationUrl: url,
-          })
-        ) {
-          event.preventDefault();
-        }
-      });
+      bindRendererContextMenu(window);
+      bindRendererExternalNavigation(window, getDesktopUrl(environment.isDevelopment));
 
       const revealSubscribers: RevealSubscription[] = [
         (fire) => window.once("ready-to-show", fire),
@@ -927,6 +973,10 @@ export const make = Effect.gen(function* () {
     flushMainWindowBounds: Effect.suspend(() => flushMainWindowBounds).pipe(
       Effect.withSpan("desktop.window.flushMainWindowBounds"),
     ),
+    setCloseConfirmationRequired: (required) =>
+      Effect.sync(() => {
+        closeConfirmationRequired = required;
+      }).pipe(Effect.withSpan("desktop.window.setCloseConfirmationRequired")),
     dispatchMenuAction: Effect.fn("desktop.window.dispatchMenuAction")(function* (action) {
       yield* Effect.annotateCurrentSpan({ action });
       const existingWindow = yield* focusedMainWindow;

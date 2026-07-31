@@ -67,6 +67,7 @@ import { ComposerPendingElementContexts } from "./ComposerPendingElementContexts
 import { ComposerPendingReviewComments } from "./ComposerPendingReviewComments";
 import { ComposerPreviewAnnotationCards } from "./ComposerPreviewAnnotationCards";
 import {
+  hasWideComposerFooterActions,
   shouldUseCompactComposerPrimaryActions,
   shouldUseCompactComposerFooter,
 } from "../composerFooterLayout";
@@ -1157,8 +1158,16 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const showCollapsedMobilePromptRow =
     isComposerCollapsedMobile && !isComposerApprovalState && pendingUserInputs.length === 0;
 
-  const composerFooterHasWideActions = showPlanFollowUpPrompt || activePendingProgress !== null;
   const showPlanSidebarToggle = Boolean(activePlan || sidebarProposedPlan || planSidebarOpen);
+  // The Tasks control consumes enough horizontal space to collapse the model
+  // picker down to a partial slug (for example "gpt-"). Treat it like the
+  // other wide footer states so secondary controls move into the existing
+  // overflow menu before the model label becomes unreadable.
+  const composerFooterHasWideActions = hasWideComposerFooterActions({
+    hasActivePendingProgress: activePendingProgress !== null,
+    showPlanFollowUpPrompt,
+    showPlanSidebarToggle,
+  });
   const composerFooterActionLayoutKey = useMemo(() => {
     if (activePendingProgress) {
       return `pending:${activePendingProgress.questionIndex}:${activePendingProgress.isLastQuestion}:${activePendingIsResponding}`;
