@@ -89,6 +89,21 @@ const hasMetricSnapshot = (
   );
 
 describe("OrchestrationEngine", () => {
+  const noDurableSideEffects = {
+    recoverSideEffectDeliveries: () => Effect.void,
+    claimSideEffectDeliveries: () => Effect.succeed([]),
+    completeSideEffectDelivery: () => Effect.void,
+    failSideEffectDelivery: () => Effect.void,
+    countUnfinishedSideEffectDeliveries: () => Effect.succeed(0),
+  } satisfies Pick<
+    OrchestrationEventStoreShape,
+    | "recoverSideEffectDeliveries"
+    | "claimSideEffectDeliveries"
+    | "completeSideEffectDelivery"
+    | "failSideEffectDelivery"
+    | "countUnfinishedSideEffectDeliveries"
+  >;
+
   it("bootstraps command handling from persisted projections without reading the full snapshot", async () => {
     let nextSequence = 8;
     const eventStore: OrchestrationEventStoreShape = {
@@ -110,6 +125,7 @@ describe("OrchestrationEngine", () => {
           }),
         ),
       deleteUpToSequenceInclusive: () => Effect.void,
+      ...noDurableSideEffects,
     };
 
     const projectionSnapshot = {
@@ -848,6 +864,7 @@ describe("OrchestrationEngine", () => {
       deleteUpToSequenceInclusive() {
         return Effect.void;
       },
+      ...noDurableSideEffects,
     };
 
     const ServerConfigLayer = ServerConfig.layerTest(process.cwd(), {
@@ -1083,6 +1100,7 @@ describe("OrchestrationEngine", () => {
       deleteUpToSequenceInclusive() {
         return Effect.void;
       },
+      ...noDurableSideEffects,
     };
 
     let shouldFailProjection = true;

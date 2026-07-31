@@ -30,6 +30,9 @@ export interface ProviderCommandReactorShape {
    * Intended for test use to replace timing-sensitive sleeps.
    */
   readonly drain: Effect.Effect<void>;
+
+  /** Stop claiming new durable work and finish already-claimed items. */
+  readonly shutdown: Effect.Effect<void>;
 }
 
 /**

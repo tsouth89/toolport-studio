@@ -21,6 +21,11 @@ export interface OrchestrationReactorShape {
    * finalized on shutdown.
    */
   readonly start: () => Effect.Effect<void, never, Scope.Scope>;
+
+  /**
+   * Stop durable intake and drain or durably leave queued work for restart.
+   */
+  readonly shutdown: Effect.Effect<void>;
 }
 
 /**

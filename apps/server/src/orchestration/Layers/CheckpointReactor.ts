@@ -35,8 +35,21 @@ import type { OrchestrationDispatchError } from "../Errors.ts";
 import { isGitRepository } from "../../git/Utils.ts";
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import * as WorkspaceEntries from "../../workspace/WorkspaceEntries.ts";
+import { ORCHESTRATION_SIDE_EFFECT_CONSUMERS } from "../../persistence/Services/OrchestrationEventStore.ts";
+import { makeDurableSideEffectReactor } from "../DurableSideEffectReactor.ts";
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
+
+type CheckpointDomainEvent = Extract<
+  OrchestrationEvent,
+  {
+    type:
+      | "thread.turn-start-requested"
+      | "thread.message-sent"
+      | "thread.checkpoint-revert-requested"
+      | "thread.turn-diff-completed";
+  }
+>;
 
 type ReactorInput =
   | {
@@ -45,7 +58,7 @@ type ReactorInput =
     }
   | {
       readonly source: "domain";
-      readonly event: OrchestrationEvent;
+      readonly event: CheckpointDomainEvent;
     };
 
 function toTurnId(value: string | undefined): TurnId | null {
@@ -830,36 +843,48 @@ const make = Effect.gen(function* () {
       }),
     );
 
-  const worker = yield* makeDrainableWorker(processInputSafely);
+  const runtimeWorker = yield* makeDrainableWorker((event: ProviderRuntimeEvent) =>
+    processInputSafely({ source: "runtime", event }),
+  );
+
+  const isCheckpointDomainEvent = (event: OrchestrationEvent): event is CheckpointDomainEvent =>
+    event.type === "thread.turn-start-requested" ||
+    event.type === "thread.message-sent" ||
+    event.type === "thread.checkpoint-revert-requested" ||
+    event.type === "thread.turn-diff-completed";
+
+  const durableReactor = yield* makeDurableSideEffectReactor({
+    consumer: ORCHESTRATION_SIDE_EFFECT_CONSUMERS.checkpoint,
+    decode: (event) => (isCheckpointDomainEvent(event) ? event : null),
+    key: () => "checkpoint",
+    process: (event) => processInput({ source: "domain", event }),
+    onFailure: (event, cause) =>
+      Effect.logWarning("checkpoint reactor failed to process durable event", {
+        eventType: event.type,
+        threadId: event.payload.threadId,
+        cause: Cause.pretty(cause),
+      }),
+  });
 
   const start: CheckpointReactorShape["start"] = Effect.fn("start")(function* () {
-    yield* Effect.forkScoped(
-      Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) => {
-        if (
-          event.type !== "thread.turn-start-requested" &&
-          event.type !== "thread.message-sent" &&
-          event.type !== "thread.checkpoint-revert-requested" &&
-          event.type !== "thread.turn-diff-completed"
-        ) {
-          return Effect.void;
-        }
-        return worker.enqueue({ source: "domain", event });
-      }),
-    );
-
+    yield* durableReactor.start();
     yield* Effect.forkScoped(
       Stream.runForEach(providerService.streamEvents, (event) => {
         if (event.type !== "turn.started" && event.type !== "turn.completed") {
           return Effect.void;
         }
-        return worker.enqueue({ source: "runtime", event });
+        return runtimeWorker.enqueue(event);
       }),
     );
   });
 
   return {
     start,
-    drain: worker.drain,
+    drain: Effect.all([durableReactor.drain, runtimeWorker.drain], {
+      concurrency: "unbounded",
+      discard: true,
+    }),
+    shutdown: durableReactor.shutdown.pipe(Effect.andThen(runtimeWorker.drain)),
   } satisfies CheckpointReactorShape;
 });
 

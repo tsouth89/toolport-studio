@@ -26,8 +26,17 @@ export const makeOrchestrationReactor = Effect.gen(function* () {
     yield* agentAwarenessRelay.start();
   });
 
+  const shutdown: OrchestrationReactorShape["shutdown"] = Effect.gen(function* () {
+    yield* Effect.all(
+      [providerCommandReactor.shutdown, checkpointReactor.shutdown, threadDeletionReactor.shutdown],
+      { concurrency: "unbounded", discard: true },
+    );
+    yield* providerRuntimeIngestion.drain;
+  });
+
   return {
     start,
+    shutdown,
   } satisfies OrchestrationReactorShape;
 });
 

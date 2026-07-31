@@ -12,7 +12,6 @@ import {
   type RuntimeMode,
   type TurnId,
 } from "@toolport-studio/contracts";
-import { makeKeyedSerialWorker } from "@toolport-studio/shared/KeyedSerialWorker";
 import { isTemporaryWorktreeBranch, WORKTREE_BRANCH_PREFIX } from "@toolport-studio/shared/git";
 import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
@@ -24,7 +23,6 @@ import * as Equal from "effect/Equal";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import * as Stream from "effect/Stream";
 
 import { resolveThreadWorkspaceCwd } from "../../checkpointing/Utils.ts";
 import { buildProviderHandoff } from "@toolport-studio/shared/providerHandoff";
@@ -48,6 +46,8 @@ import {
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
+import { ORCHESTRATION_SIDE_EFFECT_CONSUMERS } from "../../persistence/Services/OrchestrationEventStore.ts";
+import { makeDurableSideEffectReactor } from "../DurableSideEffectReactor.ts";
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
 
@@ -1175,7 +1175,7 @@ const make = Effect.gen(function* () {
 
     yield* providerService
       .sendTurn(sendTurnRequest.value)
-      .pipe(Effect.catchCause(recoverTurnStartFailure), Effect.forkScoped);
+      .pipe(Effect.catchCause(recoverTurnStartFailure));
   });
 
   /**
@@ -1504,47 +1504,95 @@ const make = Effect.gen(function* () {
     }
   });
 
-  const processDomainEventSafely = (event: ProviderIntentEvent) =>
-    processDomainEvent(event).pipe(
-      Effect.catchCause((cause) => {
-        if (Cause.hasInterruptsOnly(cause)) {
-          return Effect.interrupt;
-        }
-        return Effect.logWarning("provider command reactor failed to process event", {
+  const isProviderIntentEvent = (event: OrchestrationEvent): event is ProviderIntentEvent =>
+    event.type === "thread.runtime-mode-set" ||
+    event.type === "thread.turn-start-requested" ||
+    event.type === "thread.turn-interrupt-requested" ||
+    event.type === "thread.approval-response-requested" ||
+    event.type === "thread.user-input-response-requested" ||
+    event.type === "thread.session-stop-requested";
+
+  const surfaceDurableProviderFailure = (
+    event: ProviderIntentEvent,
+    cause: Cause.Cause<unknown>,
+  ) => {
+    const detail = formatFailureDetail(cause);
+    const surfaceFailure =
+      event.type === "thread.runtime-mode-set"
+        ? setThreadSessionLastErrorPreservingLifecycle({
+            threadId: event.payload.threadId,
+            detail,
+            createdAt: event.occurredAt,
+          })
+        : appendProviderFailureActivity({
+            threadId: event.payload.threadId,
+            kind:
+              event.type === "thread.turn-start-requested"
+                ? "provider.turn.start.failed"
+                : event.type === "thread.turn-interrupt-requested"
+                  ? "provider.turn.interrupt.failed"
+                  : event.type === "thread.approval-response-requested"
+                    ? "provider.approval.respond.failed"
+                    : event.type === "thread.user-input-response-requested"
+                      ? "provider.user-input.respond.failed"
+                      : "provider.session.stop.failed",
+            summary:
+              event.type === "thread.turn-start-requested"
+                ? "Provider turn start failed"
+                : event.type === "thread.turn-interrupt-requested"
+                  ? "Provider turn interrupt failed"
+                  : event.type === "thread.approval-response-requested"
+                    ? "Provider approval response failed"
+                    : event.type === "thread.user-input-response-requested"
+                      ? "Provider user input response failed"
+                      : "Provider session stop failed",
+            detail,
+            turnId:
+              event.type === "thread.turn-interrupt-requested"
+                ? (event.payload.turnId ?? null)
+                : null,
+            createdAt: event.payload.createdAt,
+            ...(event.type === "thread.approval-response-requested" ||
+            event.type === "thread.user-input-response-requested"
+              ? { requestId: event.payload.requestId }
+              : {}),
+          }).pipe(Effect.asVoid);
+
+    return surfaceFailure.pipe(
+      Effect.catchCause((surfaceCause) =>
+        Effect.logWarning("failed to surface durable provider command failure", {
           eventType: event.type,
-          cause: Cause.pretty(cause),
-        });
-      }),
+          threadId: event.payload.threadId,
+          cause: Cause.pretty(surfaceCause),
+          originalCause: detail,
+        }),
+      ),
     );
+  };
 
-  const worker = yield* makeKeyedSerialWorker({
-    process: (_threadId: ThreadId, event: ProviderIntentEvent) => processDomainEventSafely(event),
+  const durableReactor = yield* makeDurableSideEffectReactor({
+    consumer: ORCHESTRATION_SIDE_EFFECT_CONSUMERS.providerCommand,
+    decode: (event) => (isProviderIntentEvent(event) ? event : null),
+    key: (event) => event.payload.threadId,
     keyLabel: String,
-    idleTimeToLive: laneIdleTimeToLive,
-  });
-
-  const start: ProviderCommandReactorShape["start"] = Effect.fn("start")(function* () {
-    const processEvent = Effect.fn("processEvent")(function* (event: OrchestrationEvent) {
-      if (
-        event.type === "thread.runtime-mode-set" ||
-        event.type === "thread.turn-start-requested" ||
-        event.type === "thread.turn-interrupt-requested" ||
-        event.type === "thread.approval-response-requested" ||
-        event.type === "thread.user-input-response-requested" ||
-        event.type === "thread.session-stop-requested"
-      ) {
-        return yield* worker.enqueue(event.payload.threadId, event);
-      }
-    });
-
-    yield* Effect.forkScoped(
-      Stream.runForEach(orchestrationEngine.streamDomainEvents, processEvent),
-    );
+    laneIdleTimeToLive,
+    process: processDomainEvent,
+    onFailure: (event, cause) =>
+      surfaceDurableProviderFailure(event, cause).pipe(
+        Effect.andThen(
+          Effect.logWarning("provider command reactor failed to process durable event", {
+            eventType: event.type,
+            threadId: event.payload.threadId,
+            cause: Cause.pretty(cause),
+          }),
+        ),
+      ),
   });
 
   return {
-    start,
-    drain: worker.drain,
+    start: durableReactor.start,
+    drain: durableReactor.drain,
+    shutdown: durableReactor.shutdown,
   } satisfies ProviderCommandReactorShape;
 });
 
