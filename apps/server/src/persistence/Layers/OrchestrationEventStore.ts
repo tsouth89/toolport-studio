@@ -73,6 +73,7 @@ const SideEffectConsumerSchema = Schema.Literals([
   ORCHESTRATION_SIDE_EFFECT_CONSUMERS.providerCommand,
   ORCHESTRATION_SIDE_EFFECT_CONSUMERS.checkpoint,
   ORCHESTRATION_SIDE_EFFECT_CONSUMERS.threadDeletion,
+  ORCHESTRATION_SIDE_EFFECT_CONSUMERS.queuedTurn,
 ]);
 const SideEffectConsumerRequestSchema = Schema.Struct({
   consumer: SideEffectConsumerSchema,
@@ -137,6 +138,8 @@ function sideEffectConsumersForEvent(
       return [ORCHESTRATION_SIDE_EFFECT_CONSUMERS.checkpoint];
     case "thread.deleted":
       return [ORCHESTRATION_SIDE_EFFECT_CONSUMERS.threadDeletion];
+    case "thread.turn-queued":
+      return [ORCHESTRATION_SIDE_EFFECT_CONSUMERS.queuedTurn];
     default:
       return [];
   }

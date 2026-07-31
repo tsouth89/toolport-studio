@@ -81,6 +81,7 @@ export function applyThreadDetailEvent(
           proposedPlans: [],
           activities: [],
           checkpoints: [],
+          queuedTurns: [],
           session: null,
         },
       };
@@ -198,6 +199,36 @@ export function applyThreadDetailEvent(
             : {}),
           runtimeMode: event.payload.runtimeMode,
           interactionMode: event.payload.interactionMode,
+          updatedAt: event.occurredAt,
+        },
+      };
+
+    case "thread.turn-queued":
+      return {
+        kind: "updated",
+        thread: {
+          ...thread,
+          queuedTurns: [
+            ...(thread.queuedTurns ?? []).filter(
+              (entry) => entry.message.messageId !== event.payload.queuedTurn.message.messageId,
+            ),
+            event.payload.queuedTurn,
+          ],
+          updatedAt: event.occurredAt,
+        },
+      };
+
+    case "thread.turn-queue-discarded":
+      return {
+        kind: "updated",
+        thread: {
+          ...thread,
+          queuedTurns:
+            event.payload.messageId === undefined
+              ? []
+              : (thread.queuedTurns ?? []).filter(
+                  (entry) => entry.message.messageId !== event.payload.messageId,
+                ),
           updatedAt: event.occurredAt,
         },
       };
