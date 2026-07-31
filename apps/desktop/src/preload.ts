@@ -106,6 +106,8 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     }),
   openExternal: (url: string) => ipcRenderer.invoke(IpcChannels.OPEN_EXTERNAL_CHANNEL, url),
   openSessionPopOut: (input) => ipcRenderer.invoke(IpcChannels.OPEN_SESSION_POPOUT_CHANNEL, input),
+  setCloseConfirmationRequired: (required) =>
+    ipcRenderer.invoke(IpcChannels.SET_CLOSE_CONFIRMATION_REQUIRED_CHANNEL, required),
   onMenuAction: (listener) => {
     const wrappedListener = (_event: Electron.IpcRendererEvent, action: unknown) => {
       if (typeof action !== "string") return;

@@ -43,6 +43,7 @@ import { useEnvironments } from "~/state/environments";
 import { previewEnvironment } from "~/state/preview";
 import { useAtomQueryRunner } from "~/state/use-atom-query-runner";
 import { useAtomCommand } from "~/state/use-atom-command";
+import { isChatOnlyShellWindow } from "~/shellMode";
 
 import { previewBridge } from "./previewBridge";
 import {
@@ -243,9 +244,29 @@ const raisePreviewAutomationHostError = (
   throw error;
 };
 
+export function shouldMountPreviewAutomationHosts(input: {
+  readonly isElectron: boolean;
+  readonly automationAvailable: boolean;
+  readonly chatOnlyShell: boolean;
+}): boolean {
+  return input.isElectron && input.automationAvailable && !input.chatOnlyShell;
+}
+
 export function PreviewAutomationHosts() {
+  if (
+    !shouldMountPreviewAutomationHosts({
+      isElectron,
+      automationAvailable: Boolean(previewBridge?.automation),
+      chatOnlyShell: isChatOnlyShellWindow(),
+    })
+  ) {
+    return null;
+  }
+  return <PreviewAutomationEnvironmentHosts />;
+}
+
+function PreviewAutomationEnvironmentHosts() {
   const { environments } = useEnvironments();
-  if (!isElectron || !previewBridge?.automation) return null;
   return (
     <>
       {/*

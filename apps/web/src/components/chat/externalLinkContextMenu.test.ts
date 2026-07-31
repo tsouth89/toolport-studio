@@ -10,6 +10,7 @@ function createHarness(selection: "open-in-preview" | "open-external" | "copy-li
   const reportFailure = vi.fn();
 
   return {
+    canOpenInPreview: true,
     showContextMenu,
     openInPreview,
     openExternal,
@@ -39,6 +40,25 @@ describe("external chat link context menu", () => {
     expect(harness.openInPreview).not.toHaveBeenCalled();
     expect(harness.openExternal).not.toHaveBeenCalled();
     expect(harness.copyLink).not.toHaveBeenCalled();
+  });
+
+  it("omits the unavailable integrated browser action in chat-only pop-outs", async () => {
+    const harness = createHarness(null);
+
+    await showExternalLinkContextMenu({
+      href: "https://example.com/docs",
+      position: { x: 12, y: 24 },
+      ...harness,
+      canOpenInPreview: false,
+    });
+
+    expect(harness.showContextMenu).toHaveBeenCalledWith(
+      [
+        { id: "open-external", label: "Open in system browser" },
+        { id: "copy-link", label: "Copy Link" },
+      ],
+      { x: 12, y: 24 },
+    );
   });
 
   it("copies the exact destination without opening it", async () => {

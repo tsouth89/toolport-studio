@@ -32,7 +32,7 @@ const makeRegistry = (now: () => number, httpServer = fakeHttpServer) =>
       Effect.provide(NodeServices.layer),
     );
 
-it.effect("stores only a token hash, resolves the bearer token, and revokes by thread", () =>
+it.effect("resolves the bearer by token hash and revokes it by thread", () =>
   Effect.gen(function* () {
     let timestamp = 1_000;
     const registry = yield* makeRegistry(() => timestamp);
@@ -52,6 +52,73 @@ it.effect("stores only a token hash, resolves the bearer token, and revokes by t
     expect(yield* registry.resolve(token)).toBeUndefined();
 
     timestamp += 2_000;
+  }),
+);
+
+it.effect("reuses one credential when the same provider session attaches twice", () =>
+  Effect.gen(function* () {
+    const registry = yield* makeRegistry(() => 1_000);
+    const request = {
+      threadId: ThreadId.make("thread-duplicate"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+    };
+
+    const [first, second] = yield* Effect.all([registry.issue(request), registry.issue(request)], {
+      concurrency: "unbounded",
+    });
+
+    expect(second.config.authorizationHeader).toBe(first.config.authorizationHeader);
+    expect(second.config.providerSessionId).toBe(first.config.providerSessionId);
+    const token = first.config.authorizationHeader.replace(/^Bearer\s+/, "");
+    expect((yield* registry.resolve(token))?.threadId).toBe(request.threadId);
+  }),
+);
+
+it.effect("rotates and revokes the credential when the provider instance changes", () =>
+  Effect.gen(function* () {
+    const registry = yield* makeRegistry(() => 1_000);
+    const threadId = ThreadId.make("thread-provider-change");
+    const first = yield* registry.issue({
+      threadId,
+      providerInstanceId: ProviderInstanceId.make("codex"),
+    });
+    const second = yield* registry.issue({
+      threadId,
+      providerInstanceId: ProviderInstanceId.make("claude"),
+    });
+    const firstToken = first.config.authorizationHeader.replace(/^Bearer\s+/, "");
+    const secondToken = second.config.authorizationHeader.replace(/^Bearer\s+/, "");
+
+    expect(secondToken).not.toBe(firstToken);
+    expect(yield* registry.resolve(firstToken)).toBeUndefined();
+    expect((yield* registry.resolve(secondToken))?.providerInstanceId).toBe(
+      ProviderInstanceId.make("claude"),
+    );
+  }),
+);
+
+it.effect("keeps production credentials valid until explicit session revocation", () =>
+  Effect.gen(function* () {
+    let timestamp = 1_000;
+    const registry = yield* McpSessionRegistry.__testing
+      .make({ now: () => timestamp })
+      .pipe(
+        Effect.provideService(HttpServer.HttpServer, fakeHttpServer),
+        Effect.provideService(ServerEnvironment.ServerEnvironment, fakeEnvironment),
+        Effect.provide(NodeServices.layer),
+      );
+    const threadId = ThreadId.make("thread-long-lived");
+    const issued = yield* registry.issue({
+      threadId,
+      providerInstanceId: ProviderInstanceId.make("codex"),
+    });
+    const token = issued.config.authorizationHeader.replace(/^Bearer\s+/, "");
+
+    timestamp += 30 * 24 * 60 * 60 * 1_000;
+    expect((yield* registry.resolve(token))?.threadId).toBe(threadId);
+
+    yield* registry.revokeThread(threadId);
+    expect(yield* registry.resolve(token)).toBeUndefined();
   }),
 );
 

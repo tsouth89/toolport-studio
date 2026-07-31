@@ -4,6 +4,16 @@ export const COMPOSER_FOOTER_WIDE_ACTIONS_COMPACT_BREAKPOINT_PX = 720;
 export const COMPOSER_PRIMARY_ACTIONS_COMPACT_BREAKPOINT_PX =
   COMPOSER_FOOTER_WIDE_ACTIONS_COMPACT_BREAKPOINT_PX;
 
+export function hasWideComposerFooterActions(input: {
+  hasActivePendingProgress: boolean;
+  showPlanFollowUpPrompt: boolean;
+  showPlanSidebarToggle: boolean;
+}): boolean {
+  return (
+    input.hasActivePendingProgress || input.showPlanFollowUpPrompt || input.showPlanSidebarToggle
+  );
+}
+
 export function shouldUseCompactComposerFooter(
   width: number | null,
   options?: { hasWideActions?: boolean },

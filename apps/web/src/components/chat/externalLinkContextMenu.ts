@@ -22,6 +22,7 @@ const EXTERNAL_LINK_CONTEXT_MENU_ITEMS = [
 
 interface ShowExternalLinkContextMenuOptions {
   readonly href: string;
+  readonly canOpenInPreview: boolean;
   readonly position: { readonly x: number; readonly y: number };
   readonly showContextMenu: (
     items: readonly ContextMenuItem<ExternalLinkContextMenuAction>[],
@@ -49,6 +50,7 @@ export function resolveExternalWebLinkHost(href: string | undefined): string | n
 
 export async function showExternalLinkContextMenu({
   href,
+  canOpenInPreview,
   position,
   showContextMenu,
   openInPreview,
@@ -56,9 +58,12 @@ export async function showExternalLinkContextMenu({
   copyLink,
   reportFailure,
 }: ShowExternalLinkContextMenuOptions): Promise<void> {
+  const items = canOpenInPreview
+    ? EXTERNAL_LINK_CONTEXT_MENU_ITEMS
+    : EXTERNAL_LINK_CONTEXT_MENU_ITEMS.filter((item) => item.id !== "open-in-preview");
   let action: ExternalLinkContextMenuAction | null;
   try {
-    action = await showContextMenu(EXTERNAL_LINK_CONTEXT_MENU_ITEMS, position);
+    action = await showContextMenu(items, position);
   } catch (cause) {
     reportFailure("show-link-context-menu", cause);
     return;

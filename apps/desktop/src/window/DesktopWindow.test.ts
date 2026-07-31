@@ -37,6 +37,7 @@ import * as DesktopConfig from "../app/DesktopConfig.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopState from "../app/DesktopState.ts";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
+import * as ElectronDialog from "../electron/ElectronDialog.ts";
 import * as ElectronMenu from "../electron/ElectronMenu.ts";
 import * as ElectronShell from "../electron/ElectronShell.ts";
 import * as ElectronTheme from "../electron/ElectronTheme.ts";
@@ -105,6 +106,7 @@ function makeFakeBrowserWindow() {
 
   return {
     window: window as unknown as Electron.BrowserWindow,
+    close: window.close,
     getBounds: window.getBounds,
     getNormalBounds: window.getNormalBounds,
     isDestroyed: window.isDestroyed,
@@ -115,7 +117,9 @@ function makeFakeBrowserWindow() {
     maximize: window.maximize,
     openDevTools: webContents.openDevTools,
     reload: webContents.reload,
+    replaceMisspelling: webContents.replaceMisspelling,
     send: webContents.send,
+    setWindowOpenHandler: webContents.setWindowOpenHandler,
     setAutoHideCursor: window.setAutoHideCursor,
     webContentsListeners,
     windowListeners,
@@ -146,11 +150,23 @@ const desktopServerExposureLayer = Layer.succeed(DesktopServerExposure.DesktopSe
   getAdvertisedEndpoints: Effect.die("unexpected getAdvertisedEndpoints"),
 } satisfies DesktopServerExposure.DesktopServerExposure["Service"]);
 
-const electronMenuLayer = Layer.succeed(ElectronMenu.ElectronMenu, {
-  setApplicationMenu: () => Effect.void,
-  popupTemplate: () => Effect.void,
-  showContextMenu: () => Effect.succeed(Option.none()),
-} satisfies ElectronMenu.ElectronMenu["Service"]);
+const electronDialogLayer = (confirm: () => Effect.Effect<boolean> = () => Effect.succeed(false)) =>
+  Layer.succeed(ElectronDialog.ElectronDialog, {
+    pickFolder: () => Effect.die("unexpected folder picker"),
+    confirm: () => confirm(),
+    showMessageBox: () => Effect.die("unexpected message box"),
+    showErrorBox: () => Effect.die("unexpected error box"),
+  } satisfies ElectronDialog.ElectronDialog["Service"]);
+
+const electronMenuLayer = (contextMenuTemplates?: Electron.MenuItemConstructorOptions[][]) =>
+  Layer.succeed(ElectronMenu.ElectronMenu, {
+    setApplicationMenu: () => Effect.void,
+    popupTemplate: ({ template }) =>
+      Effect.sync(() => {
+        contextMenuTemplates?.push([...template]);
+      }),
+    showContextMenu: () => Effect.succeed(Option.none()),
+  } satisfies ElectronMenu.ElectronMenu["Service"]);
 
 const electronThemeLayer = Layer.succeed(ElectronTheme.ElectronTheme, {
   shouldUseDarkColors: Effect.succeed(false),
@@ -186,6 +202,8 @@ function makeTestLayer(input: {
     bounds: DesktopAppSettings.DesktopWindowBounds,
   ) => Effect.Effect<void>;
   readonly openedExternalUrls?: unknown[];
+  readonly confirmClose?: () => Effect.Effect<boolean>;
+  readonly contextMenuTemplates?: Electron.MenuItemConstructorOptions[][];
 }) {
   let desktopSettings = input.desktopSettings ?? DesktopAppSettings.DEFAULT_DESKTOP_SETTINGS;
   const desktopAppSettingsLayer = Layer.succeed(DesktopAppSettings.DesktopAppSettings, {
@@ -248,7 +266,8 @@ function makeTestLayer(input: {
         desktopAppSettingsLayer,
         desktopServerExposureLayer,
         DesktopState.layer,
-        electronMenuLayer,
+        electronDialogLayer(input.confirmClose),
+        electronMenuLayer(input.contextMenuTemplates),
         Layer.succeed(ElectronShell.ElectronShell, {
           openExternal: (url) =>
             Effect.sync(() => {
@@ -345,7 +364,8 @@ const makeSplashScenario = (createOutcomes: readonly (Electron.BrowserWindow | n
           desktopEnvironmentLayer,
           DesktopAppSettings.layerTest(),
           desktopServerExposureLayer,
-          electronMenuLayer,
+          electronDialogLayer(),
+          electronMenuLayer(),
           Layer.succeed(ElectronShell.ElectronShell, {
             openExternal: () => Effect.succeed(true),
             copyText: () => Effect.void,
@@ -404,6 +424,106 @@ describe("DesktopWindow", () => {
     );
   });
 
+  it.effect(
+    "enables spellcheck, spelling suggestions, and external links in session pop-outs",
+    () =>
+      Effect.gen(function* () {
+        const fakeWindow = makeFakeBrowserWindow();
+        const createCount = yield* Ref.make(0);
+        const mainWindow = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
+        const createdWindowOptions: Electron.BrowserWindowConstructorOptions[] = [];
+        const contextMenuTemplates: Electron.MenuItemConstructorOptions[][] = [];
+        const openedExternalUrls: unknown[] = [];
+        const layer = makeTestLayer({
+          window: fakeWindow.window,
+          createCount,
+          mainWindow,
+          createdWindowOptions,
+          contextMenuTemplates,
+          openedExternalUrls,
+        });
+
+        yield* Effect.gen(function* () {
+          const desktopWindow = yield* DesktopWindow.DesktopWindow;
+          yield* desktopWindow.createOrFocusSessionPopOut({
+            environmentId: "environment",
+            threadId: "thread",
+          });
+
+          assert.isTrue(createdWindowOptions[0]?.webPreferences?.spellcheck);
+          assert.isFalse(createdWindowOptions[0]?.webPreferences?.webviewTag);
+
+          const contextMenu = fakeWindow.webContentsListeners.get("context-menu");
+          if (!contextMenu) {
+            return yield* Effect.die("context-menu listener was not registered");
+          }
+
+          let prevented = false;
+          contextMenu(
+            {
+              preventDefault: () => {
+                prevented = true;
+              },
+            },
+            {
+              misspelledWord: "teh",
+              dictionarySuggestions: ["the"],
+              linkURL: "",
+              mediaType: "none",
+              x: 0,
+              y: 0,
+              editFlags: {
+                canCut: false,
+                canCopy: true,
+                canPaste: true,
+                canSelectAll: true,
+              },
+            },
+          );
+          yield* Effect.promise(() => Promise.resolve());
+
+          assert.isTrue(prevented);
+          assert.equal(contextMenuTemplates.length, 1);
+          const suggestion = contextMenuTemplates[0]?.[0];
+          assert.equal(suggestion?.label, "the");
+          (suggestion?.click as (() => void) | undefined)?.();
+          assert.deepEqual(fakeWindow.replaceMisspelling.mock.calls, [["the"]]);
+
+          const openHandler = fakeWindow.setWindowOpenHandler.mock.calls[0]?.[0] as
+            | ((details: { readonly url: string }) => { readonly action: string })
+            | undefined;
+          if (!openHandler) {
+            return yield* Effect.die("window-open handler was not registered");
+          }
+          assert.deepEqual(openHandler({ url: "https://example.com/from-pop-out" }), {
+            action: "deny",
+          });
+          yield* Effect.promise(() => Promise.resolve());
+          assert.deepEqual(openedExternalUrls, ["https://example.com/from-pop-out"]);
+
+          const willNavigate = fakeWindow.webContentsListeners.get("will-navigate");
+          if (!willNavigate) {
+            return yield* Effect.die("will-navigate listener was not registered");
+          }
+          let navigationPrevented = false;
+          willNavigate(
+            {
+              preventDefault: () => {
+                navigationPrevented = true;
+              },
+            },
+            "https://example.com/same-window-pop-out",
+          );
+          yield* Effect.promise(() => Promise.resolve());
+          assert.isTrue(navigationPrevented);
+          assert.deepEqual(openedExternalUrls, [
+            "https://example.com/from-pop-out",
+            "https://example.com/same-window-pop-out",
+          ]);
+        }).pipe(Effect.provide(layer));
+      }),
+  );
+
   it.effect("does not open a development window until the backend is ready", () =>
     Effect.gen(function* () {
       const fakeWindow = makeFakeBrowserWindow();
@@ -432,6 +552,74 @@ describe("DesktopWindow", () => {
         assert.deepEqual(fakeWindow.setAutoHideCursor.mock.calls, [[false]]);
         assert.deepEqual(fakeWindow.loadURL.mock.calls[0], ["toolport-studio-dev://app/"]);
         assert.equal(fakeWindow.openDevTools.mock.calls.length, 1);
+      }).pipe(Effect.provide(layer));
+    }),
+  );
+
+  it.effect("confirms before closing the main window while a task is running", () =>
+    Effect.gen(function* () {
+      const fakeWindow = makeFakeBrowserWindow();
+      const createCount = yield* Ref.make(0);
+      const mainWindow = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
+      let confirmCount = 0;
+      const layer = makeTestLayer({
+        window: fakeWindow.window,
+        createCount,
+        mainWindow,
+        confirmClose: () =>
+          Effect.sync(() => {
+            confirmCount += 1;
+            return true;
+          }),
+      });
+
+      yield* Effect.gen(function* () {
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+        yield* desktopWindow.handleBackendReady(new URL("http://127.0.0.1:3773"));
+        yield* desktopWindow.setCloseConfirmationRequired(true);
+
+        const close = fakeWindow.windowListeners.get("close");
+        if (!close) {
+          return yield* Effect.die("window close listener was not registered");
+        }
+        const event = { preventDefault: vi.fn() };
+        close(event);
+
+        assert.equal(event.preventDefault.mock.calls.length, 1);
+        yield* Effect.promise(() =>
+          vi.waitFor(() => {
+            assert.equal(confirmCount, 1);
+            assert.equal(fakeWindow.close.mock.calls.length, 1);
+          }),
+        );
+      }).pipe(Effect.provide(layer));
+    }),
+  );
+
+  it.effect("closes immediately when no task is running", () =>
+    Effect.gen(function* () {
+      const fakeWindow = makeFakeBrowserWindow();
+      const createCount = yield* Ref.make(0);
+      const mainWindow = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
+      const layer = makeTestLayer({
+        window: fakeWindow.window,
+        createCount,
+        mainWindow,
+      });
+
+      yield* Effect.gen(function* () {
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+        yield* desktopWindow.handleBackendReady(new URL("http://127.0.0.1:3773"));
+
+        const close = fakeWindow.windowListeners.get("close");
+        if (!close) {
+          return yield* Effect.die("window close listener was not registered");
+        }
+        const event = { preventDefault: vi.fn() };
+        close(event);
+
+        assert.equal(event.preventDefault.mock.calls.length, 0);
+        assert.equal(fakeWindow.close.mock.calls.length, 0);
       }).pipe(Effect.provide(layer));
     }),
   );

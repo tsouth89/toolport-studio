@@ -4,9 +4,22 @@ import {
   COMPOSER_FOOTER_COMPACT_BREAKPOINT_PX,
   COMPOSER_FOOTER_WIDE_ACTIONS_COMPACT_BREAKPOINT_PX,
   COMPOSER_PRIMARY_ACTIONS_COMPACT_BREAKPOINT_PX,
+  hasWideComposerFooterActions,
   shouldUseCompactComposerPrimaryActions,
   shouldUseCompactComposerFooter,
 } from "./composerFooterLayout";
+
+describe("hasWideComposerFooterActions", () => {
+  it("treats the Tasks control as a wide footer state", () => {
+    expect(
+      hasWideComposerFooterActions({
+        hasActivePendingProgress: false,
+        showPlanFollowUpPrompt: false,
+        showPlanSidebarToggle: true,
+      }),
+    ).toBe(true);
+  });
+});
 
 describe("shouldUseCompactComposerFooter", () => {
   it("stays expanded without a measured width", () => {
