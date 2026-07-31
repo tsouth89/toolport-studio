@@ -20,6 +20,7 @@ export const ORCHESTRATION_SIDE_EFFECT_CONSUMERS = {
   providerCommand: "side-effect.provider-command",
   checkpoint: "side-effect.checkpoint",
   threadDeletion: "side-effect.thread-deletion",
+  queuedTurn: "side-effect.queued-turn",
 } as const;
 
 export type OrchestrationSideEffectConsumer =

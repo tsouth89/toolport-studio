@@ -2,6 +2,7 @@ import {
   ApprovalRequestId,
   type ChatAttachment,
   type OrchestrationEvent,
+  OrchestrationQueuedTurn,
   type OrchestrationSessionStatus,
   ThreadId,
 } from "@toolport-studio/contracts";
@@ -10,6 +11,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
@@ -73,6 +75,7 @@ export const ORCHESTRATION_PROJECTOR_NAMES = {
 
 type ProjectorName =
   (typeof ORCHESTRATION_PROJECTOR_NAMES)[keyof typeof ORCHESTRATION_PROJECTOR_NAMES];
+const encodeQueuedTurnJson = Schema.encodeSync(Schema.fromJsonString(OrchestrationQueuedTurn));
 
 /**
  * Turn state to settle still-running turns with when their session leaves the
@@ -836,6 +839,74 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             updatedAt: event.occurredAt,
           });
           yield* refreshThreadShellSummary(event.payload.threadId);
+          return;
+        }
+
+        case "thread.turn-queued": {
+          yield* sql`
+              INSERT INTO projection_thread_queued_turns (
+                thread_id,
+                message_id,
+                queued_turn_json,
+                created_at
+              )
+              VALUES (
+                ${event.payload.threadId},
+                ${event.payload.queuedTurn.message.messageId},
+                ${encodeQueuedTurnJson(event.payload.queuedTurn)},
+                ${event.payload.queuedTurn.createdAt}
+              )
+              ON CONFLICT (thread_id, message_id)
+              DO UPDATE SET
+                queued_turn_json = excluded.queued_turn_json,
+                created_at = excluded.created_at
+            `.pipe(
+            Effect.mapError(
+              toPersistenceSqlError("ProjectionPipeline.threadTurnQueued:upsertQueuedTurn"),
+            ),
+          );
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isSome(existingRow)) {
+            yield* projectionThreadRepository.upsert({
+              ...existingRow.value,
+              updatedAt: event.occurredAt,
+            });
+          }
+          return;
+        }
+
+        case "thread.turn-queue-discarded": {
+          if (event.payload.messageId === undefined) {
+            yield* sql`
+                DELETE FROM projection_thread_queued_turns
+                WHERE thread_id = ${event.payload.threadId}
+              `.pipe(
+              Effect.mapError(
+                toPersistenceSqlError("ProjectionPipeline.threadTurnQueueDiscarded:deleteAll"),
+              ),
+            );
+          } else {
+            yield* sql`
+                DELETE FROM projection_thread_queued_turns
+                WHERE thread_id = ${event.payload.threadId}
+                  AND message_id = ${event.payload.messageId}
+              `.pipe(
+              Effect.mapError(
+                toPersistenceSqlError("ProjectionPipeline.threadTurnQueueDiscarded:deleteOne"),
+              ),
+            );
+          }
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isSome(existingRow)) {
+            yield* projectionThreadRepository.upsert({
+              ...existingRow.value,
+              updatedAt: event.occurredAt,
+            });
+          }
           return;
         }
 

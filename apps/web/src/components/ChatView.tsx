@@ -4,6 +4,7 @@ import {
   defaultInstanceIdForDriver,
   type EnvironmentId,
   type MessageId,
+  type OrchestrationQueuedTurn,
   type ModelSelection,
   type ProjectScript,
   type ProjectId,
@@ -277,17 +278,12 @@ import {
   resolveSendEnvMode,
   revokeBlobPreviewUrl,
   revokeUserMessagePreviewUrls,
-  shouldAutoDrainQueuedTurn,
   waitForStartedServerThread,
 } from "./ChatView.logic";
 import { useLocalStorage } from "~/hooks/useLocalStorage";
 import { useComposerHandleContext } from "../composerHandleContext";
 import { sanitizeThreadErrorMessage } from "~/rpc/transportError";
-import {
-  EMPTY_THREAD_TURN_QUEUE,
-  resolveComposerSubmitIntent,
-  useThreadTurnQueueStore,
-} from "../threadTurnQueueStore";
+import { resolveComposerSubmitIntent } from "../threadTurnQueueStore";
 import { RightPanelSheet } from "./RightPanelSheet";
 import { previewEnvironment } from "../state/preview";
 import { useAtomCommand } from "../state/use-atom-command";
@@ -319,6 +315,7 @@ const EMPTY_ACTIVITIES: OrchestrationThreadActivity[] = [];
 const EMPTY_PROVIDERS: ServerProvider[] = [];
 const EMPTY_PROVIDER_SKILLS: ServerProvider["skills"] = [];
 const EMPTY_PENDING_USER_INPUT_ANSWERS: Record<string, PendingUserInputDraftAnswer> = {};
+const EMPTY_QUEUED_TURNS: ReadonlyArray<OrchestrationQueuedTurn> = [];
 function useDraftHeroLayoutTransition(isDraftHeroState: boolean) {
   const transitionGroupRef = useRef<HTMLDivElement | null>(null);
   const composerAnchorRef = useRef<HTMLDivElement | null>(null);
@@ -1248,6 +1245,13 @@ function ChatViewContent(props: ChatViewProps) {
     reportFailure: false,
   });
   const startThreadTurn = useAtomCommand(threadEnvironment.startTurn, { reportFailure: false });
+  const queueThreadTurn = useAtomCommand(threadEnvironment.queueTurn, { reportFailure: false });
+  const discardQueuedTurns = useAtomCommand(threadEnvironment.discardQueuedTurns, {
+    reportFailure: false,
+  });
+  const flushQueuedTurn = useAtomCommand(threadEnvironment.flushQueuedTurn, {
+    reportFailure: false,
+  });
   const interruptThreadTurn = useAtomCommand(threadEnvironment.interruptTurn, {
     reportFailure: false,
   });
@@ -1665,15 +1669,8 @@ function ChatViewContent(props: ChatViewProps) {
     });
   }, [activeThreadKey, existingOpenTerminalThreadKeys, terminalUiState.terminalOpen]);
   const latestTurnSettled = isLatestTurnSettled(activeLatestTurn, activeThread?.session ?? null);
-  const activeThreadQueueKey = activeThreadId ? String(activeThreadId) : null;
-  const activeThreadQueueItems = useThreadTurnQueueStore((state) =>
-    activeThreadQueueKey
-      ? (state.queuesByThreadId[activeThreadQueueKey] ?? EMPTY_THREAD_TURN_QUEUE)
-      : EMPTY_THREAD_TURN_QUEUE,
-  );
+  const activeThreadQueueItems = activeThread?.queuedTurns ?? EMPTY_QUEUED_TURNS;
   const activeThreadQueueCount = activeThreadQueueItems.length;
-  const queueFlushInFlightRef = useRef(false);
-  const sendQueuedItemNowRef = useRef<(itemId: string) => void>(() => {});
   const activeProjectRef = activeThread
     ? scopeProjectRef(activeThread.environmentId, activeThread.projectId)
     : null;
@@ -4638,11 +4635,6 @@ function ChatViewContent(props: ChatViewProps) {
     options?: {
       readonly intent?: "auto" | "queue" | "steer" | "force";
       readonly ctrlOrMetaKey?: boolean;
-      /**
-       * When set, this send is draining a queued item. On success the id is
-       * removed; on failure the item stays queued (no composer restore).
-       */
-      readonly queuedItemId?: string;
     },
   ): Promise<boolean> => {
     e?.preventDefault();
@@ -4692,34 +4684,19 @@ function ChatViewContent(props: ChatViewProps) {
     // still running). Ctrl/Cmd+Enter or Send injects into the live turn.
     // Stop cancels the live turn; queued messages are kept unless cleared.
     if (phase === "running" && !hasSendableContent && activeThreadQueueCount > 0) {
-      const head = useThreadTurnQueueStore.getState().list(activeThread.id)[0];
+      const head = activeThreadQueueItems[0];
       if (head) {
-        sendQueuedItemNowRef.current(head.id);
+        void flushQueuedTurn({
+          environmentId,
+          input: {
+            threadId: activeThread.id,
+            messageId: head.message.messageId,
+          },
+        });
         return true;
       }
     }
-    if (submitIntent === "queue" && phase === "running") {
-      if (!hasSendableContent) {
-        return false;
-      }
-      useThreadTurnQueueStore.getState().enqueue(activeThread.id, {
-        text: promptForSend,
-        images: composerImages.map((image) => ({ ...image })),
-        terminalContexts: sendableComposerTerminalContexts.map((context) => ({ ...context })),
-        elementContexts: composerElementContexts.map((context) => ({ ...context })),
-        previewAnnotations: composerPreviewAnnotations.map((annotation) => ({ ...annotation })),
-        reviewComments: composerReviewComments.map((comment) => ({ ...comment })),
-      });
-      promptRef.current = "";
-      clearComposerDraftContent(composerDraftTarget);
-      composerImagesRef.current = [];
-      composerTerminalContextsRef.current = [];
-      composerElementContextsRef.current = [];
-      composerPreviewAnnotationsRef.current = [];
-      composerReviewCommentsRef.current = [];
-      composerRef.current?.resetCursorState();
-      return true;
-    }
+    const shouldQueueTurn = submitIntent === "queue" && phase === "running";
     if (showPlanFollowUpPrompt && activeProposedPlan) {
       const followUp = resolvePlanFollowUpSubmission({
         draftText: trimmed,
@@ -4811,7 +4788,9 @@ function ChatViewContent(props: ChatViewProps) {
       void dockTransition.catch(() => resolveDockStarted?.());
       await dockStarted;
     }
-    beginLocalDispatch({ preparingWorktree: Boolean(baseBranchForWorktree) });
+    if (!shouldQueueTurn) {
+      beginLocalDispatch({ preparingWorktree: Boolean(baseBranchForWorktree) });
+    }
 
     const composerImagesSnapshot = [...composerImages];
     const composerTerminalContextsSnapshot = [...sendableComposerTerminalContexts];
@@ -4875,23 +4854,25 @@ function ChatViewContent(props: ChatViewProps) {
       messageId: null,
     });
     scrollToEnd(false);
-    setOptimisticUserMessagesByThreadId((existing) => {
-      const key = String(threadIdForSend);
-      const nextMessage: ChatMessage = {
-        id: messageIdForSend,
-        role: "user",
-        text: outgoingMessageText,
-        ...(optimisticAttachments.length > 0 ? { attachments: optimisticAttachments } : {}),
-        turnId: null,
-        createdAt: messageCreatedAt,
-        updatedAt: messageCreatedAt,
-        streaming: false,
-      };
-      return {
-        ...existing,
-        [key]: [...(existing[key] ?? []), nextMessage],
-      };
-    });
+    if (!shouldQueueTurn) {
+      setOptimisticUserMessagesByThreadId((existing) => {
+        const key = String(threadIdForSend);
+        const nextMessage: ChatMessage = {
+          id: messageIdForSend,
+          role: "user",
+          text: outgoingMessageText,
+          ...(optimisticAttachments.length > 0 ? { attachments: optimisticAttachments } : {}),
+          turnId: null,
+          createdAt: messageCreatedAt,
+          updatedAt: messageCreatedAt,
+          streaming: false,
+        };
+        return {
+          ...existing,
+          [key]: [...(existing[key] ?? []), nextMessage],
+        };
+      });
+    }
     setThreadError(threadIdForSend, null);
     if (expiredTerminalContextCount > 0) {
       const toastCopy = buildExpiredTerminalContextToastCopy(
@@ -5008,25 +4989,35 @@ function ChatViewContent(props: ChatViewProps) {
                 : {}),
             }
           : undefined;
-      beginLocalDispatch({ preparingWorktree: false });
-      const startResult = await startThreadTurn({
-        environmentId,
-        input: {
-          threadId: threadIdForSend,
-          message: {
-            messageId: messageIdForSend,
-            role: "user",
-            text: outgoingMessageText,
-            attachments: turnAttachmentsResult.value,
-          },
-          modelSelection: ctxSelectedModelSelection,
-          titleSeed: title,
-          runtimeMode,
-          interactionMode,
-          ...(bootstrap ? { bootstrap } : {}),
-          createdAt: messageCreatedAt,
+      if (!shouldQueueTurn) {
+        beginLocalDispatch({ preparingWorktree: false });
+      }
+      const turnInput = {
+        threadId: threadIdForSend,
+        message: {
+          messageId: messageIdForSend,
+          role: "user" as const,
+          text: outgoingMessageText,
+          attachments: turnAttachmentsResult.value,
         },
-      });
+        modelSelection: ctxSelectedModelSelection,
+        titleSeed: title,
+        runtimeMode,
+        interactionMode,
+        createdAt: messageCreatedAt,
+      };
+      const startResult = shouldQueueTurn
+        ? await queueThreadTurn({
+            environmentId,
+            input: turnInput,
+          })
+        : await startThreadTurn({
+            environmentId,
+            input: {
+              ...turnInput,
+              ...(bootstrap ? { bootstrap } : {}),
+            },
+          });
       if (startResult._tag === "Failure") {
         failure = startResult;
       } else {
@@ -5038,7 +5029,6 @@ function ChatViewContent(props: ChatViewProps) {
     }
 
     const preparationWasCancelled = sendPreparationAbort.signal.aborted;
-    const drainingQueuedItemId = options?.queuedItemId;
     if (failure !== null || (preparationWasCancelled && !turnStartSucceeded)) {
       const optimisticKey = String(threadIdForSend);
       setOptimisticUserMessagesByThreadId((existing) => {
@@ -5060,7 +5050,6 @@ function ChatViewContent(props: ChatViewProps) {
       // Queue drain failures keep the item queued; do not shove text into the
       // composer (that would block the next drain and look like a draft).
       if (
-        drainingQueuedItemId === undefined &&
         activeThreadIdRef.current === threadIdForSend &&
         promptRef.current.length === 0 &&
         composerImagesRef.current.length === 0 &&
@@ -5088,16 +5077,6 @@ function ChatViewContent(props: ChatViewProps) {
           detectTrigger: true,
         });
       }
-      if (drainingQueuedItemId !== undefined) {
-        clearComposerDraftContent(composerDraftTarget);
-        promptRef.current = "";
-        composerImagesRef.current = [];
-        composerTerminalContextsRef.current = [];
-        composerElementContextsRef.current = [];
-        composerPreviewAnnotationsRef.current = [];
-        composerReviewCommentsRef.current = [];
-        composerRef.current?.resetCursorState();
-      }
       if (failure !== null && !preparationWasCancelled && !isAtomCommandInterrupted(failure)) {
         const error = squashAtomCommandFailure(failure);
         const detail = error instanceof Error ? error.message : "Failed to send message.";
@@ -5118,9 +5097,6 @@ function ChatViewContent(props: ChatViewProps) {
       sendPreparationAbortByThreadIdRef.current.delete(activeSendThreadKey);
     }
     sendInFlightThreadIdsRef.current.delete(activeSendThreadKey);
-    if (turnStartSucceeded && drainingQueuedItemId !== undefined) {
-      useThreadTurnQueueStore.getState().remove(threadIdForSend, drainingQueuedItemId);
-    }
     if (!turnStartSucceeded) {
       setDockedDraftHeroThreadKey((currentThreadKey) =>
         currentThreadKey === activeThreadKey ? null : currentThreadKey,
@@ -5210,114 +5186,18 @@ function ChatViewContent(props: ChatViewProps) {
     setThreadError,
   ]);
 
-  /** Load a queued item into the composer/refs without removing it from the queue. */
-  const applyQueuedItemToComposer = useCallback(
-    (item: {
-      readonly text: string;
-      readonly images: ReadonlyArray<ComposerImageAttachment>;
-      readonly terminalContexts: ReadonlyArray<TerminalContextDraft>;
-      readonly elementContexts: ReadonlyArray<ElementContextDraft>;
-      readonly previewAnnotations: ReadonlyArray<PreviewAnnotationPayload>;
-      readonly reviewComments: ReadonlyArray<ReviewCommentContext>;
-    }) => {
-      clearComposerDraftContent(composerDraftTarget);
-      setComposerDraftPrompt(composerDraftTarget, item.text);
-      if (item.images.length > 0) {
-        addComposerDraftImages(composerDraftTarget, [...item.images]);
-      }
-      setComposerDraftTerminalContexts(composerDraftTarget, [...item.terminalContexts]);
-      setComposerDraftElementContexts(composerDraftTarget, [...item.elementContexts]);
-      setComposerDraftPreviewAnnotations(composerDraftTarget, [...item.previewAnnotations]);
-      setComposerDraftReviewComments(composerDraftTarget, [...item.reviewComments]);
-      promptRef.current = item.text;
-      composerImagesRef.current = [...item.images];
-      composerTerminalContextsRef.current = [...item.terminalContexts];
-      composerElementContextsRef.current = [...item.elementContexts];
-      composerPreviewAnnotationsRef.current = [...item.previewAnnotations];
-      composerReviewCommentsRef.current = [...item.reviewComments];
-      composerRef.current?.resetCursorState({
-        prompt: item.text,
-        cursor: item.text.length,
-        detectTrigger: false,
-      });
-    },
-    [
-      addComposerDraftImages,
-      clearComposerDraftContent,
-      composerDraftTarget,
-      setComposerDraftElementContexts,
-      setComposerDraftPreviewAnnotations,
-      setComposerDraftPrompt,
-      setComposerDraftReviewComments,
-      setComposerDraftTerminalContexts,
-    ],
-  );
-
-  /** Pull a queued item into the composer and send it now (steer if live). */
   const sendQueuedItemNow = useCallback(
-    (itemId: string) => {
+    (messageId: MessageId) => {
       if (!activeThreadId) {
         return;
       }
-      const item = useThreadTurnQueueStore
-        .getState()
-        .list(activeThreadId)
-        .find((entry) => entry.id === itemId);
-      if (!item) {
-        return;
-      }
-      // Keep the item until onSend succeeds (queuedItemId → remove).
-      applyQueuedItemToComposer(item);
-      const intent = phase === "running" ? "steer" : "force";
-      void onSendRef.current(undefined, { intent, queuedItemId: item.id });
+      void flushQueuedTurn({
+        environmentId,
+        input: { threadId: activeThreadId, messageId },
+      });
     },
-    [activeThreadId, applyQueuedItemToComposer, phase],
+    [activeThreadId, environmentId, flushQueuedTurn],
   );
-  sendQueuedItemNowRef.current = sendQueuedItemNow;
-
-  // Drain queued turns once the live turn is fully settled. Stop keeps the queue.
-  useEffect(() => {
-    if (!activeThreadId || !activeThread) {
-      return;
-    }
-    const threadSendKey = String(activeThreadId);
-    const composerReady = Boolean(composerRef.current?.getSendContext()?.providerAvailable);
-    if (
-      !shouldAutoDrainQueuedTurn({
-        queueCount: activeThreadQueueCount,
-        phase,
-        queueFlushInFlight: queueFlushInFlightRef.current,
-        sendInFlight: sendInFlightThreadIdsRef.current.has(threadSendKey),
-        isSendBusy,
-        isConnecting,
-        // Never overwrite a new draft the user started while the queued
-        // turn was waiting. The queue remains visible for explicit sending.
-        composerHasDraftContent,
-        composerReady,
-      })
-    ) {
-      return;
-    }
-    const next = useThreadTurnQueueStore.getState().peek(activeThreadId);
-    if (!next) {
-      return;
-    }
-    queueFlushInFlightRef.current = true;
-    applyQueuedItemToComposer(next);
-    // peek → send → remove on success (queuedItemId). Failure leaves the queue.
-    void onSendRef.current(undefined, { intent: "force", queuedItemId: next.id }).finally(() => {
-      queueFlushInFlightRef.current = false;
-    });
-  }, [
-    activeThread,
-    activeThreadId,
-    activeThreadQueueCount,
-    applyQueuedItemToComposer,
-    composerHasDraftContent,
-    isConnecting,
-    isSendBusy,
-    phase,
-  ]);
 
   const onRespondToApproval = useCallback(
     async (requestId: ApprovalRequestId, decision: ProviderApprovalDecision) => {
@@ -6330,7 +6210,10 @@ function ChatViewContent(props: ChatViewProps) {
                                 type="button"
                                 className="shrink-0 rounded-md px-2 py-0.5 text-foreground/80 hover:bg-muted"
                                 onClick={() => {
-                                  useThreadTurnQueueStore.getState().clear(activeThreadId);
+                                  void discardQueuedTurns({
+                                    environmentId,
+                                    input: { threadId: activeThreadId },
+                                  });
                                 }}
                               >
                                 Clear queue
@@ -6339,26 +6222,26 @@ function ChatViewContent(props: ChatViewProps) {
                             <ul className="space-y-1">
                               {activeThreadQueueItems.map((item, index) => {
                                 const preview =
-                                  item.text.trim().length > 0
-                                    ? item.text.trim().slice(0, 72)
-                                    : item.images.length > 0
-                                      ? `${item.images.length} image${item.images.length === 1 ? "" : "s"}`
+                                  item.message.text.trim().length > 0
+                                    ? item.message.text.trim().slice(0, 72)
+                                    : item.message.attachments.length > 0
+                                      ? `${item.message.attachments.length} image${item.message.attachments.length === 1 ? "" : "s"}`
                                       : "Empty message";
                                 return (
                                   <li
-                                    key={item.id}
+                                    key={item.message.messageId}
                                     className="flex items-center justify-between gap-2 rounded-md bg-muted/30 px-2 py-1 text-[11px] text-foreground/80"
                                   >
                                     <span className="min-w-0 truncate">
                                       {index + 1}. {preview}
-                                      {item.text.trim().length > 72 ? "…" : ""}
+                                      {item.message.text.trim().length > 72 ? "…" : ""}
                                     </span>
                                     <span className="flex shrink-0 items-center gap-1">
                                       <button
                                         type="button"
                                         className="rounded px-1.5 py-0.5 font-medium text-primary hover:bg-muted"
                                         onClick={() => {
-                                          sendQueuedItemNow(item.id);
+                                          sendQueuedItemNow(item.message.messageId);
                                         }}
                                       >
                                         Send now
@@ -6367,9 +6250,13 @@ function ChatViewContent(props: ChatViewProps) {
                                         type="button"
                                         className="rounded px-1.5 py-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
                                         onClick={() => {
-                                          useThreadTurnQueueStore
-                                            .getState()
-                                            .remove(activeThreadId, item.id);
+                                          void discardQueuedTurns({
+                                            environmentId,
+                                            input: {
+                                              threadId: activeThreadId,
+                                              messageId: item.message.messageId,
+                                            },
+                                          });
                                         }}
                                       >
                                         Remove

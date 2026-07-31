@@ -4,7 +4,13 @@ import {
   scopeThreadRef,
 } from "@toolport-studio/client-runtime/environment";
 import type { VcsStatusResult } from "@toolport-studio/contracts";
-import { CloudIcon, FolderGit2Icon, GitPullRequestIcon, TerminalIcon } from "lucide-react";
+import {
+  CloudIcon,
+  FolderGit2Icon,
+  GitPullRequestIcon,
+  ListTodoIcon,
+  TerminalIcon,
+} from "lucide-react";
 import { useMemo } from "react";
 import { useEnvironment, usePrimaryEnvironmentId } from "../state/environments";
 import { useProject } from "../state/entities";
@@ -314,12 +320,31 @@ export function ThreadRowTrailingStatus({ thread }: { thread: SidebarThreadSumma
   const threadEnvironmentLabel = isRemoteThread ? (remoteEnvLabel ?? "Remote") : null;
   const terminalStatus = terminalStatusFromRunningIds(runningTerminalIds);
 
-  if (!terminalStatus && !isRemoteThread) {
+  const queuedTurnCount = thread.queuedTurnCount ?? 0;
+  if (!terminalStatus && !isRemoteThread && queuedTurnCount === 0) {
     return null;
   }
 
   return (
     <span className="inline-flex shrink-0 items-center gap-1.5">
+      {queuedTurnCount > 0 ? (
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <span
+                role="img"
+                aria-label={`${queuedTurnCount} queued ${queuedTurnCount === 1 ? "message" : "messages"}`}
+                className="inline-flex items-center justify-center text-primary"
+              />
+            }
+          >
+            <ListTodoIcon className="size-3" />
+          </TooltipTrigger>
+          <TooltipPopup side="top">
+            {queuedTurnCount} queued {queuedTurnCount === 1 ? "message" : "messages"}
+          </TooltipPopup>
+        </Tooltip>
+      ) : null}
       {terminalStatus ? (
         <Tooltip>
           <TooltipTrigger

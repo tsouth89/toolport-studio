@@ -43,6 +43,9 @@ export type UpdateThreadMetadataInput = CommandInput<"thread.meta.update">;
 export type SetThreadRuntimeModeInput = CommandInput<"thread.runtime-mode.set">;
 export type SetThreadInteractionModeInput = CommandInput<"thread.interaction-mode.set">;
 export type StartThreadTurnInput = CommandInput<"thread.turn.start">;
+export type QueueThreadTurnInput = CommandInput<"thread.turn.queue">;
+export type DiscardQueuedThreadTurnsInput = CommandInput<"thread.turn.queue.discard">;
+export type FlushQueuedThreadTurnInput = CommandInput<"thread.turn.queue.flush">;
 export type InterruptThreadTurnInput = CommandInput<"thread.turn.interrupt">;
 export type RespondToThreadApprovalInput = CommandInput<"thread.approval.respond">;
 export type RespondToThreadUserInputInput = CommandInput<"thread.user-input.respond">;
@@ -241,6 +244,40 @@ export const startThreadTurn: (input: StartThreadTurnInput) => CommandEffect = E
     createdAt: metadata.createdAt,
   });
 });
+
+export const queueThreadTurn: (input: QueueThreadTurnInput) => CommandEffect = Effect.fn(
+  "EnvironmentCommands.queueThreadTurn",
+)(function* (input) {
+  const metadata = yield* timestampedCommandMetadata(input);
+  return yield* dispatch({
+    ...input,
+    type: "thread.turn.queue",
+    commandId: metadata.commandId,
+    createdAt: metadata.createdAt,
+  });
+});
+
+export const discardQueuedThreadTurns: (input: DiscardQueuedThreadTurnsInput) => CommandEffect =
+  Effect.fn("EnvironmentCommands.discardQueuedThreadTurns")(function* (input) {
+    const metadata = yield* timestampedCommandMetadata(input);
+    return yield* dispatch({
+      ...input,
+      type: "thread.turn.queue.discard",
+      commandId: metadata.commandId,
+      createdAt: metadata.createdAt,
+    });
+  });
+
+export const flushQueuedThreadTurn: (input: FlushQueuedThreadTurnInput) => CommandEffect =
+  Effect.fn("EnvironmentCommands.flushQueuedThreadTurn")(function* (input) {
+    const metadata = yield* timestampedCommandMetadata(input);
+    return yield* dispatch({
+      ...input,
+      type: "thread.turn.queue.flush",
+      commandId: metadata.commandId,
+      createdAt: metadata.createdAt,
+    });
+  });
 
 export const interruptThreadTurn: (input: InterruptThreadTurnInput) => CommandEffect = Effect.fn(
   "EnvironmentCommands.interruptThreadTurn",

@@ -130,6 +130,21 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       `;
 
       yield* sql`
+        INSERT INTO projection_thread_queued_turns (
+          thread_id,
+          message_id,
+          queued_turn_json,
+          created_at
+        )
+        VALUES (
+          'thread-1',
+          'queued-message-1',
+          '{"message":{"messageId":"queued-message-1","role":"user","text":"run next","attachments":[]},"runtimeMode":"full-access","interactionMode":"default","createdAt":"2026-02-24T00:00:04.500Z"}',
+          '2026-02-24T00:00:04.500Z'
+        )
+      `;
+
+      yield* sql`
         INSERT INTO projection_thread_proposed_plans (
           plan_id,
           thread_id,
@@ -357,6 +372,19 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
               completedAt: "2026-02-24T00:00:08.000Z",
             },
           ],
+          queuedTurns: [
+            {
+              message: {
+                messageId: asMessageId("queued-message-1"),
+                role: "user",
+                text: "run next",
+                attachments: [],
+              },
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              createdAt: "2026-02-24T00:00:04.500Z",
+            },
+          ],
           session: {
             threadId: ThreadId.make("thread-1"),
             status: "running",
@@ -439,6 +467,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           hasPendingApprovals: true,
           hasPendingUserInput: false,
           hasActionableProposedPlan: false,
+          queuedTurnCount: 1,
         },
       ]);
 
