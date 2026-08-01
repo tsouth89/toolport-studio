@@ -369,6 +369,7 @@ export const ProviderRegistryLive = Layer.effect(
     );
     const providersRef = yield* Ref.make<ReadonlyArray<ServerProvider>>(cachedProviders);
     const lastFullRefreshAtMsRef = yield* Ref.make<number | null>(null);
+    const refreshStalenessSemaphore = yield* Semaphore.make(1);
     const maintenanceActionStatesRef = yield* Ref.make<
       ReadonlyMap<ProviderInstanceId, { readonly update?: ServerProviderUpdateState | undefined }>
     >(new Map());
@@ -649,14 +650,22 @@ export const ProviderRegistryLive = Layer.effect(
      * timer, so serving a recent result here loses nothing.
      */
     const refreshAllIfStale = Effect.fn("refreshAllIfStale")(function* () {
-      const lastRefreshAtMs = yield* Ref.get(lastFullRefreshAtMsRef);
-      if (lastRefreshAtMs !== null) {
-        const now = yield* Clock.currentTimeMillis;
-        if (now - lastRefreshAtMs < REFRESH_STALENESS_TTL_MS) {
-          return yield* Ref.get(providersRef);
-        }
-      }
-      return yield* refreshAll();
+      // Serialized, and the staleness check re-run behind the permit. A burst
+      // of connections is the case this exists for, and an unsynchronized
+      // check would let every caller in that burst observe the same stale
+      // timestamp and start its own full refresh.
+      return yield* refreshStalenessSemaphore.withPermits(1)(
+        Effect.gen(function* () {
+          const lastRefreshAtMs = yield* Ref.get(lastFullRefreshAtMsRef);
+          if (lastRefreshAtMs !== null) {
+            const now = yield* Clock.currentTimeMillis;
+            if (now - lastRefreshAtMs < REFRESH_STALENESS_TTL_MS) {
+              return yield* Ref.get(providersRef);
+            }
+          }
+          return yield* refreshAll();
+        }),
+      );
     });
 
     const refresh = Effect.fn("refresh")(function* (provider?: ProviderDriverKind) {

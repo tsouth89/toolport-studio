@@ -514,7 +514,7 @@ effectIt.layer(NodeServices.layer)("resolveSpawnCommand", (it) => {
     }),
   );
 
-  it.effect("resolves the executable once and reuses it for later spawns", () =>
+  it.effect("never serves an injected resolver's answer from the shared cache", () =>
     Effect.gen(function* () {
       let resolverCalls = 0;
       const resolveSpawn = resolveSpawnCommand("codex", ["app-server"], {
@@ -533,9 +533,10 @@ effectIt.layer(NodeServices.layer)("resolveSpawnCommand", (it) => {
 
         expect(second).toEqual(first);
         expect(first.shell).toBe(true);
-        // The default resolver blocks the event loop walking PATH, so every
-        // spawn of the same command must not repeat it.
-        expect(resolverCalls).toBe(1);
+        // Caching only covers the built-in resolver, which is the blocking
+        // one. An injected resolver answers for its own scope, so a
+        // process-wide cache must not hand its answer to another scope.
+        expect(resolverCalls).toBe(2);
       }).pipe(Effect.provideService(CommandResolutionCaching, makeCommandResolutionCache()));
     }),
   );

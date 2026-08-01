@@ -701,9 +701,14 @@ export const resolveSpawnCommand = Effect.fn("shell.resolveSpawnCommand")(functi
       : options.extendEnv
         ? { ...hostEnvironment, ...options.env }
         : options.env;
-  // The default resolver walks PATH with blocking `statSync` calls, and a
-  // command that is not installed walks all of it before giving up. Every
-  // subprocess launch would otherwise pay that on the event loop.
+  const resolveExecutable = yield* SpawnExecutableResolution;
+  // Only the built-in resolver is cached. It is the one worth caching — it
+  // walks PATH with blocking `statSync` calls, and a command that is not
+  // installed walks all of it before giving up, on the event loop, once per
+  // spawn. A resolver swapped in through the Context is cheap by comparison
+  // and answers for its own scope, so caching it in a process-wide cache
+  // could serve one scope's answer to another.
+  const isCacheableResolver = resolveExecutable === resolveSpawnExecutableWithNode;
   const cacheKey = commandResolutionCacheKey("spawn", {
     platform,
     command,
@@ -713,12 +718,13 @@ export const resolveSpawnCommand = Effect.fn("shell.resolveSpawnCommand")(functi
   const cache = yield* CommandResolutionCaching;
   const nowMs = yield* Clock.currentTimeMillis;
 
-  const cached = cache.get(cacheKey, nowMs);
+  const cached = isCacheableResolver ? cache.get(cacheKey, nowMs) : undefined;
   let resolved: string | null;
   if (cached === undefined) {
-    const resolveExecutable = yield* SpawnExecutableResolution;
     resolved = resolveExecutable(command, platform, env) ?? null;
-    cache.set(cacheKey, resolved, nowMs);
+    if (isCacheableResolver) {
+      cache.set(cacheKey, resolved, nowMs);
+    }
   } else {
     resolved = cached;
   }
