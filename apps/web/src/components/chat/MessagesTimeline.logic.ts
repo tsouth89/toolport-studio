@@ -807,10 +807,19 @@ export function deriveMessagesTimelineRows(input: {
             ? sharedToolLabelForWorkEntries(hiddenEntries)
             : null;
 
-          for (const workEntry of renderedEntries) {
+          // The run's leading row keeps the timeline entry's own id, which is
+          // the id the single-row branch above uses. A run crosses between the
+          // two branches mid-stream — one non-narration entry arriving is
+          // enough — and the virtualized list anchors its scroll position on
+          // the key of the topmost visible row. If that key disappeared on the
+          // crossover the anchor would be dropped, the measured heights stored
+          // against it lost, and the viewport would land somewhere up the
+          // thread. Only the leading row needs this: it is the one the anchor
+          // can be holding when the run is otherwise collapsed.
+          for (const [renderedIndex, workEntry] of renderedEntries.entries()) {
             nextRows.push({
               kind: "work",
-              id: workEntry.id,
+              id: renderedIndex === 0 ? timelineEntry.id : workEntry.id,
               createdAt: workEntry.createdAt,
               groupedEntries: [workEntry],
             });

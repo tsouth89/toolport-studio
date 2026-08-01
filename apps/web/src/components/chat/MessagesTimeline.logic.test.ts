@@ -12,6 +12,7 @@ import {
   sharedToolLabelForWorkEntries,
   shouldOfferLastUserMessageRetry,
 } from "./MessagesTimeline.logic";
+import { type TimelineEntry } from "../../session-logic";
 
 describe("computeMessageDurationStart", () => {
   it("returns message createdAt when there is no preceding user message", () => {
@@ -1207,6 +1208,65 @@ describe("collapseConsecutiveTimelineWorkEntries", () => {
 
     expect(collapsed).toHaveLength(1);
     expect(collapsed[0]).toMatchObject({ count: 2, entry: { id: "r2" }, rowKey: "r1" });
+  });
+});
+
+describe("deriveMessagesTimelineRows work run row identity", () => {
+  // Info rows are neither tool-like nor thinking, so a run of them is not a
+  // narration stack and crosses into the overflow branch as soon as it grows
+  // past MAX_VISIBLE_WORK_LOG_ENTRIES.
+  const infoEntry = (id: string, seconds: number) =>
+    ({
+      id,
+      kind: "work" as const,
+      createdAt: `2026-01-01T00:00:${String(seconds).padStart(2, "0")}Z`,
+      entry: {
+        id,
+        createdAt: `2026-01-01T00:00:${String(seconds).padStart(2, "0")}Z`,
+        turnId: "turn-1" as never,
+        label: "Awaiting approval",
+        tone: "info" as const,
+      },
+    }) satisfies TimelineEntry;
+
+  const baseInput = {
+    isWorking: false,
+    activeTurnStartedAt: null,
+    expandedTurnIds: new Set(["turn-1" as never]),
+    turnDiffSummaryByAssistantMessageId: new Map(),
+    revertTurnCountByUserMessageId: new Map(),
+  };
+
+  const workRowIds = (rows: ReadonlyArray<{ kind: string; id: string }>) =>
+    rows.filter((row) => row.kind !== "turn-fold").map((row) => row.id);
+
+  it("keeps the leading row's id when a run crosses the overflow threshold", () => {
+    const beforeRows = deriveMessagesTimelineRows({
+      ...baseInput,
+      timelineEntries: [infoEntry("work-1", 1)],
+    });
+    expect(workRowIds(beforeRows)).toEqual(["work-1"]);
+
+    // A second entry pushes the run past the threshold and switches it to
+    // per-entry rows. The virtualized list anchors on the topmost visible
+    // row's key, so "work-1" has to survive that switch.
+    const afterRows = deriveMessagesTimelineRows({
+      ...baseInput,
+      timelineEntries: [infoEntry("work-1", 1), infoEntry("work-2", 2)],
+    });
+    expect(workRowIds(afterRows)).toEqual(["work-1", "work-toggle:work-1"]);
+  });
+
+  it("does not repeat an id when the overflowed run is expanded", () => {
+    const rows = deriveMessagesTimelineRows({
+      ...baseInput,
+      timelineEntries: [infoEntry("work-1", 1), infoEntry("work-2", 2)],
+      expandedWorkGroupIds: new Set(["work-group:work-1"]),
+    });
+
+    const ids = workRowIds(rows);
+    expect(ids).toEqual(["work-1", "work-2", "work-toggle:work-1"]);
+    expect(new Set(ids).size).toBe(ids.length);
   });
 });
 
