@@ -21,6 +21,25 @@ const SAMPLE_INTERVAL_MS = 5_000;
 const RETENTION_MS = 60 * 60_000;
 const MAX_RETAINED_SAMPLES = 20_000;
 
+/**
+ * Ceiling for the backoff applied after consecutive sampling failures.
+ *
+ * Each sample shells out to `ps` or PowerShell. On a host where that query
+ * cannot succeed — a slow or locked-down Windows box where it times out every
+ * time — the unpaced loop spawned a doomed process every few seconds for the
+ * lifetime of the server, on the event loop that also serves HTTP and the
+ * WebSocket. Backing off to this ceiling keeps the failure cheap while still
+ * recovering on its own if the host becomes healthy again.
+ */
+const MAX_SAMPLE_BACKOFF_MS = 5 * 60_000;
+
+/** Delay before the next sample, doubling per consecutive failure. */
+export function resolveSampleDelayMs(consecutiveFailures: number): number {
+  if (consecutiveFailures <= 0) return SAMPLE_INTERVAL_MS;
+  const scaled = SAMPLE_INTERVAL_MS * 2 ** Math.min(consecutiveFailures, 10);
+  return Math.min(scaled, MAX_SAMPLE_BACKOFF_MS);
+}
+
 export interface ProcessResourceSample {
   readonly sampledAt: DateTime.Utc;
   readonly sampledAtMs: number;
@@ -49,6 +68,7 @@ export class ProcessResourceSamplingError extends Schema.TaggedErrorClass<Proces
 interface MonitorState {
   readonly samples: ReadonlyArray<ProcessResourceSample>;
   readonly lastFailure: ProcessResourceSamplingError | null;
+  readonly consecutiveFailures: number;
 }
 
 export class ProcessResourceMonitor extends Context.Service<
@@ -265,7 +285,11 @@ export function aggregateProcessResourceHistory(input: {
 
 export const make = Effect.gen(function* () {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-  const state = yield* Ref.make<MonitorState>({ samples: [], lastFailure: null });
+  const state = yield* Ref.make<MonitorState>({
+    samples: [],
+    lastFailure: null,
+    consecutiveFailures: 0,
+  });
 
   const recordSamplingFailure = (cause: {
     readonly _tag: ServerProcessResourceHistoryFailureTagType;
@@ -276,6 +300,7 @@ export const make = Effect.gen(function* () {
         failureTag: cause._tag,
         cause,
       }),
+      consecutiveFailures: current.consecutiveFailures + 1,
     }));
 
   const sampleOnce = Effect.gen(function* () {
@@ -293,6 +318,7 @@ export const make = Effect.gen(function* () {
     yield* Ref.update(state, (current) => ({
       samples: trimSamples([...current.samples, ...samples], sampledAtMs),
       lastFailure: null,
+      consecutiveFailures: 0,
     }));
   }).pipe(
     Effect.catchTags({
@@ -304,9 +330,12 @@ export const make = Effect.gen(function* () {
     }),
   );
 
-  yield* Effect.forever(sampleOnce.pipe(Effect.andThen(Effect.sleep(SAMPLE_INTERVAL_MS)))).pipe(
-    Effect.forkScoped,
+  const sampleThenWait = sampleOnce.pipe(
+    Effect.andThen(Ref.get(state)),
+    Effect.flatMap((current) => Effect.sleep(resolveSampleDelayMs(current.consecutiveFailures))),
   );
+
+  yield* Effect.forever(sampleThenWait).pipe(Effect.forkScoped);
 
   const readHistory: ProcessResourceMonitor["Service"]["readHistory"] = (input) =>
     Effect.gen(function* () {
