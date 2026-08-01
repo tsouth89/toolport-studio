@@ -252,4 +252,25 @@ describe("ProcessResourceMonitor", () => {
       expect(Option.getOrThrow(result.error).message).not.toContain("secret-value");
     }),
   );
+
+  describe("resolveSampleDelayMs", () => {
+    it("samples on the plain interval while sampling succeeds", () => {
+      expect(ProcessResourceMonitor.resolveSampleDelayMs(0)).toBe(5_000);
+    });
+
+    it("backs off as failures accumulate", () => {
+      // Each sample shells out to a process query. On a host where that query
+      // can never succeed, an unpaced loop spawns a doomed process every few
+      // seconds forever, on the event loop that also serves HTTP.
+      expect(ProcessResourceMonitor.resolveSampleDelayMs(1)).toBe(10_000);
+      expect(ProcessResourceMonitor.resolveSampleDelayMs(2)).toBe(20_000);
+      expect(ProcessResourceMonitor.resolveSampleDelayMs(3)).toBe(40_000);
+    });
+
+    it("caps the backoff so a recovered host is still picked up", () => {
+      expect(ProcessResourceMonitor.resolveSampleDelayMs(6)).toBe(300_000);
+      expect(ProcessResourceMonitor.resolveSampleDelayMs(50)).toBe(300_000);
+      expect(ProcessResourceMonitor.resolveSampleDelayMs(5_000)).toBe(300_000);
+    });
+  });
 });
