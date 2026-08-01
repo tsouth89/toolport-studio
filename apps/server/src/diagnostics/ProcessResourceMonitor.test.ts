@@ -1,7 +1,13 @@
 import { describe, expect, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Sink from "effect/Sink";
+import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
+import { ChildProcessSpawner } from "effect/unstable/process";
 
 import * as ProcessResourceMonitor from "./ProcessResourceMonitor.ts";
 
@@ -250,6 +256,61 @@ describe("ProcessResourceMonitor", () => {
         message: "Failed to sample process resources (ProcessDiagnosticsQueryFailedError).",
       });
       expect(Option.getOrThrow(result.error).message).not.toContain("secret-value");
+    }),
+  );
+
+  it.effect("stops re-sampling on the plain interval once the query keeps failing", () =>
+    Effect.gen(function* () {
+      let spawns = 0;
+      const failingSpawner = Layer.succeed(
+        ChildProcessSpawner.ChildProcessSpawner,
+        ChildProcessSpawner.make(() =>
+          Effect.sync(() => {
+            spawns += 1;
+            return ChildProcessSpawner.makeHandle({
+              pid: ChildProcessSpawner.ProcessId(1),
+              exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(1)),
+              isRunning: Effect.succeed(false),
+              kill: () => Effect.void,
+              unref: Effect.succeed(Effect.void),
+              stdin: Sink.drain,
+              stdout: Stream.empty,
+              stderr: Stream.empty,
+              all: Stream.empty,
+              getInputFd: () => Sink.drain,
+              getOutputFd: () => Stream.empty,
+            });
+          }),
+        ),
+      );
+
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          yield* ProcessResourceMonitor.make;
+          yield* Effect.yieldNow;
+          const afterBoot = spawns;
+          expect(afterBoot).toBeGreaterThan(0);
+
+          // The old loop slept a flat 5s regardless of outcome, so this would
+          // have sampled again. One failure must push the next attempt to 10s.
+          yield* TestClock.adjust(Duration.seconds(5));
+          yield* Effect.yieldNow;
+          expect(spawns).toBe(afterBoot);
+
+          yield* TestClock.adjust(Duration.seconds(5));
+          yield* Effect.yieldNow;
+          expect(spawns).toBe(afterBoot + 1);
+
+          // Second consecutive failure doubles again, so 10s is not enough.
+          yield* TestClock.adjust(Duration.seconds(10));
+          yield* Effect.yieldNow;
+          expect(spawns).toBe(afterBoot + 1);
+
+          yield* TestClock.adjust(Duration.seconds(10));
+          yield* Effect.yieldNow;
+          expect(spawns).toBe(afterBoot + 2);
+        }),
+      ).pipe(Effect.provide(failingSpawner));
     }),
   );
 

@@ -7,9 +7,16 @@ import type { ThreadId } from "@toolport-studio/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 
-import type { OrchestrationCommandInvariantError } from "./Errors.ts";
+import * as Schema from "effect/Schema";
 
-const INVARIANT_ERROR_TAG = "OrchestrationCommandInvariantError";
+import { OrchestrationCommandInvariantError } from "./Errors.ts";
+
+/**
+ * Schema-aware check rather than `instanceof`: these errors cross the dispatch
+ * boundary, so identity is not guaranteed, and a bare `_tag` comparison would
+ * match any object carrying the same tag.
+ */
+const isInvariantError = Schema.is(OrchestrationCommandInvariantError);
 
 /**
  * Run a bootstrap `thread.create`, treating an already-created thread as
@@ -41,10 +48,7 @@ export const createThreadTolerantOfExisting = <ECreate, EFind, R>(input: {
   input.create.pipe(
     Effect.flatMap(() => input.onCreated),
     Effect.catchIf(
-      (error): error is ECreate & OrchestrationCommandInvariantError =>
-        typeof error === "object" &&
-        error !== null &&
-        (error as { readonly _tag?: unknown })._tag === INVARIANT_ERROR_TAG,
+      (error): error is ECreate & OrchestrationCommandInvariantError => isInvariantError(error),
       (invariantError) =>
         input.findExistingThread(input.threadId).pipe(
           Effect.matchEffect({
