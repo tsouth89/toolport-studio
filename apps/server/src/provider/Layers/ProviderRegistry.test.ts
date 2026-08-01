@@ -1531,19 +1531,22 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
           yield* Effect.gen(function* () {
             const registry = yield* ProviderRegistry.ProviderRegistry;
 
+            // Construction already forked a probe for every managed instance,
+            // so a client connecting right after boot must not start a second
+            // round of them.
             yield* registry.refreshIfStale();
-            assert.strictEqual(yield* Ref.get(refreshCalls), 1);
-
-            yield* registry.refreshIfStale();
-            assert.strictEqual(yield* Ref.get(refreshCalls), 1);
+            assert.strictEqual(yield* Ref.get(refreshCalls), 0);
 
             yield* TestClock.adjust(Duration.seconds(61));
             yield* registry.refreshIfStale();
-            assert.strictEqual(yield* Ref.get(refreshCalls), 2);
+            assert.strictEqual(yield* Ref.get(refreshCalls), 1);
+
+            yield* registry.refreshIfStale();
+            assert.strictEqual(yield* Ref.get(refreshCalls), 1);
 
             // An explicit refresh is user intent and always re-probes.
             yield* registry.refresh();
-            assert.strictEqual(yield* Ref.get(refreshCalls), 3);
+            assert.strictEqual(yield* Ref.get(refreshCalls), 2);
           }).pipe(Effect.provide(runtimeServices));
         }),
       );
@@ -1622,8 +1625,12 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
           yield* Effect.gen(function* () {
             const registry = yield* ProviderRegistry.ProviderRegistry;
 
-            // Several clients connecting at once all find the timestamp unset.
-            // Only the first may probe; the rest reuse what it produced.
+            // Past the boot window, so these are genuinely stale rather than
+            // covered by the probes construction already forked.
+            yield* TestClock.adjust(Duration.seconds(61));
+
+            // Several clients connecting at once all see the same stale
+            // timestamp. Only the first may probe; the rest reuse its result.
             yield* Effect.all(
               [registry.refreshIfStale(), registry.refreshIfStale(), registry.refreshIfStale()],
               { concurrency: "unbounded" },
