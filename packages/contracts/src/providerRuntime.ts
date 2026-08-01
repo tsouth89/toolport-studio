@@ -6,6 +6,7 @@ import {
   NonNegativeInt,
   ProviderItemId,
   PositiveInt,
+  RuntimeAgentId,
   RuntimeItemId,
   RuntimeRequestId,
   RuntimeTaskId,
@@ -46,6 +47,8 @@ const ProviderRefs = Schema.Struct({
   providerTurnId: Schema.optional(TrimmedNonEmptyStringSchema),
   providerItemId: Schema.optional(ProviderItemId),
   providerRequestId: Schema.optional(ProviderRequestId),
+  providerThreadId: Schema.optional(TrimmedNonEmptyStringSchema),
+  agentRunId: Schema.optional(RuntimeAgentId),
 });
 export type ProviderRefs = typeof ProviderRefs.Type;
 
@@ -177,6 +180,9 @@ const ProviderRuntimeEventType = Schema.Literals([
   "task.started",
   "task.progress",
   "task.completed",
+  "agent.started",
+  "agent.updated",
+  "agent.completed",
   "hook.started",
   "hook.progress",
   "hook.completed",
@@ -227,6 +233,9 @@ const UserInputResolvedType = Schema.Literal("user-input.resolved");
 const TaskStartedType = Schema.Literal("task.started");
 const TaskProgressType = Schema.Literal("task.progress");
 const TaskCompletedType = Schema.Literal("task.completed");
+const AgentStartedType = Schema.Literal("agent.started");
+const AgentUpdatedType = Schema.Literal("agent.updated");
+const AgentCompletedType = Schema.Literal("agent.completed");
 const HookStartedType = Schema.Literal("hook.started");
 const HookProgressType = Schema.Literal("hook.progress");
 const HookCompletedType = Schema.Literal("hook.completed");
@@ -482,6 +491,31 @@ const TaskCompletedPayload = Schema.Struct({
   usage: Schema.optional(Schema.Unknown),
 });
 export type TaskCompletedPayload = typeof TaskCompletedPayload.Type;
+
+export const RuntimeAgentStatus = Schema.Literals([
+  "pending",
+  "running",
+  "completed",
+  "failed",
+  "interrupted",
+  "stopped",
+  "unknown",
+]);
+export type RuntimeAgentStatus = typeof RuntimeAgentStatus.Type;
+
+export const AgentLifecyclePayload = Schema.Struct({
+  agentRunId: RuntimeAgentId,
+  parentAgentRunId: Schema.optional(RuntimeAgentId),
+  providerThreadId: Schema.optional(TrimmedNonEmptyStringSchema),
+  status: RuntimeAgentStatus,
+  label: Schema.optional(TrimmedNonEmptyStringSchema),
+  prompt: Schema.optional(TrimmedNonEmptyStringSchema),
+  model: Schema.optional(TrimmedNonEmptyStringSchema),
+  reasoningEffort: Schema.optional(TrimmedNonEmptyStringSchema),
+  message: Schema.optional(TrimmedNonEmptyStringSchema),
+  canInspectThread: Schema.optional(Schema.Boolean),
+});
+export type AgentLifecyclePayload = typeof AgentLifecyclePayload.Type;
 
 const HookStartedPayload = Schema.Struct({
   hookId: TrimmedNonEmptyStringSchema,
@@ -842,6 +876,27 @@ const ProviderRuntimeTaskCompletedEvent = Schema.Struct({
 });
 export type ProviderRuntimeTaskCompletedEvent = typeof ProviderRuntimeTaskCompletedEvent.Type;
 
+const ProviderRuntimeAgentStartedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: AgentStartedType,
+  payload: AgentLifecyclePayload,
+});
+export type ProviderRuntimeAgentStartedEvent = typeof ProviderRuntimeAgentStartedEvent.Type;
+
+const ProviderRuntimeAgentUpdatedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: AgentUpdatedType,
+  payload: AgentLifecyclePayload,
+});
+export type ProviderRuntimeAgentUpdatedEvent = typeof ProviderRuntimeAgentUpdatedEvent.Type;
+
+const ProviderRuntimeAgentCompletedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: AgentCompletedType,
+  payload: AgentLifecyclePayload,
+});
+export type ProviderRuntimeAgentCompletedEvent = typeof ProviderRuntimeAgentCompletedEvent.Type;
+
 const ProviderRuntimeHookStartedEvent = Schema.Struct({
   ...ProviderRuntimeEventBase.fields,
   type: HookStartedType,
@@ -996,6 +1051,9 @@ export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeTaskStartedEvent,
   ProviderRuntimeTaskProgressEvent,
   ProviderRuntimeTaskCompletedEvent,
+  ProviderRuntimeAgentStartedEvent,
+  ProviderRuntimeAgentUpdatedEvent,
+  ProviderRuntimeAgentCompletedEvent,
   ProviderRuntimeHookStartedEvent,
   ProviderRuntimeHookProgressEvent,
   ProviderRuntimeHookCompletedEvent,

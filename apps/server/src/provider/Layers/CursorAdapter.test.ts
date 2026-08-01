@@ -284,6 +284,77 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
     }),
   );
 
+  it.effect("maps Cursor's native Task tool to an agent lifecycle", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CursorAdapter;
+      const settings = yield* ServerSettingsService;
+      const threadId = ThreadId.make("cursor-native-task-agent");
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockAgentWrapper({ TOOLPORT_STUDIO_ACP_EMIT_CURSOR_TASK_LIFECYCLE: "1" }),
+      );
+      yield* settings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+
+      const runtimeEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.threadId === threadId),
+        Stream.takeUntil((event) => event.type === "turn.completed"),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("cursor"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+      });
+      yield* adapter.sendTurn({
+        threadId,
+        input: "delegate one task",
+        attachments: [],
+      });
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const agentEvents = runtimeEvents.filter(
+        (event) =>
+          event.type === "agent.started" ||
+          event.type === "agent.updated" ||
+          event.type === "agent.completed",
+      );
+      assert.deepStrictEqual(
+        agentEvents.map((event) => event.type),
+        ["agent.started", "agent.completed"],
+      );
+      const started = agentEvents[0];
+      assert.equal(started?.type, "agent.started");
+      if (started?.type === "agent.started") {
+        assert.equal(started.payload.agentRunId, "cursor-task-subagent-1");
+        assert.equal(started.payload.label, "Cursor subagent");
+        assert.equal(started.payload.status, "running");
+        assert.equal(started.payload.canInspectThread, false);
+      }
+      const completed = agentEvents[1];
+      assert.equal(completed?.type, "agent.completed");
+      if (completed?.type === "agent.completed") {
+        assert.equal(completed.payload.status, "completed");
+      }
+
+      const taskItems = runtimeEvents.filter(
+        (event) =>
+          (event.type === "item.updated" || event.type === "item.completed") &&
+          event.itemId === "cursor-task-subagent-1",
+      );
+      assert.deepStrictEqual(
+        taskItems.map((event) => event.type),
+        ["item.updated", "item.completed"],
+      );
+      assert.equal(taskItems[0]?.providerRefs?.agentRunId, "cursor-task-subagent-1");
+      assert.equal(taskItems[1]?.providerRefs?.agentRunId, "cursor-task-subagent-1");
+
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
   it.effect(
     "fails the turn when Cursor dumps resource_exhausted as assistant text with end_turn",
     () =>

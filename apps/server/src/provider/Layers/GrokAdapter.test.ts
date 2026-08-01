@@ -539,6 +539,62 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
     }),
   );
 
+  it.effect("maps Grok Task and TaskOutput traces to agent lifecycle events", () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("grok-subagent-lifecycle");
+      const adapter = yield* makeMockTestAdapter({
+        TOOLPORT_STUDIO_ACP_EMIT_SUBAGENT_LIFECYCLE: "1",
+      });
+      const runtimeEvents: ProviderRuntimeEvent[] = [];
+      const turnCompleted = yield* Deferred.make<void>();
+      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => runtimeEvents.push(event)).pipe(
+          Effect.andThen(
+            event.type === "turn.completed"
+              ? Deferred.succeed(turnCompleted, undefined)
+              : Effect.void,
+          ),
+        ),
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("grok"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({ threadId, input: "delegate this", attachments: [] });
+      yield* Deferred.await(turnCompleted);
+      yield* Fiber.interrupt(runtimeEventsFiber);
+
+      const started = runtimeEvents.find((event) => event.type === "agent.started");
+      assert.equal(started?.type, "agent.started");
+      if (started?.type === "agent.started") {
+        assert.equal(String(started.payload.agentRunId), "019f-test-grok-subagent");
+        assert.equal(started.payload.label, "Inspect database changes");
+        assert.equal(started.payload.prompt, "Audit the SQL migration");
+        assert.equal(started.payload.canInspectThread, false);
+      }
+
+      const completed = runtimeEvents.find((event) => event.type === "agent.completed");
+      assert.equal(completed?.type, "agent.completed");
+      if (completed?.type === "agent.completed") {
+        assert.equal(completed.payload.status, "completed");
+        assert.equal(completed.payload.message, "No blocking migration issues found.");
+      }
+      // Keep the provider's ordinary tool lifecycle too: it closes any earlier
+      // pending row and preserves mixed TaskOutput command results for debugging.
+      assert.includeMembers(
+        runtimeEvents
+          .filter((event) => event.type === "item.completed")
+          .map((event) => String(event.itemId)),
+        ["tool-spawn-subagent-1", "tool-wait-subagent-1"],
+      );
+
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
   it.effect("closes the ACP child process when a session stops", () =>
     Effect.gen(function* () {
       const threadId = ThreadId.make("grok-stop-session-close");

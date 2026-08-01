@@ -39,6 +39,7 @@ import {
   type ThreadTokenUsageSnapshot,
   type ProviderUserInputAnswers,
   type RuntimeContentStreamKind,
+  RuntimeAgentId,
   RuntimeItemId,
   RuntimeRequestId,
   RuntimeTaskId,
@@ -956,6 +957,19 @@ function summarizeToolRequest(toolName: string, input: Record<string, unknown>):
   return `${toolName}: ${serialized.slice(0, 397)}...`;
 }
 
+function claudeAgentLabel(tool: ToolInFlight): string {
+  return (
+    readString(tool.input.description) ??
+    readString(tool.input.subagent_type) ??
+    readString(tool.input.name) ??
+    "Claude agent"
+  );
+}
+
+function claudeAgentPrompt(tool: ToolInFlight): string | undefined {
+  return readString(tool.input.prompt);
+}
+
 function titleForTool(itemType: CanonicalItemType): string {
   switch (itemType) {
     case "command_execution":
@@ -1119,14 +1133,15 @@ function nativeProviderRefs(
   _context: ClaudeSessionContext,
   options?: {
     readonly providerItemId?: string | undefined;
+    readonly agentRunId?: string | undefined;
   },
 ): NonNullable<ProviderRuntimeEvent["providerRefs"]> {
-  if (options?.providerItemId) {
-    return {
-      providerItemId: ProviderItemId.make(options.providerItemId),
-    };
-  }
-  return {};
+  return {
+    ...(options?.providerItemId
+      ? { providerItemId: ProviderItemId.make(options.providerItemId) }
+      : {}),
+    ...(options?.agentRunId ? { agentRunId: RuntimeAgentId.make(options.agentRunId) } : {}),
+  };
 }
 
 function extractAssistantTextBlocks(message: SDKMessage): Array<string> {
@@ -2261,6 +2276,41 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     );
     for (const [index, tool] of context.inFlightTools.entries()) {
       const toolStamp = yield* makeEventStamp();
+      if (tool.itemType === "collab_agent_tool_call") {
+        yield* offerRuntimeEvent({
+          type: "agent.completed",
+          eventId: toolStamp.eventId,
+          provider: PROVIDER,
+          createdAt: toolStamp.createdAt,
+          threadId: context.session.threadId,
+          turnId: turnState.turnId,
+          providerRefs: nativeProviderRefs(context, {
+            providerItemId: tool.itemId,
+            agentRunId: tool.itemId,
+          }),
+          payload: {
+            agentRunId: RuntimeAgentId.make(tool.itemId),
+            status: forceCloseOpenTools
+              ? "stopped"
+              : status === "completed"
+                ? "completed"
+                : status === "interrupted"
+                  ? "interrupted"
+                  : "failed",
+            label: claudeAgentLabel(tool),
+            ...(claudeAgentPrompt(tool) ? { prompt: claudeAgentPrompt(tool) } : {}),
+            ...(forceCloseOpenTools ? { message: OPEN_TOOL_FORCE_CLOSE_DETAIL } : {}),
+            canInspectThread: false,
+          },
+          raw: {
+            source: "claude.sdk.message",
+            method: forceCloseOpenTools ? OPEN_TOOL_FORCE_CLOSE_SOURCE : "claude/result",
+            payload: result ?? { status },
+          },
+        });
+        context.inFlightTools.delete(index);
+        continue;
+      }
       yield* offerRuntimeEvent({
         type: "item.completed",
         eventId: toolStamp.eventId,
@@ -2506,6 +2556,33 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         context.inFlightTools.set(event.index, nextTool);
 
         const stamp = yield* makeEventStamp();
+        if (nextTool.itemType === "collab_agent_tool_call") {
+          yield* offerRuntimeEvent({
+            type: "agent.updated",
+            eventId: stamp.eventId,
+            provider: PROVIDER,
+            createdAt: stamp.createdAt,
+            threadId: context.session.threadId,
+            ...(context.turnState ? { turnId: asCanonicalTurnId(context.turnState.turnId) } : {}),
+            providerRefs: nativeProviderRefs(context, {
+              providerItemId: nextTool.itemId,
+              agentRunId: nextTool.itemId,
+            }),
+            payload: {
+              agentRunId: RuntimeAgentId.make(nextTool.itemId),
+              status: "running",
+              label: claudeAgentLabel(nextTool),
+              ...(claudeAgentPrompt(nextTool) ? { prompt: claudeAgentPrompt(nextTool) } : {}),
+              canInspectThread: false,
+            },
+            raw: {
+              source: "claude.sdk.message",
+              method: "claude/stream_event/content_block_delta/input_json_delta",
+              payload: message,
+            },
+          });
+          return;
+        }
         yield* offerRuntimeEvent({
           type: "item.updated",
           eventId: stamp.eventId,
@@ -2605,6 +2682,33 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       context.inFlightTools.set(index, tool);
 
       const stamp = yield* makeEventStamp();
+      if (tool.itemType === "collab_agent_tool_call") {
+        yield* offerRuntimeEvent({
+          type: "agent.started",
+          eventId: stamp.eventId,
+          provider: PROVIDER,
+          createdAt: stamp.createdAt,
+          threadId: context.session.threadId,
+          ...(context.turnState ? { turnId: asCanonicalTurnId(context.turnState.turnId) } : {}),
+          providerRefs: nativeProviderRefs(context, {
+            providerItemId: tool.itemId,
+            agentRunId: tool.itemId,
+          }),
+          payload: {
+            agentRunId: RuntimeAgentId.make(tool.itemId),
+            status: "running",
+            label: claudeAgentLabel(tool),
+            ...(claudeAgentPrompt(tool) ? { prompt: claudeAgentPrompt(tool) } : {}),
+            canInspectThread: false,
+          },
+          raw: {
+            source: "claude.sdk.message",
+            method: "claude/stream_event/content_block_start",
+            payload: message,
+          },
+        });
+        return;
+      }
       yield* offerRuntimeEvent({
         type: "item.started",
         eventId: stamp.eventId,
@@ -2681,6 +2785,37 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         input: tool.input,
         result: toolResult.block,
       };
+
+      if (tool.itemType === "collab_agent_tool_call") {
+        const completedStamp = yield* makeEventStamp();
+        yield* offerRuntimeEvent({
+          type: "agent.completed",
+          eventId: completedStamp.eventId,
+          provider: PROVIDER,
+          createdAt: completedStamp.createdAt,
+          threadId: context.session.threadId,
+          ...(context.turnState ? { turnId: asCanonicalTurnId(context.turnState.turnId) } : {}),
+          providerRefs: nativeProviderRefs(context, {
+            providerItemId: tool.itemId,
+            agentRunId: tool.itemId,
+          }),
+          payload: {
+            agentRunId: RuntimeAgentId.make(tool.itemId),
+            status: toolResult.isError ? "failed" : "completed",
+            label: claudeAgentLabel(tool),
+            ...(claudeAgentPrompt(tool) ? { prompt: claudeAgentPrompt(tool) } : {}),
+            ...(toolResult.text.trim().length > 0 ? { message: toolResult.text.trim() } : {}),
+            canInspectThread: false,
+          },
+          raw: {
+            source: "claude.sdk.message",
+            method: "claude/user",
+            payload: message,
+          },
+        });
+        context.inFlightTools.delete(index);
+        continue;
+      }
 
       const updatedStamp = yield* makeEventStamp();
       yield* offerRuntimeEvent({

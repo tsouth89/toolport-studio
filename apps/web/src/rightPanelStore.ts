@@ -15,6 +15,7 @@ import { createJSONStorage, persist } from "zustand/middleware";
 import { resolveStorage } from "./lib/storage";
 
 export const RIGHT_PANEL_KINDS = [
+  "agents",
   "activity",
   "plan",
   "diff",
@@ -37,6 +38,7 @@ export type RightPanelSurface =
       splitDirection?: "horizontal" | "vertical";
     }
   | { id: "activity"; kind: "activity" }
+  | { id: "agents"; kind: "agents"; selectedAgentRunId: string | null }
   | { id: "diff"; kind: "diff" }
   | { id: "files"; kind: "files" }
   | {
@@ -49,7 +51,7 @@ export type RightPanelSurface =
   | { id: "plan"; kind: "plan" };
 
 const RIGHT_PANEL_STORAGE_KEY = "toolport-studio:right-panel-state:v2";
-const RIGHT_PANEL_STORAGE_VERSION = 8;
+const RIGHT_PANEL_STORAGE_VERSION = 9;
 
 export interface ThreadRightPanelState {
   isOpen: boolean;
@@ -60,6 +62,7 @@ export interface ThreadRightPanelState {
 interface RightPanelStoreState {
   byThreadKey: Record<string, ThreadRightPanelState>;
   open: (ref: ScopedThreadRef, kind: Exclude<RightPanelKind, "file" | "terminal">) => void;
+  openAgents: (ref: ScopedThreadRef, agentRunId?: string) => void;
   openBrowser: (ref: ScopedThreadRef, tabId: string | null) => void;
   openFile: (ref: ScopedThreadRef, relativePath: string, line?: number) => void;
   openTerminal: (ref: ScopedThreadRef, terminalId: string) => void;
@@ -95,6 +98,8 @@ const singletonSurface = (
   kind: Exclude<RightPanelKind, "file" | "preview" | "terminal">,
 ): RightPanelSurface => {
   switch (kind) {
+    case "agents":
+      return { id: "agents", kind, selectedAgentRunId: null };
     case "activity":
       return { id: "activity", kind };
     case "diff":
@@ -181,6 +186,18 @@ export function migratePersistedRightPanelState(persistedState: unknown): {
                 threadState && typeof threadState === "object" ? threadState : null;
               const surfaces = Array.isArray(validThreadState?.surfaces)
                 ? validThreadState.surfaces.flatMap<RightPanelSurface>((surface) => {
+                    if (surface.kind === "agents") {
+                      return [
+                        {
+                          id: "agents",
+                          kind: "agents",
+                          selectedAgentRunId:
+                            typeof surface.selectedAgentRunId === "string"
+                              ? surface.selectedAgentRunId
+                              : null,
+                        },
+                      ];
+                    }
                     if (surface.kind === "file") {
                       const revealLine =
                         typeof surface.revealLine === "number" &&
@@ -258,6 +275,20 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
               return upsertSurface(current, existing ?? browserSurface(null));
             }
             return upsertSurface(current, singletonSurface(kind));
+          }),
+        })),
+      openAgents: (ref, agentRunId) =>
+        set((state) => ({
+          byThreadKey: updateThread(state.byThreadKey, scopedThreadKey(ref), (current) => {
+            const surface: RightPanelSurface = {
+              id: "agents",
+              kind: "agents",
+              selectedAgentRunId: agentRunId ?? null,
+            };
+            const surfaces = current.surfaces.some((entry) => entry.id === surface.id)
+              ? current.surfaces.map((entry) => (entry.id === surface.id ? surface : entry))
+              : [...current.surfaces, surface];
+            return { isOpen: true, activeSurfaceId: surface.id, surfaces };
           }),
         })),
       openBrowser: (ref, tabId) =>

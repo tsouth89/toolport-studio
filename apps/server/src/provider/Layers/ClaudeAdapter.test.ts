@@ -1327,7 +1327,7 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
-  it.effect("classifies Claude Task tool invocations as collaboration agent work", () => {
+  it.effect("emits native agent lifecycle events for Claude Task tool invocations", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
@@ -1371,6 +1371,23 @@ describe("ClaudeAdapterLive", () => {
       } as unknown as SDKMessage);
 
       harness.query.emit({
+        type: "user",
+        session_id: "sdk-session-task",
+        uuid: "user-task-result-1",
+        parent_tool_use_id: null,
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "tool-task-1",
+              content: "The database review found no blocking issues.",
+            },
+          ],
+        },
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
         type: "assistant",
         session_id: "sdk-session-task",
         uuid: "assistant-task-1",
@@ -1391,11 +1408,24 @@ describe("ClaudeAdapterLive", () => {
       } as unknown as SDKMessage);
 
       const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
-      const toolStarted = runtimeEvents.find((event) => event.type === "item.started");
-      assert.equal(toolStarted?.type, "item.started");
-      if (toolStarted?.type === "item.started") {
-        assert.equal(toolStarted.payload.itemType, "collab_agent_tool_call");
-        assert.equal(toolStarted.payload.title, "Subagent task");
+      const agentStarted = runtimeEvents.find((event) => event.type === "agent.started");
+      assert.equal(agentStarted?.type, "agent.started");
+      if (agentStarted?.type === "agent.started") {
+        assert.equal(String(agentStarted.payload.agentRunId), "tool-task-1");
+        assert.equal(agentStarted.payload.label, "Review the database layer");
+        assert.equal(agentStarted.payload.prompt, "Audit the SQL changes");
+        assert.equal(agentStarted.payload.canInspectThread, false);
+      }
+
+      const agentCompleted = runtimeEvents.find((event) => event.type === "agent.completed");
+      assert.equal(agentCompleted?.type, "agent.completed");
+      if (agentCompleted?.type === "agent.completed") {
+        assert.equal(String(agentCompleted.payload.agentRunId), "tool-task-1");
+        assert.equal(agentCompleted.payload.status, "completed");
+        assert.equal(
+          agentCompleted.payload.message,
+          "The database review found no blocking issues.",
+        );
       }
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),

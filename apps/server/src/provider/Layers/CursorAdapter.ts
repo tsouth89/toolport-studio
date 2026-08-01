@@ -16,6 +16,7 @@ import {
   type ProviderUserInputAnswers,
   ProviderDriverKind,
   ProviderInstanceId,
+  RuntimeAgentId,
   RuntimeRequestId,
   type RuntimeMode,
   type ThreadId,
@@ -69,6 +70,7 @@ import {
 import {
   type AcpSessionMode,
   type AcpSessionModeState,
+  type AcpToolCallState,
   parsePermissionRequest,
 } from "../acp/AcpRuntimeModel.ts";
 import { makeAcpNativeLoggerFactory } from "../acp/AcpNativeLogging.ts";
@@ -177,6 +179,15 @@ interface CursorSessionContext {
   openToolCallIds: Set<string>;
   openToolTitles: Map<string, string>;
   openToolKinds: Map<string, string | undefined>;
+  /** Cursor Task tool calls currently represented as agent runs. */
+  openAgentRuns: Map<
+    string,
+    {
+      readonly agentRunId: RuntimeAgentId;
+      readonly label: string;
+      readonly turnId: TurnId | undefined;
+    }
+  >;
   /** Turns already interrupted; late prompt RPCs must not re-open them. */
   interruptedTurnIds: Set<TurnId>;
   /**
@@ -206,6 +217,27 @@ interface CursorSessionContext {
 /** Prefer the live turn; fall back to last bound turn for late ACP notifications. */
 const resolveCursorNotificationTurnId = (ctx: CursorSessionContext): TurnId | undefined =>
   ctx.activeTurnId ?? ctx.lastNotificationTurnId;
+
+function cursorTaskToolName(toolCall: AcpToolCallState): string | undefined {
+  const rawInput = toolCall.data.rawInput;
+  if (!isRecord(rawInput)) {
+    return undefined;
+  }
+  const name = rawInput._toolName;
+  return typeof name === "string" ? name.trim().toLowerCase() : undefined;
+}
+
+function isCursorSubagentTask(toolCall: AcpToolCallState): boolean {
+  return cursorTaskToolName(toolCall) === "task";
+}
+
+function cursorSubagentLabel(toolCall: AcpToolCallState): string {
+  const stripped = toolCall.title?.replace(/^task:\s*/i, "").trim();
+  if (!stripped || stripped.toLowerCase() === "subagent task") {
+    return "Cursor subagent";
+  }
+  return stripped;
+}
 
 function settlePendingApprovalsAsCancelled(
   pendingApprovals: ReadonlyMap<ApprovalRequestId, PendingApproval>,
@@ -434,6 +466,58 @@ export function makeCursorAdapter(
 
     const offerRuntimeEvent = (event: ProviderRuntimeEvent) =>
       PubSub.publish(runtimeEventPubSub, event).pipe(Effect.asVoid);
+
+    const emitCursorAgentLifecycle = Effect.fn("emitCursorAgentLifecycle")(function* (
+      ctx: CursorSessionContext,
+      toolCall: AcpToolCallState,
+      turnId: TurnId | undefined,
+      rawPayload: unknown,
+    ) {
+      if (!isCursorSubagentTask(toolCall)) {
+        return;
+      }
+      const agentRunId = RuntimeAgentId.make(toolCall.toolCallId);
+      const previous = ctx.openAgentRuns.get(toolCall.toolCallId);
+      const terminal = toolCall.status === "completed" || toolCall.status === "failed";
+      const label = cursorSubagentLabel(toolCall);
+      const type = terminal ? "agent.completed" : previous ? "agent.updated" : "agent.started";
+      const status =
+        toolCall.status === "failed"
+          ? ("failed" as const)
+          : toolCall.status === "completed"
+            ? ("completed" as const)
+            : ("running" as const);
+
+      if (terminal) {
+        ctx.openAgentRuns.delete(toolCall.toolCallId);
+      } else {
+        ctx.openAgentRuns.set(toolCall.toolCallId, {
+          agentRunId,
+          label,
+          turnId,
+        });
+      }
+
+      yield* offerRuntimeEvent({
+        type,
+        ...(yield* makeEventStamp()),
+        provider: PROVIDER,
+        threadId: ctx.threadId,
+        ...(turnId ? { turnId } : {}),
+        providerRefs: { agentRunId },
+        payload: {
+          agentRunId,
+          status,
+          label,
+          canInspectThread: false,
+        },
+        raw: {
+          source: "acp.jsonrpc",
+          method: "session/update",
+          payload: rawPayload,
+        },
+      });
+    });
 
     const getThreadSemaphore = (threadId: string) =>
       SynchronizedRef.modifyEffect(threadLocksRef, (current) => {
@@ -861,10 +945,35 @@ export function makeCursorAdapter(
               },
             }),
           );
+          const agent = ctx.openAgentRuns.get(toolCallId);
+          if (agent) {
+            yield* offerRuntimeEvent({
+              type: "agent.completed",
+              ...(yield* makeEventStamp()),
+              provider: PROVIDER,
+              threadId,
+              turnId: agent.turnId ?? turnId,
+              providerRefs: { agentRunId: agent.agentRunId },
+              payload: {
+                agentRunId: agent.agentRunId,
+                status: "stopped",
+                label: agent.label,
+                message: "Cursor subagent did not complete before the turn stopped.",
+                canInspectThread: false,
+              },
+              raw: {
+                source: "acp.jsonrpc",
+                method: "studio.open-tool-force-close",
+                payload: { toolCallId },
+              },
+            });
+            ctx.openAgentRuns.delete(toolCallId);
+          }
         }
         ctx.openToolCallIds.clear();
         ctx.openToolTitles.clear();
         ctx.openToolKinds.clear();
+        ctx.openAgentRuns.clear();
       });
 
     const markAcpCompromised = (ctx: CursorSessionContext, reason: string) =>
@@ -931,15 +1040,30 @@ export function makeCursorAdapter(
                 yield* noteVisibleActivity(ctx);
                 trackToolCallLifecycle(ctx, event.toolCall);
                 yield* logNative(ctx.threadId, "session/update", event.rawPayload, "acp.jsonrpc");
+                yield* emitCursorAgentLifecycle(
+                  ctx,
+                  event.toolCall,
+                  notificationTurnId,
+                  event.rawPayload,
+                );
+                const toolRuntimeEvent = makeAcpToolCallEvent({
+                  stamp: yield* makeEventStamp(),
+                  provider: PROVIDER,
+                  threadId: ctx.threadId,
+                  turnId: notificationTurnId,
+                  toolCall: event.toolCall,
+                  rawPayload: event.rawPayload,
+                });
                 yield* offerRuntimeEvent(
-                  makeAcpToolCallEvent({
-                    stamp: yield* makeEventStamp(),
-                    provider: PROVIDER,
-                    threadId: ctx.threadId,
-                    turnId: notificationTurnId,
-                    toolCall: event.toolCall,
-                    rawPayload: event.rawPayload,
-                  }),
+                  isCursorSubagentTask(event.toolCall)
+                    ? {
+                        ...toolRuntimeEvent,
+                        providerRefs: {
+                          ...toolRuntimeEvent.providerRefs,
+                          agentRunId: RuntimeAgentId.make(event.toolCall.toolCallId),
+                        },
+                      }
+                    : toolRuntimeEvent,
                 );
                 return;
               case "ContentDelta":
@@ -1306,6 +1430,7 @@ export function makeCursorAdapter(
             openToolCallIds: new Set(),
             openToolTitles: new Map(),
             openToolKinds: new Map(),
+            openAgentRuns: new Map(),
             interruptedTurnIds: new Set(),
             acpCompromised: false,
             promptsInFlight: 0,

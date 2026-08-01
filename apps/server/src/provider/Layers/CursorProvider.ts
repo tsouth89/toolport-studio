@@ -577,8 +577,13 @@ export function getCursorFallbackModels(
   return providerModelsFromSettings([], cursorSettings.customModels, EMPTY_CAPABILITIES);
 }
 
-/** Timeout for `agent about` — it's slower than a simple `--version` probe. */
-const ABOUT_TIMEOUT_MS = 8_000;
+/**
+ * Timeout for `agent about` — it's slower than a simple `--version` probe.
+ * The Windows `.cmd` shim cold-starts Windows PowerShell before the bundled
+ * Cursor Node runtime; healthy first probes can exceed eight seconds even
+ * though warm probes finish quickly.
+ */
+const ABOUT_TIMEOUT_MS = 20_000;
 
 /** Strip ANSI escape sequences so we can parse plain key-value lines. */
 function stripAnsi(text: string): string {

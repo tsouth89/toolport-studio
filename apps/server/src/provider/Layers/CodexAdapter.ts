@@ -21,6 +21,7 @@ import {
   type ThreadTokenUsageSnapshot,
   type ProviderUserInputAnswers,
   RuntimeItemId,
+  RuntimeAgentId,
   RuntimeRequestId,
   ProviderApprovalDecision,
   ThreadId,
@@ -159,6 +160,18 @@ type CodexOpenTool = {
   readonly turnId: string | undefined;
 };
 
+type CodexOpenAgent = {
+  readonly agentRunId: RuntimeAgentId;
+  readonly parentAgentRunId: RuntimeAgentId | undefined;
+  readonly providerThreadId: string | undefined;
+  readonly label: string | undefined;
+  readonly prompt: string | undefined;
+  readonly model: string | undefined;
+  readonly reasoningEffort: string | undefined;
+  readonly turnId: string | undefined;
+  readonly canInspectThread: boolean | undefined;
+};
+
 interface CodexAdapterSessionContext {
   readonly threadId: ThreadId;
   scope: Scope.Closeable;
@@ -179,6 +192,8 @@ interface CodexAdapterSessionContext {
   stopped: boolean;
   /** Open tool items for the live turn (force-closed on settle / Stop). */
   openTools: Map<string, CodexOpenTool>;
+  /** Native subagents still active for the live turn. */
+  openAgents: Map<string, CodexOpenAgent>;
 }
 
 function mapCodexRuntimeError(
@@ -554,6 +569,8 @@ function providerRefsFromEvent(
   if (event.turnId) refs.providerTurnId = event.turnId;
   if (event.itemId) refs.providerItemId = event.itemId;
   if (event.requestId) refs.providerRequestId = event.requestId;
+  if (event.providerThreadId) refs.providerThreadId = event.providerThreadId;
+  if (event.agentRunId) refs.agentRunId = event.agentRunId;
 
   return Object.keys(refs).length > 0 ? (refs as ProviderRuntimeEvent["providerRefs"]) : undefined;
 }
@@ -578,6 +595,94 @@ function runtimeEventBase(
       payload: event.payload ?? {},
     },
   };
+}
+
+function toRuntimeAgentStatus(
+  status:
+    | EffectCodexSchema.ServerNotification__CollabAgentStatus
+    | "inProgress"
+    | "completed"
+    | "failed",
+): "pending" | "running" | "completed" | "failed" | "interrupted" | "stopped" | "unknown" {
+  switch (status) {
+    case "pendingInit":
+      return "pending";
+    case "running":
+    case "inProgress":
+      return "running";
+    case "completed":
+      return "completed";
+    case "errored":
+    case "failed":
+    case "notFound":
+      return "failed";
+    case "interrupted":
+      return "interrupted";
+    case "shutdown":
+      return "stopped";
+    default:
+      return "unknown";
+  }
+}
+
+function mapCollabAgentLifecycle(
+  event: ProviderEvent,
+  canonicalThreadId: ThreadId,
+  lifecycle: "item.started" | "item.completed",
+): ReadonlyArray<ProviderRuntimeEvent> | undefined {
+  const payload =
+    readPayload(EffectCodexSchema.V2ItemStartedNotification, event.payload) ??
+    readPayload(EffectCodexSchema.V2ItemCompletedNotification, event.payload);
+  const item = payload?.item;
+  if (!item || item.type !== "collabAgentToolCall") {
+    return undefined;
+  }
+
+  const receiverThreadIds =
+    item.receiverThreadIds.length > 0 ? item.receiverThreadIds : Object.keys(item.agentsStates);
+  return receiverThreadIds.map((providerThreadId, index) => {
+    const agentRunId = RuntimeAgentId.make(providerThreadId);
+    const state = item.agentsStates[providerThreadId];
+    const status = toRuntimeAgentStatus(state?.status ?? item.status);
+    const type =
+      status === "completed" ||
+      status === "failed" ||
+      status === "interrupted" ||
+      status === "stopped"
+        ? "agent.completed"
+        : item.tool === "spawnAgent" && lifecycle === "item.started"
+          ? "agent.started"
+          : "agent.updated";
+    const base = runtimeEventBase(event, canonicalThreadId);
+    const prompt = trimText(item.prompt ?? undefined);
+    const message = trimText(state?.message ?? undefined);
+    return {
+      ...base,
+      eventId: EventId.make(`${event.id}:agent:${index}:${providerThreadId}`),
+      type,
+      providerRefs: {
+        ...base.providerRefs,
+        providerThreadId,
+        agentRunId,
+      },
+      payload: {
+        agentRunId,
+        ...(event.agentRunId ? { parentAgentRunId: event.agentRunId } : {}),
+        providerThreadId,
+        status,
+        label: `Agent ${index + 1}`,
+        ...(item.tool === "spawnAgent" && prompt ? { prompt } : {}),
+        ...(item.tool === "spawnAgent" && trimText(item.model ?? undefined)
+          ? { model: trimText(item.model ?? undefined)! }
+          : {}),
+        ...(item.tool === "spawnAgent" && item.reasoningEffort
+          ? { reasoningEffort: item.reasoningEffort }
+          : {}),
+        ...(message ? { message } : {}),
+        canInspectThread: true,
+      },
+    } satisfies ProviderRuntimeEvent;
+  });
 }
 
 function mapItemLifecycle(
@@ -991,11 +1096,15 @@ function mapToRuntimeEvents(
   }
 
   if (event.method === "item/started") {
+    const agents = mapCollabAgentLifecycle(event, canonicalThreadId, "item.started");
+    if (agents) return agents;
     const started = mapItemLifecycle(event, canonicalThreadId, "item.started");
     return started ? [started] : [];
   }
 
   if (event.method === "item/completed") {
+    const agents = mapCollabAgentLifecycle(event, canonicalThreadId, "item.completed");
+    if (agents) return agents;
     const payload = readPayload(EffectCodexSchema.V2ItemCompletedNotification, event.payload);
     const item = payload?.item;
     if (!item) {
@@ -1599,6 +1708,56 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     });
   };
 
+  const forceCloseCodexOpenAgents = (
+    session: CodexAdapterSessionContext,
+    turnId: string | undefined,
+    createdAt: string,
+  ): ReadonlyArray<ProviderRuntimeEvent> => {
+    const open = [...session.openAgents.values()].filter(
+      (agent) => turnId === undefined || agent.turnId === undefined || agent.turnId === turnId,
+    );
+    for (const agent of open) {
+      session.openAgents.delete(String(agent.agentRunId));
+    }
+    if (turnId === undefined) {
+      session.openAgents.clear();
+    }
+    return open.map((agent, index) => {
+      const resolvedTurnId = agent.turnId ?? turnId;
+      return {
+        eventId: EventId.make(`codex-force-close-agent-${agent.agentRunId}-${index}`),
+        provider: PROVIDER,
+        threadId: session.threadId,
+        createdAt,
+        type: "agent.completed" as const,
+        ...(resolvedTurnId ? { turnId: TurnId.make(resolvedTurnId) } : {}),
+        providerRefs: {
+          ...(agent.providerThreadId ? { providerThreadId: agent.providerThreadId } : {}),
+          agentRunId: agent.agentRunId,
+        },
+        payload: {
+          agentRunId: agent.agentRunId,
+          ...(agent.parentAgentRunId ? { parentAgentRunId: agent.parentAgentRunId } : {}),
+          ...(agent.providerThreadId ? { providerThreadId: agent.providerThreadId } : {}),
+          status: "stopped" as const,
+          ...(agent.label ? { label: agent.label } : {}),
+          ...(agent.prompt ? { prompt: agent.prompt } : {}),
+          ...(agent.model ? { model: agent.model } : {}),
+          ...(agent.reasoningEffort ? { reasoningEffort: agent.reasoningEffort } : {}),
+          message: "Parent turn settled before the provider reported a terminal agent state.",
+          ...(agent.canInspectThread !== undefined
+            ? { canInspectThread: agent.canInspectThread }
+            : {}),
+        },
+        raw: {
+          source: "codex.app-server.notification" as const,
+          method: OPEN_TOOL_FORCE_CLOSE_SOURCE,
+          payload: { agentRunId: agent.agentRunId },
+        },
+      };
+    });
+  };
+
   const trackCodexOpenToolsFromEvents = (
     session: CodexAdapterSessionContext,
     events: ReadonlyArray<ProviderRuntimeEvent>,
@@ -1616,9 +1775,31 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         });
       } else if (runtimeEvent.type === "item.completed" && runtimeEvent.itemId) {
         session.openTools.delete(String(runtimeEvent.itemId));
+      } else if (runtimeEvent.type === "agent.started" || runtimeEvent.type === "agent.updated") {
+        const agentRunId = String(runtimeEvent.payload.agentRunId);
+        const previous = session.openAgents.get(agentRunId);
+        session.openAgents.set(agentRunId, {
+          agentRunId: runtimeEvent.payload.agentRunId,
+          parentAgentRunId: runtimeEvent.payload.parentAgentRunId ?? previous?.parentAgentRunId,
+          providerThreadId: runtimeEvent.payload.providerThreadId ?? previous?.providerThreadId,
+          label: runtimeEvent.payload.label ?? previous?.label,
+          prompt: runtimeEvent.payload.prompt ?? previous?.prompt,
+          model: runtimeEvent.payload.model ?? previous?.model,
+          reasoningEffort: runtimeEvent.payload.reasoningEffort ?? previous?.reasoningEffort,
+          turnId:
+            (runtimeEvent.turnId ? String(runtimeEvent.turnId) : undefined) ?? previous?.turnId,
+          canInspectThread: runtimeEvent.payload.canInspectThread ?? previous?.canInspectThread,
+        });
+      } else if (runtimeEvent.type === "agent.completed") {
+        session.openAgents.delete(String(runtimeEvent.payload.agentRunId));
       } else if (runtimeEvent.type === "turn.completed" || runtimeEvent.type === "turn.aborted") {
         extras.push(
           ...forceCloseCodexOpenTools(
+            session,
+            runtimeEvent.turnId ? String(runtimeEvent.turnId) : undefined,
+            runtimeEvent.createdAt,
+          ),
+          ...forceCloseCodexOpenAgents(
             session,
             runtimeEvent.turnId ? String(runtimeEvent.turnId) : undefined,
             runtimeEvent.createdAt,
@@ -1893,6 +2074,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           serviceTier,
           stopped: false,
           openTools: new Map(),
+          openAgents: new Map(),
         });
         sessionScopeTransferred = true;
 

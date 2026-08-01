@@ -151,6 +151,8 @@ interface TimelineRowActivityState {
   onInterrupt: (() => void) | null;
   /** Open the Activity right panel (Working-row deep link). */
   onOpenActivity: (() => void) | null;
+  /** Open a native subagent in the Agents right panel. */
+  onOpenAgents: ((agentRunId: string) => void) | null;
 }
 
 const TimelineRowCtx = createContext<TimelineRowSharedState>(null!);
@@ -185,6 +187,8 @@ interface MessagesTimelineProps {
   onInterrupt?: () => void;
   /** Open Activity panel from the Working-row deep link. */
   onOpenActivity?: () => void;
+  /** Open a delegation row in the Agents panel. */
+  onOpenAgents?: (agentRunId: string) => void;
   activeThreadEnvironmentId: EnvironmentId;
   markdownCwd: string | undefined;
   resolvedTheme: "light" | "dark";
@@ -223,6 +227,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   onImageExpand,
   onInterrupt = undefined,
   onOpenActivity = undefined,
+  onOpenAgents = undefined,
   activeThreadEnvironmentId,
   markdownCwd,
   resolvedTheme,
@@ -473,6 +478,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       lastStreamActivityAt,
       onInterrupt: onInterrupt ?? null,
       onOpenActivity: onOpenActivity ?? null,
+      onOpenAgents: onOpenAgents ?? null,
     }),
     [
       activeTurnInProgress,
@@ -482,6 +488,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       latestTurn?.turnId,
       onInterrupt,
       onOpenActivity,
+      onOpenAgents,
     ],
   );
 
@@ -1376,7 +1383,12 @@ const WorkGroupSection = memo(function WorkGroupSection({
 }) {
   const { workspaceRoot } = use(TimelineRowCtx);
   const nonEmptyEntries = useMemo(
-    () => groupedEntries.filter((entry) => !workEntryIndicatesToolNeutralStatus(entry)),
+    () =>
+      groupedEntries.filter(
+        (entry) =>
+          entry.itemType === "collab_agent_tool_call" ||
+          !workEntryIndicatesToolNeutralStatus(entry),
+      ),
     [groupedEntries],
   );
   const densifiedItems = useMemo(
@@ -2241,6 +2253,12 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   const displayText = preview ? `${heading} · ${preview}` : heading;
   const expandedBody = buildToolCallExpandedBody(workEntry, workspaceRoot);
   const canExpand = expandedBody !== null;
+  const agentRunId =
+    workEntry.itemType === "collab_agent_tool_call" &&
+    workEntry.sourceActivityKind?.startsWith("agent.")
+      ? (workEntry.toolCallId ?? null)
+      : null;
+  const canOpenAgent = agentRunId !== null && activity.onOpenAgents !== null;
   const showFailedIndicator = workEntryIndicatesToolFailure(workEntry);
   const showDestructiveRowStyle =
     showFailedIndicator &&
@@ -2257,27 +2275,40 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
       : isThought
         ? "font-medium text-muted-foreground"
         : "font-medium text-foreground/88";
-  const rowToggleProps = canExpand
+  const rowToggleProps = canOpenAgent
     ? {
         role: "button" as const,
         tabIndex: 0 as const,
-        "aria-label": displayText,
-        "aria-expanded": expanded,
-        onClick: () => setExpanded((v) => !v),
+        "aria-label": `Open ${displayText} in Agents`,
+        onClick: () => activity.onOpenAgents?.(agentRunId),
         onKeyDown: (e: KeyboardEvent<HTMLDivElement>) => {
           if (e.key === "Enter" || e.key === " ") {
             e.preventDefault();
-            setExpanded((v) => !v);
+            activity.onOpenAgents?.(agentRunId);
           }
         },
       }
-    : {};
+    : canExpand
+      ? {
+          role: "button" as const,
+          tabIndex: 0 as const,
+          "aria-label": displayText,
+          "aria-expanded": expanded,
+          onClick: () => setExpanded((v) => !v),
+          onKeyDown: (e: KeyboardEvent<HTMLDivElement>) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              setExpanded((v) => !v);
+            }
+          },
+        }
+      : {};
 
   return (
     <div
       className={cn(
         "flex flex-col rounded-md px-0.5 py-0.5 transition-colors",
-        canExpand &&
+        (canExpand || canOpenAgent) &&
           "cursor-pointer hover:bg-accent/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70",
         expanded && canExpand && "bg-accent/10",
       )}
@@ -2310,12 +2341,12 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
           <div className="min-w-0 flex-1 overflow-hidden">
             <p className="flex min-w-0 w-full items-baseline gap-1.5 text-[12.5px] leading-5">
               <span className={cn("min-w-0 shrink truncate", headingClass)}>
-                {canExpand ? (
+                {canExpand || canOpenAgent ? (
                   <span className="inline-flex items-center gap-1">
                     <span
                       className={cn(
                         "inline-block text-[10px] text-muted-foreground/60 transition-transform",
-                        expanded && "rotate-90",
+                        expanded && canExpand && "rotate-90",
                       )}
                       aria-hidden
                     >
@@ -2334,7 +2365,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
           </div>
         </div>
       </div>
-      {expanded && canExpand && expandedBody ? (
+      {expanded && canExpand && !canOpenAgent && expandedBody ? (
         <div
           className="mt-1 ms-[1.375rem] cursor-default border-s-2 border-primary/35 ps-3 pt-0.5 pb-1"
           onClick={stopRowToggle}

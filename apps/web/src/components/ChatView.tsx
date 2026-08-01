@@ -151,6 +151,8 @@ import { BranchToolbar } from "./BranchToolbar";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
 import PlanSidebar from "./PlanSidebar";
 import { ActivityPanel } from "./ActivityPanel";
+import { AgentsPanel } from "./AgentsPanel";
+import { deriveAgentRuns } from "../agentRuns";
 import { shouldShowThisTurnCard, ThisTurnCard } from "./ThisTurnCard";
 import ThreadTerminalDrawer from "./ThreadTerminalDrawer";
 import { deriveThreadActivityViewModel } from "../threadActivityViewModel";
@@ -1526,6 +1528,10 @@ function ChatViewContent(props: ChatViewProps) {
   // depend on which route is mounted.
   const isServerThread = serverThread !== null;
   const activeThread = isServerThread ? serverThread : localDraftThread;
+  const agentRuns = useMemo(
+    () => deriveAgentRuns(activeThread?.activities ?? []),
+    [activeThread?.activities],
+  );
   const threadError = isServerThread
     ? resolveThreadError({
         local: localServerErrorsByThreadKey[routeThreadKey],
@@ -3278,6 +3284,14 @@ function ChatViewContent(props: ChatViewProps) {
     if (!activeThreadRef) return;
     useRightPanelStore.getState().open(activeThreadRef, "activity");
   }, [activeThreadRef]);
+  const openAgentsSurface = useCallback(
+    (agentRunId?: string) => {
+      if (!activeThreadRef) return;
+      useRightPanelStore.getState().openAgents(activeThreadRef, agentRunId);
+    },
+    [activeThreadRef],
+  );
+  const addAgentsSurface = useCallback(() => openAgentsSurface(), [openAgentsSurface]);
   const addPlanSurface = useCallback(() => {
     if (!activeThreadRef) return;
     useRightPanelStore.getState().open(activeThreadRef, "plan");
@@ -5962,6 +5976,12 @@ function ChatViewContent(props: ChatViewProps) {
         onOpenPlan={addPlanSurface}
         onViewAllMcp={openToolportMcp}
       />
+    ) : activeRightPanelSurface?.kind === "agents" ? (
+      <AgentsPanel
+        runs={agentRuns}
+        selectedAgentRunId={activeRightPanelSurface.selectedAgentRunId}
+        onSelectAgent={openAgentsSurface}
+      />
     ) : (activeRightPanelSurface?.kind === "files" || activeRightPanelSurface?.kind === "file") &&
       activeProject &&
       activeWorkspaceRoot ? (
@@ -6090,6 +6110,7 @@ function ChatViewContent(props: ChatViewProps) {
                 onImageExpand={onExpandTimelineImage}
                 onInterrupt={onInterrupt}
                 onOpenActivity={openThisTurnCard}
+                onOpenAgents={openAgentsSurface}
                 markdownCwd={gitCwd ?? undefined}
                 resolvedTheme={resolvedTheme}
                 timestampFormat={timestampFormat}
@@ -6488,6 +6509,7 @@ function ChatViewContent(props: ChatViewProps) {
           onAddDiff={addDiffSurface}
           onAddFiles={addFilesSurface}
           onAddActivity={addActivitySurface}
+          onAddAgents={addAgentsSurface}
           browserAvailable={isPreviewSupportedInRuntime()}
           diffAvailable={isServerThread && isGitRepo}
           filesAvailable={activeProject !== null}
@@ -6516,6 +6538,7 @@ function ChatViewContent(props: ChatViewProps) {
             onAddDiff={addDiffSurface}
             onAddFiles={addFilesSurface}
             onAddActivity={addActivitySurface}
+            onAddAgents={addAgentsSurface}
             browserAvailable={isPreviewSupportedInRuntime()}
             diffAvailable={isServerThread && isGitRepo}
             filesAvailable={activeProject !== null}

@@ -6,6 +6,33 @@ import { ProviderRuntimeEvent } from "./providerRuntime.ts";
 const decodeRuntimeEvent = Schema.decodeUnknownSync(ProviderRuntimeEvent);
 
 describe("ProviderRuntimeEvent", () => {
+  it("decodes inspectable native agent lifecycle events", () => {
+    const parsed = decodeRuntimeEvent({
+      type: "agent.started",
+      eventId: "event-agent-1",
+      provider: "codex",
+      createdAt: "2026-08-01T00:00:00.000Z",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      providerRefs: {
+        providerThreadId: "provider-child-1",
+        agentRunId: "provider-child-1",
+      },
+      payload: {
+        agentRunId: "provider-child-1",
+        providerThreadId: "provider-child-1",
+        status: "running",
+        prompt: "Inspect the protocol",
+        canInspectThread: true,
+      },
+    });
+
+    expect(parsed.type).toBe("agent.started");
+    if (parsed.type !== "agent.started") throw new Error("expected agent.started");
+    expect(parsed.payload.agentRunId).toBe("provider-child-1");
+    expect(parsed.payload.canInspectThread).toBe(true);
+  });
+
   it("accepts fork-provided driver kinds as branded slugs", () => {
     const parsed = decodeRuntimeEvent({
       type: "session.started",

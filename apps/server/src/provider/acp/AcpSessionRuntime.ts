@@ -1188,7 +1188,15 @@ function shouldEmitToolCallUpdate(
     return true;
   }
   if (!next.detail) {
-    return false;
+    // Some ACP tools (notably Cursor's native Task/subagent tool) provide a
+    // useful title and stable id but no detail until completion. Emit that
+    // first named state so the UI can show live work instead of materializing
+    // the tool only after it has finished. Keep suppressing anonymous generic
+    // placeholders, which add no user-visible information.
+    const title = next.title?.trim().toLowerCase();
+    return (
+      previous === undefined && title !== undefined && title !== "tool call" && title !== "tool"
+    );
   }
   return previous === undefined || previous.title !== next.title || previous.detail !== next.detail;
 }
