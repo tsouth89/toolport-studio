@@ -2043,7 +2043,7 @@ const makeWsRpcLayer = (
               );
 
               yield* providerRegistry
-                .refresh()
+                .refreshIfStale()
                 .pipe(Effect.ignoreCause({ log: true }), Effect.forkScoped);
 
               const liveUpdates = Stream.merge(

@@ -313,6 +313,41 @@ describe("observability", () => {
       ),
     );
 
+    it.effect("skips excluded span names while still recording their parent", () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const tempDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-local-tracer-" });
+          const tracePath = path.join(tempDir, "shared.trace.ndjson");
+
+          const tracerLayer = Layer.effect(
+            Tracer.Tracer,
+            makeLocalFileTracer({
+              filePath: tracePath,
+              maxBytes: 1024 * 1024,
+              maxFiles: 2,
+              batchWindowMs: 10_000,
+              excludedSpanNames: ["shell.isExecutableFile"],
+            }),
+          );
+
+          yield* Effect.scoped(
+            Effect.gen(function* () {
+              yield* Effect.void.pipe(Effect.withSpan("shell.isExecutableFile"));
+              yield* Effect.void.pipe(Effect.withSpan("shell.isExecutableFile"));
+            }).pipe(Effect.withSpan("lookup-span"), Effect.provide(tracerLayer)),
+          );
+
+          const records = yield* readTraceRecords(tracePath);
+          assert.deepStrictEqual(
+            records.map((record) => record.name),
+            ["lookup-span"],
+          );
+        }),
+      ),
+    );
+
     it.effect("serializes interrupted spans with an interrupted exit status", () =>
       Effect.scoped(
         Effect.gen(function* () {

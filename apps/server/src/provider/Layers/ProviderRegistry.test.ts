@@ -1,5 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, it, assert } from "@effect/vitest";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -1433,6 +1434,94 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             assert.deepStrictEqual(yield* registry.refreshInstance(codexInstanceId), [
               cachedProvider,
             ]);
+          }).pipe(Effect.provide(runtimeServices));
+        }),
+      );
+
+      it.effect("reuses a recent full refresh instead of re-probing every caller", () =>
+        Effect.gen(function* () {
+          const codexDriver = ProviderDriverKind.make("codex");
+          const codexInstanceId = ProviderInstanceId.make("codex");
+          const cachedProvider = {
+            instanceId: codexInstanceId,
+            driver: codexDriver,
+            status: "ready",
+            enabled: true,
+            installed: true,
+            auth: { status: "authenticated" },
+            checkedAt: "2026-04-29T10:00:00.000Z",
+            version: "1.0.0",
+            models: [],
+            slashCommands: [],
+            skills: [],
+          } as const satisfies ServerProvider;
+          const refreshCalls = yield* Ref.make(0);
+          const instance = {
+            instanceId: codexInstanceId,
+            driverKind: codexDriver,
+            continuationIdentity: {
+              driverKind: codexDriver,
+              continuationKey: "codex:instance:codex",
+            },
+            displayName: undefined,
+            enabled: true,
+            snapshot: {
+              maintenanceCapabilities: makeManualOnlyProviderMaintenanceCapabilities({
+                provider: codexDriver,
+                packageName: null,
+              }),
+              getSnapshot: Effect.succeed(cachedProvider),
+              refresh: Ref.update(refreshCalls, (count) => count + 1).pipe(
+                Effect.as(cachedProvider),
+              ),
+              streamChanges: Stream.empty,
+            },
+            adapter: {} as ProviderInstance["adapter"],
+            textGeneration: {} as ProviderInstance["textGeneration"],
+          } satisfies ProviderInstance;
+          const instanceRegistryLayer = Layer.succeed(
+            ProviderInstanceRegistry.ProviderInstanceRegistry,
+            {
+              getInstance: (instanceId) =>
+                Effect.succeed(instanceId === codexInstanceId ? instance : undefined),
+              listInstances: Effect.succeed([instance]),
+              listUnavailable: Effect.succeed([]),
+              streamChanges: Stream.empty,
+              subscribeChanges: Effect.flatMap(PubSub.unbounded<void>(), (pubsub) =>
+                PubSub.subscribe(pubsub),
+              ),
+            },
+          );
+          const scope = yield* Scope.make();
+          yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
+          const runtimeServices = yield* Layer.build(
+            ProviderRegistryLive.pipe(
+              Layer.provideMerge(instanceRegistryLayer),
+              Layer.provideMerge(
+                ServerConfig.layerTest(process.cwd(), {
+                  prefix: "t3-provider-registry-refresh-if-stale-",
+                }),
+              ),
+              Layer.provideMerge(NodeServices.layer),
+            ),
+          ).pipe(Scope.provide(scope));
+
+          yield* Effect.gen(function* () {
+            const registry = yield* ProviderRegistry.ProviderRegistry;
+
+            yield* registry.refreshIfStale();
+            assert.strictEqual(yield* Ref.get(refreshCalls), 1);
+
+            yield* registry.refreshIfStale();
+            assert.strictEqual(yield* Ref.get(refreshCalls), 1);
+
+            yield* TestClock.adjust(Duration.seconds(61));
+            yield* registry.refreshIfStale();
+            assert.strictEqual(yield* Ref.get(refreshCalls), 2);
+
+            // An explicit refresh is user intent and always re-probes.
+            yield* registry.refresh();
+            assert.strictEqual(yield* Ref.get(refreshCalls), 3);
           }).pipe(Effect.provide(runtimeServices));
         }),
       );

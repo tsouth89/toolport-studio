@@ -30,6 +30,7 @@ import {
   type ServerProviderUpdateState,
 } from "@toolport-studio/contracts";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
@@ -55,6 +56,9 @@ import {
 import type { ProviderInstance } from "../ProviderDriver.ts";
 import { makeManualOnlyProviderMaintenanceCapabilities } from "../providerMaintenance.ts";
 import type { ProviderSnapshotSource } from "../builtInProviderCatalog.ts";
+
+/** How recent a full refresh must be for `refreshAllIfStale` to reuse it. */
+const REFRESH_STALENESS_TTL_MS = 60_000;
 
 const loadProviders = (
   providerSources: ReadonlyArray<ProviderSnapshotSource>,
@@ -364,6 +368,7 @@ export const ProviderRegistryLive = Layer.effect(
       ),
     );
     const providersRef = yield* Ref.make<ReadonlyArray<ServerProvider>>(cachedProviders);
+    const lastFullRefreshAtMsRef = yield* Ref.make<number | null>(null);
     const maintenanceActionStatesRef = yield* Ref.make<
       ReadonlyMap<ProviderInstanceId, { readonly update?: ServerProviderUpdateState | undefined }>
     >(new Map());
@@ -628,10 +633,30 @@ export const ProviderRegistryLive = Layer.effect(
 
     const refreshAll = Effect.fn("refreshAll")(function* () {
       const sources = yield* getLiveSources;
-      return yield* Effect.forEach(sources, (source) => refreshOneSource(source), {
+      const providers = yield* Effect.forEach(sources, (source) => refreshOneSource(source), {
         concurrency: "unbounded",
         discard: true,
       }).pipe(Effect.andThen(Ref.get(providersRef)));
+      yield* Ref.set(lastFullRefreshAtMsRef, yield* Clock.currentTimeMillis);
+      return providers;
+    });
+
+    /**
+     * Every full refresh probes each configured provider CLI, which spawns a
+     * subprocess and, for a binary that is not installed, walks the whole PATH
+     * first. That is seconds of work, so a burst of client connections must not
+     * turn into a burst of probes. Each provider also self-refreshes on its own
+     * timer, so serving a recent result here loses nothing.
+     */
+    const refreshAllIfStale = Effect.fn("refreshAllIfStale")(function* () {
+      const lastRefreshAtMs = yield* Ref.get(lastFullRefreshAtMsRef);
+      if (lastRefreshAtMs !== null) {
+        const now = yield* Clock.currentTimeMillis;
+        if (now - lastRefreshAtMs < REFRESH_STALENESS_TTL_MS) {
+          return yield* Ref.get(providersRef);
+        }
+      }
+      return yield* refreshAll();
     });
 
     const refresh = Effect.fn("refresh")(function* (provider?: ProviderDriverKind) {
@@ -908,6 +933,7 @@ export const ProviderRegistryLive = Layer.effect(
       getProviders: Ref.get(providersRef),
       refresh: (provider?: ProviderDriverKind) =>
         refresh(provider).pipe(Effect.catchCause(recoverRefreshFailure)),
+      refreshIfStale: () => refreshAllIfStale().pipe(Effect.catchCause(recoverRefreshFailure)),
       refreshInstance: (instanceId: ProviderInstanceId) =>
         refreshInstance(instanceId).pipe(Effect.catchCause(recoverRefreshFailure)),
       getProviderMaintenanceCapabilitiesForInstance,

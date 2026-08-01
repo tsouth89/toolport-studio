@@ -118,9 +118,26 @@ export interface TraceSink {
   close: () => Effect.Effect<void>;
 }
 
+/**
+ * Span names that are never written to the local trace file.
+ *
+ * These are high-frequency leaf spans whose individual records carry no
+ * diagnostic value: a single editor or provider lookup emits tens of thousands
+ * of `shell.isExecutableFile` spans, and every record costs a `JSON.stringify`
+ * plus its share of a blocking flush. The parent lookup span still records the
+ * total, which is the part worth reading.
+ */
+export const DEFAULT_EXCLUDED_TRACE_SPAN_NAMES: ReadonlyArray<string> = ["shell.isExecutableFile"];
+
 export interface LocalFileTracerOptions extends TraceSinkOptions {
   readonly delegate?: Tracer.Tracer;
   readonly sink?: TraceSink;
+  /**
+   * Span names to drop before serialization. Defaults to
+   * {@link DEFAULT_EXCLUDED_TRACE_SPAN_NAMES}; pass an empty array to record
+   * every span.
+   */
+  readonly excludedSpanNames?: ReadonlyArray<string>;
 }
 
 type OtlpSpan = OtlpTracer.ScopeSpan["spans"][number];
@@ -407,9 +424,15 @@ export const makeLocalFileTracer = Effect.fn("makeLocalFileTracer")(function* (
       span: (spanOptions) => new Tracer.NativeSpan(spanOptions),
     });
 
+  const excludedSpanNames = new Set(options.excludedSpanNames ?? DEFAULT_EXCLUDED_TRACE_SPAN_NAMES);
+
   return Tracer.make({
     span(spanOptions) {
-      return new LocalFileSpan(spanOptions, delegate.span(spanOptions), sink.push);
+      const delegateSpan = delegate.span(spanOptions);
+      if (excludedSpanNames.has(delegateSpan.name)) {
+        return delegateSpan;
+      }
+      return new LocalFileSpan(spanOptions, delegateSpan, sink.push);
     },
     ...(delegate.context ? { context: delegate.context } : {}),
   });
