@@ -66,4 +66,21 @@ describe("ThisTurnCard agent runs", () => {
     expect(markup).toContain("Open Agents");
     expect(markup).toContain("Completed");
   });
+
+  it("surfaces failures ahead of concurrently running agents", () => {
+    const markup = renderToStaticMarkup(
+      <ThisTurnCard
+        model={model}
+        agentRuns={[
+          run({ id: "agent-completed", status: "completed" }),
+          run({ id: "agent-running" }),
+          run({ id: "agent-failed", status: "failed" }),
+        ]}
+        onDismiss={() => {}}
+        onOpenAgents={() => {}}
+      />,
+    );
+
+    expect(markup).toContain("1 failed · 1 running");
+  });
 });

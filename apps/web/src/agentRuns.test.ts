@@ -5,6 +5,7 @@ import {
   agentRunsForTurn,
   deriveAgentRuns,
   latestMessageTurnId,
+  preferredAgentRun,
   summarizeAgentRuns,
 } from "./agentRuns";
 
@@ -105,6 +106,32 @@ describe("deriveAgentRuns", () => {
       summarizeAgentRuns(firstTurnRuns.map((run) => ({ ...run, status: "completed" as const })))
         .label,
     ).toBe("2 subagents completed");
+  });
+
+  it("prioritizes failed then active agents for attention and selection", () => {
+    const runs = deriveAgentRuns([
+      activity("1", "agent.started", "2026-08-01T10:00:00.000Z", {
+        agentRunId: "agent-completed",
+        status: "completed",
+      }),
+      activity("2", "agent.started", "2026-08-01T10:00:01.000Z", {
+        agentRunId: "agent-running",
+        status: "running",
+      }),
+      activity("3", "agent.started", "2026-08-01T10:00:02.000Z", {
+        agentRunId: "agent-failed",
+        status: "failed",
+      }),
+    ]);
+
+    expect(summarizeAgentRuns(runs).label).toBe("1 failed · 1 running");
+    expect(preferredAgentRun(runs)?.id).toBe("agent-failed");
+    expect(preferredAgentRun(runs.filter((run) => run.status !== "failed"))?.id).toBe(
+      "agent-running",
+    );
+    expect(preferredAgentRun(runs.filter((run) => run.status === "completed"))?.id).toBe(
+      "agent-completed",
+    );
   });
 
   it("ignores malformed and unrelated activities", () => {

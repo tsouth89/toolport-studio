@@ -168,6 +168,15 @@ export interface AgentRunSummary {
   label: string;
 }
 
+export function preferredAgentRun(runs: ReadonlyArray<AgentRun>): AgentRun | undefined {
+  return (
+    runs.find((run) => run.status === "failed") ??
+    runs.find((run) => run.status === "running") ??
+    runs.find((run) => run.status === "pending") ??
+    runs[0]
+  );
+}
+
 function pluralizedSubagent(count: number): string {
   return count === 1 ? "subagent" : "subagents";
 }
@@ -180,10 +189,12 @@ export function summarizeAgentRuns(runs: ReadonlyArray<AgentRun>): AgentRunSumma
   const completedCount = runs.filter((run) => run.status === "completed").length;
 
   const label =
-    activeCount > 0
-      ? `${activeCount} ${pluralizedSubagent(activeCount)} running`
-      : failedCount > 0
-        ? `${failedCount} ${pluralizedSubagent(failedCount)} failed`
+    failedCount > 0
+      ? activeCount > 0
+        ? `${failedCount} failed · ${activeCount} running`
+        : `${failedCount} ${pluralizedSubagent(failedCount)} failed`
+      : activeCount > 0
+        ? `${activeCount} ${pluralizedSubagent(activeCount)} running`
         : completedCount === runs.length && completedCount > 0
           ? `${completedCount} ${pluralizedSubagent(completedCount)} completed`
           : `${runs.length} ${pluralizedSubagent(runs.length)}`;

@@ -16,7 +16,12 @@ import {
 import { useEffect, useRef, useState } from "react";
 
 import { formatMcpServerDisplayName } from "@toolport-studio/shared/toolActivity";
-import { summarizeAgentRuns, type AgentRun, type AgentRunStatus } from "../agentRuns";
+import {
+  preferredAgentRun,
+  summarizeAgentRuns,
+  type AgentRun,
+  type AgentRunStatus,
+} from "../agentRuns";
 import { formatDuration } from "../session-logic";
 import type { ThreadActivityViewModel } from "../threadActivityViewModel";
 import { cn } from "../lib/utils";
@@ -136,11 +141,12 @@ export function ThisTurnCard({
   const title = statusTitle(model, liveElapsed);
   const current = model.current;
   const agentSummary = summarizeAgentRuns(agentRuns);
+  const preferredRun = preferredAgentRun(agentRuns);
   const compactAgentLabel =
-    agentSummary.activeCount > 0
-      ? `${agentSummary.activeCount} running`
-      : agentSummary.failedCount > 0
-        ? `${agentSummary.failedCount} failed`
+    agentSummary.failedCount > 0
+      ? `${agentSummary.failedCount} failed`
+      : agentSummary.activeCount > 0
+        ? `${agentSummary.activeCount} running`
         : agentSummary.completedCount === agentSummary.totalCount
           ? `${agentSummary.totalCount} done`
           : `${agentSummary.totalCount} agent${agentSummary.totalCount === 1 ? "" : "s"}`;
@@ -259,13 +265,13 @@ export function ThisTurnCard({
                 "inline-flex shrink-0 items-center gap-1 border-l border-border/50 px-2 text-[10px] font-semibold text-muted-foreground hover:bg-accent/35 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
                 agentSummary.failedCount > 0 && "text-destructive",
               )}
-              onClick={() => onOpenAgents(agentRuns[0]?.id)}
+              onClick={() => onOpenAgents(preferredRun?.id)}
               aria-label={`Open ${agentSummary.label} in Agents`}
             >
-              {agentSummary.activeCount > 0 ? (
-                <Loader2 className="size-3 animate-spin text-primary" aria-hidden />
-              ) : agentSummary.failedCount > 0 ? (
+              {agentSummary.failedCount > 0 ? (
                 <XCircle className="size-3" aria-hidden />
+              ) : agentSummary.activeCount > 0 ? (
+                <Loader2 className="size-3 animate-spin text-primary" aria-hidden />
               ) : (
                 <CheckCircle2 className="size-3 text-success" aria-hidden />
               )}
@@ -387,7 +393,7 @@ export function ThisTurnCard({
               <button
                 type="button"
                 className="w-full border-t border-border/35 px-2 py-1.5 text-left text-[10px] font-medium text-muted-foreground hover:bg-accent/35 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
-                onClick={() => onOpenAgents?.(agentRuns[0]?.id)}
+                onClick={() => onOpenAgents?.(preferredRun?.id)}
                 disabled={!onOpenAgents}
               >
                 +{agentRuns.length - 3} more · Open Agents
@@ -454,7 +460,7 @@ export function ThisTurnCard({
             <button
               type="button"
               className="text-[11px] font-medium text-muted-foreground hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              onClick={() => onOpenAgents(agentRuns[0]?.id)}
+              onClick={() => onOpenAgents(preferredRun?.id)}
             >
               Open Agents
             </button>
