@@ -1,4 +1,4 @@
-import type { OrchestrationThreadActivity } from "@toolport-studio/contracts";
+import type { OrchestrationThreadActivity, TurnId } from "@toolport-studio/contracts";
 
 export type AgentRunStatus =
   | "pending"
@@ -19,6 +19,7 @@ export interface AgentRunActivity {
 
 export interface AgentRun {
   id: string;
+  turnId: TurnId | null;
   parentId: string | null;
   providerThreadId: string | null;
   label: string;
@@ -83,6 +84,7 @@ export function deriveAgentRuns(
     const nextStatus = status(payload.status);
     runs.set(id, {
       id,
+      turnId: previous?.turnId ?? activity.turnId,
       parentId: text(payload.parentAgentRunId) ?? previous?.parentId ?? null,
       providerThreadId: text(payload.providerThreadId) ?? previous?.providerThreadId ?? null,
       label: text(payload.label) ?? previous?.label ?? "Agent",
@@ -138,4 +140,59 @@ export function deriveAgentRuns(
   };
   for (const root of children.get(null) ?? []) visit(root, 0);
   return flattened;
+}
+
+export function agentRunsForTurn(
+  runs: ReadonlyArray<AgentRun>,
+  turnId: TurnId | null,
+): ReadonlyArray<AgentRun> {
+  if (turnId === null) return [];
+  return runs.filter((run) => run.turnId === turnId);
+}
+
+export function latestMessageTurnId(
+  messages: ReadonlyArray<{ readonly turnId: TurnId | null }>,
+): TurnId | null {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const turnId = messages[index]?.turnId;
+    if (turnId !== null && turnId !== undefined) return turnId;
+  }
+  return null;
+}
+
+export interface AgentRunSummary {
+  totalCount: number;
+  activeCount: number;
+  failedCount: number;
+  completedCount: number;
+  label: string;
+}
+
+function pluralizedSubagent(count: number): string {
+  return count === 1 ? "subagent" : "subagents";
+}
+
+export function summarizeAgentRuns(runs: ReadonlyArray<AgentRun>): AgentRunSummary {
+  const activeCount = runs.filter(
+    (run) => run.status === "pending" || run.status === "running",
+  ).length;
+  const failedCount = runs.filter((run) => run.status === "failed").length;
+  const completedCount = runs.filter((run) => run.status === "completed").length;
+
+  const label =
+    activeCount > 0
+      ? `${activeCount} ${pluralizedSubagent(activeCount)} running`
+      : failedCount > 0
+        ? `${failedCount} ${pluralizedSubagent(failedCount)} failed`
+        : completedCount === runs.length && completedCount > 0
+          ? `${completedCount} ${pluralizedSubagent(completedCount)} completed`
+          : `${runs.length} ${pluralizedSubagent(runs.length)}`;
+
+  return {
+    totalCount: runs.length,
+    activeCount,
+    failedCount,
+    completedCount,
+    label,
+  };
 }

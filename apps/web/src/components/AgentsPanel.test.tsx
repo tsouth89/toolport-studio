@@ -6,6 +6,7 @@ import { AgentsPanel } from "./AgentsPanel";
 
 const run = (overrides: Partial<AgentRun> = {}): AgentRun => ({
   id: "agent-1",
+  turnId: null,
   parentId: null,
   providerThreadId: "provider-child-1",
   label: "Agent 1",

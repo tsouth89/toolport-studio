@@ -152,7 +152,7 @@ import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings"
 import PlanSidebar from "./PlanSidebar";
 import { ActivityPanel } from "./ActivityPanel";
 import { AgentsPanel } from "./AgentsPanel";
-import { deriveAgentRuns } from "../agentRuns";
+import { agentRunsForTurn, deriveAgentRuns, latestMessageTurnId } from "../agentRuns";
 import { shouldShowThisTurnCard, ThisTurnCard } from "./ThisTurnCard";
 import ThreadTerminalDrawer from "./ThreadTerminalDrawer";
 import { deriveThreadActivityViewModel } from "../threadActivityViewModel";
@@ -1636,6 +1636,25 @@ function ChatViewContent(props: ChatViewProps) {
     return openTerminalThreadKeys.filter((nextThreadKey) => existingThreadKeys.has(nextThreadKey));
   }, [draftThreadKeys, openTerminalThreadKeys, serverThreadKeys]);
   const activeLatestTurn = activeThread?.latestTurn ?? null;
+  const latestSettledMessageTurnId = useMemo(
+    () => latestMessageTurnId(activeThread?.messages ?? []),
+    [activeThread?.messages],
+  );
+  const thisTurnAgentRuns = useMemo(
+    () =>
+      agentRunsForTurn(
+        agentRuns,
+        activeThread?.session?.activeTurnId ??
+          activeLatestTurn?.turnId ??
+          latestSettledMessageTurnId,
+      ),
+    [
+      activeLatestTurn?.turnId,
+      activeThread?.session?.activeTurnId,
+      agentRuns,
+      latestSettledMessageTurnId,
+    ],
+  );
   const sourcePlanThreadRef = useMemo(() => {
     const sourceThreadId = activeLatestTurn?.sourceProposedPlan?.threadId;
     if (!activeThread || !sourceThreadId || sourceThreadId === activeThread.id) {
@@ -3328,7 +3347,7 @@ function ChatViewContent(props: ChatViewProps) {
   const thisTurnCardVisible =
     !dockedActivityOpen &&
     thisTurnCardDismissedKey !== thisTurnCardKey &&
-    (thisTurnCardForcedOpen || shouldShowThisTurnCard(activityViewModel));
+    (thisTurnCardForcedOpen || shouldShowThisTurnCard(activityViewModel, thisTurnAgentRuns));
   const openThisTurnCard = useCallback(() => {
     setThisTurnCardDismissedKey(null);
     setThisTurnCardForcedOpen(true);
@@ -6153,10 +6172,12 @@ function ChatViewContent(props: ChatViewProps) {
                 >
                   <ThisTurnCard
                     model={activityViewModel}
+                    agentRuns={thisTurnAgentRuns}
                     onDismiss={dismissThisTurnCard}
                     onOpenTurnDiff={isServerThread ? onOpenTurnDiff : undefined}
                     onOpenToolport={openToolportMcp}
                     onOpenDockedActivity={addActivitySurface}
+                    onOpenAgents={openAgentsSurface}
                     expandRequestId={thisTurnExpandRequestId}
                   />
                 </div>
