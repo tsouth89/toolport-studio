@@ -368,7 +368,14 @@ export const ProviderRegistryLive = Layer.effect(
       ),
     );
     const providersRef = yield* Ref.make<ReadonlyArray<ServerProvider>>(cachedProviders);
-    const lastFullRefreshAtMsRef = yield* Ref.make<number | null>(null);
+    // Seeded at construction, because every managed instance forks its own
+    // probe as it is built. Starting this null made the first client connection
+    // look overdue for a refresh, so it queued behind those boot probes on each
+    // provider's own refresh permit and then ran a second full round of CLI
+    // spawns. Measured on a live server: 11.9s of refresh where the boot probes
+    // were already producing the same answers, and streaming them through
+    // `streamChanges` regardless.
+    const lastFullRefreshAtMsRef = yield* Ref.make<number | null>(yield* Clock.currentTimeMillis);
     const refreshStalenessSemaphore = yield* Semaphore.make(1);
     const maintenanceActionStatesRef = yield* Ref.make<
       ReadonlyMap<ProviderInstanceId, { readonly update?: ServerProviderUpdateState | undefined }>
