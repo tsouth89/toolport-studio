@@ -10,7 +10,11 @@ import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import { HostProcessPlatform } from "@toolport-studio/shared/hostProcess";
-import { SpawnExecutableResolution } from "@toolport-studio/shared/shell";
+import {
+  CommandResolutionCaching,
+  makeCommandResolutionCache,
+  SpawnExecutableResolution,
+} from "@toolport-studio/shared/shell";
 import * as ExternalLauncher from "./externalLauncher.ts";
 
 function makeMockDetachedHandle(onUnref: () => void = () => undefined) {
@@ -32,12 +36,28 @@ function makeMockDetachedHandle(onUnref: () => void = () => undefined) {
   });
 }
 
+const countingFileSystemLayer = (counter: { calls: number }) =>
+  Layer.effect(
+    FileSystem.FileSystem,
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      return FileSystem.FileSystem.of({
+        ...fileSystem,
+        stat: (path) =>
+          Effect.sync(() => {
+            counter.calls += 1;
+          }).pipe(Effect.andThen(fileSystem.stat(path))),
+      });
+    }),
+  ).pipe(Layer.provide(NodeServices.layer));
+
 const testLayer = (input: {
   readonly platform: NodeJS.Platform;
   readonly env?: Record<string, string>;
   readonly resolveExecutable?: (command: string) => string | undefined;
   readonly onSpawn?: (command: ChildProcess.StandardCommand) => void;
   readonly onUnref?: () => void;
+  readonly countStats?: { calls: number };
 }) => {
   const spawnerLayer = Layer.succeed(
     ChildProcessSpawner.ChildProcessSpawner,
@@ -53,8 +73,15 @@ const testLayer = (input: {
     ),
   );
 
+  const platformLayer = input.countStats
+    ? Layer.merge(NodeServices.layer, countingFileSystemLayer(input.countStats))
+    : NodeServices.layer;
+
   return Layer.mergeAll(
-    ExternalLauncher.layer.pipe(Layer.provide(Layer.merge(NodeServices.layer, spawnerLayer))),
+    ExternalLauncher.layer.pipe(Layer.provide(Layer.merge(platformLayer, spawnerLayer))),
+    // Command resolution is cached process-wide by default; a per-test cache
+    // keeps the filesystem probe counts below independent of test order.
+    Layer.succeed(CommandResolutionCaching, makeCommandResolutionCache()),
     Layer.succeed(HostProcessPlatform, input.platform),
     Layer.succeed(
       SpawnExecutableResolution,
@@ -152,6 +179,63 @@ it.effect("discovers editors through the service API", () =>
 
     assert.equal(editors.includes("vscode"), true);
     assert.equal(editors.includes("file-manager"), true);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("scans the filesystem once and serves later editor lookups from cache", () =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const binDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-editors-cache-" });
+    yield* fileSystem.writeFileString(path.join(binDir, "code.CMD"), "@echo off\r\n");
+
+    const counter = { calls: 0 };
+    yield* Effect.gen(function* () {
+      const launcher = yield* ExternalLauncher.ExternalLauncher;
+      const first = yield* launcher.resolveAvailableEditors();
+      const scanCalls = counter.calls;
+      assert.equal(scanCalls > 0, true);
+
+      const second = yield* launcher.resolveAvailableEditors();
+      assert.deepStrictEqual(second, first);
+      assert.equal(counter.calls, scanCalls);
+    }).pipe(
+      Effect.provide(
+        testLayer({
+          platform: "win32",
+          env: { PATH: binDir, PATHEXT: ".COM;.EXE;.BAT;.CMD" },
+          countStats: counter,
+        }),
+      ),
+    );
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("rescans when the lookup environment changes", () =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const binDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-editors-rescan-" });
+    yield* fileSystem.writeFileString(path.join(binDir, "code.CMD"), "@echo off\r\n");
+
+    const lookupEnv = (pathValue: string) =>
+      ConfigProvider.layer(
+        ConfigProvider.fromEnv({ env: { PATH: pathValue, PATHEXT: ".COM;.EXE;.BAT;.CMD" } }),
+      );
+
+    yield* Effect.gen(function* () {
+      const launcher = yield* ExternalLauncher.ExternalLauncher;
+      const withEditor = yield* launcher
+        .resolveAvailableEditors()
+        .pipe(Effect.provide(lookupEnv(binDir)));
+      const withoutEditor = yield* launcher
+        .resolveAvailableEditors()
+        .pipe(Effect.provide(lookupEnv("")));
+
+      assert.equal(withEditor.includes("vscode"), true);
+      // A cache that ignored the changed PATH would replay the first result.
+      assert.equal(withoutEditor.includes("vscode"), false);
+    }).pipe(Effect.provide(testLayer({ platform: "win32", env: {} })));
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 

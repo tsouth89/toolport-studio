@@ -19,6 +19,7 @@ import {
 } from "@toolport-studio/contracts";
 import { HostProcessPlatform } from "@toolport-studio/shared/hostProcess";
 import { isCommandAvailable, resolveSpawnCommand } from "@toolport-studio/shared/shell";
+import * as Clock from "effect/Clock";
 import * as Config from "effect/Config";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -27,6 +28,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Ref from "effect/Ref";
 import * as ChildProcess from "effect/unstable/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 
@@ -292,10 +294,46 @@ const resolveBrowserLaunch = Effect.fn("externalLauncher.resolveBrowserLaunch")(
   return buildBrowserLaunch(target, platform, env);
 });
 
-const resolveAvailableEditors = Effect.fn("externalLauncher.resolveAvailableEditors")(function* () {
+/**
+ * Scanning for editors probes every PATH entry against every PATHEXT candidate for
+ * each of the ~20 known editor commands, and a command that is not installed costs a
+ * full scan before it can report absence. That is tens of thousands of stats, so the
+ * result is cached rather than recomputed on every client connection. The cache is
+ * keyed on the lookup environment so a PATH change is picked up immediately, and it
+ * expires so an editor installed while the server is running is still discovered.
+ */
+const EDITOR_SCAN_CACHE_TTL_MS = 5 * 60 * 1000;
+
+interface EditorScanCacheEntry {
+  readonly key: string;
+  readonly expiresAtMs: number;
+  readonly editors: ReadonlyArray<EditorId>;
+}
+
+const editorScanCacheKey = (platform: NodeJS.Platform, env: NodeJS.ProcessEnv): string =>
+  [
+    platform,
+    ...Object.entries(env)
+      .map(([name, value]) => `${name}=${value ?? ""}`)
+      .toSorted(),
+  ].join("\n");
+
+const resolveAvailableEditors = Effect.fn("externalLauncher.resolveAvailableEditors")(function* (
+  cache: Ref.Ref<EditorScanCacheEntry | null>,
+) {
   const platform = yield* HostProcessPlatform;
   const env = yield* readCommandLookupEnv;
-  return yield* buildAvailableEditors(platform, env);
+  const key = editorScanCacheKey(platform, env);
+  const now = yield* Clock.currentTimeMillis;
+
+  const cached = yield* Ref.get(cache);
+  if (cached !== null && cached.key === key && cached.expiresAtMs > now) {
+    return cached.editors;
+  }
+
+  const editors = yield* buildAvailableEditors(platform, env);
+  yield* Ref.set(cache, { key, expiresAtMs: now + EDITOR_SCAN_CACHE_TTL_MS, editors });
+  return editors;
 });
 
 /**
@@ -434,6 +472,7 @@ export const make = Effect.gen(function* () {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
+  const editorScanCache = yield* Ref.make<EditorScanCacheEntry | null>(null);
 
   const provideCommandResolutionServices = <A, E, R>(
     effect: Effect.Effect<A, E, R | FileSystem.FileSystem | Path.Path>,
@@ -444,7 +483,8 @@ export const make = Effect.gen(function* () {
     );
 
   return ExternalLauncher.of({
-    resolveAvailableEditors: () => provideCommandResolutionServices(resolveAvailableEditors()),
+    resolveAvailableEditors: () =>
+      provideCommandResolutionServices(resolveAvailableEditors(editorScanCache)),
     launchBrowser: (target) =>
       launchBrowser(target).pipe(
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),

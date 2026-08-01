@@ -2,13 +2,17 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it as effectIt } from "@effect/vitest";
 import { HostProcessEnvironment, HostProcessPlatform } from "@toolport-studio/shared/hostProcess";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import {
   extractPathFromShellOutput,
   CommandAvailability,
   type CommandAvailabilityChecker,
+  CommandResolutionCaching,
   isCommandAvailable,
+  makeCommandResolutionCache,
   listLoginShellCandidates,
   mergePathEntries,
   mergePathValues,
@@ -356,6 +360,21 @@ effectIt.layer(NodeServices.layer)("isCommandAvailable", (it) => {
   );
 });
 
+const countingFileSystemLayer = (counter: { calls: number }) =>
+  Layer.effect(
+    FileSystem.FileSystem,
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      return FileSystem.FileSystem.of({
+        ...fileSystem,
+        stat: (path) =>
+          Effect.sync(() => {
+            counter.calls += 1;
+          }).pipe(Effect.andThen(fileSystem.stat(path))),
+      });
+    }),
+  ).pipe(Layer.provide(NodeServices.layer));
+
 effectIt.layer(NodeServices.layer)("resolveCommandPath", (it) => {
   it.effect("fails when PATH is empty", () =>
     Effect.gen(function* () {
@@ -364,6 +383,52 @@ effectIt.layer(NodeServices.layer)("resolveCommandPath", (it) => {
       }).pipe(Effect.provideService(HostProcessPlatform, "win32"), Effect.result);
 
       expect(result._tag).toBe("Failure");
+    }),
+  );
+
+  it.effect("serves a repeated lookup from cache without touching the filesystem", () =>
+    Effect.gen(function* () {
+      const counter = { calls: 0 };
+      const lookup = resolveCommandPath("definitely-not-installed", {
+        env: { PATH: "C:\\dir-one", PATHEXT: ".COM;.EXE" },
+      }).pipe(
+        Effect.provideService(HostProcessPlatform, "win32"),
+        Effect.provide(countingFileSystemLayer(counter)),
+        Effect.result,
+      );
+
+      yield* Effect.gen(function* () {
+        expect((yield* lookup)._tag).toBe("Failure");
+        const afterFirst = counter.calls;
+        // One PATH entry x two PATHEXT entries, each probed in both cases.
+        expect(afterFirst).toBe(4);
+
+        // A command known to be absent is the expensive case, so the miss is
+        // cached too — otherwise every caller repeats the full scan.
+        expect((yield* lookup)._tag).toBe("Failure");
+        expect(counter.calls).toBe(afterFirst);
+      }).pipe(Effect.provideService(CommandResolutionCaching, makeCommandResolutionCache()));
+    }),
+  );
+
+  it.effect("rescans when PATH changes", () =>
+    Effect.gen(function* () {
+      const counter = { calls: 0 };
+      const lookupWith = (pathValue: string) =>
+        resolveCommandPath("definitely-not-installed", {
+          env: { PATH: pathValue, PATHEXT: ".COM;.EXE" },
+        }).pipe(
+          Effect.provideService(HostProcessPlatform, "win32"),
+          Effect.provide(countingFileSystemLayer(counter)),
+          Effect.result,
+        );
+
+      yield* Effect.gen(function* () {
+        yield* lookupWith("C:\\dir-one");
+        const afterFirst = counter.calls;
+        yield* lookupWith("C:\\dir-two");
+        expect(counter.calls).toBeGreaterThan(afterFirst);
+      }).pipe(Effect.provideService(CommandResolutionCaching, makeCommandResolutionCache()));
     }),
   );
 });
@@ -446,6 +511,33 @@ effectIt.layer(NodeServices.layer)("resolveSpawnCommand", (it) => {
         args: ["unsafe & value"],
         shell: false,
       });
+    }),
+  );
+
+  it.effect("never serves an injected resolver's answer from the shared cache", () =>
+    Effect.gen(function* () {
+      let resolverCalls = 0;
+      const resolveSpawn = resolveSpawnCommand("codex", ["app-server"], {
+        env: { PATH: "C:\\dir-one", PATHEXT: ".COM;.EXE;.CMD" },
+      }).pipe(
+        Effect.provideService(HostProcessPlatform, "win32"),
+        Effect.provideService(SpawnExecutableResolution, () => {
+          resolverCalls += 1;
+          return "C:\\dir-one\\codex.cmd";
+        }),
+      );
+
+      yield* Effect.gen(function* () {
+        const first = yield* resolveSpawn;
+        const second = yield* resolveSpawn;
+
+        expect(second).toEqual(first);
+        expect(first.shell).toBe(true);
+        // Caching only covers the built-in resolver, which is the blocking
+        // one. An injected resolver answers for its own scope, so a
+        // process-wide cache must not hand its answer to another scope.
+        expect(resolverCalls).toBe(2);
+      }).pipe(Effect.provideService(CommandResolutionCaching, makeCommandResolutionCache()));
     }),
   );
 });

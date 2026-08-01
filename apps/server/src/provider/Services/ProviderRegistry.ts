@@ -39,6 +39,16 @@ export interface ProviderRegistryShape {
   readonly refresh: (provider?: ProviderDriverKind) => Effect.Effect<ReadonlyArray<ServerProvider>>;
 
   /**
+   * Refresh every provider unless a full refresh completed recently, in which
+   * case the cached list is returned untouched.
+   *
+   * Intended for callers that refresh opportunistically rather than on user
+   * intent — chiefly the config subscription, where a reconnect loop would
+   * otherwise re-probe every provider CLI on every attempt.
+   */
+  readonly refreshIfStale: () => Effect.Effect<ReadonlyArray<ServerProvider>>;
+
+  /**
    * Refresh the specific configured instance. Returns the updated snapshot
    * list. When the instance id is unknown the call resolves with the
    * currently cached list (no error) — matching the legacy `refresh` shim

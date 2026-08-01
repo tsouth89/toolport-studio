@@ -1,5 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, it, assert } from "@effect/vitest";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -159,6 +160,28 @@ function mockHandle(result: { stdout: string; stderr: string; code: number }) {
  * `packages/shared/src/shell.test.ts`, which pins the platform the same way.
  */
 const hostPlatformLayer = Layer.succeed(HostProcessPlatform, "linux");
+
+/**
+ * Waits in wall-clock time, independent of the ambient TestClock.
+ *
+ * Rebuilding a provider instance resolves its binary against the host PATH,
+ * one filesystem probe per PATH entry per executable extension. That is real
+ * async I/O, and advancing virtual time never lets it finish, so a poll loop
+ * waiting on a rebuild has to hand the event loop back for real. How long it
+ * takes scales with the size of the host PATH and with how loaded the machine
+ * is, which is why a loop that only advanced TestClock passed on CI most of
+ * the time and failed the rest.
+ */
+const sleepOffTestClock = (millis: number) =>
+  Effect.promise(
+    () =>
+      new Promise<void>((resolve) => {
+        // Deliberately not `Effect.sleep`: that resolves against the ambient
+        // TestClock, which is the thing this needs to bypass.
+        // @effect-diagnostics-next-line globalTimers:off
+        globalThis.setTimeout(resolve, millis);
+      }),
+  );
 
 function mockSpawnerLayer(
   handler: (args: ReadonlyArray<string>) => {
@@ -1437,6 +1460,180 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
         }),
       );
 
+      it.effect("reuses a recent full refresh instead of re-probing every caller", () =>
+        Effect.gen(function* () {
+          const codexDriver = ProviderDriverKind.make("codex");
+          const codexInstanceId = ProviderInstanceId.make("codex");
+          const cachedProvider = {
+            instanceId: codexInstanceId,
+            driver: codexDriver,
+            status: "ready",
+            enabled: true,
+            installed: true,
+            auth: { status: "authenticated" },
+            checkedAt: "2026-04-29T10:00:00.000Z",
+            version: "1.0.0",
+            models: [],
+            slashCommands: [],
+            skills: [],
+          } as const satisfies ServerProvider;
+          const refreshCalls = yield* Ref.make(0);
+          const instance = {
+            instanceId: codexInstanceId,
+            driverKind: codexDriver,
+            continuationIdentity: {
+              driverKind: codexDriver,
+              continuationKey: "codex:instance:codex",
+            },
+            displayName: undefined,
+            enabled: true,
+            snapshot: {
+              maintenanceCapabilities: makeManualOnlyProviderMaintenanceCapabilities({
+                provider: codexDriver,
+                packageName: null,
+              }),
+              getSnapshot: Effect.succeed(cachedProvider),
+              refresh: Ref.update(refreshCalls, (count) => count + 1).pipe(
+                Effect.as(cachedProvider),
+              ),
+              streamChanges: Stream.empty,
+            },
+            adapter: {} as ProviderInstance["adapter"],
+            textGeneration: {} as ProviderInstance["textGeneration"],
+          } satisfies ProviderInstance;
+          const instanceRegistryLayer = Layer.succeed(
+            ProviderInstanceRegistry.ProviderInstanceRegistry,
+            {
+              getInstance: (instanceId) =>
+                Effect.succeed(instanceId === codexInstanceId ? instance : undefined),
+              listInstances: Effect.succeed([instance]),
+              listUnavailable: Effect.succeed([]),
+              streamChanges: Stream.empty,
+              subscribeChanges: Effect.flatMap(PubSub.unbounded<void>(), (pubsub) =>
+                PubSub.subscribe(pubsub),
+              ),
+            },
+          );
+          const scope = yield* Scope.make();
+          yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
+          const runtimeServices = yield* Layer.build(
+            ProviderRegistryLive.pipe(
+              Layer.provideMerge(instanceRegistryLayer),
+              Layer.provideMerge(
+                ServerConfig.layerTest(process.cwd(), {
+                  prefix: "t3-provider-registry-refresh-if-stale-",
+                }),
+              ),
+              Layer.provideMerge(NodeServices.layer),
+            ),
+          ).pipe(Scope.provide(scope));
+
+          yield* Effect.gen(function* () {
+            const registry = yield* ProviderRegistry.ProviderRegistry;
+
+            yield* registry.refreshIfStale();
+            assert.strictEqual(yield* Ref.get(refreshCalls), 1);
+
+            yield* registry.refreshIfStale();
+            assert.strictEqual(yield* Ref.get(refreshCalls), 1);
+
+            yield* TestClock.adjust(Duration.seconds(61));
+            yield* registry.refreshIfStale();
+            assert.strictEqual(yield* Ref.get(refreshCalls), 2);
+
+            // An explicit refresh is user intent and always re-probes.
+            yield* registry.refresh();
+            assert.strictEqual(yield* Ref.get(refreshCalls), 3);
+          }).pipe(Effect.provide(runtimeServices));
+        }),
+      );
+
+      it.effect("collapses a burst of concurrent stale refreshes into one", () =>
+        Effect.gen(function* () {
+          const codexDriver = ProviderDriverKind.make("codex");
+          const codexInstanceId = ProviderInstanceId.make("codex");
+          const cachedProvider = {
+            instanceId: codexInstanceId,
+            driver: codexDriver,
+            status: "ready",
+            enabled: true,
+            installed: true,
+            auth: { status: "authenticated" },
+            checkedAt: "2026-04-29T10:00:00.000Z",
+            version: "1.0.0",
+            models: [],
+            slashCommands: [],
+            skills: [],
+          } as const satisfies ServerProvider;
+          const refreshCalls = yield* Ref.make(0);
+          const instance = {
+            instanceId: codexInstanceId,
+            driverKind: codexDriver,
+            continuationIdentity: {
+              driverKind: codexDriver,
+              continuationKey: "codex:instance:codex",
+            },
+            displayName: undefined,
+            enabled: true,
+            snapshot: {
+              maintenanceCapabilities: makeManualOnlyProviderMaintenanceCapabilities({
+                provider: codexDriver,
+                packageName: null,
+              }),
+              getSnapshot: Effect.succeed(cachedProvider),
+              // Suspends so a second caller can reach the staleness check
+              // while the first refresh is still in flight.
+              refresh: Effect.yieldNow.pipe(
+                Effect.andThen(Ref.update(refreshCalls, (count) => count + 1)),
+                Effect.as(cachedProvider),
+              ),
+              streamChanges: Stream.empty,
+            },
+            adapter: {} as ProviderInstance["adapter"],
+            textGeneration: {} as ProviderInstance["textGeneration"],
+          } satisfies ProviderInstance;
+          const instanceRegistryLayer = Layer.succeed(
+            ProviderInstanceRegistry.ProviderInstanceRegistry,
+            {
+              getInstance: (instanceId) =>
+                Effect.succeed(instanceId === codexInstanceId ? instance : undefined),
+              listInstances: Effect.succeed([instance]),
+              listUnavailable: Effect.succeed([]),
+              streamChanges: Stream.empty,
+              subscribeChanges: Effect.flatMap(PubSub.unbounded<void>(), (pubsub) =>
+                PubSub.subscribe(pubsub),
+              ),
+            },
+          );
+          const scope = yield* Scope.make();
+          yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
+          const runtimeServices = yield* Layer.build(
+            ProviderRegistryLive.pipe(
+              Layer.provideMerge(instanceRegistryLayer),
+              Layer.provideMerge(
+                ServerConfig.layerTest(process.cwd(), {
+                  prefix: "t3-provider-registry-refresh-burst-",
+                }),
+              ),
+              Layer.provideMerge(NodeServices.layer),
+            ),
+          ).pipe(Scope.provide(scope));
+
+          yield* Effect.gen(function* () {
+            const registry = yield* ProviderRegistry.ProviderRegistry;
+
+            // Several clients connecting at once all find the timestamp unset.
+            // Only the first may probe; the rest reuse what it produced.
+            yield* Effect.all(
+              [registry.refreshIfStale(), registry.refreshIfStale(), registry.refreshIfStale()],
+              { concurrency: "unbounded" },
+            );
+
+            assert.strictEqual(yield* Ref.get(refreshCalls), 1);
+          }).pipe(Effect.provide(runtimeServices));
+        }),
+      );
+
       it.effect("keeps consuming registry changes after one sync fails", () =>
         Effect.gen(function* () {
           const codexDriver = ProviderDriverKind.make("codex");
@@ -1778,7 +1975,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             // executable. This verifies the public settings-to-probe behavior
             // without depending on timestamps assigned by TestClock.
             const refreshed = yield* Effect.gen(function* () {
-              for (let attempts = 0; attempts < 60; attempts += 1) {
+              for (let attempts = 0; attempts < 200; attempts += 1) {
                 const providers = yield* registry.getProviders;
                 const codex = providers.find((provider) => provider.instanceId === "codex");
                 if (
@@ -1789,7 +1986,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
                   return providers;
                 }
                 yield* TestClock.adjust("50 millis");
-                yield* Effect.yieldNow;
+                yield* sleepOffTestClock(20);
               }
               return yield* registry.getProviders;
             });

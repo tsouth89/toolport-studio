@@ -3,6 +3,7 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
+import * as Clock from "effect/Clock";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -347,6 +348,62 @@ export const CommandAvailability = Context.Reference<CommandAvailabilityChecker>
   },
 );
 
+/**
+ * How long a command lookup stays cached.
+ *
+ * Short enough that a CLI installed while the server is running is picked up
+ * without a restart, long enough that a burst of lookups — a client connecting,
+ * a settings change rebuilding every provider instance — pays for the scan once
+ * instead of once per caller.
+ */
+export const COMMAND_RESOLUTION_CACHE_TTL_MS = 30_000;
+
+export interface CommandResolutionCache {
+  /**
+   * The cached resolution: an absolute path, `null` for a command known to be
+   * absent, or `undefined` when nothing usable is cached.
+   */
+  readonly get: (key: string, nowMs: number) => string | null | undefined;
+  readonly set: (key: string, resolvedPath: string | null, nowMs: number) => void;
+  readonly clear: () => void;
+}
+
+export const makeCommandResolutionCache = (
+  ttlMs: number = COMMAND_RESOLUTION_CACHE_TTL_MS,
+): CommandResolutionCache => {
+  const entries = new Map<string, { expiresAtMs: number; resolvedPath: string | null }>();
+  return {
+    get: (key, nowMs) => {
+      const entry = entries.get(key);
+      if (entry === undefined) return undefined;
+      if (entry.expiresAtMs <= nowMs) {
+        entries.delete(key);
+        return undefined;
+      }
+      return entry.resolvedPath;
+    },
+    set: (key, resolvedPath, nowMs) => {
+      entries.set(key, { expiresAtMs: nowMs + ttlMs, resolvedPath });
+    },
+    clear: () => entries.clear(),
+  };
+};
+
+/**
+ * Process-wide cache for {@link resolveCommandPath}.
+ *
+ * A lookup walks every PATH entry against every executable extension, and a
+ * command that is not installed always runs that scan to completion before it
+ * can report absence — so misses are the expensive case and are cached too.
+ * Provide a fresh cache to isolate tests that assert on probe counts.
+ */
+export const CommandResolutionCaching = Context.Reference<CommandResolutionCache>(
+  "@toolport-studio/shared/shell/CommandResolutionCaching",
+  {
+    defaultValue: () => makeCommandResolutionCache(),
+  },
+);
+
 export function readEnvironmentFromWindowsShell(
   names: ReadonlyArray<string>,
   execFile?: ExecFileSyncLike,
@@ -511,14 +568,41 @@ const isExecutableFile = Effect.fn("shell.isExecutableFile")(function* (
   return canExecuteFile(filePath);
 });
 
-const resolveCommandPathForPlatform = Effect.fn("shell.resolveCommandPathForPlatform")(function* (
+/**
+ * Keyed on everything a lookup reads, so a changed PATH or PATHEXT resolves
+ * afresh rather than replaying a stale answer.
+ *
+ * The `scope` prefix keeps the async lookup and the spawn-time resolver in
+ * separate namespaces: the latter is swappable via {@link SpawnExecutableResolution},
+ * so their answers are not interchangeable.
+ */
+const commandResolutionCacheKey = (
+  scope: "lookup" | "spawn",
+  input: {
+    readonly platform: NodeJS.Platform;
+    readonly command: string;
+    readonly env: NodeJS.ProcessEnv;
+    readonly windowsPathExtensions: ReadonlyArray<string>;
+  },
+): string =>
+  [
+    scope,
+    input.platform,
+    input.command,
+    resolvePathEnvironmentVariable(input.env),
+    input.windowsPathExtensions.join(","),
+  ].join("\0");
+
+const scanForCommandPath = Effect.fn("shell.scanForCommandPath")(function* (
   command: string,
-  options: CommandAvailabilityOptions & { readonly platform: NodeJS.Platform },
-): Effect.fn.Return<string, CommandResolutionError, FileSystem.FileSystem | Path.Path> {
+  input: {
+    readonly platform: NodeJS.Platform;
+    readonly env: NodeJS.ProcessEnv;
+    readonly windowsPathExtensions: ReadonlyArray<string>;
+  },
+): Effect.fn.Return<string | null, never, FileSystem.FileSystem | Path.Path> {
   const path = yield* Path.Path;
-  const platform = options.platform;
-  const env = options.env ?? process.env;
-  const windowsPathExtensions = platform === "win32" ? resolveWindowsPathExtensions(env) : [];
+  const { platform, env, windowsPathExtensions } = input;
   const commandCandidates = resolveCommandCandidates(
     command,
     platform,
@@ -532,12 +616,12 @@ const resolveCommandPathForPlatform = Effect.fn("shell.resolveCommandPathForPlat
         return candidate;
       }
     }
-    return yield* new CommandResolutionError({ command, reason: "not-found" });
+    return null;
   }
 
   const pathValue = resolvePathEnvironmentVariable(env);
   if (pathValue.length === 0) {
-    return yield* new CommandResolutionError({ command, reason: "not-found" });
+    return null;
   }
   const pathEntries: string[] = [];
   for (const entry of pathValue.split(pathDelimiterForPlatform(platform))) {
@@ -555,7 +639,39 @@ const resolveCommandPathForPlatform = Effect.fn("shell.resolveCommandPathForPlat
       }
     }
   }
-  return yield* new CommandResolutionError({ command, reason: "not-found" });
+  return null;
+});
+
+const resolveCommandPathForPlatform = Effect.fn("shell.resolveCommandPathForPlatform")(function* (
+  command: string,
+  options: CommandAvailabilityOptions & { readonly platform: NodeJS.Platform },
+): Effect.fn.Return<string, CommandResolutionError, FileSystem.FileSystem | Path.Path> {
+  const platform = options.platform;
+  const env = options.env ?? process.env;
+  const windowsPathExtensions = platform === "win32" ? resolveWindowsPathExtensions(env) : [];
+
+  const cacheKey = commandResolutionCacheKey("lookup", {
+    platform,
+    command,
+    env,
+    windowsPathExtensions,
+  });
+  const cache = yield* CommandResolutionCaching;
+  const nowMs = yield* Clock.currentTimeMillis;
+
+  const cached = cache.get(cacheKey, nowMs);
+  const resolvedPath =
+    cached === undefined
+      ? yield* scanForCommandPath(command, { platform, env, windowsPathExtensions })
+      : cached;
+  if (cached === undefined) {
+    cache.set(cacheKey, resolvedPath, nowMs);
+  }
+
+  if (resolvedPath === null) {
+    return yield* new CommandResolutionError({ command, reason: "not-found" });
+  }
+  return resolvedPath;
 });
 
 export const resolveCommandPath = Effect.fn("shell.resolveCommandPath")(function* (
@@ -586,7 +702,34 @@ export const resolveSpawnCommand = Effect.fn("shell.resolveSpawnCommand")(functi
         ? { ...hostEnvironment, ...options.env }
         : options.env;
   const resolveExecutable = yield* SpawnExecutableResolution;
-  const resolvedCommand = resolveExecutable(command, platform, env) ?? command;
+  // Only the built-in resolver is cached. It is the one worth caching — it
+  // walks PATH with blocking `statSync` calls, and a command that is not
+  // installed walks all of it before giving up, on the event loop, once per
+  // spawn. A resolver swapped in through the Context is cheap by comparison
+  // and answers for its own scope, so caching it in a process-wide cache
+  // could serve one scope's answer to another.
+  const isCacheableResolver = resolveExecutable === resolveSpawnExecutableWithNode;
+  const cacheKey = commandResolutionCacheKey("spawn", {
+    platform,
+    command,
+    env,
+    windowsPathExtensions: resolveWindowsPathExtensions(env),
+  });
+  const cache = yield* CommandResolutionCaching;
+  const nowMs = yield* Clock.currentTimeMillis;
+
+  const cached = isCacheableResolver ? cache.get(cacheKey, nowMs) : undefined;
+  let resolved: string | null;
+  if (cached === undefined) {
+    resolved = resolveExecutable(command, platform, env) ?? null;
+    if (isCacheableResolver) {
+      cache.set(cacheKey, resolved, nowMs);
+    }
+  } else {
+    resolved = cached;
+  }
+
+  const resolvedCommand = resolved ?? command;
   const extension = NodePath.win32.extname(resolvedCommand).toLowerCase();
   if (extension !== ".cmd" && extension !== ".bat") {
     return { command: resolvedCommand, args: [...args], shell: false };
