@@ -656,10 +656,10 @@ describe("isolateCodexNotificationFailure", () => {
       // work and then says nothing looks like from the outside.
       const handled: Array<string> = [];
       const failures: Array<string> = [];
-      const isolated = isolateCodexNotificationFailure<{ readonly method: string }>(
-        (notification) =>
+      const isolated = isolateCodexNotificationFailure(
+        (notification: { readonly method: string }) =>
           notification.method === "thread/settings/updated"
-            ? Effect.fail(new Error("boom"))
+            ? Effect.fail({ _tag: "NotificationProjectionError" } as const)
             : Effect.sync(() => {
                 handled.push(notification.method);
               }),
@@ -692,8 +692,8 @@ describe("isolateCodexNotificationFailure", () => {
   it.effect("survives a defect, not just a typed failure", () =>
     Effect.gen(function* () {
       const handled: Array<string> = [];
-      const isolated = isolateCodexNotificationFailure<{ readonly method: string }>(
-        (notification) =>
+      const isolated = isolateCodexNotificationFailure(
+        (notification: { readonly method: string }) =>
           notification.method === "bad"
             ? Effect.sync(() => {
                 throw new TypeError("cannot read properties of undefined");

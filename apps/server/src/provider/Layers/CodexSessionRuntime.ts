@@ -98,9 +98,9 @@ const RECOVERABLE_THREAD_RESUME_ERROR_SNIPPETS = [
  * Working with no output and no error. Interrupts still propagate so teardown
  * is not swallowed.
  */
-export function isolateCodexNotificationFailure<N extends { readonly method: string }>(
-  handle: (notification: N) => Effect.Effect<void, unknown>,
-  onFailure: (notification: N, cause: Cause.Cause<unknown>) => Effect.Effect<void>,
+export function isolateCodexNotificationFailure<N extends { readonly method: string }, E>(
+  handle: (notification: N) => Effect.Effect<void, E>,
+  onFailure: (notification: N, cause: Cause.Cause<E>) => Effect.Effect<void>,
 ): (notification: N) => Effect.Effect<void> {
   return (notification) =>
     handle(notification).pipe(
