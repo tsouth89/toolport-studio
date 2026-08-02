@@ -7,8 +7,12 @@ import * as Cause from "effect/Cause";
 import * as Data from "effect/Data";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 
 import { createModelCapabilities } from "@toolport-studio/shared/model";
+
+import { readOpenCodeAccountLabel } from "../Drivers/OpenCodeAccount.ts";
 import { compareSemverVersions } from "@toolport-studio/shared/semver";
 import {
   buildServerProvider,
@@ -299,7 +303,11 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
   openCodeSettings: OpenCodeSettings,
   cwd: string,
   environment?: NodeJS.ProcessEnv,
-): Effect.fn.Return<ServerProviderDraft, never, OpenCodeRuntime> {
+): Effect.fn.Return<
+  ServerProviderDraft,
+  never,
+  OpenCodeRuntime | FileSystem.FileSystem | Path.Path
+> {
   const openCodeRuntime = yield* OpenCodeRuntime;
   const resolvedEnvironment = environment ?? process.env;
   const checkedAt = DateTime.formatIso(yield* DateTime.now);
@@ -435,6 +443,16 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
     DEFAULT_OPENCODE_MODEL_CAPABILITIES,
   );
   const connectedCount = inventoryExit.value.providerList.connected.length;
+  // The subscription is the headline; the upstream count is supporting detail.
+  // They answer different questions: one is who you are signed in as, the
+  // other is how many model providers OpenCode can currently reach.
+  const accountLabel = yield* readOpenCodeAccountLabel(resolvedEnvironment);
+  const upstreamDetail =
+    connectedCount > 0
+      ? `${connectedCount} upstream provider${connectedCount === 1 ? "" : "s"} connected through ${isExternalServer ? "the configured OpenCode server" : "OpenCode"}.`
+      : isExternalServer
+        ? "Connected to the configured OpenCode server, but it did not report any connected upstream providers."
+        : "OpenCode is available, but it did not report any connected upstream providers.";
   return buildServerProvider({
     presentation: OPENCODE_PRESENTATION,
     enabled: true,
@@ -447,13 +465,9 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
       auth: {
         status: connectedCount > 0 ? "authenticated" : "unknown",
         type: "opencode",
+        ...(accountLabel ? { label: accountLabel } : {}),
       },
-      message:
-        connectedCount > 0
-          ? `${connectedCount} upstream provider${connectedCount === 1 ? "" : "s"} connected through ${isExternalServer ? "the configured OpenCode server" : "OpenCode"}.`
-          : isExternalServer
-            ? "Connected to the configured OpenCode server, but it did not report any connected upstream providers."
-            : "OpenCode is available, but it did not report any connected upstream providers.",
+      message: upstreamDetail,
     },
   });
 });
