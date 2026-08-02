@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import type { EnvironmentId, ProviderInstanceId, ThreadId } from "@toolport-studio/contracts";
+import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
@@ -472,16 +473,70 @@ export function resolvePreviewMcpDeliveryMode(
   return via ? "via-toolport" : "direct";
 }
 
+/** Segment separator for {@link mcpBindingCatalogKey}. */
+const CATALOG_KEY_SEPARATOR = "\0";
+/** Segment prefixes that describe the catalog rather than name a server. */
+const CATALOG_KEY_TAG_PREFIXES = ["preview:", "cred:"] as const;
+
+/**
+ * Server names encoded in a catalog key.
+ *
+ * The key mixes server names with tagged segments, and OpenCode needs the names
+ * back to disconnect what a rebind dropped. Decoding lives next to the encoder
+ * so adding a tag cannot leave a consumer treating it as a server name — which
+ * is exactly what a `cred:` segment did when it was added.
+ */
+export function mcpBindingNamesFromCatalogKey(catalogKey: string): ReadonlySet<string> {
+  return new Set(
+    catalogKey
+      .split(CATALOG_KEY_SEPARATOR)
+      .filter(
+        (segment) =>
+          segment.length > 0 &&
+          !CATALOG_KEY_TAG_PREFIXES.some((prefix) => segment.startsWith(prefix)),
+      ),
+  );
+}
+
+/**
+ * Short, non-reversible digest of the preview credential a binding set carries.
+ * Hashed because catalog keys are logged when an adapter recycles its child.
+ */
+function previewCredentialDigest(bindings: ReadonlyArray<McpProviderBinding>): string {
+  const direct = bindings.find((binding) => binding.name === INTERNAL_MCP_SERVER_NAME);
+  const toolport = bindings.find((binding) => binding.name === TOOLPORT_MCP_SERVER_NAME);
+  const parts =
+    direct?.transport === "http"
+      ? [direct.url, direct.headers.Authorization]
+      : toolport?.transport === "stdio"
+        ? [
+            toolport.env.TOOLPORT_REGISTRY,
+            toolport.env[`TOOLPORT_SECRET_${STUDIO_PREVIEW_SECRET_ENV_KEY}`],
+          ]
+        : [];
+  const material = parts.filter((part): part is string => Boolean(part)).join("\0");
+  if (!material) return "none";
+  return NodeCrypto.createHash("sha256").update(material).digest("hex").slice(0, 12);
+}
+
 /**
  * Stable fingerprint for adapter rebind/recycle checks.
+ *
  * Includes server names plus whether Toolport carries Studio preview (secret
  * attached), so a silent drop from via-toolport to bare toolport still rebinds.
+ *
+ * Also includes a digest of the preview endpoint + bearer. Providers bake the
+ * bearer into launch-time config (`-c mcp_servers.toolport.env.*`) with no
+ * refresh channel, so a credential rotated under a live child — session reaped
+ * for inactivity, thread stopped, instance switched — leaves that child holding
+ * a revoked token and every `preview_*` call failing 401 forever. Names and
+ * lane are identical across a rotation; only the digest moves.
  */
 export function mcpBindingCatalogKey(bindings: ReadonlyArray<McpProviderBinding>): string {
   const names = bindings
     .map((binding) => binding.name)
     .toSorted()
-    .join("\0");
+    .join(CATALOG_KEY_SEPARATOR);
   const toolport = bindings.find(
     (binding) => binding.name === TOOLPORT_MCP_SERVER_NAME && binding.transport === "stdio",
   );
@@ -490,7 +545,9 @@ export function mcpBindingCatalogKey(bindings: ReadonlyArray<McpProviderBinding>
     Boolean(toolport.env[`TOOLPORT_SECRET_${STUDIO_PREVIEW_SECRET_ENV_KEY}`]);
   const hasDirectPreview = bindings.some((binding) => binding.name === INTERNAL_MCP_SERVER_NAME);
   const previewLane = previewVia ? "via" : hasDirectPreview ? "direct" : "none";
-  return `${names}\0preview:${previewLane}`;
+  return [names, `preview:${previewLane}`, `cred:${previewCredentialDigest(bindings)}`].join(
+    CATALOG_KEY_SEPARATOR,
+  );
 }
 
 function toolportBindingCarriesPreview(binding: McpProviderBinding | undefined): boolean {
