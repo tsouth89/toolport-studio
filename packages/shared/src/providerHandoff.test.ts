@@ -152,6 +152,15 @@ describe("recent exchange", () => {
     ).not.toContain("How the conversation ended");
   });
 
+  it("omits the section when the exchange turn limit is disabled", () => {
+    const envelope = buildProviderHandoff(
+      { ...base, recentExchange: exchange },
+      { ...DEFAULT_PROVIDER_HANDOFF_LIMITS, maxExchangeTurns: 0 },
+    );
+
+    expect(envelope).not.toContain("How the conversation ended");
+  });
+
   it("stays bounded with a huge exchange", () => {
     const envelope = buildProviderHandoff({
       ...base,

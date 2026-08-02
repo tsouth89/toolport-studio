@@ -137,9 +137,12 @@ export function buildProviderHandoff(
   // its prefix, so placing the handoff's most important context first prevents
   // large workspace or diff sections from removing the answer being handed
   // over. The per-turn caps keep this entire section below the total budget.
-  const exchange = (input.recentExchange ?? [])
-    .filter((entry) => entry.text.trim().length > 0)
-    .slice(-limits.maxExchangeTurns);
+  const exchange =
+    limits.maxExchangeTurns > 0
+      ? (input.recentExchange ?? [])
+          .filter((entry) => entry.text.trim().length > 0)
+          .slice(-limits.maxExchangeTurns)
+      : [];
   if (exchange.length > 0) {
     const rendered = exchange
       .map(
