@@ -43,4 +43,13 @@ describe("BYOK presets", () => {
       expect(preset.apiKeysUrl).toMatch(/^https:\/\//);
     }
   });
+
+  it("only sends the API key over HTTPS", () => {
+    // baseUrl is where the harness sends the bearer token. Presets are meant
+    // to become user-editable data, so a plaintext endpoint would leak the
+    // key rather than merely fail.
+    for (const preset of BYOK_PRESETS) {
+      expect(preset.baseUrl).toMatch(/^https:\/\//);
+    }
+  });
 });

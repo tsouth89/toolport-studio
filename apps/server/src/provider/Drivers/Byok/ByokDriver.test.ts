@@ -88,6 +88,7 @@ describe("preset vision capability", () => {
 describe("ByokDriver", () => {
   it("defaults to a preset that exists", () => {
     const config = ByokDriver.defaultConfig();
+    expect(config.preset).toBe("deepseek");
     expect(findByokPreset(config.preset)).toBeDefined();
   });
 

@@ -534,6 +534,38 @@ describe("applyProviderInstanceSettings preset branding", () => {
     expect(entries[0]?.presetId).toBe("deepseek");
   });
 
+  it("does not brand another driver that happens to carry a preset key", () => {
+    // Driver config is opaque, so any driver's blob can contain `preset`.
+    // Reading it unconditionally would render a Codex instance as DeepSeek.
+    const entries = applyProviderInstanceSettings(
+      [
+        {
+          instanceId: ProviderInstanceId.make("codex"),
+          driverKind: ProviderDriverKind.make("codex"),
+          displayName: "Codex",
+          enabled: true,
+          installed: true,
+          status: "ready",
+          isDefault: true,
+          isAvailable: true,
+          models: [],
+        } as unknown as ProviderInstanceEntry,
+      ],
+      {
+        providers: DEFAULT_SERVER_SETTINGS.providers,
+        providerInstances: {
+          [ProviderInstanceId.make("codex")]: {
+            driver: ProviderDriverKind.make("codex"),
+            enabled: true,
+            config: { preset: "deepseek" },
+          },
+        },
+      },
+    );
+
+    expect(entries[0]?.presetId).toBeUndefined();
+  });
+
   it("leaves non-BYOK instances without a preset id", () => {
     const entries = applyProviderInstanceSettings(
       [

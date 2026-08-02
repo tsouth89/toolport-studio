@@ -862,6 +862,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     [providerInstanceEntries, selectedInstanceId],
   );
   const noProviderAvailable = selectedProviderEntry === undefined;
+  /**
+   * Whether the selected provider can read image attachments. Absent on the
+   * snapshot means yes, so providers that never declare it are unaffected.
+   */
+  const providerReadsImages = selectedProviderEntry?.snapshot.supportsImageInput !== false;
+  const providerReadsImagesRef = useRef(providerReadsImages);
+  providerReadsImagesRef.current = providerReadsImages;
   // The driver kind follows the instance that will actually run the turn,
   // which can differ from the persisted selection when that selection is
   // disabled.
@@ -1310,6 +1317,23 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     promptRef.current = prompt;
     setComposerCursor((existing) => clampCollapsedComposerCursor(prompt, existing));
   }, [prompt, promptRef]);
+
+  // Clear anything already attached when the target provider cannot read
+  // images, so the composer never shows attachments that would be dropped.
+  useEffect(() => {
+    if (providerReadsImages || composerImages.length === 0) return;
+    for (const image of composerImages) removeComposerImageFromDraft(image.id);
+    toastManager.add({
+      type: "error",
+      title: `${selectedProviderEntry?.displayName ?? "This provider"} cannot read images.`,
+      description: "The attached images were removed.",
+    });
+  }, [
+    providerReadsImages,
+    composerImages,
+    removeComposerImageFromDraft,
+    selectedProviderEntry?.displayName,
+  ]);
 
   useEffect(() => {
     composerImagesRef.current = composerImages;
@@ -1926,7 +1950,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     // swaps image input for placeholder text and answers anyway, so silently
     // forwarding an attachment produces a confident answer about an image the
     // model never received.
-    if (selectedProviderEntry?.snapshot.supportsImageInput === false) {
+    if (!providerReadsImages) {
       toastManager.add({
         type: "error",
         title: `${selectedProviderEntry.displayName} cannot read images.`,
@@ -2216,7 +2240,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       },
       getSendContext: () => ({
         prompt: promptRef.current,
-        images: composerImagesRef.current,
+        // Attach-then-switch bypasses the attach guard, and every send path
+        // (including queue draining) reads images from here, so this is the
+        // one place that can guarantee a text-only provider never receives
+        // an image.
+        images: providerReadsImagesRef.current ? composerImagesRef.current : [],
         terminalContexts: composerTerminalContextsRef.current,
         elementContexts: composerElementContextsRef.current,
         previewAnnotations: composerPreviewAnnotationsRef.current,

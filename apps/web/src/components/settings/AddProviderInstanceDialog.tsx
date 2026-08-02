@@ -63,12 +63,19 @@ function slugifyLabel(value: string): string {
     .slice(0, 48);
 }
 
+/**
+ * Prefix an instance id gets. Preset tiles name themselves after the provider
+ * (`deepseek_work` reads better than `byok_work` and stays unique per
+ * provider), so the placeholder must use this too or it advertises an id the
+ * field will never generate.
+ */
+function instanceIdPrefix(choice: WizardChoice): string {
+  return choice.presetId ?? String(choice.driver);
+}
+
 function deriveInstanceId(choice: WizardChoice, label: string): string {
   const slug = slugifyLabel(label);
-  // Preset tiles name themselves after the provider: `deepseek_work` reads
-  // better than `byok_work` and stays unique per provider.
-  const prefix = choice.presetId ?? String(choice.driver);
-  return slug ? `${prefix}_${slug}` : "";
+  return slug ? `${instanceIdPrefix(choice)}_${slug}` : "";
 }
 
 const INSTANCE_ID_PATTERN = /^[a-zA-Z][a-zA-Z0-9_-]*$/;
@@ -231,6 +238,14 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
       ...(choice.presetId ? { preset: choice.presetId } : {}),
       ...(configByDriver[choiceKey] ?? {}),
     };
+    // The config step can change the preset after the tile picked one, so the
+    // key row has to follow the final choice. Seeding it from the tile would
+    // pre-name a variable the driver does not read.
+    const effectivePresetId =
+      typeof config["preset"] === "string" ? String(config["preset"]) : choice.presetId;
+    const effectiveEnvKey = effectivePresetId
+      ? BYOK_PRESET_CHOICES.find((preset) => preset.value === effectivePresetId)?.envKey
+      : undefined;
     const hasConfig = Object.keys(config).length > 0;
     const normalizedAccentColor = normalizeProviderAccentColor(accentColor);
 
@@ -242,8 +257,8 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
       // Offer the key row pre-named and marked sensitive. Empty is the point:
       // the instance reports exactly what is missing until the user pastes a
       // key, and the value goes straight into the secret store.
-      ...(choice.envKey
-        ? { environment: [{ name: choice.envKey, value: "", sensitive: true }] }
+      ...(effectiveEnvKey
+        ? { environment: [{ name: effectiveEnvKey, value: "", sensitive: true }] }
         : {}),
       ...(hasConfig ? { config } : {}),
     };
@@ -376,7 +391,7 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
                 <span className="text-xs font-medium text-foreground">Instance ID</span>
                 <Input
                   className="bg-background"
-                  placeholder={`${driver}_work`}
+                  placeholder={`${instanceIdPrefix(choice)}_work`}
                   value={instanceId}
                   onChange={(event) => {
                     setInstanceIdOverride(event.target.value);

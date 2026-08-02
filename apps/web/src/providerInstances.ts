@@ -17,7 +17,7 @@ import {
   defaultInstanceIdForDriver,
   PROVIDER_DISPLAY_NAMES,
   type ModelSelection,
-  type ProviderDriverKind,
+  ProviderDriverKind,
   ProviderInstanceId,
   type ServerProvider,
   type ServerProviderModel,
@@ -205,7 +205,13 @@ export function deriveProviderInstanceEntries(
  * their own schemas, so this narrows defensively and returns undefined for
  * every other driver.
  */
-function readByokPresetId(config: unknown): string | undefined {
+const BYOK_DRIVER_KIND = ProviderDriverKind.make("byok");
+
+function readByokPresetId(driverKind: ProviderDriverKind, config: unknown): string | undefined {
+  // `config` is opaque at the contracts layer, so any driver's blob could
+  // carry a `preset` key. Without this check a Codex instance with a stray
+  // `preset: "deepseek"` would render with DeepSeek's branding.
+  if (driverKind !== BYOK_DRIVER_KIND) return undefined;
   if (typeof config !== "object" || config === null) return undefined;
   const preset = (config as { readonly preset?: unknown }).preset;
   return typeof preset === "string" && preset.trim().length > 0 ? preset.trim() : undefined;
@@ -228,7 +234,7 @@ export function applyProviderInstanceSettings(
         : false;
     // The snapshot is authoritative: stored config omits fields left at
     // their default, so a preset chosen implicitly is absent there.
-    const presetId = entry.presetId ?? readByokPresetId(explicitInstance?.config);
+    const presetId = entry.presetId ?? readByokPresetId(entry.driverKind, explicitInstance?.config);
     if (enabled === entry.enabled && presetId === entry.presetId) return entry;
     return { ...entry, enabled, ...(presetId ? { presetId } : {}) };
   });
