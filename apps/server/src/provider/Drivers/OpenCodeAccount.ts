@@ -51,7 +51,12 @@ export function parseOpenCodeAuthFile(contents: string): ReadonlyArray<string> {
     return [];
   }
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return [];
-  return Object.keys(parsed as Record<string, unknown>).filter((key) => key.trim().length > 0);
+  // Trim before returning, not just before filtering: a padded id would fail
+  // to match a known account and would carry whitespace into a label the
+  // wire contract requires to be trimmed.
+  return Object.keys(parsed as Record<string, unknown>)
+    .map((key) => key.trim())
+    .filter((key) => key.length > 0);
 }
 
 export const resolveOpenCodeAuthFilePath = Effect.fn("resolveOpenCodeAuthFilePath")(function* (

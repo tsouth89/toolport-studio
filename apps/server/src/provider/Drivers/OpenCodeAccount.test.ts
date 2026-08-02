@@ -29,6 +29,12 @@ describe("parseOpenCodeAuthFile", () => {
     expect(parseOpenCodeAuthFile(contents)).toEqual(["opencode-go", "anthropic"]);
   });
 
+  it("trims account ids so padded keys still match and stay contract-clean", () => {
+    const contents = JSON.stringify({ "  opencode-go  ": { type: "api", key: "a" } });
+    expect(parseOpenCodeAuthFile(contents)).toEqual(["opencode-go"]);
+    expect(openCodeAccountLabel(parseOpenCodeAuthFile(contents)[0]!)).toBe("OpenCode Go");
+  });
+
   it("degrades instead of throwing on files we do not own", () => {
     expect(parseOpenCodeAuthFile("not json")).toEqual([]);
     expect(parseOpenCodeAuthFile("[]")).toEqual([]);
