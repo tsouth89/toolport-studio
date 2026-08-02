@@ -76,22 +76,33 @@ describe("buildCodexConfigToml", () => {
 
 describe("buildCodexModelCatalog", () => {
   it("declares reasoning levels per model rather than per provider", () => {
-    // DeepSeek documents pro as temporarily rejecting `low`, so the two
-    // models in one preset must not share an effort list.
-    expect(
-      (
-        catalogEntry(deepseek, "deepseek-v4-flash")["supported_reasoning_levels"] as {
-          effort: string;
-        }[]
-      ).map((level) => level.effort),
-    ).toEqual(["low", "high", "max"]);
-    expect(
-      (
-        catalogEntry(deepseek, "deepseek-v4-pro")["supported_reasoning_levels"] as {
-          effort: string;
-        }[]
-      ).map((level) => level.effort),
-    ).toEqual(["high", "max"]);
+    // Tested against a synthetic preset so the invariant holds regardless of
+    // which models the shipped catalog happens to list today. DeepSeek
+    // documents different effort sets for models in the same family, so a
+    // per-provider list would be wrong the moment a second model returns.
+    const mixed: ByokPreset = {
+      ...deepseek,
+      models: [
+        { ...deepseek.models[0]!, slug: "wide", reasoningEfforts: ["low", "high", "max"] },
+        { ...deepseek.models[0]!, slug: "narrow", reasoningEfforts: ["high", "max"] },
+      ],
+    };
+    const levels = (slug: string) =>
+      (catalogEntry(mixed, slug)["supported_reasoning_levels"] as { effort: string }[]).map(
+        (level) => level.effort,
+      );
+
+    expect(levels("wide")).toEqual(["low", "high", "max"]);
+    expect(levels("narrow")).toEqual(["high", "max"]);
+  });
+
+  it("lists exactly the models the preset declares", () => {
+    // v4-pro is intentionally absent until DeepSeek ships it on the Responses
+    // API; an unrecognized model name is downgraded to Flash rather than
+    // rejected, so offering it would quietly mislead.
+    expect(buildCodexModelCatalog(deepseek).models.map((model) => model["slug"])).toEqual([
+      "deepseek-v4-flash",
+    ]);
   });
 
   it("leaves service tiers empty so the picker shows no OpenAI tier row", () => {
@@ -137,10 +148,7 @@ it.layer(NodeServices.layer)("materializeByokCodexHome", (it) => {
       expect(result.catalogPath).toBe(path.join(homePath, BYOK_CATALOG_FILE_NAME));
 
       const catalog = decodeCatalogJson(yield* fileSystem.readFileString(result.catalogPath));
-      expect(catalog.models.map((model) => model.slug)).toEqual([
-        "deepseek-v4-flash",
-        "deepseek-v4-pro",
-      ]);
+      expect(catalog.models.map((model) => model.slug)).toEqual(["deepseek-v4-flash"]);
 
       // Codex requires an absolute catalog path, and the config must point at
       // the file we actually wrote.

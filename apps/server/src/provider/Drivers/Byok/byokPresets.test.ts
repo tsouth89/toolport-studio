@@ -19,6 +19,15 @@ describe("BYOK presets", () => {
     }
   });
 
+  it("agrees with the picker about where each key goes", () => {
+    // The wizard offers the key row pre-named from the contracts choice. If
+    // it named a variable the server does not read, the user would paste a
+    // valid key into a field that does nothing.
+    for (const choice of BYOK_PRESET_CHOICES) {
+      expect(findByokPreset(choice.value)?.envKey).toBe(choice.envKey);
+    }
+  });
+
   it("keeps every model's default effort within its supported set", () => {
     for (const preset of BYOK_PRESETS) {
       for (const model of preset.models) {

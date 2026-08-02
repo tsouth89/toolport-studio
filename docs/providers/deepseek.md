@@ -31,15 +31,14 @@ The instance is ready when its card reads **Authenticated · DeepSeek API Key**.
 
 ## Models
 
-Two models appear in the picker:
-
 | Model             | Reasoning levels | Context |
 | ----------------- | ---------------- | ------- |
 | DeepSeek-V4-Flash | Low, High, Max   | 1M      |
-| DeepSeek-V4-Pro   | High, Max        | 1M      |
 
-The levels differ per model because DeepSeek documents Pro as temporarily
-accepting only `high` and `max`. If that changes, the levels change with it.
+V4-Pro is not listed yet. DeepSeek's Codex integration does not support it on
+the Responses API, and an unrecognized model name is silently answered by Flash
+rather than rejected, so offering Pro would mean paying attention to a choice
+that quietly does nothing. It returns when DeepSeek ships it.
 
 Reasoning effort is a per-turn choice next to the model name, the same as any
 other provider.
@@ -66,10 +65,6 @@ It is usually revoked, mistyped, or from a different account. Create a new one.
 
 **"Could not reach DeepSeek to verify the API key."** A network or proxy
 problem, not a key problem. Turns may still work.
-
-**A model returns a 404.** DeepSeek ships models to its endpoints at different
-times. If Pro fails while Flash works, Pro has probably not landed on the
-Responses API yet. Switch back to Flash.
 
 ## Checking what you are actually being charged for
 

@@ -133,16 +133,25 @@ export interface ProviderSettingsFormChoice {
   readonly label: string;
 }
 
+export interface ByokPresetChoice extends ProviderSettingsFormChoice {
+  /**
+   * Environment variable this provider's key belongs in. The client needs it
+   * to offer the row pre-named at setup; the server's preset table is checked
+   * against it so the two cannot disagree about where the key goes.
+   */
+  readonly envKey: string;
+}
+
 /**
- * Selectable BYOK providers, as (id, label) pairs.
+ * Selectable BYOK providers.
  *
- * Lives in contracts because both sides need it: the settings form renders
- * the picker from this, and the server's preset table takes its ids and
- * labels from here so the two cannot drift. Operational detail (endpoint,
- * key variable, model catalog) stays server-side.
+ * Lives in contracts because both sides need it: the add-provider wizard and
+ * settings form render from this, and the server's preset table takes its
+ * ids, labels, and key variables from here so the two cannot drift. Endpoint
+ * and model catalog stay server-side.
  */
-export const BYOK_PRESET_CHOICES: ReadonlyArray<ProviderSettingsFormChoice> = [
-  { value: "deepseek", label: "DeepSeek" },
+export const BYOK_PRESET_CHOICES: ReadonlyArray<ByokPresetChoice> = [
+  { value: "deepseek", label: "DeepSeek", envKey: "DEEPSEEK_API_KEY" },
 ];
 
 export interface ProviderSettingsFormAnnotation {

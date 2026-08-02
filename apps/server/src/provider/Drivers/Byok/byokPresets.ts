@@ -111,19 +111,12 @@ const DEEPSEEK: ByokPreset = {
       supportsApplyPatch: true,
       supportsWebSearch: true,
     },
-    {
-      slug: "deepseek-v4-pro",
-      displayName: "DeepSeek-V4-Pro",
-      description: "Most capable frontier agentic coding model.",
-      contextWindow: 1_000_000,
-      // Documented as temporary: pro does not accept `low` yet.
-      reasoningEfforts: ["high", "max"],
-      defaultReasoningEffort: "high",
-      supportsVision: false,
-      supportsParallelToolCalls: true,
-      supportsApplyPatch: true,
-      supportsWebSearch: true,
-    },
+    // deepseek-v4-pro is deliberately absent. DeepSeek's own Codex
+    // integration says Pro support on the Responses API is not live yet and
+    // to use Flash instead, and an unrecognized model name is silently
+    // downgraded rather than rejected — so listing Pro would offer a model
+    // that quietly answers as Flash. Restore it (efforts: high, max) once
+    // DeepSeek ships it.
   ],
 };
 
