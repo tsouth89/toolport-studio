@@ -17,7 +17,7 @@ import {
   defaultInstanceIdForDriver,
   PROVIDER_DISPLAY_NAMES,
   type ModelSelection,
-  type ProviderDriverKind,
+  ProviderDriverKind,
   ProviderInstanceId,
   type ServerProvider,
   type ServerProviderModel,
@@ -52,6 +52,12 @@ export interface ProviderInstanceEntry {
   readonly enabled: boolean;
   readonly installed: boolean;
   readonly status: ServerProviderState;
+  /**
+   * BYOK preset id from this instance's driver config, when present. Drives
+   * the provider logo: one driver serves every API-key provider, so the
+   * brand follows the preset rather than the driver kind.
+   */
+  readonly presetId?: string | undefined;
   /**
    * True when this entry is the default instance for its driver kind —
    * i.e. its instance id equals `defaultInstanceIdForDriver(driverKind)`.
@@ -174,6 +180,7 @@ export function deriveProviderInstanceEntries(
       enabled: snapshot.enabled,
       installed: snapshot.installed,
       status: snapshot.status,
+      ...(snapshot.presetId ? { presetId: snapshot.presetId } : {}),
       isDefault,
       isAvailable: snapshot.availability !== "unavailable",
       snapshot,
@@ -192,6 +199,24 @@ export function deriveProviderInstanceEntries(
  * absent there, its streamed snapshot is stale (for example immediately after
  * deletion) and is treated as disabled.
  */
+/**
+ * Read the BYOK preset id out of an instance's opaque driver config. The
+ * config is `Schema.Unknown` at the contracts layer because drivers own
+ * their own schemas, so this narrows defensively and returns undefined for
+ * every other driver.
+ */
+const BYOK_DRIVER_KIND = ProviderDriverKind.make("byok");
+
+function readByokPresetId(driverKind: ProviderDriverKind, config: unknown): string | undefined {
+  // `config` is opaque at the contracts layer, so any driver's blob could
+  // carry a `preset` key. Without this check a Codex instance with a stray
+  // `preset: "deepseek"` would render with DeepSeek's branding.
+  if (driverKind !== BYOK_DRIVER_KIND) return undefined;
+  if (typeof config !== "object" || config === null) return undefined;
+  const preset = (config as { readonly preset?: unknown }).preset;
+  return typeof preset === "string" && preset.trim().length > 0 ? preset.trim() : undefined;
+}
+
 export function applyProviderInstanceSettings(
   entries: ReadonlyArray<ProviderInstanceEntry>,
   settings: Pick<ServerSettings, "providerInstances" | "providers">,
@@ -207,7 +232,11 @@ export function applyProviderInstanceSettings(
       : entry.isDefault
         ? (legacyProviders[entry.driverKind]?.enabled ?? entry.enabled)
         : false;
-    return enabled === entry.enabled ? entry : { ...entry, enabled };
+    // The snapshot is authoritative: stored config omits fields left at
+    // their default, so a preset chosen implicitly is absent there.
+    const presetId = entry.presetId ?? readByokPresetId(entry.driverKind, explicitInstance?.config);
+    if (enabled === entry.enabled && presetId === entry.presetId) return entry;
+    return { ...entry, enabled, ...(presetId ? { presetId } : {}) };
   });
 }
 

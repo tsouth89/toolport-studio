@@ -4,6 +4,7 @@ import { Radio as RadioPrimitive } from "@base-ui/react/radio";
 import { CheckIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 import {
+  BYOK_PRESET_CHOICES,
   ProviderInstanceId,
   ProviderDriverKind,
   type ProviderInstanceConfig,
@@ -13,7 +14,7 @@ import { usePrimarySettings, useUpdatePrimarySettings } from "../../hooks/useSet
 import { cn } from "../../lib/utils";
 import { normalizeProviderAccentColor } from "../../providerInstances";
 import { Button } from "../ui/button";
-import { ACPRegistryIcon, Gemini, GithubCopilotIcon, PiAgentIcon, type Icon } from "../Icons";
+import { Gemini, GithubCopilotIcon, type Icon } from "../Icons";
 import {
   Dialog,
   DialogDescription,
@@ -25,8 +26,9 @@ import {
 import { Badge } from "../ui/badge";
 import { Input } from "../ui/input";
 import { RadioGroup } from "../ui/radio-group";
+import { resolveProviderInstanceIcon } from "../chat/providerIconUtils";
 import { toastManager } from "../ui/toast";
-import { DRIVER_OPTION_BY_VALUE, DRIVER_OPTIONS } from "./providerDriverMeta";
+import { DRIVER_OPTIONS, type DriverOption } from "./providerDriverMeta";
 import { ProviderSettingsForm, deriveProviderSettingsFields } from "./ProviderSettingsForm";
 import { AnimatedHeight } from "../AnimatedHeight";
 import {
@@ -61,14 +63,69 @@ function slugifyLabel(value: string): string {
     .slice(0, 48);
 }
 
-function deriveInstanceId(driver: ProviderDriverKind, label: string): string {
+/**
+ * Prefix an instance id gets. Preset tiles name themselves after the provider
+ * (`deepseek_work` reads better than `byok_work` and stays unique per
+ * provider), so the placeholder must use this too or it advertises an id the
+ * field will never generate.
+ */
+function instanceIdPrefix(choice: WizardChoice): string {
+  return choice.presetId ?? String(choice.driver);
+}
+
+function deriveInstanceId(choice: WizardChoice, label: string): string {
   const slug = slugifyLabel(label);
-  return slug ? `${driver}_${slug}` : "";
+  return slug ? `${instanceIdPrefix(choice)}_${slug}` : "";
 }
 
 const INSTANCE_ID_PATTERN = /^[a-zA-Z][a-zA-Z0-9_-]*$/;
-const DEFAULT_DRIVER_KIND = ProviderDriverKind.make("codex");
-const DEFAULT_DRIVER_OPTION = DRIVER_OPTIONS[0]!;
+const BYOK_DRIVER_KIND = ProviderDriverKind.make("byok");
+
+/**
+ * One tile in the driver step.
+ *
+ * The BYOK driver is generic — it serves DeepSeek, and later every other
+ * API-key provider — so showing it as a single "API Key Provider" tile would
+ * make the user pick a driver and then configure which provider it actually
+ * is. Expanding it into one tile per preset means picking DeepSeek is a
+ * single click, with the preset and its key variable filled in for them.
+ */
+interface WizardChoice extends DriverOption {
+  readonly key: string;
+  readonly driver: ProviderDriverKind;
+  /** Set for preset-backed tiles; seeds config and the key row. */
+  readonly presetId?: string | undefined;
+  readonly envKey?: string | undefined;
+}
+
+const WIZARD_CHOICES: readonly WizardChoice[] = DRIVER_OPTIONS.flatMap((option) => {
+  if (option.value !== BYOK_DRIVER_KIND) {
+    return [
+      {
+        ...option,
+        key: String(option.value),
+        driver: option.value,
+      } satisfies WizardChoice,
+    ];
+  }
+  return BYOK_PRESET_CHOICES.map(
+    (preset) =>
+      ({
+        ...option,
+        key: `${option.value}:${preset.value}`,
+        label: preset.label,
+        icon:
+          resolveProviderInstanceIcon({ driverKind: option.value, presetId: preset.value }) ??
+          option.icon,
+        driver: option.value,
+        presetId: preset.value,
+        envKey: preset.envKey,
+      }) satisfies WizardChoice,
+  );
+});
+
+const WIZARD_CHOICE_BY_KEY = new Map(WIZARD_CHOICES.map((choice) => [choice.key, choice]));
+const DEFAULT_WIZARD_CHOICE = WIZARD_CHOICES[0]!;
 const EMPTY_CONFIG_DRAFT: Record<string, unknown> = {};
 interface ComingSoonDriverOption {
   readonly value: ProviderDriverKind;
@@ -86,16 +143,6 @@ const COMING_SOON_DRIVER_OPTIONS: readonly ComingSoonDriverOption[] = [
     value: ProviderDriverKind.make("gemini"),
     label: "Gemini",
     icon: Gemini,
-  },
-  {
-    value: ProviderDriverKind.make("acpRegistry"),
-    label: "ACP Registry",
-    icon: ACPRegistryIcon,
-  },
-  {
-    value: ProviderDriverKind.make("piAgent"),
-    label: "Pi Agent",
-    icon: PiAgentIcon,
   },
 ];
 
@@ -124,7 +171,7 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
   const updateSettings = useUpdatePrimarySettings();
 
   const [wizardStep, setWizardStep] = useState(0);
-  const [driver, setDriver] = useState<ProviderDriverKind>(DEFAULT_DRIVER_KIND);
+  const [choiceKey, setChoiceKey] = useState<string>(DEFAULT_WIZARD_CHOICE.key);
   const [label, setLabel] = useState("");
   const [accentColor, setAccentColor] = useState<string>("");
   const [instanceIdOverride, setInstanceIdOverride] = useState<string | null>(null);
@@ -140,8 +187,10 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
     [settings.providerInstances],
   );
 
-  const driverOption = DRIVER_OPTION_BY_VALUE[driver] ?? DEFAULT_DRIVER_OPTION;
-  const instanceId = instanceIdOverride ?? deriveInstanceId(driver, label);
+  const choice = WIZARD_CHOICE_BY_KEY.get(choiceKey) ?? DEFAULT_WIZARD_CHOICE;
+  const driver = choice.driver;
+  const driverOption = choice;
+  const instanceId = instanceIdOverride ?? deriveInstanceId(choice, label);
   const driverSettingsFields = useMemo(
     () => deriveProviderSettingsFields(driverOption),
     [driverOption],
@@ -151,14 +200,14 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
   const previewLabel = label.trim() || `${driverOption.label} Workspace`;
   const wizardStepSummaries = [driverOption.label, previewLabel, null] as const;
 
-  const configDraft = configByDriver[driver] ?? EMPTY_CONFIG_DRAFT;
+  const configDraft = configByDriver[choiceKey] ?? EMPTY_CONFIG_DRAFT;
   const setConfigDraft = (config: Record<string, unknown> | undefined) => {
     setConfigByDriver((existing) => {
       const next = { ...existing };
       if (config === undefined || Object.keys(config).length === 0) {
-        delete next[driver];
+        delete next[choiceKey];
       } else {
-        next[driver] = config;
+        next[choiceKey] = config;
       }
       return next;
     });
@@ -183,7 +232,20 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
     setHasAttemptedSubmit(true);
     if (instanceIdError !== null) return;
 
-    const config = configByDriver[driver] ?? {};
+    // Seed the preset so the instance knows which provider it is even if the
+    // user never opens the config step.
+    const config = {
+      ...(choice.presetId ? { preset: choice.presetId } : {}),
+      ...(configByDriver[choiceKey] ?? {}),
+    };
+    // The config step can change the preset after the tile picked one, so the
+    // key row has to follow the final choice. Seeding it from the tile would
+    // pre-name a variable the driver does not read.
+    const effectivePresetId =
+      typeof config["preset"] === "string" ? String(config["preset"]) : choice.presetId;
+    const effectiveEnvKey = effectivePresetId
+      ? BYOK_PRESET_CHOICES.find((preset) => preset.value === effectivePresetId)?.envKey
+      : undefined;
     const hasConfig = Object.keys(config).length > 0;
     const normalizedAccentColor = normalizeProviderAccentColor(accentColor);
 
@@ -192,6 +254,12 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
       enabled: true,
       ...(label.trim().length > 0 ? { displayName: label.trim() } : {}),
       ...(normalizedAccentColor ? { accentColor: normalizedAccentColor } : {}),
+      // Offer the key row pre-named and marked sensitive. Empty is the point:
+      // the instance reports exactly what is missing until the user pastes a
+      // key, and the value goes straight into the secret store.
+      ...(effectiveEnvKey
+        ? { environment: [{ name: effectiveEnvKey, value: "", sensitive: true }] }
+        : {}),
       ...(hasConfig ? { config } : {}),
     };
     // `ProviderInstanceId.make` revalidates the slug; we've already checked
@@ -248,17 +316,17 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
                   Driver
                 </div>
                 <RadioGroup
-                  value={driver}
-                  onValueChange={(value) => setDriver(ProviderDriverKind.make(value))}
+                  value={choiceKey}
+                  onValueChange={(value) => setChoiceKey(String(value))}
                   aria-labelledby="add-instance-driver-label"
                   className="grid grid-cols-1 gap-2 sm:grid-cols-2"
                 >
-                  {DRIVER_OPTIONS.map((option) => {
+                  {WIZARD_CHOICES.map((option) => {
                     const IconComponent = option.icon;
                     return (
                       <RadioPrimitive.Root
-                        key={option.value}
-                        value={option.value}
+                        key={option.key}
+                        value={option.key}
                         className="relative flex cursor-pointer items-center gap-3 rounded-lg bg-card px-3 py-3 text-left text-muted-foreground outline-none ring-1 ring-black/5 hover:bg-zinc-50 focus-visible:ring-2 focus-visible:ring-ring data-checked:bg-primary/8 data-checked:text-foreground data-checked:ring-2 data-checked:ring-primary data-checked:hover:bg-primary/8 dark:bg-white/3 dark:ring-white/5 dark:hover:bg-white/5 dark:data-checked:bg-primary/15 dark:data-checked:ring-primary dark:data-checked:hover:bg-primary/15"
                       >
                         <IconComponent className="size-4 shrink-0" aria-hidden />
@@ -323,7 +391,7 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
                 <span className="text-xs font-medium text-foreground">Instance ID</span>
                 <Input
                   className="bg-background"
-                  placeholder={`${driver}_work`}
+                  placeholder={`${instanceIdPrefix(choice)}_work`}
                   value={instanceId}
                   onChange={(event) => {
                     setInstanceIdOverride(event.target.value);

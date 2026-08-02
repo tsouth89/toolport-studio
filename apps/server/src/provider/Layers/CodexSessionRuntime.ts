@@ -104,6 +104,15 @@ type CodexThreadItem =
 export interface CodexSessionRuntimeOptions {
   readonly threadId: ThreadId;
   readonly providerInstanceId?: ProviderInstanceId;
+  /**
+   * Driver kind owning this session. Defaults to `codex`.
+   *
+   * The Codex runtime also backs BYOK instances, whose sessions and events
+   * must report their own driver kind: `ProviderService` rejects a session
+   * whose provider disagrees with the adapter that produced it, and the
+   * composer locks a busy thread to `session.providerName`.
+   */
+  readonly driverKind?: ProviderDriverKind;
   readonly binaryPath: string;
   readonly homePath?: string;
   readonly launchArgs?: string;
@@ -887,9 +896,10 @@ export const makeCodexSessionRuntime = (
         ),
       );
 
+    const sessionProvider = options.driverKind ?? PROVIDER;
     const sessionCreatedAt = yield* nowIso;
     const initialSession = {
-      provider: PROVIDER,
+      provider: sessionProvider,
       ...(options.providerInstanceId ? { providerInstanceId: options.providerInstanceId } : {}),
       status: "connecting",
       runtimeMode: options.runtimeMode,
@@ -908,7 +918,7 @@ export const makeCodexSessionRuntime = (
         const id = yield* randomUUIDv4("provider-event");
         return yield* offerEvent({
           id: EventId.make(id),
-          provider: PROVIDER,
+          provider: sessionProvider,
           ...(options.providerInstanceId ? { providerInstanceId: options.providerInstanceId } : {}),
           createdAt: yield* nowIso,
           ...event,

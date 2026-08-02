@@ -8,6 +8,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   buildProviderInstanceUpdatePatch,
   formatDiagnosticsDescription,
+  hasLegacyProviderSlot,
   isProjectGroupingEnabled,
   projectGroupingModeFromToggle,
 } from "./SettingsPanels.logic";
@@ -117,5 +118,23 @@ describe("buildProviderInstanceUpdatePatch", () => {
 
     expect(patch.providerInstances?.[instanceId]).toEqual(nextInstance);
     expect(patch.providers).toBeUndefined();
+  });
+});
+
+describe("hasLegacyProviderSlot", () => {
+  it("is true for drivers with a legacy providers.<kind> blob", () => {
+    expect(hasLegacyProviderSlot(ProviderDriverKind.make("codex"))).toBe(true);
+    expect(hasLegacyProviderSlot(ProviderDriverKind.make("claudeAgent"))).toBe(true);
+  });
+
+  it("is false for drivers that only exist as explicit instances", () => {
+    // The Providers panel builds a default-instance row per legacy slot and
+    // reads `providers[driver].enabled` behind a non-null assertion, so a
+    // driver without a blob crashed the whole panel before this guard.
+    expect(hasLegacyProviderSlot(ProviderDriverKind.make("byok"))).toBe(false);
+  });
+
+  it("is false for a driver this build has never heard of", () => {
+    expect(hasLegacyProviderSlot(ProviderDriverKind.make("someForkDriver"))).toBe(false);
   });
 });

@@ -126,10 +126,38 @@ const makeBinaryPathSetting = (fallback: string) =>
     Schema.withDecodingDefault(Effect.succeed(fallback)),
   );
 
-export type ProviderSettingsFormControl = "text" | "password" | "textarea" | "switch";
+export type ProviderSettingsFormControl = "text" | "password" | "textarea" | "switch" | "select";
+
+export interface ProviderSettingsFormChoice {
+  readonly value: string;
+  readonly label: string;
+}
+
+export interface ByokPresetChoice extends ProviderSettingsFormChoice {
+  /**
+   * Environment variable this provider's key belongs in. The client needs it
+   * to offer the row pre-named at setup; the server's preset table is checked
+   * against it so the two cannot disagree about where the key goes.
+   */
+  readonly envKey: string;
+}
+
+/**
+ * Selectable BYOK providers.
+ *
+ * Lives in contracts because both sides need it: the add-provider wizard and
+ * settings form render from this, and the server's preset table takes its
+ * ids, labels, and key variables from here so the two cannot drift. Endpoint
+ * and model catalog stay server-side.
+ */
+export const BYOK_PRESET_CHOICES: ReadonlyArray<ByokPresetChoice> = [
+  { value: "deepseek", label: "DeepSeek", envKey: "DEEPSEEK_API_KEY" },
+];
 
 export interface ProviderSettingsFormAnnotation {
   readonly control?: ProviderSettingsFormControl | undefined;
+  /** Choices for `control: "select"`. Ignored by every other control. */
+  readonly options?: ReadonlyArray<ProviderSettingsFormChoice> | undefined;
   readonly placeholder?: string | undefined;
   readonly hidden?: boolean | undefined;
   readonly clearWhenEmpty?: "omit" | "persist" | undefined;
@@ -373,6 +401,61 @@ export const OpenCodeSettings = makeProviderSettingsSchema(
   },
 );
 export type OpenCodeSettings = typeof OpenCodeSettings.Type;
+
+/**
+ * Bring-your-own-key providers: third-party, API-key-authenticated model
+ * endpoints (DeepSeek and friends) run through a harness Toolport Studio
+ * already ships.
+ *
+ * There is intentionally no API key field here. Settings are written to disk
+ * in plain text, so the key lives in the instance's environment variables
+ * where the secret store already handles it, under the variable name the
+ * preset declares.
+ *
+ * `preset` names an entry in the server's preset table rather than a closed
+ * literal union, for the same forward-compatibility reason `ProviderDriverKind`
+ * is an open slug: presets are meant to become user-editable data, and an
+ * unknown one must round-trip rather than fail to parse.
+ */
+export const ByokSettings = makeProviderSettingsSchema(
+  {
+    enabled: Schema.Boolean.pipe(
+      Schema.withDecodingDefault(Effect.succeed(true)),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+    preset: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("deepseek")),
+      Schema.annotateKey({
+        title: "Provider",
+        description: "Which API-key provider this instance talks to.",
+        providerSettingsForm: {
+          control: "select",
+          options: BYOK_PRESET_CHOICES,
+          placeholder: "deepseek",
+          // Persist the choice: an omitted preset leaves the client with no
+          // way to tell which provider an instance is until the first
+          // snapshot arrives.
+          clearWhenEmpty: "persist",
+        },
+      }),
+    ),
+    binaryPath: makeBinaryPathSetting("codex").pipe(
+      Schema.annotateKey({
+        title: "Binary path",
+        description: "Path to the harness binary used to run this provider.",
+        providerSettingsForm: { placeholder: "codex", clearWhenEmpty: "omit" },
+      }),
+    ),
+    customModels: Schema.Array(Schema.String).pipe(
+      Schema.withDecodingDefault(Effect.succeed([])),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+  },
+  {
+    order: ["preset", "binaryPath"],
+  },
+);
+export type ByokSettings = typeof ByokSettings.Type;
 
 export const ObservabilitySettings = Schema.Struct({
   otlpTracesUrl: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
