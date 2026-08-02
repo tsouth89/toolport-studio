@@ -163,4 +163,22 @@ describe("recent exchange", () => {
 
     expect(envelope.length).toBeLessThanOrEqual(DEFAULT_PROVIDER_HANDOFF_LIMITS.maxTotalChars);
   });
+
+  it("keeps the newest exchange when other handoff sections exhaust the total budget", () => {
+    const newestAnswer = "LATEST_ASSISTANT_RESULT";
+    const envelope = buildProviderHandoff({
+      ...base,
+      firstUserMessage: "f".repeat(50_000),
+      lastUserMessage: "l".repeat(50_000),
+      diffStat: "d".repeat(50_000),
+      filesInPlay: Array.from({ length: 5_000 }, (_, index) => `src/file-${index}.ts`),
+      recentExchange: [
+        { role: "user", text: "u".repeat(10_000) },
+        { role: "assistant", text: newestAnswer },
+      ],
+    });
+
+    expect(envelope).toContain(newestAnswer);
+    expect(envelope.length).toBeLessThanOrEqual(DEFAULT_PROVIDER_HANDOFF_LIMITS.maxTotalChars);
+  });
 });

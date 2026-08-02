@@ -133,6 +133,24 @@ export function buildProviderHandoff(
       `Treat it as your own context and carry on from it rather than starting over.`,
   );
 
+  // Keep the exchange directly after the opener. The final envelope cap keeps
+  // its prefix, so placing the handoff's most important context first prevents
+  // large workspace or diff sections from removing the answer being handed
+  // over. The per-turn caps keep this entire section below the total budget.
+  const exchange = (input.recentExchange ?? [])
+    .filter((entry) => entry.text.trim().length > 0)
+    .slice(-limits.maxExchangeTurns);
+  if (exchange.length > 0) {
+    const rendered = exchange
+      .map(
+        (entry) =>
+          `**${entry.role === "user" ? "User" : "Previous assistant"}:** ` +
+          truncate(entry.text, limits.maxExchangeCharsPerTurn),
+      )
+      .join("\n\n");
+    sections.push(`## How the conversation ended\n\n${rendered}`);
+  }
+
   const first = nonEmpty(input.firstUserMessage);
   const last = nonEmpty(input.lastUserMessage);
   if (first !== null) {
@@ -164,20 +182,6 @@ export function buildProviderHandoff(
     const list = files.map((file) => `- ${file}`).join("\n");
     const suffix = omitted > 0 ? `\n- ...and ${omitted} more` : "";
     sections.push(`## Files touched so far\n\n${list}${suffix}`);
-  }
-
-  const exchange = (input.recentExchange ?? [])
-    .filter((entry) => entry.text.trim().length > 0)
-    .slice(-limits.maxExchangeTurns);
-  if (exchange.length > 0) {
-    const rendered = exchange
-      .map(
-        (entry) =>
-          `**${entry.role === "user" ? "User" : "Previous assistant"}:** ` +
-          truncate(entry.text, limits.maxExchangeCharsPerTurn),
-      )
-      .join("\n\n");
-    sections.push(`## How the conversation ended\n\n${rendered}`);
   }
 
   sections.push(
