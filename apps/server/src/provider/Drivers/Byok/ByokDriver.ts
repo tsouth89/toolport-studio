@@ -145,6 +145,7 @@ const withInstanceIdentity =
     readonly accentColor: string | undefined;
     readonly continuationGroupKey: string;
     readonly presetId: string;
+    readonly supportsImageInput: boolean;
   }) =>
   (snapshot: ServerProviderDraft): ServerProvider => ({
     ...snapshot,
@@ -153,6 +154,7 @@ const withInstanceIdentity =
     // The driver kind is shared by every API-key provider, so the snapshot
     // has to say which one this is for the client to brand it.
     presetId: input.presetId,
+    supportsImageInput: input.supportsImageInput,
     ...(input.displayName ? { displayName: input.displayName } : {}),
     ...(input.accentColor ? { accentColor: input.accentColor } : {}),
     continuation: { groupKey: input.continuationGroupKey },
@@ -224,6 +226,9 @@ export const ByokDriver: ProviderDriver<ByokSettings, ByokDriverEnv> = {
         accentColor,
         continuationGroupKey: continuationIdentity.continuationKey,
         presetId: preset.id,
+        // Provider-level for now: no shipped preset mixes vision-capable and
+        // text-only models. A preset that does will need this per model.
+        supportsImageInput: preset.models.some((model) => model.supportsVision),
       });
       // Re-run per refresh so a key added, fixed, or revoked after startup is
       // reflected without restarting the instance.

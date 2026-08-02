@@ -76,6 +76,15 @@ describe("applyByokIdentity", () => {
   });
 });
 
+describe("preset vision capability", () => {
+  it("marks DeepSeek text-only so attachments are refused before sending", () => {
+    // The Responses endpoint replaces image input with placeholder text
+    // rather than rejecting it, so a forwarded screenshot yields a confident
+    // answer about something the model never saw.
+    expect(deepseek.models.some((model) => model.supportsVision)).toBe(false);
+  });
+});
+
 describe("ByokDriver", () => {
   it("defaults to a preset that exists", () => {
     const config = ByokDriver.defaultConfig();

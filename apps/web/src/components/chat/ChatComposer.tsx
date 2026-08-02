@@ -1922,6 +1922,18 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       });
       return;
     }
+    // Refuse locally for text-only providers. DeepSeek's Responses endpoint
+    // swaps image input for placeholder text and answers anyway, so silently
+    // forwarding an attachment produces a confident answer about an image the
+    // model never received.
+    if (selectedProviderEntry?.snapshot.supportsImageInput === false) {
+      toastManager.add({
+        type: "error",
+        title: `${selectedProviderEntry.displayName} cannot read images.`,
+        description: "Describe what matters, or switch to a provider with vision.",
+      });
+      return;
+    }
     const nextImages: ComposerImageAttachment[] = [];
     let nextImageCount = composerImagesRef.current.length;
     let error: string | null = null;

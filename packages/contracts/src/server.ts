@@ -187,6 +187,16 @@ export const ServerProvider = Schema.Struct({
    * config, because config omits fields left at their default.
    */
   presetId: Schema.optional(TrimmedNonEmptyString),
+  /**
+   * Whether this instance can accept image attachments. Absent means yes, so
+   * every existing provider is unaffected.
+   *
+   * Set explicitly by providers we know are text-only, because the failure
+   * is silent otherwise: DeepSeek's Responses endpoint documents replacing
+   * image input with placeholder text rather than rejecting it, so the model
+   * answers confidently about a screenshot it never saw.
+   */
+  supportsImageInput: Schema.optional(Schema.Boolean),
   badgeLabel: Schema.optional(TrimmedNonEmptyString),
   continuation: Schema.optional(ServerProviderContinuation),
   showInteractionModeToggle: Schema.optional(Schema.Boolean),
