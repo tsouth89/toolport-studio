@@ -13,6 +13,7 @@
 - Providers
   - [Claude](./providers/claude.md)
   - [Codex](./providers/codex.md)
+  - [DeepSeek and API-key providers](./providers/deepseek.md)
 - Integrations
   - [Source-control providers](./integrations/source-control-providers.md)
 - User guides
