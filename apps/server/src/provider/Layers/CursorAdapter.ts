@@ -176,6 +176,14 @@ interface CursorSessionContext {
    * arrive as agent_message_chunk + end_turn instead of a failed prompt RPC.
    */
   turnAssistantText: string;
+  /**
+   * How many `session/update` notifications the live turn projected. Zero at
+   * turn end means the agent said nothing we could show, which is the visible
+   * shape of a broken notification stream.
+   */
+  turnProjectedUpdateCount: number;
+  /** Bumped on dispose so a late notification finalizer cannot stomp a recycle. */
+  notificationGeneration: number;
   /** Open ACP tool calls for the live turn (force-closed on Stop). */
   openToolCallIds: Set<string>;
   openToolTitles: Map<string, string>;
@@ -221,6 +229,26 @@ const resolveCursorNotificationTurnId = (ctx: CursorSessionContext): TurnId | un
 
 /** Shared with the ACP runtime, which uses the same signal to decide what to emit. */
 const isCursorSubagentTask = isAcpSubagentTaskToolCall;
+
+/**
+ * Whether a finished turn produced nothing the user could see.
+ *
+ * A healthy Cursor turn projects at least one `session/update` — reasoning,
+ * assistant text, or a tool call. Zero of them plus a clean `end_turn` is the
+ * signature of a notification stream that stopped reaching the adapter: the
+ * prompt RPC still resolves, so the turn just ends in silence with no error.
+ * Cancelled turns are excluded; stopping early is expected to produce nothing.
+ */
+export function cursorTurnEndedWithoutOutput(input: {
+  readonly projectedUpdateCount: number;
+  readonly assistantText: string;
+  readonly stopReason: string | null | undefined;
+}): boolean {
+  if (input.stopReason === "cancelled") {
+    return false;
+  }
+  return input.projectedUpdateCount === 0 && input.assistantText.trim().length === 0;
+}
 
 function cursorSubagentLabel(toolCall: AcpToolCallState): string {
   const stripped = toolCall.title?.replace(/^task:\s*/i, "").trim();
@@ -612,6 +640,9 @@ export function makeCursorAdapter(
       Effect.gen(function* () {
         const notificationFiber = ctx.notificationFiber;
         const scope = ctx.scope;
+        // Invalidate in-flight notification finalizers before clearing the
+        // fiber so a late ensuring cannot stomp a recycled consumer.
+        ctx.notificationGeneration += 1;
         ctx.notificationFiber = undefined;
         if (notificationFiber) {
           yield* Fiber.interrupt(notificationFiber).pipe(Effect.ignore, Effect.forkChild);
@@ -867,6 +898,7 @@ export function makeCursorAdapter(
     const noteVisibleActivity = (ctx: CursorSessionContext) =>
       Effect.gen(function* () {
         ctx.lastVisibleActivityAtMs = yield* Clock.currentTimeMillis;
+        ctx.turnProjectedUpdateCount += 1;
       });
 
     const trackToolCallLifecycle = (
@@ -979,8 +1011,9 @@ export function makeCursorAdapter(
         });
       });
 
-    const startNotificationFiber = (ctx: CursorSessionContext) =>
-      Stream.runDrain(
+    const startNotificationFiber = (ctx: CursorSessionContext) => {
+      const generation = ctx.notificationGeneration;
+      return Stream.runDrain(
         Stream.mapEffect(ctx.acp.getEvents(), (event) =>
           Effect.gen(function* () {
             const notificationTurnId = resolveCursorNotificationTurnId(ctx);
@@ -1119,8 +1152,22 @@ export function makeCursorAdapter(
         Effect.catch((cause) =>
           Effect.logError("Failed to process Cursor runtime notification.", { cause }),
         ),
+        // Grok parity. Without this the consumer could end and every later
+        // session/update would vanish in silence: prompts still resolve, so
+        // turns kept ending with no reply and nothing ever recycled the child.
+        Effect.ensuring(
+          Effect.gen(function* () {
+            // Ignore finalizers from a disposed generation after recycle/stop.
+            if (ctx.notificationGeneration !== generation || ctx.stopped) {
+              return;
+            }
+            ctx.notificationFiber = undefined;
+            yield* markAcpCompromised(ctx, "notification stream ended");
+          }),
+        ),
         Effect.forkChild,
       );
+    };
 
     /**
      * Recycle the Cursor ACP child while preserving resumeCursor when possible.
@@ -1423,6 +1470,8 @@ export function makeCursorAdapter(
             lastVisibleActivityAtMs: yield* Clock.currentTimeMillis,
             silentPromptWarningTurnId: undefined,
             turnAssistantText: "",
+            turnProjectedUpdateCount: 0,
+            notificationGeneration: 0,
             openToolCallIds: new Set(),
             openToolTitles: new Map(),
             openToolKinds: new Map(),
@@ -1517,6 +1566,7 @@ export function makeCursorAdapter(
             ctx.lastPlanFingerprint = undefined;
             ctx.silentPromptWarningTurnId = undefined;
             ctx.turnAssistantText = "";
+            ctx.turnProjectedUpdateCount = 0;
             ctx.openToolCallIds.clear();
             ctx.openToolTitles.clear();
             ctx.openToolKinds.clear();
@@ -1785,6 +1835,34 @@ export function makeCursorAdapter(
                 },
               });
             } else {
+              if (
+                cursorTurnEndedWithoutOutput({
+                  projectedUpdateCount: ctx.turnProjectedUpdateCount,
+                  assistantText: ctx.turnAssistantText,
+                  stopReason: result.stopReason ?? null,
+                })
+              ) {
+                // Silent end_turn means the notification stream stopped
+                // reaching us. Say so and recycle the child before the next
+                // turn, instead of ending on an empty bubble with no error.
+                yield* Effect.logWarning("Cursor turn ended without producing any output", {
+                  threadId: input.threadId,
+                  turnId,
+                  stopReason: result.stopReason ?? null,
+                });
+                yield* markAcpCompromised(ctx, "turn produced no notifications");
+                yield* offerRuntimeEvent({
+                  type: "runtime.warning",
+                  ...(yield* makeEventStamp()),
+                  provider: PROVIDER,
+                  threadId: input.threadId,
+                  turnId,
+                  payload: {
+                    message:
+                      "Cursor ended this turn without sending any reply. The agent connection will be restarted before your next message.",
+                  },
+                });
+              }
               yield* offerRuntimeEvent({
                 type: "turn.completed",
                 ...(yield* makeEventStamp()),

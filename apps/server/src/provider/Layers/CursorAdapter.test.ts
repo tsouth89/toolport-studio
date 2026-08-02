@@ -6,6 +6,7 @@ import * as NodeURL from "node:url";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
+import { describe } from "vite-plus/test";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -29,7 +30,7 @@ import {
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import type { CursorAdapterShape } from "../Services/CursorAdapter.ts";
-import { makeCursorAdapter } from "./CursorAdapter.ts";
+import { cursorTurnEndedWithoutOutput, makeCursorAdapter } from "./CursorAdapter.ts";
 const decodeCursorSettings = Schema.decodeSync(CursorSettings);
 
 // Test-local service tag so the rest of the file can keep using `yield* CursorAdapter`.
@@ -1943,4 +1944,53 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
       }).pipe(Effect.provide(customAdapterLayer));
     },
   );
+});
+
+describe("cursorTurnEndedWithoutOutput", () => {
+  it("flags a clean end_turn that projected nothing", () => {
+    // The visible shape of a notification stream that stopped reaching us:
+    // the prompt RPC resolves, but no reasoning, text, or tool call arrived.
+    assert.equal(
+      cursorTurnEndedWithoutOutput({
+        projectedUpdateCount: 0,
+        assistantText: "",
+        stopReason: "end_turn",
+      }),
+      true,
+    );
+  });
+
+  it("stays quiet when the turn projected updates", () => {
+    assert.equal(
+      cursorTurnEndedWithoutOutput({
+        projectedUpdateCount: 3,
+        assistantText: "",
+        stopReason: "end_turn",
+      }),
+      false,
+    );
+  });
+
+  it("stays quiet when assistant text arrived", () => {
+    assert.equal(
+      cursorTurnEndedWithoutOutput({
+        projectedUpdateCount: 0,
+        assistantText: "hello",
+        stopReason: "end_turn",
+      }),
+      false,
+    );
+  });
+
+  it("never flags a cancelled turn", () => {
+    // Stop is expected to end a turn with nothing to show.
+    assert.equal(
+      cursorTurnEndedWithoutOutput({
+        projectedUpdateCount: 0,
+        assistantText: "",
+        stopReason: "cancelled",
+      }),
+      false,
+    );
+  });
 });
