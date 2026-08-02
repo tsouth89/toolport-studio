@@ -11,6 +11,8 @@ import { causeErrorTag } from "@toolport-studio/shared/observability";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";
@@ -36,6 +38,7 @@ import {
   type ProviderMaintenanceCapabilities,
 } from "../providerMaintenance.ts";
 import { makeGrokAcpRuntime, resolveGrokAcpBaseModelId } from "../acp/GrokAcpSupport.ts";
+import { readGrokAccount, type GrokAccount } from "../Drivers/GrokAccount.ts";
 
 const GROK_PRESENTATION = {
   displayName: "Grok",
@@ -120,8 +123,16 @@ const GROK_BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
   },
 ];
 
-export function grokAuthAfterSuccessfulAcpDiscovery(): ServerProviderAuth {
-  return { status: "authenticated", label: "Grok Account" };
+export function grokAuthAfterSuccessfulAcpDiscovery(
+  account?: GrokAccount | undefined,
+): ServerProviderAuth {
+  // A successful ACP session proves the credentials work. The account file
+  // says who they belong to, which is what Codex and Claude already show.
+  return {
+    status: "authenticated",
+    label: account?.planLabel ?? "Grok Account",
+    ...(account?.email ? { email: account.email } : {}),
+  };
 }
 
 export function buildInitialGrokProviderSnapshot(
@@ -312,7 +323,7 @@ export const checkGrokProviderStatus = Effect.fn("checkGrokProviderStatus")(func
 ): Effect.fn.Return<
   ServerProviderDraft,
   never,
-  ChildProcessSpawner.ChildProcessSpawner | Crypto.Crypto
+  ChildProcessSpawner.ChildProcessSpawner | Crypto.Crypto | FileSystem.FileSystem | Path.Path
 > {
   const checkedAt = DateTime.formatIso(yield* DateTime.now);
   const fallbackModels = grokModelsFromSettings(grokSettings.customModels);
@@ -443,6 +454,9 @@ export const checkGrokProviderStatus = Effect.fn("checkGrokProviderStatus")(func
       },
     });
   }
+  // Read after discovery so a slow or missing credential file cannot delay
+  // the probe's real work.
+  const account = yield* readGrokAccount(environment);
   const discoveredModels = discoveryExit.value.value;
   const models =
     discoveredModels.length > 0
@@ -458,9 +472,7 @@ export const checkGrokProviderStatus = Effect.fn("checkGrokProviderStatus")(func
       installed: true,
       version,
       status: "ready",
-      // A successful ACP session and model discovery requires usable Grok
-      // credentials, even though Grok does not expose account metadata.
-      auth: grokAuthAfterSuccessfulAcpDiscovery(),
+      auth: grokAuthAfterSuccessfulAcpDiscovery(account),
     },
   });
 });
