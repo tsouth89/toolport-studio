@@ -4663,6 +4663,27 @@ function ChatViewContent(props: ChatViewProps) {
     ],
   );
 
+  // Send now / Enter-to-flush used to fire and forget. When the server rejected
+  // the flush (queued turn already drained, thread gone) the queued row just sat
+  // there and every click looked like a dead button.
+  const flushQueuedTurnForThread = useCallback(
+    async (targetThreadId: ThreadId, messageId: MessageId) => {
+      const result = await flushQueuedTurn({
+        environmentId,
+        input: { threadId: targetThreadId, messageId },
+      });
+      if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+        const error = squashAtomCommandFailure(result);
+        setThreadError(
+          targetThreadId,
+          error instanceof Error ? error.message : "Failed to send the queued message.",
+        );
+      }
+      return result;
+    },
+    [environmentId, flushQueuedTurn, setThreadError],
+  );
+
   const onSend = async (
     e?: { preventDefault: () => void },
     options?: {
@@ -4719,13 +4740,7 @@ function ChatViewContent(props: ChatViewProps) {
     if (phase === "running" && !hasSendableContent && activeThreadQueueCount > 0) {
       const head = activeThreadQueueItems[0];
       if (head) {
-        void flushQueuedTurn({
-          environmentId,
-          input: {
-            threadId: activeThread.id,
-            messageId: head.message.messageId,
-          },
-        });
+        void flushQueuedTurnForThread(activeThread.id, head.message.messageId);
         return true;
       }
     }
@@ -5224,12 +5239,9 @@ function ChatViewContent(props: ChatViewProps) {
       if (!activeThreadId) {
         return;
       }
-      void flushQueuedTurn({
-        environmentId,
-        input: { threadId: activeThreadId, messageId },
-      });
+      void flushQueuedTurnForThread(activeThreadId, messageId);
     },
-    [activeThreadId, environmentId, flushQueuedTurn],
+    [activeThreadId, flushQueuedTurnForThread],
   );
 
   const onRespondToApproval = useCallback(
