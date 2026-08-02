@@ -48,6 +48,19 @@ export function isAcpSessionLoadNotFound(error: unknown): boolean {
       continue;
     }
     seen.add(node);
+
+    // An AcpRequestError carries its reasons as `cause: [{_tag, defect}]`.
+    // Walking that array as a plain record found none of the keys below and
+    // stopped there, so the agent's real message was never reached: cursor's
+    // "Session <id> not found" sits inside the Die reason, and the wrapper
+    // above it says only "Extension request failed" with code -32603.
+    if (Array.isArray(node)) {
+      for (const entry of node) {
+        queue.push(entry);
+      }
+      continue;
+    }
+
     const record = node as Record<string, unknown>;
 
     if (record.code === ACP_RESOURCE_NOT_FOUND_CODE || record.code === 404) {
