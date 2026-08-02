@@ -74,7 +74,11 @@ import {
   type SidebarProjectGroupMember,
   type SidebarProjectSnapshot,
 } from "../sidebarProjectGrouping";
-import { legacyProjectCwdPreferenceKey, useUiStateStore } from "../uiStateStore";
+import {
+  legacyProjectCwdPreferenceKey,
+  resolveProjectExpandedPreference,
+  useUiStateStore,
+} from "../uiStateStore";
 import { useThreadSelectionStore } from "../threadSelectionStore";
 import { useThreadActions } from "../hooks/useThreadActions";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
@@ -934,6 +938,22 @@ export default function Sidebar() {
         ),
       ),
     [projectGroups],
+  );
+  const projectExpansionPreferenceKeysByProjectKey = useMemo(
+    () =>
+      new Map(
+        threadListProjectGroups.map((group) => [
+          group.projectKey,
+          [
+            group.projectKey,
+            ...group.memberProjects.flatMap((member) => [
+              getProjectOrderKey(member),
+              legacyProjectCwdPreferenceKey(member.workspaceRoot),
+            ]),
+          ],
+        ]),
+      ),
+    [threadListProjectGroups],
   );
 
   // Project scope: one menu above the list. Scoping filters the list without
@@ -2044,6 +2064,10 @@ export default function Sidebar() {
                         ? "rounded-md bg-sidebar-row-hover/80"
                         : null;
                   const isScopedProject = scopedProjectGroup?.projectKey === panel.projectKey;
+                  const projectExpansionPreferenceKeys =
+                    projectExpansionPreferenceKeysByProjectKey.get(panel.projectKey) ?? [
+                      panel.projectKey,
+                    ];
                   const hasActiveThread = panel.threads.some(
                     (thread) =>
                       thread.id === routeThreadRef?.threadId &&
@@ -2070,7 +2094,10 @@ export default function Sidebar() {
                   // Unconfigured shelves stay quiet unless they are scoped or
                   // need attention. Once a user toggles one, honor that choice.
                   const isShelfExpanded = resolveSidebarProjectShelfExpanded({
-                    persistedExpanded: projectExpandedById[panel.projectKey],
+                    persistedExpanded: resolveProjectExpandedPreference(
+                      projectExpandedById,
+                      projectExpansionPreferenceKeys,
+                    ),
                     isScoped: isScopedProject,
                     hasActiveThread,
                     hasAttentionThread,
@@ -2102,7 +2129,7 @@ export default function Sidebar() {
                           className="flex h-6 min-w-0 flex-1 items-center gap-1 rounded-sm px-0.5 text-left outline-none hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-ring"
                           onClick={(event) => {
                             event.stopPropagation();
-                            setProjectExpanded(panel.projectKey, !isShelfExpanded);
+                            setProjectExpanded(projectExpansionPreferenceKeys, !isShelfExpanded);
                           }}
                         >
                           <ChevronRightIcon
