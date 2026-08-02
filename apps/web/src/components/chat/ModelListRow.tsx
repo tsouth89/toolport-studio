@@ -5,8 +5,8 @@ import {
   getDisplayModelName,
   getTriggerDisplayModelLabel,
   type ModelEsque,
-  resolveProviderInstanceIcon,
 } from "./providerIconUtils";
+import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 import { ComboboxItem } from "../ui/combobox";
 import { Button } from "../ui/button";
 import { Kbd } from "../ui/kbd";
@@ -34,14 +34,13 @@ export const ModelListRow = memo(function ModelListRow(props: {
   preferShortName?: boolean;
   useTriggerLabel?: boolean;
   showNewBadge?: boolean;
+  sectionLabel?: string | undefined;
+  sectionHint?: string | undefined;
+  sectionSeparated?: boolean | undefined;
   jumpLabel?: string | null;
   disabledReason?: string | null;
   onToggleFavorite: () => void;
 }) {
-  const ProviderIcon = resolveProviderInstanceIcon({
-    driverKind: props.driverKind,
-    presetId: props.presetId,
-  });
   const providerLabel = props.model.subProvider
     ? `${props.providerDisplayName} · ${props.model.subProvider}`
     : props.providerDisplayName;
@@ -63,6 +62,17 @@ export const ModelListRow = memo(function ModelListRow(props: {
           "data-disabled:pointer-events-auto data-disabled:cursor-not-allowed data-disabled:hover:bg-transparent",
       )}
     >
+      <ProviderInstanceIcon
+        driverKind={props.driverKind}
+        presetId={props.presetId}
+        displayName={props.providerDisplayName}
+        accentColor={props.providerAccentColor}
+        showBadge={props.showProvider && Boolean(props.providerAccentColor)}
+        className="size-7"
+        iconClassName="size-5"
+        badgeClassName="h-3 min-w-3 px-0.5 text-[7px]"
+        indicatorBackground="var(--popover)"
+      />
       <div className="min-w-0 flex-1 text-left">
         <div className="flex min-w-0 items-center gap-2">
           <div className="min-w-0 truncate text-xs font-medium leading-snug">
@@ -84,7 +94,6 @@ export const ModelListRow = memo(function ModelListRow(props: {
         </div>
         {props.showProvider && (
           <div className="mt-1 flex items-center gap-1.5">
-            {ProviderIcon ? <ProviderIcon className="size-3 shrink-0" /> : null}
             <span className="truncate text-xs font-normal leading-snug text-muted-foreground/70">
               {providerLabel}
             </span>
@@ -93,6 +102,11 @@ export const ModelListRow = memo(function ModelListRow(props: {
       </div>
 
       <div className="flex shrink-0 items-center gap-1.5">
+        {props.isSelected ? (
+          <span className="rounded-full border border-primary/40 bg-primary/10 px-1.5 py-0.5 text-[9px] font-medium leading-none text-primary">
+            Selected
+          </span>
+        ) : null}
         {props.jumpLabel ? (
           // Held back until the row is in play. These sat at full strength on
           // every row, competing with the favourite stars along the same edge
@@ -138,16 +152,30 @@ export const ModelListRow = memo(function ModelListRow(props: {
     </ComboboxItem>
   );
 
-  if (!props.disabledReason) {
-    return row;
-  }
-
-  return (
+  const rowWithDisabledReason = props.disabledReason ? (
     <Tooltip>
       <TooltipTrigger render={row} />
       <TooltipPopup side="left" align="center" className="max-w-64 text-balance leading-snug">
         {props.disabledReason}
       </TooltipPopup>
     </Tooltip>
+  ) : (
+    row
+  );
+
+  if (!props.sectionLabel) return rowWithDisabledReason;
+
+  return (
+    <div className={cn(props.sectionSeparated && "mt-2 border-t border-border/55 pt-2")}>
+      <div className="flex items-center gap-2 px-2 pb-1.5 pt-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground/70">
+        <span>{props.sectionLabel}</span>
+        {props.sectionHint ? (
+          <span className="font-normal normal-case tracking-normal text-muted-foreground/50">
+            {props.sectionHint}
+          </span>
+        ) : null}
+      </div>
+      {rowWithDisabledReason}
+    </div>
   );
 });
