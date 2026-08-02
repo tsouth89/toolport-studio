@@ -1823,7 +1823,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     return [...events.slice(0, terminalIndex), ...extras, ...events.slice(terminalIndex)];
   };
 
-  const startEventFiber = (runtime: CodexSessionRuntimeShape) =>
+  const startEventFiber = (runtime: CodexSessionRuntimeShape, sessionScope: Scope.Closeable) =>
     Stream.runForEach(runtime.events, (event) =>
       Effect.gen(function* () {
         yield* writeNativeEvent(event);
@@ -1843,7 +1843,15 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         }
         yield* Queue.offerAll(runtimeEventQueue, runtimeEvents);
       }),
-    ).pipe(Effect.forkChild);
+    ).pipe(
+      // Fork into the session scope, never the caller's fiber. `forkChild` made
+      // this consumer a child of the fiber running startSession, so it was
+      // interrupted the moment startSession returned. Only notifications that
+      // landed during startup were ever projected, which is why a codex or BYOK
+      // thread showed thread/started and then sat on Working forever while the
+      // app-server kept streaming a full turn at it.
+      Effect.forkIn(sessionScope),
+    );
 
   const disposeCodexProcess = (session: CodexAdapterSessionContext) =>
     Effect.gen(function* () {
@@ -1938,7 +1946,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
             }),
         ),
       );
-      const eventFiber = yield* startEventFiber(runtime);
+      const eventFiber = yield* startEventFiber(runtime, sessionScope);
       yield* runtime.start().pipe(
         Effect.mapError(
           (cause) =>
@@ -2052,7 +2060,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           ),
         );
 
-        const eventFiber = yield* startEventFiber(runtime);
+        const eventFiber = yield* startEventFiber(runtime, sessionScope);
 
         const started = yield* runtime.start().pipe(
           Effect.mapError(

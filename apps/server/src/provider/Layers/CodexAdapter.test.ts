@@ -705,6 +705,51 @@ function startLifecycleRuntime() {
 }
 
 lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
+  it.effect("keeps projecting after the fiber that started the session finishes", () =>
+    Effect.gen(function* () {
+      // startSession forked the runtime event consumer with forkChild, so it was
+      // interrupted the moment startSession returned. Only notifications that
+      // landed during startup were projected; everything the app-server sent
+      // afterwards was dropped and the thread sat on Working forever. Callers in
+      // one fiber hid it, a real RPC handler fiber does not.
+      const adapter = yield* CodexAdapter;
+      const startScope = yield* Scope.make();
+      const startFiber = yield* adapter
+        .startSession({
+          provider: ProviderDriverKind.make("codex"),
+          threadId: asThreadId("thread-detached-start"),
+          runtimeMode: "full-access",
+        })
+        .pipe(Effect.forkIn(startScope));
+      yield* Fiber.join(startFiber);
+
+      const runtime = lifecycleRuntimeFactory.lastRuntime;
+      NodeAssert.ok(runtime);
+
+      const projected = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+      yield* runtime.emit({
+        id: asEventId("evt-after-start"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        method: "item/agentMessage/delta",
+        threadId: asThreadId("thread-detached-start"),
+        turnId: asTurnId("turn-after-start"),
+        textDelta: "hello",
+        payload: { threadId: "provider-thread-1", itemId: "item-1", delta: "hello" },
+      });
+
+      const head = yield* Fiber.join(projected).pipe(
+        Effect.timeoutOption("5 seconds"),
+        Effect.map((result) => (Option.isSome(result) ? result.value : Option.none())),
+      );
+      NodeAssert.ok(
+        Option.isSome(head),
+        "event consumer died with the fiber that started the session",
+      );
+    }),
+  );
+
   it.effect("maps Stop force-settle turn/completed interrupted payloads", () =>
     Effect.gen(function* () {
       // Matches the synthetic payload CodexSessionRuntime.interruptTurn emits so
