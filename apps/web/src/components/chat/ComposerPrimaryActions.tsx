@@ -1,5 +1,5 @@
 import { memo, type PointerEventHandler } from "react";
-import { ChevronDownIcon, ChevronLeftIcon, ListPlusIcon, ZapIcon } from "lucide-react";
+import { ChevronDownIcon, ChevronLeftIcon, ZapIcon } from "lucide-react";
 import { cn } from "~/lib/utils";
 import { StageBackdropButtonArt, useSidebarStageBackdropVariant } from "../SidebarStageBackdrop";
 import { Button } from "../ui/button";
@@ -25,6 +25,7 @@ interface ComposerPrimaryActionsProps {
   isEnvironmentUnavailable: boolean;
   isPreparingWorktree: boolean;
   hasSendableContent: boolean;
+  queuedMessageCount: number;
   preserveComposerFocusOnPointerDown?: boolean;
   onPreviousPendingQuestion: () => void;
   onInterrupt: () => void;
@@ -51,6 +52,26 @@ export const formatPendingPrimaryActionLabel = (input: {
     return "Next question";
   }
   return input.questionIndex > 0 ? "Submit answers" : "Submit answer";
+};
+
+export const resolveRunningPrimaryAction = (input: {
+  hasSendableContent: boolean;
+  queuedMessageCount: number;
+}) => {
+  if (!input.hasSendableContent && input.queuedMessageCount > 0) {
+    return {
+      action: "send-now",
+      label: "Send now",
+      ariaLabel: "Send next queued message now",
+      title: "Send now (Enter) — inject the next queued message into the live turn",
+    } as const;
+  }
+  return {
+    action: "queue",
+    label: "Send",
+    ariaLabel: "Send message after this turn",
+    title: "Send (Enter) — queues after the current turn",
+  } as const;
 };
 
 const preventPointerFocus: PointerEventHandler<HTMLElement> = (event) => {
@@ -92,6 +113,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   isEnvironmentUnavailable,
   isPreparingWorktree,
   hasSendableContent,
+  queuedMessageCount,
   preserveComposerFocusOnPointerDown = false,
   onPreviousPendingQuestion,
   onInterrupt,
@@ -166,27 +188,20 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
     );
   }
 
-  // Live turn: Queue (default Enter), Send/steer (Ctrl+Enter or click), Stop.
+  // Live turn: one stateful Send action. The first action queues a draft;
+  // once the composer clears, the same control sends the queue head now.
   if (isRunning) {
-    const canQueueOrSteer = !isEnvironmentUnavailable && hasSendableContent;
+    const primaryAction = resolveRunningPrimaryAction({
+      hasSendableContent,
+      queuedMessageCount,
+    });
+    const canRunPrimaryAction =
+      !isEnvironmentUnavailable &&
+      (primaryAction.action === "queue"
+        ? hasSendableContent && Boolean(onQueue)
+        : Boolean(onSteer));
     return (
       <div className="flex items-center gap-1">
-        <button
-          type="button"
-          className={cn(
-            "inline-flex h-8 items-center gap-1.5 rounded-full px-2.5 text-xs font-medium text-muted-foreground transition-colors",
-            "hover:bg-muted/80 hover:text-foreground",
-            "disabled:pointer-events-none disabled:opacity-35",
-          )}
-          {...pointerFocusProps}
-          disabled={!canQueueOrSteer || !onQueue}
-          aria-label="Queue message for after this turn"
-          title="Queue (Enter) — runs after this turn finishes"
-          onClick={() => onQueue?.()}
-        >
-          <ListPlusIcon className="size-3.5 shrink-0 opacity-80" aria-hidden="true" />
-          <span className="hidden sm:inline">Queue</span>
-        </button>
         <button
           type="button"
           className={cn(
@@ -198,16 +213,16 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
               : "bg-primary/90 enabled:shadow-xs enabled:shadow-primary/20 hover:bg-primary",
           )}
           {...pointerFocusProps}
-          disabled={!canQueueOrSteer || !onSteer}
-          aria-label="Send into live turn now"
-          title="Send (Ctrl+Enter) — inject into the live turn now"
-          onClick={() => onSteer?.()}
+          disabled={!canRunPrimaryAction}
+          aria-label={primaryAction.ariaLabel}
+          title={primaryAction.title}
+          onClick={() => (primaryAction.action === "queue" ? onQueue?.() : onSteer?.())}
         >
           <span className="absolute inset-0 -z-10" aria-hidden="true">
             <StageBackdropButtonArt variant={stageBackdropVariant} />
           </span>
           <ZapIcon className="size-3.5 shrink-0" aria-hidden="true" />
-          Send
+          {primaryAction.label}
         </button>
         <StopCircleButton
           onClick={onInterrupt}

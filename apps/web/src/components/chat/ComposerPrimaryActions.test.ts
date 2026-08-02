@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { formatPendingPrimaryActionLabel } from "./ComposerPrimaryActions";
+import {
+  formatPendingPrimaryActionLabel,
+  resolveRunningPrimaryAction,
+} from "./ComposerPrimaryActions";
 
 describe("formatPendingPrimaryActionLabel", () => {
   it("returns 'Submitting...' while responding", () => {
@@ -89,5 +92,25 @@ describe("formatPendingPrimaryActionLabel", () => {
         questionIndex: 5,
       }),
     ).toBe("Submit answers");
+  });
+});
+
+describe("resolveRunningPrimaryAction", () => {
+  it("uses the single Send control to queue a non-empty draft", () => {
+    expect(
+      resolveRunningPrimaryAction({ hasSendableContent: true, queuedMessageCount: 0 }),
+    ).toMatchObject({ action: "queue", label: "Send" });
+  });
+
+  it("turns the same control into Send now after the draft is queued", () => {
+    expect(
+      resolveRunningPrimaryAction({ hasSendableContent: false, queuedMessageCount: 1 }),
+    ).toMatchObject({ action: "send-now", label: "Send now" });
+  });
+
+  it("keeps a new draft queueable when older messages are already queued", () => {
+    expect(
+      resolveRunningPrimaryAction({ hasSendableContent: true, queuedMessageCount: 2 }),
+    ).toMatchObject({ action: "queue", label: "Send" });
   });
 });
