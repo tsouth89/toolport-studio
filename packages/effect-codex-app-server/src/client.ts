@@ -153,8 +153,24 @@ export const make = Effect.fn("effect-codex-app-server/CodexAppServerClient.make
         Effect.flatMap((decoded) =>
           Effect.forEach(handlers, (handler) => handler(decoded), { discard: true }),
         ),
-        Effect.catch(() => Effect.void),
+        // A params schema that has drifted from the running app-server used to
+        // be swallowed here. Every notification of that type then vanished with
+        // no error anywhere, which reads downstream as "the provider accepted
+        // the turn and never said anything". Name the method so the drift is
+        // findable instead of silent.
+        Effect.catch((cause) =>
+          Effect.logWarning("Dropped a Codex notification whose params failed to decode.", {
+            method: notification.method,
+            detail: String(cause).slice(0, 500),
+          }),
+        ),
       );
+    }
+
+    if (handlers.length === 0 && !unknownNotificationHandler) {
+      return Effect.logDebug("Received a Codex notification with no registered handler.", {
+        method: notification.method,
+      });
     }
 
     return unknownNotificationHandler

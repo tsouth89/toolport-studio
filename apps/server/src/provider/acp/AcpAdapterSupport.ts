@@ -90,7 +90,14 @@ function messageLooksLikeSessionNotFound(message: string): boolean {
     normalized.includes("resource not found") ||
     normalized.includes("no such file") ||
     normalized.includes("enoent") ||
-    /\bmissing session\b/.test(normalized)
+    /\bmissing session\b/.test(normalized) ||
+    // Cursor names the session between the two words:
+    //   Session "b50007b7-f065-44a0-b606-75c51359aa78" not found
+    // and returns it under JSON-RPC -32602 "Invalid params" rather than the
+    // -32002 this used to key on, so a recycle died on the raw defect instead
+    // of falling back to session/new. Bounded so an unrelated "not found"
+    // further along a long message cannot force a silent session reset.
+    /\bsession\b[^\n]{0,80}?\bnot found\b/.test(normalized)
   );
 }
 
