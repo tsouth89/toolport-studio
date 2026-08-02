@@ -18,6 +18,8 @@ const emitInterleavedAssistantToolCalls =
   process.env.TOOLPORT_STUDIO_ACP_EMIT_INTERLEAVED_ASSISTANT_TOOL_CALLS === "1";
 const emitGenericToolPlaceholders =
   process.env.TOOLPORT_STUDIO_ACP_EMIT_GENERIC_TOOL_PLACEHOLDERS === "1";
+const emitSubagentLifecycle = process.env.TOOLPORT_STUDIO_ACP_EMIT_SUBAGENT_LIFECYCLE === "1";
+const emitCursorTaskLifecycle = process.env.TOOLPORT_STUDIO_ACP_EMIT_CURSOR_TASK_LIFECYCLE === "1";
 const emitAskQuestion = process.env.TOOLPORT_STUDIO_ACP_EMIT_ASK_QUESTION === "1";
 const emitXAiAskUserQuestion = process.env.TOOLPORT_STUDIO_ACP_EMIT_XAI_ASK_USER_QUESTION === "1";
 const emitXAiPromptCompleteThenHang =
@@ -749,6 +751,80 @@ const program = Effect.gen(function* () {
         });
 
         return yield* Effect.never;
+      }
+
+      if (emitSubagentLifecycle) {
+        const subagentId = "019f-test-grok-subagent";
+        yield* agent.client.sessionUpdate({
+          sessionId: requestedSessionId,
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "tool-spawn-subagent-1",
+            title: "Inspect database changes",
+            kind: "other",
+            status: "completed",
+            rawInput: {
+              variant: "Task",
+              prompt: "Audit the SQL migration",
+              description: "Inspect database changes",
+              subagent_type: "reviewer",
+              run_in_background: true,
+            },
+            rawOutput: {
+              type: "Text",
+              text: `Subagent started in background.\nsubagent_id: ${subagentId}\ntype: reviewer\ndescription: Inspect database changes`,
+            },
+          },
+        });
+        yield* agent.client.sessionUpdate({
+          sessionId: requestedSessionId,
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "tool-wait-subagent-1",
+            title: "wait",
+            kind: "other",
+            status: "completed",
+            rawInput: {
+              variant: "TaskOutput",
+              task_ids: [subagentId],
+              timeout_ms: 300_000,
+            },
+            rawOutput: {
+              type: "TaskOutput",
+              Result: {
+                task_id: subagentId,
+                command: "[subagent:reviewer] Inspect database changes",
+                status: "completed",
+                exit_code: 0,
+                output: "No blocking migration issues found.",
+              },
+            },
+          },
+        });
+      }
+
+      if (emitCursorTaskLifecycle) {
+        const toolCallId = "cursor-task-subagent-1";
+        yield* agent.client.sessionUpdate({
+          sessionId: requestedSessionId,
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId,
+            title: "Task: Subagent task",
+            kind: "other",
+            status: "pending",
+            rawInput: { _toolName: "task" },
+          },
+        });
+        yield* agent.client.sessionUpdate({
+          sessionId: requestedSessionId,
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId,
+            status: "completed",
+            rawOutput: { durationMs: 12079, isBackground: false },
+          },
+        });
       }
 
       if (emitInterleavedAssistantToolCalls) {

@@ -4,6 +4,7 @@ import {
   EventId,
   ProviderDriverKind,
   ProviderItemId,
+  RuntimeAgentId,
   type ProviderInstanceId,
   type ProviderApprovalDecision,
   type ProviderEvent,
@@ -1059,14 +1060,19 @@ export const makeCodexSessionRuntime = (
         const payload = notification.params;
         const route = readRouteFields(notification);
         const collabReceiverTurns = yield* Ref.get(collabReceiverTurnsRef);
+        const providerThreadId = readNotificationThreadId(notification);
         const childParentTurnId = (() => {
-          const providerConversationId = readNotificationThreadId(notification);
-          return providerConversationId
-            ? collabReceiverTurns.get(providerConversationId)
-            : undefined;
+          return providerThreadId ? collabReceiverTurns.get(providerThreadId) : undefined;
         })();
 
-        rememberCollabReceiverTurns(collabReceiverTurns, notification, route.turnId);
+        // Keep deeper descendants on the root Studio turn. Native child turns
+        // are intentionally suppressed, so projecting a grandchild against a
+        // child-only turn id would orphan its activity.
+        rememberCollabReceiverTurns(
+          collabReceiverTurns,
+          notification,
+          childParentTurnId ?? route.turnId,
+        );
         if (childParentTurnId && shouldSuppressChildConversationNotification(notification.method)) {
           yield* Ref.set(collabReceiverTurnsRef, collabReceiverTurns);
           return;
@@ -1129,6 +1135,10 @@ export const makeCodexSessionRuntime = (
           method: notification.method,
           ...(turnId ? { turnId } : {}),
           ...(itemId ? { itemId } : {}),
+          ...(providerThreadId ? { providerThreadId } : {}),
+          ...(childParentTurnId && providerThreadId
+            ? { agentRunId: RuntimeAgentId.make(providerThreadId) }
+            : {}),
           ...(requestId ? { requestId } : {}),
           ...(requestKind ? { requestKind } : {}),
           ...(notification.method === "item/agentMessage/delta"

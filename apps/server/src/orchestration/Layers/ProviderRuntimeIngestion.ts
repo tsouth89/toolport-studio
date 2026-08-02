@@ -117,6 +117,9 @@ const MAX_BUFFERED_ASSISTANT_CHARS = 24_000;
 /** Cap persisted thinking detail so activities stay restart-safe but readable. */
 const REASONING_DETAIL_LIMIT = 8_000;
 const REASONING_PREVIEW_LIMIT = 160;
+/** Agent prompts/results are useful context, but must not become unbounded activity rows. */
+const AGENT_PROMPT_DETAIL_LIMIT = 2_000;
+const AGENT_MESSAGE_DETAIL_LIMIT = 2_000;
 /** Coalesce thought tokens into activity upserts (native terminal updates live). */
 const REASONING_FLUSH_MIN_INTERVAL_MS = 250;
 const REASONING_FLUSH_MIN_NEW_CHARS = 48;
@@ -324,7 +327,8 @@ function toolActivityDataPayload(
       ? String(event.itemId).trim()
       : null;
   const toolCallId = existingToolCallId ?? itemId;
-  if (!toolCallId && Object.keys(existing).length === 0) {
+  const agentRunId = event.providerRefs?.agentRunId;
+  if (!toolCallId && !agentRunId && Object.keys(existing).length === 0) {
     return {};
   }
   const sanitized: Record<string, unknown> = {};
@@ -333,6 +337,9 @@ function toolActivityDataPayload(
   }
   if (toolCallId && !existingToolCallId) {
     sanitized.toolCallId = toolCallId;
+  }
+  if (agentRunId) {
+    sanitized.agentRunId = agentRunId;
   }
   return { data: sanitized };
 }
@@ -704,6 +711,59 @@ export function runtimeEventToActivities(
       ];
     }
 
+    case "agent.started":
+    case "agent.updated":
+    case "agent.completed": {
+      const terminal = event.type === "agent.completed";
+      const label = event.payload.label ?? "Agent";
+      const summary = terminal
+        ? event.payload.status === "completed"
+          ? `${label} completed`
+          : event.payload.status === "interrupted" || event.payload.status === "stopped"
+            ? `${label} stopped`
+            : `${label} failed`
+        : event.type === "agent.started"
+          ? `${label} started`
+          : `${label} updated`;
+      return [
+        {
+          id: event.eventId,
+          createdAt: event.createdAt,
+          tone: event.payload.status === "failed" ? "error" : "tool",
+          kind: event.type,
+          summary,
+          payload: {
+            itemType: "collab_agent_tool_call",
+            toolCallId: event.payload.agentRunId,
+            agentRunId: event.payload.agentRunId,
+            ...(event.payload.parentAgentRunId
+              ? { parentAgentRunId: event.payload.parentAgentRunId }
+              : {}),
+            ...(event.payload.providerThreadId
+              ? { providerThreadId: event.payload.providerThreadId }
+              : {}),
+            status: event.payload.status,
+            ...(event.payload.label ? { label: truncateDetail(event.payload.label, 120) } : {}),
+            ...(event.payload.prompt
+              ? { prompt: truncateDetail(event.payload.prompt, AGENT_PROMPT_DETAIL_LIMIT) }
+              : {}),
+            ...(event.payload.model ? { model: event.payload.model } : {}),
+            ...(event.payload.reasoningEffort
+              ? { reasoningEffort: event.payload.reasoningEffort }
+              : {}),
+            ...(event.payload.message
+              ? { message: truncateDetail(event.payload.message, AGENT_MESSAGE_DETAIL_LIMIT) }
+              : {}),
+            ...(event.payload.canInspectThread !== undefined
+              ? { canInspectThread: event.payload.canInspectThread }
+              : {}),
+          },
+          turnId: toTurnId(event.turnId) ?? null,
+          ...maybeSequence,
+        },
+      ];
+    }
+
     case "thread.state.changed": {
       if (event.payload.state !== "compacted") {
         return [];
@@ -762,6 +822,9 @@ export function runtimeEventToActivities(
             ...(event.payload.status ? { status: event.payload.status } : {}),
             ...(event.payload.title ? { title: event.payload.title } : {}),
             ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
+            ...(event.providerRefs?.agentRunId
+              ? { agentRunId: event.providerRefs.agentRunId }
+              : {}),
             ...toolActivityDataPayload(event),
           },
           turnId: toTurnId(event.turnId) ?? null,
@@ -785,6 +848,9 @@ export function runtimeEventToActivities(
             itemType: event.payload.itemType,
             ...(event.payload.title ? { title: event.payload.title } : {}),
             ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
+            ...(event.providerRefs?.agentRunId
+              ? { agentRunId: event.providerRefs.agentRunId }
+              : {}),
             ...toolActivityDataPayload(event),
           },
           turnId: toTurnId(event.turnId) ?? null,
@@ -807,6 +873,9 @@ export function runtimeEventToActivities(
           payload: {
             itemType: event.payload.itemType,
             ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
+            ...(event.providerRefs?.agentRunId
+              ? { agentRunId: event.providerRefs.agentRunId }
+              : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -1868,6 +1937,18 @@ const make = Effect.gen(function* () {
           event.type === "item.updated" ||
           event.type === "item.completed") &&
         isToolLifecycleItemType(event.payload.itemType)
+      ) {
+        yield* closeReasoningSegment({
+          event,
+          threadId: thread.id,
+          turnId: toTurnId(event.turnId),
+          createdAt: now,
+        });
+      }
+      if (
+        event.type === "agent.started" ||
+        event.type === "agent.updated" ||
+        event.type === "agent.completed"
       ) {
         yield* closeReasoningSegment({
           event,

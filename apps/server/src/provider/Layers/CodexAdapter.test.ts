@@ -858,6 +858,68 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
     }),
   );
 
+  it.effect("force-stops open agents before a parent turn settles", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const eventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.take(3),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* runtime.emit({
+        id: asEventId("evt-open-agent"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        method: "item/started",
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-open-agent"),
+        itemId: asItemId("collab_open"),
+        payload: {
+          startedAtMs: 1_778_000_000_000,
+          threadId: "provider-parent",
+          turnId: "turn-open-agent",
+          item: {
+            type: "collabAgentToolCall",
+            id: "collab_open",
+            senderThreadId: "provider-parent",
+            receiverThreadIds: ["provider-child-open"],
+            prompt: "Inspect the long-running operation",
+            tool: "spawnAgent",
+            agentsStates: {
+              "provider-child-open": { status: "running", message: null },
+            },
+            status: "inProgress",
+          },
+        },
+      });
+      yield* runtime.emit({
+        id: asEventId("evt-open-agent-turn-completed"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-01-01T00:00:01.000Z",
+        method: "turn/completed",
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-open-agent"),
+        payload: {
+          threadId: "provider-parent",
+          turn: { id: "turn-open-agent", status: "interrupted", items: [] },
+        },
+      });
+
+      const events = Array.from(yield* Fiber.join(eventsFiber));
+      NodeAssert.equal(events[0]?.type, "agent.started");
+      NodeAssert.equal(events[1]?.type, "agent.completed");
+      if (events[1]?.type === "agent.completed") {
+        NodeAssert.equal(events[1].payload.agentRunId, "provider-child-open");
+        NodeAssert.equal(events[1].payload.status, "stopped");
+        NodeAssert.match(String(events[1].payload.message ?? ""), /parent turn settled/i);
+      }
+      NodeAssert.equal(events[2]?.type, "turn.completed");
+    }),
+  );
+
   it.effect("maps completed agent message items to canonical item.completed events", () =>
     Effect.gen(function* () {
       const { adapter, runtime } = yield* startLifecycleRuntime();
@@ -899,6 +961,128 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
       NodeAssert.equal(firstEvent.value.turnId, "turn-1");
       NodeAssert.equal(firstEvent.value.payload.itemType, "assistant_message");
     }),
+  );
+
+  it.effect("maps native Codex collaboration items to inspectable agent lifecycle events", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const eventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.take(2),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      const item = {
+        type: "collabAgentToolCall" as const,
+        id: "collab_1",
+        senderThreadId: "provider-parent",
+        receiverThreadIds: ["provider-child"],
+        prompt: "Inspect the provider protocol",
+        model: "gpt-5.6-codex",
+        reasoningEffort: "high" as const,
+        tool: "spawnAgent" as const,
+        agentsStates: {
+          "provider-child": { status: "running" as const, message: null },
+        },
+        status: "inProgress" as const,
+      };
+      yield* runtime.emit({
+        id: asEventId("evt-agent-start"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        method: "item/started",
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-1"),
+        itemId: asItemId("collab_1"),
+        payload: {
+          startedAtMs: 1_778_000_000_000,
+          threadId: "provider-parent",
+          turnId: "turn-1",
+          item,
+        },
+      });
+      yield* runtime.emit({
+        id: asEventId("evt-agent-complete"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-01-01T00:00:01.000Z",
+        method: "item/completed",
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-1"),
+        itemId: asItemId("collab_1"),
+        payload: {
+          completedAtMs: 1_778_000_001_000,
+          threadId: "provider-parent",
+          turnId: "turn-1",
+          item: {
+            ...item,
+            status: "completed" as const,
+            agentsStates: {
+              "provider-child": { status: "completed" as const, message: "Protocol mapped" },
+            },
+          },
+        },
+      });
+
+      const events = Array.from(yield* Fiber.join(eventsFiber));
+      NodeAssert.equal(events[0]?.type, "agent.started");
+      if (events[0]?.type === "agent.started") {
+        NodeAssert.equal(events[0].payload.agentRunId, "provider-child");
+        NodeAssert.equal(events[0].payload.prompt, "Inspect the provider protocol");
+        NodeAssert.equal(events[0].payload.status, "running");
+        NodeAssert.equal(events[0].payload.canInspectThread, true);
+        NodeAssert.equal(events[0].providerRefs?.providerThreadId, "provider-child");
+      }
+      NodeAssert.equal(events[1]?.type, "agent.completed");
+      if (events[1]?.type === "agent.completed") {
+        NodeAssert.equal(events[1].payload.status, "completed");
+        NodeAssert.equal(events[1].payload.message, "Protocol mapped");
+      }
+    }),
+  );
+
+  it.effect(
+    "treats follow-up collaboration calls as updates without replacing the task prompt",
+    () =>
+      Effect.gen(function* () {
+        const { adapter, runtime } = yield* startLifecycleRuntime();
+        const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+
+        yield* runtime.emit({
+          id: asEventId("evt-agent-follow-up"),
+          kind: "notification",
+          provider: ProviderDriverKind.make("codex"),
+          createdAt: "2026-01-01T00:00:02.000Z",
+          method: "item/started",
+          threadId: asThreadId("thread-1"),
+          turnId: asTurnId("turn-1"),
+          itemId: asItemId("collab_follow_up"),
+          payload: {
+            startedAtMs: 1_778_000_002_000,
+            threadId: "provider-parent",
+            turnId: "turn-1",
+            item: {
+              type: "collabAgentToolCall",
+              id: "collab_follow_up",
+              senderThreadId: "provider-parent",
+              receiverThreadIds: ["provider-child"],
+              prompt: "Now inspect the tests",
+              tool: "sendInput",
+              agentsStates: {
+                "provider-child": { status: "running", message: null },
+              },
+              status: "inProgress",
+            },
+          },
+        });
+
+        const firstEvent = yield* Fiber.join(firstEventFiber);
+        NodeAssert.equal(firstEvent._tag, "Some");
+        if (firstEvent._tag !== "Some" || firstEvent.value.type !== "agent.updated") return;
+        NodeAssert.equal(firstEvent.value.payload.agentRunId, "provider-child");
+        NodeAssert.equal(firstEvent.value.payload.prompt, undefined);
+      }),
   );
 
   it.effect("labels MCP lifecycle entries with server and tool names", () =>

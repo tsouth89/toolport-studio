@@ -18,6 +18,20 @@ beforeEach(() => {
 });
 
 describe("rightPanelStore", () => {
+  it("opens Agents and updates the selected native agent", () => {
+    useRightPanelStore.getState().openAgents(refA, "agent-a");
+    expect(selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, refA)).toEqual({
+      id: "agents",
+      kind: "agents",
+      selectedAgentRunId: "agent-a",
+    });
+
+    useRightPanelStore.getState().openAgents(refA, "agent-b");
+    expect(
+      selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA).surfaces,
+    ).toEqual([{ id: "agents", kind: "agents", selectedAgentRunId: "agent-b" }]);
+  });
+
   it("drops the legacy singleton terminal surface during migration", () => {
     expect(
       migratePersistedRightPanelState({

@@ -5,6 +5,8 @@ import {
   ProviderInstanceId,
   type ProviderRuntimeEvent,
   type ProviderSession,
+  RuntimeAgentId,
+  type RuntimeAgentStatus,
   RuntimeItemId,
   RuntimeRequestId,
   ThreadId,
@@ -23,7 +25,13 @@ import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
-import type { OpencodeClient, Part, PermissionRequest, QuestionRequest } from "@opencode-ai/sdk/v2";
+import type {
+  OpencodeClient,
+  Part,
+  PermissionRequest,
+  QuestionRequest,
+  Session,
+} from "@opencode-ai/sdk/v2";
 import { getModelSelectionStringOptionValue } from "@toolport-studio/shared/model";
 import {
   classifyProviderEmittedFailure,
@@ -214,11 +222,44 @@ function openCodeEventSessionTitle(event: OpenCodeSubscribedEvent): string | und
   return trimText(event.properties.info.title);
 }
 
+function openCodeSessionModel(session: Session): string | undefined {
+  if (!session.model) {
+    return undefined;
+  }
+  return `${session.model.providerID}/${session.model.id}`;
+}
+
+function openCodeAgentLabel(session: Session): string {
+  return trimText(session.title) ?? trimText(session.agent) ?? "OpenCode agent";
+}
+
+function openCodeChildSessionInfo(event: OpenCodeSubscribedEvent): Session | undefined {
+  switch (event.type) {
+    case "session.created":
+    case "session.updated":
+    case "session.deleted":
+      return event.properties.info;
+    default:
+      return undefined;
+  }
+}
+
 type OpenCodeOpenTool = {
   readonly callID: string;
   readonly tool: string;
   readonly title: string;
   readonly itemType: ToolLifecycleItemType;
+};
+
+type OpenCodeAgentRun = {
+  readonly agentRunId: RuntimeAgentId;
+  readonly providerThreadId: string;
+  readonly parentAgentRunId: RuntimeAgentId | undefined;
+  readonly turnId: TurnId | undefined;
+  label: string;
+  model: string | undefined;
+  message: string | undefined;
+  terminal: boolean;
 };
 
 interface OpenCodeSessionContext {
@@ -235,6 +276,8 @@ interface OpenCodeSessionContext {
   readonly completedAssistantPartIds: Set<string>;
   /** Tools still pending/running for the live turn (force-closed on settle). */
   readonly openTools: Map<string, OpenCodeOpenTool>;
+  /** Native OpenCode child sessions surfaced as inspectable agent runs. */
+  readonly agentRunsBySessionId: Map<string, OpenCodeAgentRun>;
   readonly turns: Array<OpenCodeTurnSnapshot>;
   activeTurnId: TurnId | undefined;
   activeAgent: string | undefined;
@@ -747,6 +790,115 @@ export function makeOpenCodeAdapter(
     const emit = (event: ProviderRuntimeEvent) =>
       Queue.offer(runtimeEvents, event).pipe(Effect.asVoid);
 
+    const emitAgentLifecycle = Effect.fn("emitOpenCodeAgentLifecycle")(function* (
+      context: OpenCodeSessionContext,
+      agent: OpenCodeAgentRun,
+      type: "agent.started" | "agent.updated" | "agent.completed",
+      status: RuntimeAgentStatus,
+      raw: unknown,
+      message?: string,
+      createdAt?: string,
+    ) {
+      if (type === "agent.completed") {
+        agent.terminal = true;
+      }
+      const resolvedMessage = trimText(message) ?? agent.message;
+      if (resolvedMessage) {
+        agent.message = resolvedMessage;
+      }
+      yield* emit({
+        ...(yield* buildEventBase({
+          threadId: context.session.threadId,
+          turnId: agent.turnId,
+          createdAt,
+          raw,
+        })),
+        type,
+        providerRefs: {
+          providerThreadId: agent.providerThreadId,
+          agentRunId: agent.agentRunId,
+        },
+        payload: {
+          agentRunId: agent.agentRunId,
+          ...(agent.parentAgentRunId ? { parentAgentRunId: agent.parentAgentRunId } : {}),
+          providerThreadId: agent.providerThreadId,
+          status,
+          label: agent.label,
+          ...(agent.model ? { model: agent.model } : {}),
+          ...(resolvedMessage ? { message: resolvedMessage } : {}),
+          canInspectThread: true,
+        },
+      });
+    });
+
+    const upsertOpenCodeAgent = Effect.fn("upsertOpenCodeAgent")(function* (
+      context: OpenCodeSessionContext,
+      session: Session,
+      raw: unknown,
+      lifecycle: "created" | "updated",
+    ) {
+      const existing = context.agentRunsBySessionId.get(session.id);
+      const parentAgent = session.parentID
+        ? context.agentRunsBySessionId.get(session.parentID)
+        : undefined;
+      const isDirectChild = session.parentID === context.openCodeSessionId;
+      if (!existing && !isDirectChild && !parentAgent) {
+        return undefined;
+      }
+
+      const agent =
+        existing ??
+        ({
+          agentRunId: RuntimeAgentId.make(session.id),
+          providerThreadId: session.id,
+          parentAgentRunId: parentAgent?.agentRunId,
+          turnId: context.activeTurnId,
+          label: openCodeAgentLabel(session),
+          model: openCodeSessionModel(session),
+          message: undefined,
+          terminal: false,
+        } satisfies OpenCodeAgentRun);
+      agent.label = openCodeAgentLabel(session);
+      agent.model = openCodeSessionModel(session) ?? agent.model;
+      context.agentRunsBySessionId.set(session.id, agent);
+
+      if (agent.terminal) {
+        return agent;
+      }
+      yield* emitAgentLifecycle(
+        context,
+        agent,
+        existing ? "agent.updated" : "agent.started",
+        "running",
+        raw,
+        undefined,
+        isoFromEpochMs(lifecycle === "created" ? session.time.created : session.time.updated),
+      );
+      return agent;
+    });
+
+    const forceCloseOpenCodeAgents = Effect.fn("forceCloseOpenCodeAgents")(function* (
+      context: OpenCodeSessionContext,
+      message: string,
+    ) {
+      for (const agent of context.agentRunsBySessionId.values()) {
+        if (agent.terminal) {
+          continue;
+        }
+        yield* emitAgentLifecycle(
+          context,
+          agent,
+          "agent.completed",
+          "stopped",
+          {
+            source: OPEN_TOOL_FORCE_CLOSE_SOURCE,
+            providerThreadId: agent.providerThreadId,
+          },
+          message,
+        );
+      }
+    });
+
     /**
      * Force-close tools still pending/running when a turn settles. OpenCode can
      * go idle or abort while a tool part never reaches completed/error, which
@@ -832,6 +984,10 @@ export function makeOpenCodeAdapter(
           class: "transport_error",
         },
       }).pipe(Effect.ignore);
+      yield* forceCloseOpenCodeAgents(
+        context,
+        "OpenCode exited before the child session reported a terminal state.",
+      ).pipe(Effect.ignore);
       yield* emit({
         ...(yield* buildEventBase({
           threadId: context.session.threadId,
@@ -925,22 +1081,160 @@ export function makeOpenCodeAdapter(
       event: OpenCodeSubscribedEvent,
     ) {
       const payloadSessionId = openCodeEventSessionId(event);
-      if (payloadSessionId !== context.openCodeSessionId) {
+      const isRootSession = payloadSessionId === context.openCodeSessionId;
+      const childInfo = openCodeChildSessionInfo(event);
+      if (childInfo && !isRootSession && event.type !== "session.deleted") {
+        yield* upsertOpenCodeAgent(
+          context,
+          childInfo,
+          event,
+          event.type === "session.created" ? "created" : "updated",
+        );
+      }
+      const childAgent = payloadSessionId
+        ? context.agentRunsBySessionId.get(payloadSessionId)
+        : undefined;
+      if (!isRootSession && !childAgent) {
         return;
       }
 
-      const turnId = context.activeTurnId;
+      const turnId = childAgent?.turnId ?? context.activeTurnId;
       yield* writeNativeEventBestEffort(context.session.threadId, {
         observedAt: yield* nowIso,
         event: {
           provider: PROVIDER,
           threadId: context.session.threadId,
-          providerThreadId: context.openCodeSessionId,
+          providerThreadId: payloadSessionId ?? context.openCodeSessionId,
           type: event.type,
           ...(turnId ? { turnId } : {}),
           payload: event,
         },
       });
+
+      if (childAgent) {
+        switch (event.type) {
+          case "session.created":
+          case "session.updated":
+            break;
+
+          case "session.deleted":
+            if (!childAgent.terminal) {
+              yield* emitAgentLifecycle(
+                context,
+                childAgent,
+                "agent.completed",
+                "stopped",
+                event,
+                "OpenCode removed the child session.",
+                isoFromEpochMs(event.properties.info.time.updated),
+              );
+            }
+            break;
+
+          case "session.status":
+            if (childAgent.terminal) {
+              break;
+            }
+            if (event.properties.status.type === "idle") {
+              yield* emitAgentLifecycle(context, childAgent, "agent.completed", "completed", event);
+            } else {
+              yield* emitAgentLifecycle(
+                context,
+                childAgent,
+                "agent.updated",
+                "running",
+                event,
+                event.properties.status.type === "retry"
+                  ? event.properties.status.message
+                  : undefined,
+              );
+            }
+            break;
+
+          case "session.idle":
+            if (!childAgent.terminal) {
+              yield* emitAgentLifecycle(context, childAgent, "agent.completed", "completed", event);
+            }
+            break;
+
+          case "session.error":
+            if (!childAgent.terminal) {
+              yield* emitAgentLifecycle(
+                context,
+                childAgent,
+                "agent.completed",
+                "failed",
+                event,
+                sessionErrorMessage(event.properties.error),
+              );
+            }
+            break;
+
+          case "message.part.updated": {
+            const part = event.properties.part;
+            if (part.type === "text") {
+              const message = trimText(part.text);
+              if (message && !childAgent.terminal) {
+                yield* emitAgentLifecycle(
+                  context,
+                  childAgent,
+                  "agent.updated",
+                  "running",
+                  event,
+                  message,
+                  part.time ? isoFromEpochMs(part.time.start) : undefined,
+                );
+              }
+              break;
+            }
+            if (part.type !== "tool") {
+              break;
+            }
+            const itemType = toToolLifecycleItemType(part.tool);
+            const title =
+              part.state.status === "running" ? (part.state.title ?? part.tool) : part.tool;
+            const detail = detailFromToolPart(part);
+            yield* emit({
+              ...(yield* buildEventBase({
+                threadId: context.session.threadId,
+                turnId,
+                itemId: part.callID,
+                createdAt: toolStateCreatedAt(part),
+                raw: event,
+              })),
+              type:
+                part.state.status === "pending"
+                  ? "item.started"
+                  : part.state.status === "completed" || part.state.status === "error"
+                    ? "item.completed"
+                    : "item.updated",
+              providerRefs: {
+                providerThreadId: childAgent.providerThreadId,
+                agentRunId: childAgent.agentRunId,
+              },
+              payload: {
+                itemType,
+                ...(part.state.status === "error"
+                  ? { status: "failed" as const }
+                  : part.state.status === "completed"
+                    ? { status: "completed" as const }
+                    : { status: "inProgress" as const }),
+                ...(title ? { title } : {}),
+                ...(detail ? { detail } : {}),
+                data: {
+                  tool: part.tool,
+                  state: part.state,
+                },
+              },
+            });
+            break;
+          }
+
+          default:
+            break;
+        }
+        return;
+      }
 
       switch (event.type) {
         case "session.updated": {
@@ -1197,6 +1491,10 @@ export function makeOpenCodeAdapter(
 
           if (event.properties.status.type === "idle" && turnId) {
             yield* forceCloseOpenTools(context, turnId);
+            yield* forceCloseOpenCodeAgents(
+              context,
+              "Parent turn settled before OpenCode reported a terminal child-session state.",
+            );
             context.activeTurnId = undefined;
             // Pure provider failure dumps as assistant text + idle must not
             // settle as successful replies (Cursor/Grok/Claude parity).
@@ -1261,6 +1559,7 @@ export function makeOpenCodeAdapter(
           const message = sessionErrorMessage(event.properties.error);
           const activeTurnId = context.activeTurnId;
           yield* forceCloseOpenTools(context, activeTurnId);
+          yield* forceCloseOpenCodeAgents(context, message);
           context.activeTurnId = undefined;
           yield* updateProviderSession(
             context,
@@ -1573,6 +1872,7 @@ export function makeOpenCodeAdapter(
           messageRoleById: new Map(),
           completedAssistantPartIds: new Set(),
           openTools: new Map(),
+          agentRunsBySessionId: new Map(),
           turns: [],
           activeTurnId: undefined,
           activeAgent: undefined,
@@ -1823,6 +2123,7 @@ export function makeOpenCodeAdapter(
 
         // Close ghost tool rows before clearing the turn (Stop settle order).
         yield* forceCloseOpenTools(context, settleTurnId);
+        yield* forceCloseOpenCodeAgents(context, "Parent turn was cancelled.");
 
         // Force session ready even if OpenCode never emits session.status idle.
         // Leaving activeTurnId set after Stop makes the next send look like a
@@ -1903,6 +2204,7 @@ export function makeOpenCodeAdapter(
             threadId,
           });
         }
+        yield* forceCloseOpenCodeAgents(context, "OpenCode session stopped.");
         const stopped = yield* stopOpenCodeContext(context);
         sessions.delete(threadId);
         if (!stopped) {

@@ -13,6 +13,7 @@ import {
   type ProviderUserInputAnswers,
   ProviderDriverKind,
   ProviderInstanceId,
+  RuntimeAgentId,
   RuntimeRequestId,
   type ThreadId,
   TurnId,
@@ -58,7 +59,7 @@ import {
   makeAcpTokenUsageUpdatedEvent,
   makeAcpToolCallEvent,
 } from "../acp/AcpCoreRuntimeEvents.ts";
-import { parsePermissionRequest } from "../acp/AcpRuntimeModel.ts";
+import { type AcpToolCallState, parsePermissionRequest } from "../acp/AcpRuntimeModel.ts";
 import { makeAcpNativeLoggerFactory } from "../acp/AcpNativeLogging.ts";
 import {
   applyGrokAcpModelSelection,
@@ -170,6 +171,85 @@ const DEFAULT_GROK_SILENT_TURN_WATCHDOG: GrokSilentTurnWatchdogConfig = {
   thinkMs: GROK_SILENT_THINK_WATCHDOG_MS,
   pollMs: GROK_SILENT_TURN_WATCHDOG_POLL_MS,
 };
+
+function grokRecord(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function grokText(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function parseGrokSpawnedAgent(toolCall: AcpToolCallState): GrokAgentRunState | undefined {
+  const rawInput = grokRecord(toolCall.data.rawInput);
+  if (rawInput?.variant !== "Task") {
+    return undefined;
+  }
+  const rawOutput = grokRecord(toolCall.data.rawOutput);
+  const outputText = grokText(rawOutput?.text);
+  const agentId = outputText?.match(/(?:^|\n)subagent_id:\s*([^\s]+)/i)?.[1];
+  if (!agentId) {
+    return undefined;
+  }
+  const description = grokText(rawInput.description);
+  const subagentType = grokText(rawInput.subagent_type);
+  const prompt = grokText(rawInput.prompt);
+  return {
+    agentRunId: RuntimeAgentId.make(agentId),
+    label: description ?? subagentType ?? "Grok agent",
+    ...(prompt ? { prompt } : {}),
+  };
+}
+
+interface GrokAgentResult {
+  readonly agentRunId: RuntimeAgentId;
+  readonly status: "running" | "completed" | "failed" | "stopped";
+  readonly label?: string;
+  readonly message?: string;
+}
+
+function parseGrokAgentResults(toolCall: AcpToolCallState): ReadonlyArray<GrokAgentResult> {
+  const rawInput = grokRecord(toolCall.data.rawInput);
+  if (rawInput?.variant !== "TaskOutput") {
+    return [];
+  }
+  const rawOutput = grokRecord(toolCall.data.rawOutput);
+  const single = grokRecord(rawOutput?.Result);
+  const multi = grokRecord(rawOutput?.MultiResult);
+  const candidates = single
+    ? [single]
+    : Array.isArray(multi?.results)
+      ? multi.results.map(grokRecord).filter((entry): entry is Record<string, unknown> => !!entry)
+      : [];
+  const results: GrokAgentResult[] = [];
+  for (const candidate of candidates) {
+    const taskId = grokText(candidate.task_id);
+    const command = grokText(candidate.command);
+    if (!taskId || !command?.startsWith("[subagent:")) {
+      continue;
+    }
+    const rawStatus = grokText(candidate.status)?.toLowerCase();
+    const status =
+      rawStatus === "completed"
+        ? "completed"
+        : rawStatus === "failed"
+          ? "failed"
+          : rawStatus === "stopped" || rawStatus === "cancelled"
+            ? "stopped"
+            : "running";
+    const label = command.match(/^\[subagent:[^\]]+\]\s*(.*)$/i)?.[1]?.trim() || undefined;
+    const message = grokText(candidate.output);
+    results.push({
+      agentRunId: RuntimeAgentId.make(taskId),
+      status,
+      ...(label ? { label } : {}),
+      ...(message ? { message } : {}),
+    });
+  }
+  return results;
+}
 
 export type GrokSilentTurnKind = "open-tool" | "post-tool" | "thinking" | null;
 
@@ -480,6 +560,8 @@ interface GrokSessionContext {
    * Capped in the formatter; order is completion order.
    */
   completedToolTitles: string[];
+  /** Native Grok background subagents keyed by the task id returned from Task. */
+  agentRuns: Map<string, GrokAgentRunState>;
   /**
    * User-facing reason when the silence watchdog (or equivalent) auto-stops a
    * turn. Must be settled into turn.completed even if cancel makes the prompt
@@ -511,6 +593,12 @@ interface GrokSessionContext {
    * Stop abandons these; settle drains the head.
    */
   pendingSends: Map<string, PendingGrokQueuedSend>;
+}
+
+interface GrokAgentRunState {
+  readonly agentRunId: RuntimeAgentId;
+  readonly label: string;
+  readonly prompt?: string;
 }
 
 type PendingGrokQueuedSend = {
@@ -1676,6 +1764,76 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                     }
                   }
                 }
+                const spawnedAgent = parseGrokSpawnedAgent(event.toolCall);
+                if (spawnedAgent) {
+                  ctx.agentRuns.set(String(spawnedAgent.agentRunId), spawnedAgent);
+                  yield* offerRuntimeEvent({
+                    type: "agent.started",
+                    ...stamp,
+                    provider: PROVIDER,
+                    threadId: ctx.threadId,
+                    turnId: notificationTurnId,
+                    providerRefs: {
+                      agentRunId: spawnedAgent.agentRunId,
+                    },
+                    payload: {
+                      agentRunId: spawnedAgent.agentRunId,
+                      status: "running",
+                      label: spawnedAgent.label,
+                      ...(spawnedAgent.prompt ? { prompt: spawnedAgent.prompt } : {}),
+                      canInspectThread: false,
+                    },
+                    raw: {
+                      source: "acp.jsonrpc",
+                      method: "session/update",
+                      payload: event.rawPayload,
+                    },
+                  });
+                }
+
+                const agentResults = parseGrokAgentResults(event.toolCall);
+                if (agentResults.length > 0) {
+                  for (const [index, result] of agentResults.entries()) {
+                    const previous = ctx.agentRuns.get(String(result.agentRunId));
+                    const terminal = result.status !== "running";
+                    const label = previous?.label ?? result.label ?? "Grok agent";
+                    yield* offerRuntimeEvent({
+                      type: terminal ? "agent.completed" : "agent.updated",
+                      eventId:
+                        index === 0
+                          ? stamp.eventId
+                          : EventId.make(`${stamp.eventId}-agent-${index}`),
+                      createdAt: stamp.createdAt,
+                      provider: PROVIDER,
+                      threadId: ctx.threadId,
+                      turnId: notificationTurnId,
+                      providerRefs: {
+                        agentRunId: result.agentRunId,
+                      },
+                      payload: {
+                        agentRunId: result.agentRunId,
+                        status: result.status,
+                        label,
+                        ...(previous?.prompt ? { prompt: previous.prompt } : {}),
+                        ...(result.message ? { message: result.message } : {}),
+                        canInspectThread: false,
+                      },
+                      raw: {
+                        source: "acp.jsonrpc",
+                        method: "session/update",
+                        payload: event.rawPayload,
+                      },
+                    });
+                    if (terminal) {
+                      ctx.agentRuns.delete(String(result.agentRunId));
+                    } else if (!previous) {
+                      ctx.agentRuns.set(String(result.agentRunId), {
+                        agentRunId: result.agentRunId,
+                        label,
+                      });
+                    }
+                  }
+                }
                 yield* offerRuntimeEvent(
                   makeAcpToolCallEvent({
                     stamp,
@@ -2108,6 +2266,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             hasObservedToolCall: false,
             lastOpenToolTitle: undefined,
             completedToolTitles: [],
+            agentRuns: new Map(),
             silentTurnStopMessage: undefined,
             notificationGeneration: 0,
             acpDisposed: false,

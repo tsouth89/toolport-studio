@@ -678,6 +678,35 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain("Stop now");
   });
 
+  it("makes native delegation rows deep-link to the Agents panel", () => {
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        onOpenAgents={() => {}}
+        timelineEntries={[
+          {
+            id: "agent-work",
+            kind: "work",
+            createdAt: "2026-01-01T00:00:00Z",
+            entry: {
+              id: "agent-work-entry",
+              createdAt: "2026-01-01T00:00:00Z",
+              label: "Agent 1 started",
+              tone: "tool",
+              itemType: "collab_agent_tool_call",
+              toolCallId: "provider-child-1",
+              sourceActivityKind: "agent.started",
+              toolLifecycleStatus: "inProgress",
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain('aria-label="Open Agent 1 in Agents"');
+    expect(markup).toContain('tabindex="0"');
+  });
+
   it("names the open tool on the wait notice when a long tool is still running", () => {
     const lastStreamActivityAt = new Date(Date.now() - 11 * 60_000).toISOString();
     const markup = renderToStaticMarkup(

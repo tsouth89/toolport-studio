@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import { shouldShowThisTurnCard } from "./ThisTurnCard";
+import type { AgentRun } from "../agentRuns";
 import type { ThreadActivityViewModel } from "../threadActivityViewModel";
 
 function baseModel(partial: Partial<ThreadActivityViewModel> = {}): ThreadActivityViewModel {
@@ -69,5 +70,19 @@ describe("shouldShowThisTurnCard", () => {
         }),
       ),
     ).toBe(true);
+  });
+
+  it("keeps a failed subagent visible after the parent turn settles", () => {
+    const failedRun = {
+      status: "failed",
+    } as AgentRun;
+    expect(shouldShowThisTurnCard(baseModel(), [failedRun])).toBe(true);
+  });
+
+  it("retains compact access to completed subagents after settle", () => {
+    const completedRun = {
+      status: "completed",
+    } as AgentRun;
+    expect(shouldShowThisTurnCard(baseModel(), [completedRun])).toBe(true);
   });
 });

@@ -2,6 +2,7 @@ import type { ContextMenuItem, PreviewSessionSnapshot } from "@toolport-studio/c
 import { getTerminalLabel } from "@toolport-studio/shared/terminalLabels";
 import {
   Activity,
+  Bot,
   ClipboardList,
   FileDiff,
   Files,
@@ -54,6 +55,7 @@ interface RightPanelTabsProps {
   onAddDiff: () => void;
   onAddFiles: () => void;
   onAddActivity: () => void;
+  onAddAgents: () => void;
   browserAvailable: boolean;
   diffAvailable: boolean;
   filesAvailable: boolean;
@@ -102,6 +104,7 @@ function RightPanelEmptyState(props: {
   onAddDiff: () => void;
   onAddFiles: () => void;
   onAddActivity: () => void;
+  onAddAgents: () => void;
   browserAvailable: boolean;
   diffAvailable: boolean;
   filesAvailable: boolean;
@@ -109,6 +112,14 @@ function RightPanelEmptyState(props: {
   // Prefer destinations (files / terminal / browser / diff). Activity is optional
   // deep-inspect now that the main timeline carries Working chrome.
   const actions = [
+    {
+      label: "Agents",
+      description: "Inspect native subagents and their work.",
+      icon: Bot,
+      available: true,
+      disabledReason: null,
+      onClick: props.onAddAgents,
+    },
     {
       label: "Files",
       description: "Browse and read workspace files.",
@@ -228,6 +239,8 @@ function surfaceTitle(
       return "Plan";
     case "activity":
       return "Activity";
+    case "agents":
+      return "Agents";
     case "preview": {
       const snapshot = surface.resourceId ? sessions[surface.resourceId] : null;
       if (!snapshot || snapshot.navStatus._tag === "Idle") return "Browser";
@@ -291,6 +304,8 @@ function SurfaceIcon({
       return <ClipboardList className="size-3.5 shrink-0" />;
     case "activity":
       return <Activity className="size-3.5 shrink-0" />;
+    case "agents":
+      return <Bot className="size-3.5 shrink-0" />;
   }
 }
 
@@ -500,6 +515,10 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
                     <Activity />
                     Activity
                   </SurfaceMenuItem>
+                  <SurfaceMenuItem available onClick={props.onAddAgents}>
+                    <Bot />
+                    Agents
+                  </SurfaceMenuItem>
                   <SurfaceMenuItem
                     available={props.diffAvailable}
                     disabledReason={SURFACE_DISABLED_REASONS.diff}
@@ -523,6 +542,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
             onAddDiff={props.onAddDiff}
             onAddFiles={props.onAddFiles}
             onAddActivity={props.onAddActivity}
+            onAddAgents={props.onAddAgents}
             browserAvailable={props.browserAvailable}
             diffAvailable={props.diffAvailable}
             filesAvailable={props.filesAvailable}

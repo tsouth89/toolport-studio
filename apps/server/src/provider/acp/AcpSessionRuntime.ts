@@ -27,6 +27,7 @@ import {
   extractModelConfigId,
   findSessionConfigOption,
   mergeToolCallState,
+  isAcpSubagentTaskToolCall,
   parseSessionModeState,
   parseSessionUpdateEvent,
   sessionUpdateIsReplay,
@@ -1188,7 +1189,13 @@ function shouldEmitToolCallUpdate(
     return true;
   }
   if (!next.detail) {
-    return false;
+    // A subagent task has a stable id and a useful title but no detail until it
+    // finishes. Emit that first state so the UI can show live work instead of
+    // materializing the agent only once it is over. Every other detail-less
+    // update stays suppressed: those are placeholders that add no visible
+    // information, and emitting them on title alone turned an ordinary pending
+    // read into a timeline row.
+    return previous === undefined && isAcpSubagentTaskToolCall(next);
   }
   return previous === undefined || previous.title !== next.title || previous.detail !== next.detail;
 }

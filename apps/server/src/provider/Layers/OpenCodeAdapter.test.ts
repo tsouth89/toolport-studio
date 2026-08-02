@@ -1284,6 +1284,150 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive more", (it) => {
     }),
   );
 
+  it.effect("maps native child sessions, nesting, status, and work to agent lifecycles", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-opencode-child-agents");
+      const rootSessionId = "http://127.0.0.1:9999/session";
+      const childSessionId = "ses_child_research";
+      const nestedSessionId = "ses_nested_tests";
+      runtimeMock.state.subscribedEvents = [
+        {
+          type: "session.created",
+          properties: {
+            sessionID: "ses_foreign",
+            info: {
+              id: "ses_foreign",
+              parentID: "ses_unrelated_root",
+              title: "Unrelated session",
+              time: { created: 1, updated: 1 },
+            },
+          },
+        },
+        {
+          type: "session.created",
+          properties: {
+            sessionID: childSessionId,
+            info: {
+              id: childSessionId,
+              parentID: rootSessionId,
+              title: "Research the provider protocol",
+              agent: "explore",
+              model: { providerID: "anthropic", id: "claude-sonnet-4-5" },
+              time: { created: 2, updated: 2 },
+            },
+          },
+        },
+        {
+          type: "session.status",
+          properties: {
+            sessionID: childSessionId,
+            status: { type: "busy" },
+          },
+        },
+        {
+          type: "message.part.updated",
+          properties: {
+            sessionID: childSessionId,
+            part: {
+              id: "part-child-tool",
+              sessionID: childSessionId,
+              messageID: "msg-child",
+              type: "tool",
+              callID: "call-child-tool",
+              tool: "read",
+              state: {
+                status: "running",
+                input: { filePath: "README.md" },
+                title: "Reading README.md",
+                time: { start: 3 },
+              },
+            },
+          },
+        },
+        {
+          type: "session.created",
+          properties: {
+            sessionID: nestedSessionId,
+            info: {
+              id: nestedSessionId,
+              parentID: childSessionId,
+              title: "Inspect focused tests",
+              agent: "explore",
+              time: { created: 4, updated: 4 },
+            },
+          },
+        },
+        {
+          type: "session.idle",
+          properties: { sessionID: nestedSessionId },
+        },
+        {
+          type: "session.error",
+          properties: { sessionID: childSessionId },
+        },
+      ];
+
+      const eventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter(
+          (event) =>
+            event.threadId === threadId &&
+            (event.type.startsWith("agent.") || event.type.startsWith("item.")),
+        ),
+        Stream.take(6),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+
+      const events = Array.from(yield* Fiber.join(eventsFiber).pipe(Effect.timeout("1 second")));
+      NodeAssert.deepEqual(
+        events.map((event) => event.type),
+        [
+          "agent.started",
+          "agent.updated",
+          "item.updated",
+          "agent.started",
+          "agent.completed",
+          "agent.completed",
+        ],
+      );
+
+      const childStarted = events[0];
+      NodeAssert.equal(childStarted?.type, "agent.started");
+      if (childStarted?.type === "agent.started") {
+        NodeAssert.equal(childStarted.payload.agentRunId, childSessionId);
+        NodeAssert.equal(childStarted.payload.providerThreadId, childSessionId);
+        NodeAssert.equal(childStarted.payload.label, "Research the provider protocol");
+        NodeAssert.equal(childStarted.payload.model, "anthropic/claude-sonnet-4-5");
+        NodeAssert.equal(childStarted.payload.canInspectThread, true);
+      }
+
+      const childWork = events[2];
+      NodeAssert.equal(childWork?.type, "item.updated");
+      NodeAssert.equal(childWork?.providerRefs?.agentRunId, childSessionId);
+      NodeAssert.equal(childWork?.providerRefs?.providerThreadId, childSessionId);
+
+      const nestedStarted = events[3];
+      NodeAssert.equal(nestedStarted?.type, "agent.started");
+      if (nestedStarted?.type === "agent.started") {
+        NodeAssert.equal(nestedStarted.payload.parentAgentRunId, childSessionId);
+      }
+
+      const childCompleted = events[5];
+      NodeAssert.equal(childCompleted?.type, "agent.completed");
+      if (childCompleted?.type === "agent.completed") {
+        NodeAssert.equal(childCompleted.payload.agentRunId, childSessionId);
+        NodeAssert.equal(childCompleted.payload.status, "failed");
+      }
+    }),
+  );
+
   it.effect("writes provider-native observability records using the session thread id", () =>
     Effect.gen(function* () {
       const nativeEvents: Array<{

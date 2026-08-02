@@ -9,6 +9,7 @@ import {
   ProviderRuntimeEvent,
   ProviderSession,
   ProviderInstanceId,
+  RuntimeAgentId,
 } from "@toolport-studio/contracts";
 import {
   ApprovalRequestId,
@@ -3228,6 +3229,89 @@ describe("ProviderRuntimeIngestion", () => {
     ).toBe("# Plan title");
   });
 
+  it("persists native agent lifecycle and associates child work with the agent", async () => {
+    const harness = await createHarness();
+    const agentRunId = RuntimeAgentId.make("provider-child-1");
+    const oversizedPrompt = "Inspect the protocol. ".repeat(140);
+
+    harness.emit({
+      type: "agent.started",
+      eventId: asEventId("evt-agent-started"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-agent-1"),
+      payload: {
+        agentRunId,
+        providerThreadId: "provider-child-1",
+        status: "running",
+        label: "Agent 1",
+        prompt: oversizedPrompt,
+        canInspectThread: true,
+      },
+    });
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-agent-tool"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-agent-1"),
+      itemId: "child-command-1",
+      providerRefs: { agentRunId, providerThreadId: "provider-child-1" },
+      payload: {
+        itemType: "command_execution",
+        title: "Ran command",
+      },
+    });
+    harness.emit({
+      type: "agent.completed",
+      eventId: asEventId("evt-agent-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:02.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-agent-1"),
+      payload: {
+        agentRunId,
+        providerThreadId: "provider-child-1",
+        status: "completed",
+        label: "Agent 1",
+        message: "Protocol mapped",
+        canInspectThread: true,
+      },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.id === "evt-agent-completed",
+      ),
+    );
+    const started = thread.activities.find(
+      (activity: ProviderRuntimeTestActivity) => activity.id === "evt-agent-started",
+    );
+    const childWork = thread.activities.find(
+      (activity: ProviderRuntimeTestActivity) => activity.id === "evt-agent-tool",
+    );
+    const completed = thread.activities.find(
+      (activity: ProviderRuntimeTestActivity) => activity.id === "evt-agent-completed",
+    );
+    const startedPayload =
+      started?.payload && typeof started.payload === "object"
+        ? (started.payload as Record<string, unknown>)
+        : undefined;
+    expect(started?.kind).toBe("agent.started");
+    expect(started?.summary).toBe("Agent 1 started");
+    expect(String(startedPayload?.prompt ?? "")).toHaveLength(2_000);
+    expect(String(startedPayload?.prompt ?? "")).toMatch(/\.\.\.$/);
+    expect(childWork?.payload).toMatchObject({ agentRunId: "provider-child-1" });
+    expect(completed?.kind).toBe("agent.completed");
+    expect(completed?.payload).toMatchObject({
+      agentRunId: "provider-child-1",
+      status: "completed",
+      message: "Protocol mapped",
+    });
+  });
+
   it("titles task activities with the task description, including on completion", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
@@ -3717,5 +3801,77 @@ describe("ProviderRuntimeIngestion", () => {
       `reasoning:${threadId}:${turnId}:0`,
       `reasoning:${threadId}:${turnId}:1`,
     ]);
+  });
+
+  it("starts a new Thinking segment after a native agent boundary", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const threadId = asThreadId("thread-1");
+    const turnId = asTurnId("turn-reasoning-agent");
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-reasoning-agent-turn"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId,
+      turnId,
+      payload: { model: "gpt-5.6-codex" },
+    });
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-reasoning-agent-before"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId,
+      turnId,
+      payload: { streamKind: "reasoning_text", delta: "Thinking before delegation." },
+    });
+    harness.emit({
+      type: "agent.started",
+      eventId: asEventId("evt-reasoning-agent-started"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId,
+      turnId,
+      payload: {
+        agentRunId: RuntimeAgentId.make("provider-child-reasoning"),
+        status: "running",
+      },
+    });
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-reasoning-agent-after"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId,
+      turnId,
+      payload: { streamKind: "reasoning_text", delta: "Thinking after delegation." },
+    });
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-reasoning-agent-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId,
+      turnId,
+      payload: { state: "completed", stopReason: "end_turn" },
+    });
+
+    const isProviderReasoning = (activity: ProviderRuntimeTestActivity) =>
+      activity.kind === "task.progress" &&
+      typeof activity.payload === "object" &&
+      activity.payload !== null &&
+      (activity.payload as { source?: unknown }).source === "provider.reasoning";
+    const thread = await waitForThread(
+      harness.readModel,
+      (entry) => entry.activities.filter(isProviderReasoning).length >= 2,
+    );
+    expect(
+      thread.activities
+        .filter(isProviderReasoning)
+        .map((activity: ProviderRuntimeTestActivity) => activity.id)
+        .toSorted(),
+    ).toEqual([`reasoning:${threadId}:${turnId}:0`, `reasoning:${threadId}:${turnId}:1`]);
   });
 });

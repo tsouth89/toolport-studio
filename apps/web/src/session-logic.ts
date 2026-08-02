@@ -83,12 +83,13 @@ export interface WorkLogEntry {
   toolLifecycleStatus?: WorkLogToolLifecycleStatus;
   /** Originating orchestration activity kind (e.g. `user-input.requested`) for row chrome. */
   sourceActivityKind?: OrchestrationThreadActivity["kind"];
+  /** Stable provider/runtime tool identity, used for deep-linkable work surfaces. */
+  toolCallId?: string;
 }
 
 interface DerivedWorkLogEntry extends WorkLogEntry {
   activityKind: OrchestrationThreadActivity["kind"];
   collapseKey?: string;
-  toolCallId?: string;
 }
 
 export interface PendingApproval {
@@ -932,6 +933,12 @@ function extractWorkLogToolLifecycleStatus(
   ) {
     return s;
   }
+  if (s === "pending" || s === "running") return "inProgress";
+  if (s === "interrupted") return "stopped";
+  // "unknown" is explicitly not a failure. There is no neutral member of this
+  // union, so leave the lifecycle status unset and let the row render plainly
+  // rather than dressing it in failure chrome the way mapping it to "failed"
+  // did. The agents panel already treats "unknown" as neutral.
   return undefined;
 }
 
@@ -942,7 +949,8 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
       : null;
   const commandPreview = extractToolCommand(payload);
   const changedFiles = extractChangedFiles(payload);
-  const title = extractToolTitle(payload);
+  const agentLabel = activity.kind.startsWith("agent.") ? asTrimmedString(payload?.label) : null;
+  const title = extractToolTitle(payload) ?? agentLabel;
   const isTaskActivity = activity.kind === "task.progress" || activity.kind === "task.completed";
   const taskSummary =
     isTaskActivity && typeof payload?.summary === "string" && payload.summary.length > 0
@@ -969,7 +977,7 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
     id: activity.id,
     createdAt: activity.createdAt,
     turnId: activity.turnId,
-    label: taskLabel || activity.summary,
+    label: taskLabel || agentLabel || activity.summary,
     tone:
       activity.kind === "task.progress"
         ? "thinking"
@@ -1073,7 +1081,19 @@ function isTerminalToolLifecycleStatus(status: WorkLogToolLifecycleStatus | unde
 function isToolLifecycleActivityKind(
   kind: OrchestrationThreadActivity["kind"] | undefined,
 ): boolean {
-  return kind === "tool.updated" || kind === "tool.completed";
+  return (
+    kind === "tool.updated" ||
+    kind === "tool.completed" ||
+    kind === "agent.started" ||
+    kind === "agent.updated" ||
+    kind === "agent.completed"
+  );
+}
+
+function isTerminalToolLifecycleActivityKind(
+  kind: OrchestrationThreadActivity["kind"] | undefined,
+): boolean {
+  return kind === "tool.completed" || kind === "agent.completed";
 }
 
 function collapseDerivedWorkLogEntries(
@@ -1093,13 +1113,13 @@ function collapseDerivedWorkLogEntries(
         if (
           previous &&
           isToolLifecycleActivityKind(previous.activityKind) &&
-          previous.activityKind !== "tool.completed" &&
+          !isTerminalToolLifecycleActivityKind(previous.activityKind) &&
           !isTerminalToolLifecycleStatus(previous.toolLifecycleStatus)
         ) {
           const merged = mergeDerivedWorkLogEntries(previous, entry);
           collapsed[openIdx] = merged;
           if (
-            entry.activityKind === "tool.completed" ||
+            isTerminalToolLifecycleActivityKind(entry.activityKind) ||
             isTerminalToolLifecycleStatus(merged.toolLifecycleStatus)
           ) {
             openIndexByKey.delete(key);
@@ -1116,7 +1136,7 @@ function collapseDerivedWorkLogEntries(
       const prevKey = previous.collapseKey ?? merged.collapseKey;
       if (prevKey) {
         if (
-          entry.activityKind === "tool.completed" ||
+          isTerminalToolLifecycleActivityKind(entry.activityKind) ||
           isTerminalToolLifecycleStatus(merged.toolLifecycleStatus)
         ) {
           openIndexByKey.delete(prevKey);
@@ -1132,7 +1152,7 @@ function collapseDerivedWorkLogEntries(
     if (
       key &&
       isToolLifecycleActivityKind(entry.activityKind) &&
-      entry.activityKind !== "tool.completed" &&
+      !isTerminalToolLifecycleActivityKind(entry.activityKind) &&
       !isTerminalToolLifecycleStatus(entry.toolLifecycleStatus)
     ) {
       openIndexByKey.set(key, collapsed.length - 1);
@@ -1152,7 +1172,7 @@ function shouldCollapseToolLifecycleEntries(
   if (!isToolLifecycleActivityKind(next.activityKind)) {
     return false;
   }
-  if (previous.activityKind === "tool.completed") {
+  if (isTerminalToolLifecycleActivityKind(previous.activityKind)) {
     return false;
   }
   if (isTerminalToolLifecycleStatus(previous.toolLifecycleStatus)) {
@@ -1226,7 +1246,7 @@ function mergeChangedFiles(
 }
 
 function deriveToolLifecycleCollapseKey(entry: DerivedWorkLogEntry): string | undefined {
-  if (entry.activityKind !== "tool.updated" && entry.activityKind !== "tool.completed") {
+  if (!isToolLifecycleActivityKind(entry.activityKind)) {
     return undefined;
   }
   if (entry.toolCallId) {

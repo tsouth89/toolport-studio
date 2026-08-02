@@ -770,7 +770,9 @@ export function deriveMessagesTimelineRows(input: {
         cursor += 1;
       }
       const visibleGroupedEntries = groupedEntries.filter(
-        (entry) => !workEntryIndicatesToolNeutralStatus(entry),
+        (entry) =>
+          entry.itemType === "collab_agent_tool_call" ||
+          !workEntryIndicatesToolNeutralStatus(entry),
       );
       if (visibleGroupedEntries.length > 0) {
         const onlyToolEntries = visibleGroupedEntries.every((entry) =>

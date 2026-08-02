@@ -714,6 +714,29 @@ describe("workEntryIndicatesToolFailure", () => {
 });
 
 describe("deriveWorkLogEntries", () => {
+  it("does not dress an unknown agent status as a failure", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "agent-unknown",
+        createdAt: "2026-02-23T00:00:04.000Z",
+        summary: "Agent",
+        kind: "agent.updated",
+        payload: {
+          agentRunId: "agent-run-1",
+          label: "Cursor subagent",
+          status: "unknown",
+        },
+      }),
+    ];
+
+    const entries = deriveWorkLogEntries(activities);
+    expect(entries).toHaveLength(1);
+    // "unknown" is not a failure, and there is no neutral member of the
+    // lifecycle union, so the row carries no status rather than error chrome.
+    expect(entries[0]?.toolLifecycleStatus).toBeUndefined();
+    expect(workEntryIndicatesToolFailure(entries[0]!)).toBe(false);
+  });
+
   it("omits tool started entries and keeps completed entries", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({
@@ -970,6 +993,85 @@ describe("deriveWorkLogEntries", () => {
 
     const [entry] = deriveWorkLogEntries(activities);
     expect(entry?.toolLifecycleStatus).toBe("failed");
+  });
+
+  it("keeps native agent identity and maps its running status for timeline chrome", () => {
+    const [entry] = deriveWorkLogEntries([
+      makeActivity({
+        id: "agent-started",
+        kind: "agent.started",
+        summary: "Agent 1 started",
+        tone: "tool",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          toolCallId: "provider-child-1",
+          agentRunId: "provider-child-1",
+          status: "running",
+          label: "Review database migration",
+        },
+      }),
+    ]);
+
+    expect(entry).toMatchObject({
+      itemType: "collab_agent_tool_call",
+      toolCallId: "provider-child-1",
+      sourceActivityKind: "agent.started",
+      toolLifecycleStatus: "inProgress",
+      label: "Review database migration",
+      toolTitle: "Review database migration",
+    });
+  });
+
+  it("collapses native agent lifecycle updates into one terminal delegation row", () => {
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        id: "agent-started",
+        createdAt: "2026-08-01T10:00:00.000Z",
+        kind: "agent.started",
+        summary: "Agent 1 started",
+        tone: "tool",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          toolCallId: "provider-child-1",
+          agentRunId: "provider-child-1",
+          status: "running",
+        },
+      }),
+      makeActivity({
+        id: "agent-updated",
+        createdAt: "2026-08-01T10:00:01.000Z",
+        kind: "agent.updated",
+        summary: "Agent 1 updated",
+        tone: "tool",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          toolCallId: "provider-child-1",
+          agentRunId: "provider-child-1",
+          status: "running",
+        },
+      }),
+      makeActivity({
+        id: "agent-completed",
+        createdAt: "2026-08-01T10:00:02.000Z",
+        kind: "agent.completed",
+        summary: "Agent 1 completed",
+        tone: "tool",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          toolCallId: "provider-child-1",
+          agentRunId: "provider-child-1",
+          status: "completed",
+        },
+      }),
+    ]);
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      id: "agent-completed",
+      sourceActivityKind: "agent.completed",
+      toolCallId: "provider-child-1",
+      toolLifecycleStatus: "completed",
+    });
   });
 
   it("defaults tool.completed entries to completed lifecycle status", () => {
