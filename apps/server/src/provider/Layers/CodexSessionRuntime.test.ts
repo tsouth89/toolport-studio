@@ -21,6 +21,7 @@ import {
   hasConfiguredMcpServer,
   isCodexTurnNotSteerable,
   isCodexTurnStalled,
+  isolateCodexNotificationFailure,
   isRecoverableThreadResumeError,
   openCodexThread,
 } from "./CodexSessionRuntime.ts";
@@ -645,4 +646,68 @@ describe("buildCodexTurnInput", () => {
   it("omits empty prompt text", () => {
     NodeAssert.deepStrictEqual(buildCodexTurnInput({}), []);
   });
+});
+
+describe("isolateCodexNotificationFailure", () => {
+  it.effect("keeps draining after one notification fails", () =>
+    Effect.gen(function* () {
+      // The consumer ran bare, so the first failure ended the fiber and every
+      // later notification vanished. That is what a codex turn that accepts
+      // work and then says nothing looks like from the outside.
+      const handled: Array<string> = [];
+      const failures: Array<string> = [];
+      const isolated = isolateCodexNotificationFailure<{ readonly method: string }>(
+        (notification) =>
+          notification.method === "thread/settings/updated"
+            ? Effect.fail(new Error("boom"))
+            : Effect.sync(() => {
+                handled.push(notification.method);
+              }),
+        (notification) =>
+          Effect.sync(() => {
+            failures.push(notification.method);
+          }),
+      );
+
+      for (const method of [
+        "thread/started",
+        "thread/settings/updated",
+        "turn/started",
+        "item/agentMessage/delta",
+        "turn/completed",
+      ]) {
+        yield* isolated({ method });
+      }
+
+      NodeAssert.deepStrictEqual(handled, [
+        "thread/started",
+        "turn/started",
+        "item/agentMessage/delta",
+        "turn/completed",
+      ]);
+      NodeAssert.deepStrictEqual(failures, ["thread/settings/updated"]);
+    }),
+  );
+
+  it.effect("survives a defect, not just a typed failure", () =>
+    Effect.gen(function* () {
+      const handled: Array<string> = [];
+      const isolated = isolateCodexNotificationFailure<{ readonly method: string }>(
+        (notification) =>
+          notification.method === "bad"
+            ? Effect.sync(() => {
+                throw new TypeError("cannot read properties of undefined");
+              })
+            : Effect.sync(() => {
+                handled.push(notification.method);
+              }),
+        () => Effect.void,
+      );
+
+      yield* isolated({ method: "bad" });
+      yield* isolated({ method: "turn/completed" });
+
+      NodeAssert.deepStrictEqual(handled, ["turn/completed"]);
+    }),
+  );
 });

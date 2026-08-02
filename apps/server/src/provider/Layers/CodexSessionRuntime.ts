@@ -20,6 +20,8 @@ import {
 import { resolveSpawnCommand } from "@toolport-studio/shared/shell";
 import { normalizeModelSlug } from "@toolport-studio/shared/model";
 import { extractProviderErrorMessage } from "@toolport-studio/shared/providerError";
+import { causeErrorTag } from "@toolport-studio/shared/observability";
+import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
@@ -86,6 +88,27 @@ const RECOVERABLE_THREAD_RESUME_ERROR_SNIPPETS = [
   "unknown thread",
   "does not exist",
 ];
+
+/**
+ * Wrap a per-notification handler so one failure costs one notification.
+ *
+ * The codex notification consumer ran bare inside `Stream.runForEach`, so the
+ * first failure or defect ended the fiber and every later notification was
+ * silently lost: frames kept arriving and decoding while the thread sat on
+ * Working with no output and no error. Interrupts still propagate so teardown
+ * is not swallowed.
+ */
+export function isolateCodexNotificationFailure<N extends { readonly method: string }>(
+  handle: (notification: N) => Effect.Effect<void, unknown>,
+  onFailure: (notification: N, cause: Cause.Cause<unknown>) => Effect.Effect<void>,
+): (notification: N) => Effect.Effect<void> {
+  return (notification) =>
+    handle(notification).pipe(
+      Effect.catchCause((cause) =>
+        Cause.hasInterrupts(cause) ? Effect.interrupt : onFailure(notification, cause),
+      ),
+    );
+}
 
 export function hasConfiguredMcpServer(appServerArgs: ReadonlyArray<string> | undefined): boolean {
   return appServerArgs?.some((argument) => argument.includes("mcp_servers.")) === true;
@@ -1486,8 +1509,34 @@ export const makeCodexSessionRuntime = (
       { concurrency: 1, discard: true },
     );
 
+    // Isolate every notification. This consumer used to run bare, so the first
+    // failure or defect ended the fiber and every later notification was lost
+    // with nothing recorded anywhere: frames kept arriving and decoding while
+    // the thread sat on Working forever. One bad frame must cost one frame.
     yield* Stream.fromQueue(serverNotifications).pipe(
-      Stream.runForEach(handleRawNotification),
+      Stream.runForEach(
+        isolateCodexNotificationFailure(handleRawNotification, (notification, cause) =>
+          Effect.logWarning("Failed to project a Codex notification; continuing.", {
+            threadId: options.threadId,
+            method: notification.method,
+            errorTag: causeErrorTag(cause),
+            detail: Cause.pretty(cause).slice(0, 500),
+          }),
+        ),
+      ),
+      // Reaching here means the stream ended. Nothing will be projected for
+      // this session again, so say so rather than going quiet.
+      Effect.ensuring(
+        Ref.get(closedRef).pipe(
+          Effect.flatMap((closed) =>
+            closed
+              ? Effect.void
+              : Effect.logWarning("Codex notification stream ended while the session was live.", {
+                  threadId: options.threadId,
+                }),
+          ),
+        ),
+      ),
       Effect.forkIn(runtimeScope),
     );
 

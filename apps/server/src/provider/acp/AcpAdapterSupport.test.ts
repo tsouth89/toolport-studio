@@ -70,6 +70,32 @@ describe("AcpAdapterSupport", () => {
         }),
       ),
     ).toBe(true);
+
+    // The shape the client actually produces, captured from a real cursor
+    // session/load rejection. The wrapper says only "Extension request failed"
+    // with code -32603; the agent's message lives in a Die reason inside the
+    // `cause` ARRAY. Walking that array as a record stopped the search dead,
+    // which is why the fallback to session/new never ran.
+    expect(
+      isAcpSessionLoadNotFound({
+        _tag: "AcpRequestError",
+        code: -32603,
+        errorMessage: "Extension request failed",
+        method: "session/load",
+        requestId: "1",
+        operation: "receive-response",
+        cause: [
+          {
+            _tag: "Die",
+            defect: {
+              code: -32602,
+              message: "Invalid params",
+              data: { message: 'Session "b50007b7-f065-44a0-b606-75c51359aa78" not found' },
+            },
+          },
+        ],
+      }),
+    ).toBe(true);
     // Schema-defect style surface: bare Error message + stack frames.
     const schemaStyle = new Error("Path not found");
     schemaStyle.stack =
