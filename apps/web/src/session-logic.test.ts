@@ -714,6 +714,29 @@ describe("workEntryIndicatesToolFailure", () => {
 });
 
 describe("deriveWorkLogEntries", () => {
+  it("does not dress an unknown agent status as a failure", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "agent-unknown",
+        createdAt: "2026-02-23T00:00:04.000Z",
+        summary: "Agent",
+        kind: "agent.updated",
+        payload: {
+          agentRunId: "agent-run-1",
+          label: "Cursor subagent",
+          status: "unknown",
+        },
+      }),
+    ];
+
+    const entries = deriveWorkLogEntries(activities);
+    expect(entries).toHaveLength(1);
+    // "unknown" is not a failure, and there is no neutral member of the
+    // lifecycle union, so the row carries no status rather than error chrome.
+    expect(entries[0]?.toolLifecycleStatus).toBeUndefined();
+    expect(workEntryIndicatesToolFailure(entries[0]!)).toBe(false);
+  });
+
   it("omits tool started entries and keeps completed entries", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({

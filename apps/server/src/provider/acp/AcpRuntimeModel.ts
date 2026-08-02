@@ -69,6 +69,23 @@ export interface AcpToolCallState {
   readonly data: Record<string, unknown>;
 }
 
+/**
+ * Whether a tool call is a subagent task (Cursor's native `task` tool).
+ *
+ * These arrive with a stable id and a useful title but no detail until they
+ * finish, so they are the one case that earns an early emit from the generic
+ * placeholder suppression. Identified by the tool name the agent sends rather
+ * than by title text, which is user-facing and not a contract.
+ */
+export function isAcpSubagentTaskToolCall(toolCall: AcpToolCallState): boolean {
+  const rawInput = toolCall.data.rawInput;
+  if (typeof rawInput !== "object" || rawInput === null || Array.isArray(rawInput)) {
+    return false;
+  }
+  const name = (rawInput as Record<string, unknown>)._toolName;
+  return typeof name === "string" && name.trim().toLowerCase() === "task";
+}
+
 export interface AcpPlanUpdate {
   readonly explanation?: string | null;
   readonly plan: ReadonlyArray<{

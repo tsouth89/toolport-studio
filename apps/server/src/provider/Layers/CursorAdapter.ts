@@ -71,6 +71,7 @@ import {
   type AcpSessionMode,
   type AcpSessionModeState,
   type AcpToolCallState,
+  isAcpSubagentTaskToolCall,
   parsePermissionRequest,
 } from "../acp/AcpRuntimeModel.ts";
 import { makeAcpNativeLoggerFactory } from "../acp/AcpNativeLogging.ts";
@@ -218,18 +219,8 @@ interface CursorSessionContext {
 const resolveCursorNotificationTurnId = (ctx: CursorSessionContext): TurnId | undefined =>
   ctx.activeTurnId ?? ctx.lastNotificationTurnId;
 
-function cursorTaskToolName(toolCall: AcpToolCallState): string | undefined {
-  const rawInput = toolCall.data.rawInput;
-  if (!isRecord(rawInput)) {
-    return undefined;
-  }
-  const name = rawInput._toolName;
-  return typeof name === "string" ? name.trim().toLowerCase() : undefined;
-}
-
-function isCursorSubagentTask(toolCall: AcpToolCallState): boolean {
-  return cursorTaskToolName(toolCall) === "task";
-}
+/** Shared with the ACP runtime, which uses the same signal to decide what to emit. */
+const isCursorSubagentTask = isAcpSubagentTaskToolCall;
 
 function cursorSubagentLabel(toolCall: AcpToolCallState): string {
   const stripped = toolCall.title?.replace(/^task:\s*/i, "").trim();
@@ -1040,12 +1031,6 @@ export function makeCursorAdapter(
                 yield* noteVisibleActivity(ctx);
                 trackToolCallLifecycle(ctx, event.toolCall);
                 yield* logNative(ctx.threadId, "session/update", event.rawPayload, "acp.jsonrpc");
-                yield* emitCursorAgentLifecycle(
-                  ctx,
-                  event.toolCall,
-                  notificationTurnId,
-                  event.rawPayload,
-                );
                 const toolRuntimeEvent = makeAcpToolCallEvent({
                   stamp: yield* makeEventStamp(),
                   provider: PROVIDER,
@@ -1064,6 +1049,17 @@ export function makeCursorAdapter(
                         },
                       }
                     : toolRuntimeEvent,
+                );
+                // After the tool event, not before. Both carry the same id, so
+                // the work log collapses them onto one row where the later
+                // entry wins `itemType`. Emitting the tool event last dropped
+                // `collab_agent_tool_call` from that row, which is the field
+                // the timeline uses to keep the agent visible and deep-linked.
+                yield* emitCursorAgentLifecycle(
+                  ctx,
+                  event.toolCall,
+                  notificationTurnId,
+                  event.rawPayload,
                 );
                 return;
               case "ContentDelta":

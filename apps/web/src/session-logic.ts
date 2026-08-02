@@ -935,7 +935,10 @@ function extractWorkLogToolLifecycleStatus(
   }
   if (s === "pending" || s === "running") return "inProgress";
   if (s === "interrupted") return "stopped";
-  if (s === "unknown") return "failed";
+  // "unknown" is explicitly not a failure. There is no neutral member of this
+  // union, so leave the lifecycle status unset and let the row render plainly
+  // rather than dressing it in failure chrome the way mapping it to "failed"
+  // did. The agents panel already treats "unknown" as neutral.
   return undefined;
 }
 

@@ -27,6 +27,7 @@ import {
   extractModelConfigId,
   findSessionConfigOption,
   mergeToolCallState,
+  isAcpSubagentTaskToolCall,
   parseSessionModeState,
   parseSessionUpdateEvent,
   sessionUpdateIsReplay,
@@ -1188,15 +1189,13 @@ function shouldEmitToolCallUpdate(
     return true;
   }
   if (!next.detail) {
-    // Some ACP tools (notably Cursor's native Task/subagent tool) provide a
-    // useful title and stable id but no detail until completion. Emit that
-    // first named state so the UI can show live work instead of materializing
-    // the tool only after it has finished. Keep suppressing anonymous generic
-    // placeholders, which add no user-visible information.
-    const title = next.title?.trim().toLowerCase();
-    return (
-      previous === undefined && title !== undefined && title !== "tool call" && title !== "tool"
-    );
+    // A subagent task has a stable id and a useful title but no detail until it
+    // finishes. Emit that first state so the UI can show live work instead of
+    // materializing the agent only once it is over. Every other detail-less
+    // update stays suppressed: those are placeholders that add no visible
+    // information, and emitting them on title alone turned an ordinary pending
+    // read into a timeline row.
+    return previous === undefined && isAcpSubagentTaskToolCall(next);
   }
   return previous === undefined || previous.title !== next.title || previous.detail !== next.detail;
 }
