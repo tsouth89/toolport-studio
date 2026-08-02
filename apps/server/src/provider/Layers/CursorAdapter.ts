@@ -1168,7 +1168,13 @@ export function makeCursorAdapter(
             yield* markAcpCompromised(ctx, "notification stream ended");
           }),
         ),
-        Effect.forkChild,
+        // Fork into the session scope, not the caller's fiber. `forkChild`
+        // made this consumer a child of the fiber running startSession, so it
+        // was interrupted the moment startSession returned and every
+        // session/update after that was lost. That is why a cursor turn
+        // projected nothing at all, and why the compromise marking above then
+        // recycled into a session/load the agent no longer knows about.
+        Effect.forkIn(ctx.scope),
       );
     };
 
