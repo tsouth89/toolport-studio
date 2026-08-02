@@ -1,5 +1,12 @@
 import { useAtomValue } from "@effect/atom-react";
-import { BoxesIcon, CircleHelpIcon, ServerIcon, SettingsIcon } from "lucide-react";
+import {
+  BoxesIcon,
+  ChevronRightIcon,
+  CircleHelpIcon,
+  ServerIcon,
+  SettingsIcon,
+  SquarePenIcon,
+} from "lucide-react";
 import { memo, useCallback } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 
@@ -26,11 +33,18 @@ import {
 } from "./SidebarChrome.logic";
 import { SidebarProviderUpdatePill } from "./SidebarProviderUpdatePill";
 import { SidebarUpdatePill } from "./SidebarUpdatePill";
+import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
 
 export const SidebarChromeHeader = memo(function SidebarChromeHeader({
   isElectron,
+  newThreadDisabled,
+  newThreadShortcutLabel,
+  onNewThread,
 }: {
   isElectron: boolean;
+  newThreadDisabled?: boolean;
+  newThreadShortcutLabel?: string | null;
+  onNewThread?: () => void;
 }) {
   const stageLabel = useSidebarStageLabel();
   const backdropVariant = resolveSidebarStageBackdropVariant(stageLabel);
@@ -50,6 +64,22 @@ export const SidebarChromeHeader = memo(function SidebarChromeHeader({
         )}
       />
       <SidebarBrand onBackdrop />
+      {onNewThread ? (
+        <button
+          type="button"
+          aria-label="New chat without a project"
+          className="relative z-10 ml-auto mr-1 inline-flex size-8 shrink-0 items-center justify-center rounded-md text-white/80 outline-none transition-colors hover:bg-white/15 hover:text-white focus-visible:ring-2 focus-visible:ring-white/90 disabled:cursor-not-allowed disabled:opacity-40"
+          disabled={newThreadDisabled}
+          onClick={onNewThread}
+          title={
+            newThreadShortcutLabel
+              ? `New chat without a project (${newThreadShortcutLabel})`
+              : "New chat without a project"
+          }
+        >
+          <SquarePenIcon className="size-4" />
+        </button>
+      ) : null}
     </SidebarHeader>
   );
 });
@@ -152,6 +182,8 @@ export const SidebarChromeFooter = memo(function SidebarChromeFooter() {
   const navigate = useNavigate();
   const { isMobile, setOpenMobile } = useSidebar();
   const navItems = resolveSidebarChromeNavItems();
+  const connectionItems = navItems.filter((item) => item.id === "providers" || item.id === "mcp");
+  const settingsItem = navItems.find((item) => item.id === "settings") ?? null;
 
   const closeMobileSidebar = useCallback(() => {
     if (isMobile) {
@@ -187,22 +219,51 @@ export const SidebarChromeFooter = memo(function SidebarChromeFooter() {
       <SidebarProviderUpdatePill />
       <SidebarUpdatePill />
       <SidebarMenu className="gap-0.5">
-        {navItems.map((item) => {
-          const Icon = sidebarChromeNavIcon(item.id);
-          return (
-            <SidebarMenuItem key={item.id}>
-              <SidebarMenuButton
-                size="sm"
-                className="h-8 items-center gap-2 rounded-md px-2 py-1.5 text-[13px] font-medium text-sidebar-muted-foreground/85 hover:bg-sidebar-row-hover hover:text-sidebar-foreground"
-                aria-label={formatSidebarChromeNavAriaLabel(item.label, item.kind)}
-                onClick={() => handleNav(item)}
-              >
-                <Icon className="size-4 shrink-0 opacity-90" />
-                <span className="truncate">{item.label}</span>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-          );
-        })}
+        <SidebarMenuItem>
+          <Menu>
+            <MenuTrigger
+              render={
+                <SidebarMenuButton
+                  size="sm"
+                  className="h-8 items-center gap-2 rounded-md px-2 py-1.5 text-[13px] font-medium text-sidebar-muted-foreground/85 hover:bg-sidebar-row-hover hover:text-sidebar-foreground"
+                  aria-label="Open connections"
+                />
+              }
+            >
+              <ServerIcon className="size-4 shrink-0 opacity-90" />
+              <span className="truncate">Connections</span>
+              <ChevronRightIcon className="ml-auto size-3.5 opacity-50" />
+            </MenuTrigger>
+            <MenuPopup align="end" side="right" className="w-44">
+              {connectionItems.map((item) => {
+                const Icon = sidebarChromeNavIcon(item.id);
+                return (
+                  <MenuItem
+                    key={item.id}
+                    aria-label={formatSidebarChromeNavAriaLabel(item.label, item.kind)}
+                    onClick={() => handleNav(item)}
+                  >
+                    <Icon className="size-4" />
+                    <span>{item.label}</span>
+                  </MenuItem>
+                );
+              })}
+            </MenuPopup>
+          </Menu>
+        </SidebarMenuItem>
+        {settingsItem ? (
+          <SidebarMenuItem>
+            <SidebarMenuButton
+              size="sm"
+              className="h-8 items-center gap-2 rounded-md px-2 py-1.5 text-[13px] font-medium text-sidebar-muted-foreground/85 hover:bg-sidebar-row-hover hover:text-sidebar-foreground"
+              aria-label={formatSidebarChromeNavAriaLabel(settingsItem.label, settingsItem.kind)}
+              onClick={() => handleNav(settingsItem)}
+            >
+              <SettingsIcon className="size-4 shrink-0 opacity-90" />
+              <span className="truncate">{settingsItem.label}</span>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+        ) : null}
       </SidebarMenu>
     </SidebarFooter>
   );

@@ -20,6 +20,7 @@ import {
   parseSidebarThreadDragPayload,
   resolveProjectStatusIndicator,
   resolveSameEnvironmentProjectMember,
+  resolveSidebarProjectShelfExpanded,
   resolveSidebarStageBadgeLabel,
   resolveThreadRowClassName,
   resolveSidebarStatus,
@@ -1149,6 +1150,51 @@ describe("buildActiveSidebarProjectPanels", () => {
       previewLimit: 5,
     });
     expect(panels.map((p) => p.projectKey)).toEqual(["recent-project", "general"]);
+  });
+});
+
+describe("resolveSidebarProjectShelfExpanded", () => {
+  it("keeps quiet unconfigured shelves collapsed", () => {
+    expect(
+      resolveSidebarProjectShelfExpanded({
+        persistedExpanded: undefined,
+        isScoped: false,
+        hasActiveThread: false,
+        hasAttentionThread: false,
+      }),
+    ).toBe(false);
+  });
+
+  it("opens unconfigured shelves when scoped, active, or needing attention", () => {
+    for (const relevantState of ["scoped", "active", "attention"] as const) {
+      expect(
+        resolveSidebarProjectShelfExpanded({
+          persistedExpanded: undefined,
+          isScoped: relevantState === "scoped",
+          hasActiveThread: relevantState === "active",
+          hasAttentionThread: relevantState === "attention",
+        }),
+      ).toBe(true);
+    }
+  });
+
+  it("honors an explicit persisted choice", () => {
+    expect(
+      resolveSidebarProjectShelfExpanded({
+        persistedExpanded: false,
+        isScoped: true,
+        hasActiveThread: true,
+        hasAttentionThread: true,
+      }),
+    ).toBe(false);
+    expect(
+      resolveSidebarProjectShelfExpanded({
+        persistedExpanded: true,
+        isScoped: false,
+        hasActiveThread: false,
+        hasAttentionThread: false,
+      }),
+    ).toBe(true);
   });
 });
 

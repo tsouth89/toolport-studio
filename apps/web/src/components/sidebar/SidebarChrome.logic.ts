@@ -1,4 +1,4 @@
-/** Pure helpers for SOU-386 PR4 sidebar chrome. */
+/** Pure helpers for sidebar chrome destinations. */
 
 export type SidebarChromeNavId = "providers" | "mcp" | "settings" | "help";
 
@@ -12,9 +12,8 @@ export type SidebarChromeNavItem = {
 };
 
 /**
- * Mockup-shaped left-rail bottom stack: providers / MCP / settings / help.
- * Routes stay in-app; MCP launches the installed Toolport app (web fallback);
- * Help opens the Studio site for now.
+ * Sidebar destinations. The chrome groups providers + MCP under Connections,
+ * links Settings directly, and exposes Help from the Settings navigation.
  */
 export function resolveSidebarChromeNavItems(): ReadonlyArray<SidebarChromeNavItem> {
   return [
