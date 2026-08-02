@@ -185,10 +185,12 @@ function mapCodexRuntimeError(
   threadId: ThreadId,
   method: string,
   error: CodexSessionRuntimeError,
+  /** Driver kind of the instance that failed (see `CodexAdapterLiveOptions.driverKind`). */
+  provider: ProviderDriverKind = PROVIDER,
 ): ProviderAdapterError {
   if (isCodexAppServerProcessExitedError(error) || isCodexAppServerTransportError(error)) {
     return new ProviderAdapterSessionClosedError({
-      provider: PROVIDER,
+      provider,
       threadId,
       cause: error,
     });
@@ -196,14 +198,14 @@ function mapCodexRuntimeError(
 
   if (isCodexSessionRuntimeThreadIdMissingError(error)) {
     return new ProviderAdapterSessionNotFoundError({
-      provider: PROVIDER,
+      provider,
       threadId,
       cause: error,
     });
   }
 
   return new ProviderAdapterRequestError({
-    provider: PROVIDER,
+    provider,
     method,
     detail: error.message,
     cause: error,
@@ -1536,7 +1538,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     Effect.mapError(
       (cause) =>
         new ProviderAdapterRequestError({
-          provider: PROVIDER,
+          provider: boundDriverKind,
           method: "crypto/randomUUIDv4",
           detail: "Failed to generate Codex runtime identifier.",
           cause,
@@ -1559,7 +1561,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       return [];
     }
     const stampBase = {
-      provider: PROVIDER,
+      provider: boundDriverKind,
       threadId: session.threadId,
       createdAt,
     };
@@ -1740,7 +1742,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         Effect.mapError(
           (cause) =>
             new ProviderAdapterProcessError({
-              provider: PROVIDER,
+              provider: boundDriverKind,
               threadId: session.threadId,
               detail: cause.message,
               cause,
@@ -1752,7 +1754,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         Effect.mapError(
           (cause) =>
             new ProviderAdapterProcessError({
-              provider: PROVIDER,
+              provider: boundDriverKind,
               threadId: session.threadId,
               detail: cause.message,
               cause,
@@ -1847,7 +1849,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           Effect.mapError(
             (cause) =>
               new ProviderAdapterProcessError({
-                provider: PROVIDER,
+                provider: boundDriverKind,
                 threadId: input.threadId,
                 detail: cause.message,
                 cause,
@@ -1861,7 +1863,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           Effect.mapError(
             (cause) =>
               new ProviderAdapterProcessError({
-                provider: PROVIDER,
+                provider: boundDriverKind,
                 threadId: input.threadId,
                 detail: cause.message,
                 cause,
@@ -1906,7 +1908,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     });
     if (!attachmentPath) {
       return yield* new ProviderAdapterRequestError({
-        provider: PROVIDER,
+        provider: boundDriverKind,
         method: "turn/start",
         detail: `Invalid attachment id '${attachment.id}'.`,
       });
@@ -1915,7 +1917,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       Effect.mapError(
         (cause) =>
           new ProviderAdapterRequestError({
-            provider: PROVIDER,
+            provider: boundDriverKind,
             method: "turn/start",
             detail: `Failed to read attachment file: ${cause.message}.`,
             cause,
@@ -1939,7 +1941,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     yield* Queue.offer(runtimeEventQueue, {
       type: "session.state.changed",
       eventId: prepStamp.eventId,
-      provider: PROVIDER,
+      provider: boundDriverKind,
       createdAt: prepStamp.createdAt,
       threadId: input.threadId,
       payload: {
@@ -1959,7 +1961,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           yield* Queue.offer(runtimeEventQueue, {
             type: "session.state.changed",
             eventId: failStamp.eventId,
-            provider: PROVIDER,
+            provider: boundDriverKind,
             createdAt: failStamp.createdAt,
             threadId: input.threadId,
             payload: {
@@ -2002,7 +2004,9 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           : {}),
       })
       .pipe(
-        Effect.mapError((cause) => mapCodexRuntimeError(input.threadId, "turn/start", cause)),
+        Effect.mapError((cause) =>
+          mapCodexRuntimeError(input.threadId, "turn/start", cause, boundDriverKind),
+        ),
         // Attachment/prep path can leave session marked running without a turn
         // when turn/start fails; force ready so Working cannot stick.
         Effect.tapError(() =>
@@ -2011,7 +2015,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
             yield* Queue.offer(runtimeEventQueue, {
               type: "session.state.changed",
               eventId: failStamp.eventId,
-              provider: PROVIDER,
+              provider: boundDriverKind,
               createdAt: failStamp.createdAt,
               threadId: input.threadId,
               payload: {
@@ -2028,7 +2032,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     const session = sessions.get(threadId);
     if (!session || session.stopped) {
       return yield* new ProviderAdapterSessionNotFoundError({
-        provider: PROVIDER,
+        provider: boundDriverKind,
         threadId,
       });
     }
@@ -2041,7 +2045,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       Effect.mapError((cause) =>
         cause._tag === "ProviderAdapterSessionNotFoundError"
           ? cause
-          : mapCodexRuntimeError(threadId, "turn/interrupt", cause),
+          : mapCodexRuntimeError(threadId, "turn/interrupt", cause, boundDriverKind),
       ),
     );
 
@@ -2051,7 +2055,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       Effect.mapError((cause) =>
         cause._tag === "ProviderAdapterSessionNotFoundError"
           ? cause
-          : mapCodexRuntimeError(threadId, "thread/read", cause),
+          : mapCodexRuntimeError(threadId, "thread/read", cause, boundDriverKind),
       ),
       Effect.map((snapshot) => ({
         threadId,
@@ -2063,7 +2067,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     if (!Number.isInteger(numTurns) || numTurns < 1) {
       return Effect.fail(
         new ProviderAdapterValidationError({
-          provider: PROVIDER,
+          provider: boundDriverKind,
           operation: "rollbackThread",
           issue: "numTurns must be an integer >= 1.",
         }),
@@ -2075,7 +2079,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       Effect.mapError((cause) =>
         cause._tag === "ProviderAdapterSessionNotFoundError"
           ? cause
-          : mapCodexRuntimeError(threadId, "thread/rollback", cause),
+          : mapCodexRuntimeError(threadId, "thread/rollback", cause, boundDriverKind),
       ),
       Effect.map((snapshot) => ({
         threadId,
@@ -2090,7 +2094,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       Effect.mapError((cause) =>
         cause._tag === "ProviderAdapterSessionNotFoundError"
           ? cause
-          : mapCodexRuntimeError(threadId, "item/requestApproval/decision", cause),
+          : mapCodexRuntimeError(threadId, "item/requestApproval/decision", cause, boundDriverKind),
       ),
     );
 
@@ -2104,7 +2108,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       Effect.mapError((cause) =>
         cause._tag === "ProviderAdapterSessionNotFoundError"
           ? cause
-          : mapCodexRuntimeError(threadId, "item/tool/requestUserInput", cause),
+          : mapCodexRuntimeError(threadId, "item/tool/requestUserInput", cause, boundDriverKind),
       ),
     );
 
@@ -2163,7 +2167,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
   );
 
   return {
-    provider: PROVIDER,
+    provider: boundDriverKind,
     capabilities: {
       sessionModelSwitch: "in-session",
     },
