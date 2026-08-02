@@ -3,6 +3,7 @@ import {
   ArchiveIcon,
   ArrowLeftIcon,
   BotIcon,
+  CircleHelpIcon,
   FlaskConicalIcon,
   GitBranchIcon,
   KeyboardIcon,
@@ -24,6 +25,7 @@ import {
   ToolportConnectSidebarAvatar,
   ToolportConnectSidebarSignIn,
 } from "../clerk/ToolportConnectSidebarSignIn";
+import { ensureLocalApi, readLocalApi } from "../../localApi";
 
 export type SettingsSectionPath =
   | "/settings/general"
@@ -71,6 +73,15 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
     }
     void navigate({ to: "/" });
   }, [canGoBack, isMobile, navigate, setOpenMobile]);
+  const handleHelpClick = useCallback(() => {
+    if (isMobile) {
+      setOpenMobile(false);
+    }
+    const api = readLocalApi() ?? ensureLocalApi();
+    void api.shell.openExternal("https://toolport.studio").catch(() => {
+      /* best-effort external navigation */
+    });
+  }, [isMobile, setOpenMobile]);
 
   return (
     <>
@@ -104,6 +115,17 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
                 </SidebarMenuItem>
               );
             })}
+            <SidebarMenuItem>
+              <SidebarMenuButton
+                size="sm"
+                aria-label="Help (opens externally)"
+                className="h-8 items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm font-medium text-sidebar-muted-foreground/80 hover:bg-sidebar-row-hover hover:text-sidebar-foreground"
+                onClick={handleHelpClick}
+              >
+                <CircleHelpIcon className="size-4 shrink-0 text-sidebar-muted-foreground/60" />
+                <span className="truncate">Help</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
           </SidebarMenu>
         </SidebarGroup>
       </SidebarContent>

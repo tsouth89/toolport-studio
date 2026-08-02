@@ -16,18 +16,17 @@ import {
 import {
   ArchiveIcon,
   ChevronDownIcon,
+  ChevronRightIcon,
   CircleAlertIcon,
   CopyIcon,
   FolderIcon,
   FolderPlusIcon,
   GitBranchIcon,
   EllipsisIcon,
-  GripVerticalIcon,
   PinIcon,
   PlusIcon,
   SearchIcon,
   ServerIcon,
-  SquarePenIcon,
   Trash2Icon,
 } from "lucide-react";
 import {
@@ -75,7 +74,11 @@ import {
   type SidebarProjectGroupMember,
   type SidebarProjectSnapshot,
 } from "../sidebarProjectGrouping";
-import { legacyProjectCwdPreferenceKey, useUiStateStore } from "../uiStateStore";
+import {
+  legacyProjectCwdPreferenceKey,
+  resolveProjectExpandedPreference,
+  useUiStateStore,
+} from "../uiStateStore";
 import { useThreadSelectionStore } from "../threadSelectionStore";
 import { useThreadActions } from "../hooks/useThreadActions";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
@@ -107,6 +110,7 @@ import {
   parseSidebarThreadDragPayload,
   resolveAdjacentThreadId,
   resolveSameEnvironmentProjectMember,
+  resolveSidebarProjectShelfExpanded,
   resolveSidebarStatus,
   resolveWorkingStartedAt,
   shouldNavigateAfterProjectRemoval,
@@ -136,7 +140,15 @@ import {
 } from "./ui/dialog";
 import { Input } from "./ui/input";
 import { Kbd } from "./ui/kbd";
-import { Menu, MenuPopup, MenuRadioGroup, MenuRadioItem, MenuTrigger } from "./ui/menu";
+import {
+  Menu,
+  MenuItem,
+  MenuPopup,
+  MenuRadioGroup,
+  MenuRadioItem,
+  MenuSeparator,
+  MenuTrigger,
+} from "./ui/menu";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "./ui/select";
 import { SidebarContent, SidebarGroup, SidebarMenuButton, useSidebar } from "./ui/sidebar";
 import { SidebarChromeFooter, SidebarChromeHeader } from "./sidebar/SidebarChrome";
@@ -522,9 +534,9 @@ const SidebarRow = memo(function SidebarRow(props: {
   const rowSurfaceClassName = cn(
     "group/sidebar-row relative w-full cursor-pointer overflow-hidden rounded-md text-left outline-none select-none",
     props.isActive
-      ? "bg-sidebar-row-active text-sidebar-foreground"
+      ? "bg-sidebar-row-active/60 text-sidebar-foreground before:absolute before:inset-y-1 before:left-0 before:w-0.5 before:rounded-full before:bg-sky-400"
       : isSelected
-        ? "bg-sidebar-row-selected text-sidebar-foreground"
+        ? "bg-sidebar-row-selected/70 text-sidebar-foreground"
         : shouldRecede
           ? "text-sidebar-muted-foreground/75 hover:bg-sidebar-row-hover hover:text-sidebar-foreground"
           : "bg-transparent text-sidebar-foreground hover:bg-sidebar-row-hover",
@@ -592,45 +604,28 @@ const SidebarRow = memo(function SidebarRow(props: {
             />
           }
         >
-          {/* Leading meta is two fixed rails so a running status dot never
-              steals title width or collides with the provider mark:
-              [status 12px][provider 14px][title…][trailing rail]. */}
+          {/* Provider identity and thread status share one compact mark. Status
+              overlays the provider instead of creating another visual column. */}
           <div
             className={cn(
               "relative z-10 flex h-7 min-w-0 items-center gap-1.5 px-2",
               nestUnderProjectShelf && "ps-4",
             )}
           >
-            <span className="flex shrink-0 items-center gap-1.5">
+            <span
+              className="relative flex size-4 shrink-0 items-center justify-center text-sidebar-muted-foreground"
+              title={
+                topStatus?.label ??
+                (driverKind
+                  ? (thread.session?.providerName ?? modelInstanceId)
+                  : (props.projectTitle ?? undefined))
+              }
+            >
               <span
-                className="flex size-3 shrink-0 items-center justify-center"
-                aria-hidden
-                title={topStatus?.label}
-              >
-                {topStatus ? (
-                  <span
-                    className={cn(
-                      "block size-1.5 rounded-full",
-                      status === "working"
-                        ? "animate-status-pulse bg-sky-500 dark:bg-sky-400"
-                        : status === "approval"
-                          ? "bg-amber-500 dark:bg-amber-300"
-                          : status === "input"
-                            ? "bg-indigo-500 dark:bg-indigo-300"
-                            : status === "failed"
-                              ? "bg-red-500 dark:bg-red-400"
-                              : "bg-emerald-500 dark:bg-emerald-400",
-                    )}
-                  />
-                ) : null}
-              </span>
-              <span
-                className="flex size-3.5 shrink-0 items-center justify-center text-sidebar-muted-foreground"
-                title={
-                  driverKind
-                    ? (thread.session?.providerName ?? modelInstanceId)
-                    : (props.projectTitle ?? undefined)
-                }
+                className={cn(
+                  "flex size-3.5 items-center justify-center transition-[opacity,filter]",
+                  shouldRecede && "opacity-50 saturate-50",
+                )}
               >
                 {driverKind ? (
                   <ProviderInstanceIcon
@@ -647,6 +642,26 @@ const SidebarRow = memo(function SidebarRow(props: {
                   />
                 ) : null}
               </span>
+              {topStatus ? (
+                <span
+                  aria-hidden
+                  className={cn(
+                    driverKind || showProjectFavicon
+                      ? "absolute -bottom-px -right-px size-2 ring-2 ring-sidebar"
+                      : "size-1.5",
+                    "block rounded-full",
+                    status === "working"
+                      ? "animate-status-pulse bg-sky-500 dark:bg-sky-400"
+                      : status === "approval"
+                        ? "bg-amber-500 dark:bg-amber-300"
+                        : status === "input"
+                          ? "bg-indigo-500 dark:bg-indigo-300"
+                          : status === "failed"
+                            ? "bg-red-500 dark:bg-red-400"
+                            : "bg-emerald-500 dark:bg-emerald-400",
+                  )}
+                />
+              ) : null}
             </span>
             <div className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">{title}</div>
             {/* Fixed-width trailing rail: title truncates against this edge at rest
@@ -728,7 +743,10 @@ export default function Sidebar() {
   );
   const projectOrder = useUiStateStore((store) => store.projectOrder);
   const pinnedProjectKeys = useUiStateStore((store) => store.pinnedProjectKeys);
+  const projectExpandedById = useUiStateStore((store) => store.projectExpandedById);
+  const threadLastVisitedAtById = useUiStateStore((store) => store.threadLastVisitedAtById);
   const reorderProjectsInStore = useUiStateStore((store) => store.reorderProjects);
+  const setProjectExpanded = useUiStateStore((store) => store.setProjectExpanded);
   const setProjectPinned = useUiStateStore((store) => store.setProjectPinned);
   const reorderPinnedProjectKeys = useUiStateStore((store) => store.reorderPinnedProjectKeys);
   const threads = useThreadShells();
@@ -920,6 +938,22 @@ export default function Sidebar() {
         ),
       ),
     [projectGroups],
+  );
+  const projectExpansionPreferenceKeysByProjectKey = useMemo(
+    () =>
+      new Map(
+        threadListProjectGroups.map((group) => [
+          group.projectKey,
+          [
+            group.projectKey,
+            ...group.memberProjects.flatMap((member) => [
+              getProjectOrderKey(member),
+              legacyProjectCwdPreferenceKey(member.workspaceRoot),
+            ]),
+          ],
+        ]),
+      ),
+    [threadListProjectGroups],
   );
 
   // Project scope: one menu above the list. Scoping filters the list without
@@ -1853,63 +1887,37 @@ export default function Sidebar() {
   const newThreadShortcutLabel = shortcutLabelForCommand(keybindings, "chat.new");
   return (
     <>
-      <SidebarChromeHeader isElectron={isElectron} />
+      <SidebarChromeHeader
+        isElectron={isElectron}
+        newThreadDisabled={environments.length === 0}
+        newThreadShortcutLabel={newThreadShortcutLabel}
+        onNewThread={handleNewThreadClick}
+      />
       <SidebarContent className="gap-0">
         <SidebarGroup className="px-2 pb-2 pt-3">
-          <div className="flex items-center gap-1">
-            <div className="min-w-0 flex-1">
-              <CommandDialogTrigger
-                render={
-                  <SidebarMenuButton
-                    size="sm"
-                    type="button"
-                    aria-label="Search threads and commands"
-                    className="h-8 gap-2 rounded-md border-0 bg-transparent px-2 py-1.5 text-sm font-medium text-sidebar-muted-foreground hover:bg-sidebar-row-hover hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar"
-                    data-testid="command-palette-trigger"
-                  />
-                }
-              >
-                <SearchIcon className="size-4 shrink-0 text-sidebar-muted-foreground/80" />
-                <div className="flex-1 truncate text-left">Search</div>
-                {commandPaletteShortcutLabel ? (
-                  <Kbd className="h-4 min-w-0 rounded-sm bg-sidebar-control-surface px-1.5 text-[10px] text-sidebar-muted-foreground ring-1 ring-sidebar-border">
-                    {commandPaletteShortcutLabel}
-                  </Kbd>
-                ) : null}
-              </CommandDialogTrigger>
-            </div>
-            <div className="shrink-0">
-              <Tooltip>
-                <TooltipTrigger
-                  render={
-                    <SidebarMenuButton
-                      size="sm"
-                      type="button"
-                      className="relative size-8 justify-center rounded-md border-0 bg-transparent p-0 text-sidebar-muted-foreground hover:bg-sidebar-row-hover hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar"
-                      onClick={handleNewThreadClick}
-                      disabled={environments.length === 0}
-                      aria-label="New chat without a project"
-                    />
-                  }
-                >
-                  <SquarePenIcon className="size-4 shrink-0 text-sidebar-muted-foreground/80" />
-                  <span
-                    className="pointer-events-none absolute left-1/2 top-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
-                    aria-hidden="true"
-                  />
-                </TooltipTrigger>
-                <TooltipPopup side="right">
-                  {newThreadShortcutLabel
-                    ? `New chat without a project (${newThreadShortcutLabel})`
-                    : "New chat without a project"}
-                </TooltipPopup>
-              </Tooltip>
-            </div>
-          </div>
+          <CommandDialogTrigger
+            render={
+              <SidebarMenuButton
+                size="sm"
+                type="button"
+                aria-label="Search threads and commands"
+                className="group/search h-8 w-full gap-2 rounded-md border-0 bg-transparent px-2 py-1.5 text-sm font-medium text-sidebar-muted-foreground hover:bg-sidebar-row-hover hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar"
+                data-testid="command-palette-trigger"
+              />
+            }
+          >
+            <SearchIcon className="size-4 shrink-0 text-sidebar-muted-foreground/80" />
+            <div className="flex-1 truncate text-left">Search</div>
+            {commandPaletteShortcutLabel ? (
+              <Kbd className="h-4 min-w-0 rounded-sm bg-sidebar-control-surface px-1.5 text-[10px] text-sidebar-muted-foreground opacity-55 ring-1 ring-sidebar-border transition-opacity group-hover/search:opacity-100 group-focus-visible/search:opacity-100">
+                {commandPaletteShortcutLabel}
+              </Kbd>
+            ) : null}
+          </CommandDialogTrigger>
         </SidebarGroup>
         {projectGroups.length > 0 ? (
           <SidebarGroup className="px-2 pb-2 pt-0">
-            <div className="flex items-center gap-1">
+            <div className="flex items-center">
               <Menu open={projectScopeMenuOpen} onOpenChange={setProjectScopeMenuOpen}>
                 <MenuTrigger
                   aria-label="Filter threads by project"
@@ -1975,28 +1983,18 @@ export default function Sidebar() {
                       );
                     })}
                   </MenuRadioGroup>
+                  <MenuSeparator />
+                  <MenuItem
+                    onClick={() => {
+                      setProjectScopeMenuOpen(false);
+                      window.setTimeout(openAddProjectCommandPalette, 0);
+                    }}
+                  >
+                    <FolderPlusIcon className="size-4" />
+                    <span>Add project</span>
+                  </MenuItem>
                 </MenuPopup>
               </Menu>
-              <Tooltip>
-                <TooltipTrigger
-                  render={
-                    <SidebarMenuButton
-                      size="sm"
-                      className="relative size-8 shrink-0 justify-center rounded-md bg-transparent p-0 text-sidebar-muted-foreground hover:bg-sidebar-row-hover hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar"
-                      onClick={openAddProjectCommandPalette}
-                      type="button"
-                      aria-label="New project"
-                    />
-                  }
-                >
-                  <FolderPlusIcon className="size-4 shrink-0 text-sidebar-muted-foreground/80" />
-                  <span
-                    className="pointer-events-none absolute left-1/2 top-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
-                    aria-hidden="true"
-                  />
-                </TooltipTrigger>
-                <TooltipPopup side="right">New project</TooltipPopup>
-              </Tooltip>
             </div>
           </SidebarGroup>
         ) : null}
@@ -2065,6 +2063,45 @@ export default function Sidebar() {
                       : isDropTarget
                         ? "rounded-md bg-sidebar-row-hover/80"
                         : null;
+                  const isScopedProject = scopedProjectGroup?.projectKey === panel.projectKey;
+                  const projectExpansionPreferenceKeys =
+                    projectExpansionPreferenceKeysByProjectKey.get(panel.projectKey) ?? [
+                      panel.projectKey,
+                    ];
+                  const hasActiveThread = panel.threads.some(
+                    (thread) =>
+                      thread.id === routeThreadRef?.threadId &&
+                      thread.environmentId === routeThreadRef.environmentId,
+                  );
+                  const hasAttentionThread = panel.threads.some((thread) => {
+                    const threadStatus = resolveSidebarStatus(thread);
+                    if (
+                      threadStatus === "working" ||
+                      threadStatus === "approval" ||
+                      threadStatus === "input" ||
+                      threadStatus === "failed"
+                    ) {
+                      return true;
+                    }
+                    const threadKey = scopedThreadKey(
+                      scopeThreadRef(thread.environmentId, thread.id),
+                    );
+                    return hasUnseenCompletion({
+                      ...thread,
+                      lastVisitedAt: threadLastVisitedAtById[threadKey],
+                    });
+                  });
+                  // Unconfigured shelves stay quiet unless they are scoped or
+                  // need attention. Once a user toggles one, honor that choice.
+                  const isShelfExpanded = resolveSidebarProjectShelfExpanded({
+                    persistedExpanded: resolveProjectExpandedPreference(
+                      projectExpandedById,
+                      projectExpansionPreferenceKeys,
+                    ),
+                    isScoped: isScopedProject,
+                    hasActiveThread,
+                    hasAttentionThread,
+                  });
                   items.push(
                     <li
                       key={`project-header:${panel.projectKey}`}
@@ -2084,32 +2121,36 @@ export default function Sidebar() {
                       onDrop={(event) => handleProjectGroupDrop(event, panel.projectKey)}
                       onDragEnd={handleProjectGroupDragEnd}
                     >
-                      {/* Air between groups is what makes a small dim label read
-                          as a header. Claude Desktop's headers are smaller and
-                          fainter than their rows and still land, because the
-                          groups are actually separated. */}
-                      <div className="group/project-header mt-5 mb-1 flex h-5 w-full items-center gap-1 px-1.5 text-left first:mt-1">
-                        <GripVerticalIcon
-                          className="size-3 shrink-0 cursor-grab text-muted-foreground/40 opacity-0 transition-opacity group-hover/project-header:opacity-100 active:cursor-grabbing"
-                          aria-hidden
-                        />
-                        <span
-                          className={cn(
-                            // A project is the parent of the rows beneath it, so it
-                            // cannot read as smaller and fainter than its children.
-                            // Still under the 13px session title, but heavier and
-                            // brighter so it lands as a header rather than a
-                            // shrunken sibling.
-                            "min-w-0 truncate text-[11px] font-medium tracking-wide",
-                            panel.isNoProject
-                              ? "text-muted-foreground/70"
-                              : "text-sidebar-muted-foreground/85",
-                          )}
-                          title={panel.displayName}
+                      <div className="group/project-header mt-3 mb-0.5 flex h-6 w-full items-center gap-1 px-1 text-left first:mt-1">
+                        <button
+                          type="button"
+                          aria-expanded={isShelfExpanded}
+                          aria-label={`${isShelfExpanded ? "Collapse" : "Expand"} ${panel.displayName}`}
+                          className="flex h-6 min-w-0 flex-1 items-center gap-1 rounded-sm px-0.5 text-left outline-none hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setProjectExpanded(projectExpansionPreferenceKeys, !isShelfExpanded);
+                          }}
                         >
-                          {panel.displayName}
-                        </span>
-                        <span className="flex-1" />
+                          <ChevronRightIcon
+                            aria-hidden
+                            className={cn(
+                              "size-3 shrink-0 text-muted-foreground/55 transition-transform",
+                              isShelfExpanded && "rotate-90",
+                            )}
+                          />
+                          <span
+                            className={cn(
+                              "min-w-0 truncate text-[11px] font-medium tracking-wide",
+                              panel.isNoProject
+                                ? "text-muted-foreground/70"
+                                : "text-sidebar-muted-foreground/85",
+                            )}
+                            title={panel.displayName}
+                          >
+                            {panel.displayName}
+                          </span>
+                        </button>
                         <button
                           type="button"
                           data-testid="sidebar-project-pin"
@@ -2133,13 +2174,16 @@ export default function Sidebar() {
                           <PinIcon className={cn("size-3", panel.isPinned && "fill-current")} />
                         </button>
                         {panel.threads.length > 0 ? (
-                          <span className="shrink-0 font-mono text-[10px] text-muted-foreground/45 opacity-0 transition-opacity group-hover/project-header:opacity-100">
+                          <span className="shrink-0 pe-0.5 font-mono text-[10px] tabular-nums text-muted-foreground/40">
                             {panel.threads.length}
                           </span>
                         ) : null}
                       </div>
                     </li>,
                   );
+                  if (!isShelfExpanded) {
+                    continue;
+                  }
                   if (panel.threads.length === 0) {
                     items.push(
                       <li
@@ -2158,9 +2202,11 @@ export default function Sidebar() {
                         }
                         onDrop={(event) => handleProjectGroupDrop(event, panel.projectKey)}
                       >
-                        <div className="mb-0.5 px-5 py-0.5 font-mono text-[10px] text-muted-foreground/40">
-                          {draggingThreadKey != null ? "Drop session here" : "Drag sessions here"}
-                        </div>
+                        {draggingThreadKey != null ? (
+                          <div className="mb-0.5 px-5 py-0.5 font-mono text-[10px] text-muted-foreground/40">
+                            Drop session here
+                          </div>
+                        ) : null}
                       </li>,
                     );
                   }

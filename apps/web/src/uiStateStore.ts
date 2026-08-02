@@ -315,13 +315,20 @@ export function resolveProjectExpanded(
   projectExpandedById: Readonly<Record<string, boolean>>,
   preferenceKeys: readonly string[],
 ): boolean {
+  return resolveProjectExpandedPreference(projectExpandedById, preferenceKeys) ?? true;
+}
+
+export function resolveProjectExpandedPreference(
+  projectExpandedById: Readonly<Record<string, boolean>>,
+  preferenceKeys: readonly string[],
+): boolean | undefined {
   for (const key of preferenceKeys) {
     const expanded = projectExpandedById[key];
     if (expanded !== undefined) {
       return expanded;
     }
   }
-  return projectExpandedById[LEGACY_PROJECT_EXPANSION_DEFAULT_KEY] ?? true;
+  return projectExpandedById[LEGACY_PROJECT_EXPANSION_DEFAULT_KEY];
 }
 
 export function setProjectExpanded(

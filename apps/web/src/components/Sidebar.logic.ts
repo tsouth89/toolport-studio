@@ -642,6 +642,22 @@ export type ActiveSidebarProjectPanel<TThread> = {
   readonly hiddenCount: number;
 };
 
+/**
+ * Keep unconfigured project shelves collapsed unless the current context
+ * makes their contents immediately relevant. An explicit user preference
+ * always wins so manually collapsed shelves do not spring back open.
+ */
+export function resolveSidebarProjectShelfExpanded(input: {
+  readonly persistedExpanded: boolean | undefined;
+  readonly isScoped: boolean;
+  readonly hasActiveThread: boolean;
+  readonly hasAttentionThread: boolean;
+}): boolean {
+  return (
+    input.persistedExpanded ?? (input.isScoped || input.hasActiveThread || input.hasAttentionThread)
+  );
+}
+
 /** MIME types for sidebar HTML5 DnD (project reorder vs session move). */
 export const SIDEBAR_DND_PROJECT_MIME = "application/x-toolport-sidebar-project";
 export const SIDEBAR_DND_THREAD_MIME = "application/x-toolport-sidebar-thread";

@@ -12,6 +12,7 @@ import {
   reorderPinnedProjectKeys,
   reorderProjects,
   resolveProjectExpanded,
+  resolveProjectExpandedPreference,
   setDefaultAdvertisedEndpointKey,
   setProjectExpanded,
   setProjectPinned,
@@ -68,6 +69,15 @@ describe("uiStateStore pure functions", () => {
     );
     expect(resolveProjectExpanded({ [legacyKey]: false }, ["new-logical", legacyKey])).toBe(false);
     expect(resolveProjectExpanded({}, ["new-logical"])).toBe(true);
+    expect(resolveProjectExpandedPreference({}, ["new-logical"])).toBeUndefined();
+  });
+
+  it("exposes migrated expansion defaults as an explicit shelf preference", () => {
+    const parsed = parsePersistedState({
+      expandedProjectCwds: ["/repo/a"],
+    });
+
+    expect(resolveProjectExpandedPreference(parsed.projectExpandedById, ["unknown"])).toBe(false);
   });
 
   it("sets expansion for every stable key belonging to a logical project", () => {
