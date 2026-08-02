@@ -126,10 +126,29 @@ const makeBinaryPathSetting = (fallback: string) =>
     Schema.withDecodingDefault(Effect.succeed(fallback)),
   );
 
-export type ProviderSettingsFormControl = "text" | "password" | "textarea" | "switch";
+export type ProviderSettingsFormControl = "text" | "password" | "textarea" | "switch" | "select";
+
+export interface ProviderSettingsFormChoice {
+  readonly value: string;
+  readonly label: string;
+}
+
+/**
+ * Selectable BYOK providers, as (id, label) pairs.
+ *
+ * Lives in contracts because both sides need it: the settings form renders
+ * the picker from this, and the server's preset table takes its ids and
+ * labels from here so the two cannot drift. Operational detail (endpoint,
+ * key variable, model catalog) stays server-side.
+ */
+export const BYOK_PRESET_CHOICES: ReadonlyArray<ProviderSettingsFormChoice> = [
+  { value: "deepseek", label: "DeepSeek" },
+];
 
 export interface ProviderSettingsFormAnnotation {
   readonly control?: ProviderSettingsFormControl | undefined;
+  /** Choices for `control: "select"`. Ignored by every other control. */
+  readonly options?: ReadonlyArray<ProviderSettingsFormChoice> | undefined;
   readonly placeholder?: string | undefined;
   readonly hidden?: boolean | undefined;
   readonly clearWhenEmpty?: "omit" | "persist" | undefined;
@@ -400,7 +419,15 @@ export const ByokSettings = makeProviderSettingsSchema(
       Schema.annotateKey({
         title: "Provider",
         description: "Which API-key provider this instance talks to.",
-        providerSettingsForm: { placeholder: "deepseek", clearWhenEmpty: "omit" },
+        providerSettingsForm: {
+          control: "select",
+          options: BYOK_PRESET_CHOICES,
+          placeholder: "deepseek",
+          // Persist the choice: an omitted preset leaves the client with no
+          // way to tell which provider an instance is until the first
+          // snapshot arrives.
+          clearWhenEmpty: "persist",
+        },
       }),
     ),
     binaryPath: makeBinaryPathSetting("codex").pipe(

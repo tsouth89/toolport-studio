@@ -16,6 +16,8 @@
  * @module provider/Drivers/Byok/byokPresets
  */
 
+import { BYOK_PRESET_CHOICES } from "@toolport-studio/contracts";
+
 /**
  * Wire protocol a preset speaks, which in turn decides the harness.
  *
@@ -126,6 +128,16 @@ const DEEPSEEK: ByokPreset = {
 };
 
 export const BYOK_PRESETS: ReadonlyArray<ByokPreset> = [DEEPSEEK];
+
+/**
+ * Ids offered by the settings picker. Contracts owns the (id, label) pairs so
+ * the form and this table cannot disagree about which providers exist; a
+ * preset missing from either side is a bug, which `byokPresets.test.ts`
+ * pins down.
+ */
+export const BYOK_PRESET_CHOICE_IDS: ReadonlyArray<string> = BYOK_PRESET_CHOICES.map(
+  (choice) => choice.value,
+);
 
 export const BYOK_PRESET_BY_ID: ReadonlyMap<string, ByokPreset> = new Map(
   BYOK_PRESETS.map((preset) => [preset.id, preset]),

@@ -5,6 +5,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import type {
   ProviderSettingsFormAnnotation,
+  ProviderSettingsFormChoice,
   ProviderSettingsFormControl,
   ProviderSettingsFormSchemaAnnotation,
 } from "@toolport-studio/contracts";
@@ -12,6 +13,7 @@ import type {
 import { cn } from "../../lib/utils";
 import { DraftInput } from "../ui/draft-input";
 import { Input } from "../ui/input";
+import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
 import { Textarea } from "../ui/textarea";
 import type { ProviderClientDefinition } from "./providerDriverMeta";
@@ -24,6 +26,7 @@ export interface ProviderSettingsFieldModel {
   readonly placeholder?: string | undefined;
   readonly clearWhenEmpty: "omit" | "persist";
   readonly defaultBooleanValue?: boolean | undefined;
+  readonly options?: ReadonlyArray<ProviderSettingsFormChoice> | undefined;
 }
 
 function titleizeFieldKey(key: string): string {
@@ -103,6 +106,7 @@ export function deriveProviderSettingsFields(
             ? { placeholder: formAnnotation.placeholder }
             : {}),
           clearWhenEmpty: formAnnotation.clearWhenEmpty ?? "omit",
+          ...(formAnnotation.options !== undefined ? { options: formAnnotation.options } : {}),
           ...(formAnnotation.control === "switch"
             ? { defaultBooleanValue: readFieldBooleanDefault(fieldSchema) }
             : {}),
@@ -212,6 +216,43 @@ function ProviderSettingsFieldRow({
             }
             aria-label={field.label}
           />
+        </div>
+      </FieldFrame>
+    );
+  }
+
+  if (field.control === "select" && field.options && field.options.length > 0) {
+    const options = field.options;
+    // Fall back to the first choice so the trigger never renders blank for a
+    // value the schema defaulted rather than stored.
+    const current = readProviderConfigString(value, field.key) || (options[0]?.value ?? "");
+    const currentLabel = options.find((option) => option.value === current)?.label ?? current;
+    return (
+      <FieldFrame variant={variant}>
+        <div className={cn(variant === "card" && "block")}>
+          {label}
+          <Select
+            value={current}
+            onValueChange={(next) =>
+              onChange(nextProviderConfigWithFieldValue(value, field, String(next)))
+            }
+          >
+            <SelectTrigger
+              id={inputId}
+              className={cn("w-full", variant === "card" && "mt-1.5")}
+              aria-label={field.label}
+            >
+              <SelectValue>{currentLabel}</SelectValue>
+            </SelectTrigger>
+            <SelectPopup alignItemWithTrigger={false}>
+              {options.map((option) => (
+                <SelectItem key={option.value} hideIndicator value={option.value}>
+                  {option.label}
+                </SelectItem>
+              ))}
+            </SelectPopup>
+          </Select>
+          {description}
         </div>
       </FieldFrame>
     );
