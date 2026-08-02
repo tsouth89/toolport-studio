@@ -126,6 +126,16 @@ function codexMcpLaunchOptions(
 
 export interface CodexAdapterLiveOptions {
   readonly instanceId?: ProviderInstanceId;
+  /**
+   * Driver kind this adapter instance is serving. Defaults to `codex`.
+   *
+   * The Codex runtime backs more than the first-party driver: a BYOK
+   * instance runs a third-party endpoint through the same app-server with a
+   * generated `CODEX_HOME`, and its snapshots, threads, and turn requests
+   * are all stamped with its own driver kind. Without this the request
+   * guard below rejects those turns as a provider mismatch.
+   */
+  readonly driverKind?: ProviderDriverKind;
   readonly environment?: NodeJS.ProcessEnv;
   readonly makeRuntime?: (
     options: CodexSessionRuntimeOptions,
@@ -1504,6 +1514,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
   options?: CodexAdapterLiveOptions,
 ) {
   const boundInstanceId = options?.instanceId ?? ProviderInstanceId.make("codex");
+  const boundDriverKind = options?.driverKind ?? PROVIDER;
   const fileSystem = yield* FileSystem.FileSystem;
   const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const crypto = yield* Crypto.Crypto;
@@ -1769,11 +1780,11 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
   const startSession: CodexAdapterShape["startSession"] = (input) =>
     Effect.scoped(
       Effect.gen(function* () {
-        if (input.provider !== undefined && input.provider !== PROVIDER) {
+        if (input.provider !== undefined && input.provider !== boundDriverKind) {
           return yield* new ProviderAdapterValidationError({
-            provider: PROVIDER,
+            provider: boundDriverKind,
             operation: "startSession",
-            issue: `Expected provider '${PROVIDER}' but received '${input.provider}'.`,
+            issue: `Expected provider '${boundDriverKind}' but received '${input.provider}'.`,
           });
         }
 

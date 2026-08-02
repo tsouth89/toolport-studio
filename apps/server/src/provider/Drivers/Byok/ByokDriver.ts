@@ -205,6 +205,9 @@ export const ByokDriver: ProviderDriver<ByokSettings, ByokDriverEnv> = {
 
       const adapter = yield* makeCodexAdapter(codexConfig, {
         instanceId,
+        // Turn requests carry this instance's driver kind, not the harness's,
+        // so the adapter must be told which one it is serving.
+        driverKind: DRIVER_KIND,
         environment: processEnv,
         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
       });

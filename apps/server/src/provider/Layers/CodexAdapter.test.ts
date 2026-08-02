@@ -302,6 +302,22 @@ validationLayer("CodexAdapterLive validation", (it) => {
       NodeAssert.equal(validationRuntimeFactory.factory.mock.calls.length, 0);
     }),
   );
+  it.effect("rejects a driver kind that is not the one it was bound to", () =>
+    // The guard must still fire for a genuine mismatch once `driverKind` is
+    // configurable; otherwise making it an option would silently disable it.
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const result = yield* adapter
+        .startSession({
+          provider: ProviderDriverKind.make("byok"),
+          threadId: asThreadId("thread-mismatch"),
+          runtimeMode: "full-access",
+        })
+        .pipe(Effect.result);
+
+      NodeAssert.equal(result._tag, "Failure");
+    }),
+  );
   it.effect("maps codex model options before starting a session", () =>
     Effect.gen(function* () {
       validationRuntimeFactory.factory.mockClear();
@@ -326,6 +342,57 @@ validationLayer("CodexAdapterLive validation", (it) => {
         threadId: asThreadId("thread-1"),
         runtimeMode: "full-access",
       });
+    }),
+  );
+});
+
+const byokRuntimeFactory = makeRuntimeFactory();
+const byokDriverKindLayer = it.layer(
+  Layer.effect(
+    CodexAdapter,
+    Effect.gen(function* () {
+      const codexConfig = decodeCodexSettings({});
+      return yield* makeCodexAdapter(codexConfig, {
+        // A BYOK instance runs a third-party endpoint through this same
+        // adapter, so its turns arrive stamped `byok`, not `codex`.
+        driverKind: ProviderDriverKind.make("byok"),
+        makeRuntime: byokRuntimeFactory.factory,
+      });
+    }),
+  ).pipe(
+    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+    Layer.provideMerge(ServerSettingsService.layerTest()),
+    Layer.provideMerge(providerSessionDirectoryTestLayer),
+    Layer.provideMerge(NodeServices.layer),
+  ),
+);
+
+byokDriverKindLayer("CodexAdapterLive bound to another driver kind", (it) => {
+  it.effect("starts a session for the driver kind it was bound to", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("byok"),
+        threadId: asThreadId("thread-byok"),
+        runtimeMode: "full-access",
+      });
+
+      NodeAssert.equal(byokRuntimeFactory.factory.mock.calls.length, 1);
+    }),
+  );
+
+  it.effect("still rejects the harness's own kind once rebound", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const result = yield* adapter
+        .startSession({
+          provider: ProviderDriverKind.make("codex"),
+          threadId: asThreadId("thread-byok-mismatch"),
+          runtimeMode: "full-access",
+        })
+        .pipe(Effect.result);
+
+      NodeAssert.equal(result._tag, "Failure");
     }),
   );
 });
