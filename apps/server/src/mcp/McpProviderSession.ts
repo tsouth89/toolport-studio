@@ -473,6 +473,31 @@ export function resolvePreviewMcpDeliveryMode(
   return via ? "via-toolport" : "direct";
 }
 
+/** Segment separator for {@link mcpBindingCatalogKey}. */
+const CATALOG_KEY_SEPARATOR = "\0";
+/** Segment prefixes that describe the catalog rather than name a server. */
+const CATALOG_KEY_TAG_PREFIXES = ["preview:", "cred:"] as const;
+
+/**
+ * Server names encoded in a catalog key.
+ *
+ * The key mixes server names with tagged segments, and OpenCode needs the names
+ * back to disconnect what a rebind dropped. Decoding lives next to the encoder
+ * so adding a tag cannot leave a consumer treating it as a server name — which
+ * is exactly what a `cred:` segment did when it was added.
+ */
+export function mcpBindingNamesFromCatalogKey(catalogKey: string): ReadonlySet<string> {
+  return new Set(
+    catalogKey
+      .split(CATALOG_KEY_SEPARATOR)
+      .filter(
+        (segment) =>
+          segment.length > 0 &&
+          !CATALOG_KEY_TAG_PREFIXES.some((prefix) => segment.startsWith(prefix)),
+      ),
+  );
+}
+
 /**
  * Short, non-reversible digest of the preview credential a binding set carries.
  * Hashed because catalog keys are logged when an adapter recycles its child.
@@ -511,7 +536,7 @@ export function mcpBindingCatalogKey(bindings: ReadonlyArray<McpProviderBinding>
   const names = bindings
     .map((binding) => binding.name)
     .toSorted()
-    .join("\0");
+    .join(CATALOG_KEY_SEPARATOR);
   const toolport = bindings.find(
     (binding) => binding.name === TOOLPORT_MCP_SERVER_NAME && binding.transport === "stdio",
   );
@@ -520,7 +545,9 @@ export function mcpBindingCatalogKey(bindings: ReadonlyArray<McpProviderBinding>
     Boolean(toolport.env[`TOOLPORT_SECRET_${STUDIO_PREVIEW_SECRET_ENV_KEY}`]);
   const hasDirectPreview = bindings.some((binding) => binding.name === INTERNAL_MCP_SERVER_NAME);
   const previewLane = previewVia ? "via" : hasDirectPreview ? "direct" : "none";
-  return `${names}\0preview:${previewLane}\0cred:${previewCredentialDigest(bindings)}`;
+  return [names, `preview:${previewLane}`, `cred:${previewCredentialDigest(bindings)}`].join(
+    CATALOG_KEY_SEPARATOR,
+  );
 }
 
 function toolportBindingCarriesPreview(binding: McpProviderBinding | undefined): boolean {

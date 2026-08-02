@@ -300,6 +300,33 @@ it.effect("catalog key moves when the via-toolport preview bearer rotates", () =
   }).pipe(Effect.provide(NodeServices.layer)),
 );
 
+it.effect("decodes only server names back out of a catalog key", () =>
+  Effect.sync(() => {
+    McpProviderSession.clearAllMcpProviderSessions();
+    setInternalPreviewSession();
+    McpProviderSession.armPreviewMcpForThread(threadId);
+
+    const bindings = McpProviderSession.readMcpProviderBindings(
+      threadId,
+      { PATH: "" },
+      "win32",
+      "C:\\Users\\tester",
+    );
+    const key = McpProviderSession.mcpBindingCatalogKey(bindings);
+
+    // OpenCode disconnects whatever a rebind dropped, using exactly this set.
+    // A descriptive segment leaking through would disconnect a server named
+    // "cred:none".
+    expect([...McpProviderSession.mcpBindingNamesFromCatalogKey(key)].toSorted()).toEqual(
+      bindings.map((binding) => binding.name).toSorted(),
+    );
+    expect(
+      McpProviderSession.mcpBindingNamesFromCatalogKey(McpProviderSession.mcpBindingCatalogKey([]))
+        .size,
+    ).toBe(0);
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
 it.effect("catalog key moves when the direct preview bearer rotates", () =>
   Effect.sync(() => {
     McpProviderSession.clearAllMcpProviderSessions();

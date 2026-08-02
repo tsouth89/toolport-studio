@@ -101,7 +101,11 @@ const makeMcpAuthMiddleware = McpSessionRegistry.McpSessionRegistry.pipe(
               ? { "mcp.credential.fingerprint": credentialFingerprint }
               : {}),
           });
-          yield* Effect.logWarning("mcp.credential.rejected", {
+          // A bearer that was valid and is not any more is the signal worth a
+          // warning. No bearer at all is an unauthenticated probe or a misrouted
+          // request, which is routine on a local port and would drown it out.
+          const logRejection = reason === "unknown_bearer" ? Effect.logWarning : Effect.logDebug;
+          yield* logRejection("mcp.credential.rejected", {
             reason,
             credentialFingerprint,
             method: request.method,
