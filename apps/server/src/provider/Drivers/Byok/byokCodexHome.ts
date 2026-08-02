@@ -37,6 +37,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import type * as PlatformError from "effect/PlatformError";
+import * as Schema from "effect/Schema";
 
 import type { ByokPreset, ByokPresetModel, ByokReasoningEffort } from "./byokPresets.ts";
 
@@ -148,6 +149,17 @@ export function buildCodexConfigToml(input: ByokCodexHomeInput): string {
  */
 type CodexCatalogEntry = Record<string, unknown>;
 
+/**
+ * Serializer for the catalog file. The value side stays `Unknown` because
+ * the schema of record is Codex's Rust struct, not ours — pinning it here
+ * would mean re-deriving it on every Codex release for no safety we can
+ * actually enforce.
+ */
+const CodexModelCatalogJson = Schema.fromJsonString(
+  Schema.Struct({ models: Schema.Array(Schema.Unknown) }),
+);
+const encodeCodexModelCatalog = Schema.encodeSync(CodexModelCatalogJson);
+
 function buildCatalogEntry(model: ByokPresetModel, priority: number): CodexCatalogEntry {
   const efforts = model.reasoningEfforts.map((effort) => ({
     effort,
@@ -238,7 +250,7 @@ export const materializeByokCodexHome = Effect.fn("materializeByokCodexHome")(fu
   yield* fileSystem.makeDirectory(homePath, { recursive: true });
   yield* fileSystem.writeFileString(
     catalogPath,
-    `${JSON.stringify(buildCodexModelCatalog(input.preset), null, 2)}\n`,
+    `${encodeCodexModelCatalog(buildCodexModelCatalog(input.preset))}\n`,
   );
   yield* fileSystem.writeFileString(
     configPath,

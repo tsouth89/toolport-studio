@@ -685,6 +685,29 @@ export const ACPRegistryIcon: Icon = ({ className, ...props }) => (
   </svg>
 );
 
+/**
+ * Generic mark for bring-your-own-key providers. Deliberately not any
+ * vendor's logo: one driver serves many providers, and borrowing a single
+ * vendor's identity for all of them would be worse than a neutral key.
+ */
+export const ApiKeyProviderIcon: Icon = ({ className, ...props }) => (
+  <svg
+    {...props}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    className={cn("text-black dark:text-white", className)}
+  >
+    <circle cx="7.5" cy="15.5" r="4.5" />
+    <path d="M10.7 12.3 21 2" />
+    <path d="m17 6 3 3" />
+    <path d="m14 9 3 3" />
+  </svg>
+);
+
 export const PiAgentIcon: Icon = ({ className, ...props }) => (
   <svg {...props} viewBox="0 0 800 800" className={cn("fill-none", className)}>
     <rect width="800" height="800" rx="160" fill="#000" />

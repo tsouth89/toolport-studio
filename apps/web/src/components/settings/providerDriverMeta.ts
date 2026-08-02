@@ -1,4 +1,5 @@
 import {
+  ByokSettings,
   ClaudeSettings,
   CodexSettings,
   CursorSettings,
@@ -7,7 +8,15 @@ import {
   ProviderDriverKind,
 } from "@toolport-studio/contracts";
 import type * as Schema from "effect/Schema";
-import { ClaudeAI, CursorIcon, GrokIcon, type Icon, OpenAI, OpenCodeIcon } from "../Icons";
+import {
+  ApiKeyProviderIcon,
+  ClaudeAI,
+  CursorIcon,
+  GrokIcon,
+  type Icon,
+  OpenAI,
+  OpenCodeIcon,
+} from "../Icons";
 
 type ProviderSettingsSchema = {
   readonly fields: Readonly<Record<string, Schema.Top>>;
@@ -66,6 +75,13 @@ export const PROVIDER_CLIENT_DEFINITIONS: readonly ProviderClientDefinition[] = 
     label: "OpenCode",
     icon: OpenCodeIcon,
     settingsSchema: OpenCodeSettings,
+  },
+  {
+    value: ProviderDriverKind.make("byok"),
+    label: "API Key Provider",
+    icon: ApiKeyProviderIcon,
+    badgeLabel: "Early Access",
+    settingsSchema: ByokSettings,
   },
 ];
 

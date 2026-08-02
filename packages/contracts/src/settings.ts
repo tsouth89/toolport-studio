@@ -374,6 +374,53 @@ export const OpenCodeSettings = makeProviderSettingsSchema(
 );
 export type OpenCodeSettings = typeof OpenCodeSettings.Type;
 
+/**
+ * Bring-your-own-key providers: third-party, API-key-authenticated model
+ * endpoints (DeepSeek and friends) run through a harness Toolport Studio
+ * already ships.
+ *
+ * There is intentionally no API key field here. Settings are written to disk
+ * in plain text, so the key lives in the instance's environment variables
+ * where the secret store already handles it, under the variable name the
+ * preset declares.
+ *
+ * `preset` names an entry in the server's preset table rather than a closed
+ * literal union, for the same forward-compatibility reason `ProviderDriverKind`
+ * is an open slug: presets are meant to become user-editable data, and an
+ * unknown one must round-trip rather than fail to parse.
+ */
+export const ByokSettings = makeProviderSettingsSchema(
+  {
+    enabled: Schema.Boolean.pipe(
+      Schema.withDecodingDefault(Effect.succeed(true)),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+    preset: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("deepseek")),
+      Schema.annotateKey({
+        title: "Provider",
+        description: "Which API-key provider this instance talks to.",
+        providerSettingsForm: { placeholder: "deepseek", clearWhenEmpty: "omit" },
+      }),
+    ),
+    binaryPath: makeBinaryPathSetting("codex").pipe(
+      Schema.annotateKey({
+        title: "Binary path",
+        description: "Path to the harness binary used to run this provider.",
+        providerSettingsForm: { placeholder: "codex", clearWhenEmpty: "omit" },
+      }),
+    ),
+    customModels: Schema.Array(Schema.String).pipe(
+      Schema.withDecodingDefault(Effect.succeed([])),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+  },
+  {
+    order: ["preset", "binaryPath"],
+  },
+);
+export type ByokSettings = typeof ByokSettings.Type;
+
 export const ObservabilitySettings = Schema.Struct({
   otlpTracesUrl: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
   otlpMetricsUrl: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),

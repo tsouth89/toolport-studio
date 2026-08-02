@@ -3,6 +3,7 @@ import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
 
 import {
   BYOK_CATALOG_FILE_NAME,
@@ -15,6 +16,12 @@ import {
 import { findByokPreset, type ByokPreset } from "./byokPresets.ts";
 
 const deepseek = findByokPreset("deepseek")!;
+
+const decodeCatalogJson = Schema.decodeSync(
+  Schema.fromJsonString(
+    Schema.Struct({ models: Schema.Array(Schema.Struct({ slug: Schema.String })) }),
+  ),
+);
 
 const catalogEntry = (preset: ByokPreset, slug: string) => {
   const entry = buildCodexModelCatalog(preset).models.find((model) => model["slug"] === slug);
@@ -129,9 +136,7 @@ it.layer(NodeServices.layer)("materializeByokCodexHome", (it) => {
       expect(result.configPath).toBe(path.join(homePath, BYOK_CONFIG_FILE_NAME));
       expect(result.catalogPath).toBe(path.join(homePath, BYOK_CATALOG_FILE_NAME));
 
-      const catalog = JSON.parse(yield* fileSystem.readFileString(result.catalogPath)) as {
-        models: ReadonlyArray<{ slug: string }>;
-      };
+      const catalog = decodeCatalogJson(yield* fileSystem.readFileString(result.catalogPath));
       expect(catalog.models.map((model) => model.slug)).toEqual([
         "deepseek-v4-flash",
         "deepseek-v4-pro",
