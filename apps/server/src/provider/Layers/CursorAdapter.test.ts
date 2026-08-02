@@ -11,6 +11,7 @@ import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as Scope from "effect/Scope";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
@@ -203,6 +204,55 @@ const cursorAdapterTestLayer = it.layer(
 );
 
 cursorAdapterTestLayer("CursorAdapterLive", (it) => {
+  it.effect("keeps projecting after the fiber that started the session finishes", () =>
+    Effect.gen(function* () {
+      // startSession used to fork the notification consumer with forkChild, so
+      // the consumer was interrupted the moment the starting fiber completed
+      // and every later session/update was lost. In-process callers hid this
+      // because their fiber stays alive for the whole test; a real RPC handler
+      // fiber does not. Join the start before prompting to reproduce that.
+      const adapter = yield* CursorAdapter;
+      const settings = yield* ServerSettingsService;
+      const threadId = ThreadId.make("cursor-detached-start-thread");
+
+      const wrapperPath = yield* Effect.promise(() => makeMockAgentWrapper());
+      yield* settings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+
+      const events: Array<ProviderRuntimeEvent> = [];
+      yield* adapter.streamEvents.pipe(
+        Stream.runForEach((event) =>
+          Effect.sync(() => {
+            events.push(event);
+          }),
+        ),
+        Effect.forkChild,
+      );
+
+      // Run the start in a fiber that finishes, the way an RPC handler does.
+      const startScope = yield* Scope.make();
+      const startFiber = yield* adapter
+        .startSession({
+          threadId,
+          provider: ProviderDriverKind.make("cursor"),
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+          modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+        })
+        .pipe(Effect.forkIn(startScope));
+      yield* Fiber.join(startFiber);
+
+      yield* adapter.sendTurn({ threadId, input: "hello mock", attachments: [] });
+
+      assert.include(
+        events.map((event) => event.type),
+        "content.delta",
+        "notification consumer died with the fiber that started the session",
+      );
+
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
   it.effect("starts a session and maps mock ACP prompt flow to runtime events", () =>
     Effect.gen(function* () {
       const adapter = yield* CursorAdapter;
