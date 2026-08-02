@@ -1,4 +1,4 @@
-import { type CSSProperties, memo, useMemo } from "react";
+import { type CSSProperties, memo, type ReactNode, useMemo } from "react";
 import { type ProviderInstanceId } from "@toolport-studio/contracts";
 import { LockIcon, SettingsIcon, SparklesIcon } from "lucide-react";
 
@@ -48,7 +48,7 @@ export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
     return counts;
   }, [props.instanceEntries]);
 
-  const smartView = (id: "recommended", label: string, icon: React.ReactNode) => {
+  const smartView = (id: "recommended", label: string, icon: ReactNode) => {
     const isSelected = props.selectedInstanceId === id;
     return (
       <button
