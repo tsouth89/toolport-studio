@@ -135,6 +135,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   const handleSelectInstance = useCallback(
     (instanceId: ProviderInstanceId | "recommended") => {
       setSelectedInstanceId(instanceId);
+      setSearchQuery("");
       if (instanceId === "recommended") {
         setForYouAccountFilter("all");
       }
