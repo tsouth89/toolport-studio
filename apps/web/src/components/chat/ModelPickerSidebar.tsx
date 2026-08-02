@@ -1,16 +1,12 @@
+import { type CSSProperties, memo, type ReactNode, useMemo } from "react";
 import { type ProviderInstanceId } from "@toolport-studio/contracts";
-import { memo, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { LockIcon, SparklesIcon, StarIcon } from "lucide-react";
-import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
+import { LockIcon, SettingsIcon, SparklesIcon } from "lucide-react";
+
+import { ProviderInstanceIcon, providerInstanceInitials } from "./ProviderInstanceIcon";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { cn } from "~/lib/utils";
 import { isProviderInstancePickerReady, type ProviderInstanceEntry } from "../../providerInstances";
 
-/**
- * Build the hover tooltip for an instance button. Mirrors the old
- * kind-based copy but uses the entry's configured `displayName` so custom
- * instances get their user-authored name (e.g. "Codex Personal — Unavailable.").
- */
 function describeUnavailableInstance(entry: ProviderInstanceEntry): string {
   const label = entry.displayName;
   if (!entry.enabled || entry.status === "disabled") {
@@ -21,55 +17,29 @@ function describeUnavailableInstance(entry: ProviderInstanceEntry): string {
   }
   const kind =
     entry.status === "error" ? "Unavailable" : entry.status === "warning" ? "Limited" : "Not ready";
-  const msg = entry.snapshot.message?.trim();
-  return msg ? `${label} — ${kind}. ${msg}` : `${label} — ${kind}.`;
+  const message = entry.snapshot.message?.trim();
+  return message ? `${label} — ${kind}. ${message}` : `${label} — ${kind}.`;
 }
 
-const SELECTED_INDICATOR_CLASS =
-  "pointer-events-none absolute -right-1 top-1/2 z-10 h-5 w-0.75 -translate-y-1/2 rounded-l-full bg-primary";
-const BADGE_BASE_CLASS =
-  "pointer-events-none absolute -right-0.5 top-0.5 z-10 flex size-3.5 items-center justify-center rounded-full bg-transparent shadow-sm ";
-const NEW_BADGE_CLASS = `${BADGE_BASE_CLASS} text-amber-600  dark:text-amber-300 `;
-/** Thread is pinned to another provider. Visible without hovering. */
-const LOCK_BADGE_CLASS = `${BADGE_BASE_CLASS} text-muted-foreground`;
+function statusDotClassName(entry: ProviderInstanceEntry): string {
+  if (isProviderInstancePickerReady(entry)) return "bg-emerald-500";
+  if (entry.status === "warning") return "bg-amber-500";
+  return "bg-muted-foreground/55";
+}
 
-/** Opens toward the rail so the list stays readable (not over the model names). */
-const PICKER_TOOLTIP_SIDE = "left" as const;
-const PICKER_TOOLTIP_SIDE_OFFSET = 8;
-const PICKER_TOOLTIP_CLASS = "max-w-64 text-balance font-normal leading-snug";
+const NAV_ITEM_CLASS =
+  "relative flex min-h-8 w-full items-center gap-2.5 rounded-md px-2 text-left text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40";
 
 export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
-  selectedInstanceId: ProviderInstanceId | "recommended" | "favorites";
-  onSelectInstance: (instanceId: ProviderInstanceId | "recommended" | "favorites") => void;
-  /**
-   * Instance entries to render as rail buttons. Each entry becomes one icon
-   * keyed by `instanceId`, so the default built-in Codex and a user-authored
-   * `codex_personal` appear as two distinct rail items, each routing to
-   * their own model list.
-   */
+  selectedInstanceId: ProviderInstanceId | "recommended";
+  onSelectInstance: (instanceId: ProviderInstanceId | "recommended") => void;
   instanceEntries: ReadonlyArray<ProviderInstanceEntry>;
-  /** Render the favorites rail entry. Hidden for locked-provider instance switching. */
-  showFavorites?: boolean;
-  /** Render the automatic recommendations rail entry. */
   showRecommended?: boolean;
-  /** Instance ids shown in the rail but unavailable for the current picker context. */
   disabledInstanceIds?: ReadonlySet<ProviderInstanceId>;
   getDisabledInstanceTooltip?: (entry: ProviderInstanceEntry) => string;
-  /**
-   * Instance id values that should render the "new" sparkle badge. Callers
-   * pass the subset of default built-in ids they want flagged (custom
-   * instances are never flagged — the user just made them).
-   */
-  newBadgeInstanceIds?: ReadonlySet<ProviderInstanceId>;
+  onManageProviders?: () => void;
 }) {
-  const handleSelect = (instanceId: ProviderInstanceId | "recommended" | "favorites") => {
-    props.onSelectInstance(instanceId);
-  };
-  const showFavorites = props.showFavorites ?? true;
   const showRecommended = props.showRecommended ?? true;
-  const [hoveredInstanceId, setHoveredInstanceId] = useState<ProviderInstanceId | null>(null);
-  const sidebarContentRef = useRef<HTMLDivElement>(null);
-  const [selectedIndicatorTop, setSelectedIndicatorTop] = useState<number | null>(null);
   const duplicateDriverCounts = useMemo(() => {
     const counts = new Map<string, number>();
     for (const entry of props.instanceEntries) {
@@ -78,219 +48,144 @@ export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
     return counts;
   }, [props.instanceEntries]);
 
-  useLayoutEffect(() => {
-    const content = sidebarContentRef.current;
-    if (!content) {
-      return;
-    }
-    const selectedButton = Array.from(
-      content.querySelectorAll<HTMLElement>("[data-model-picker-provider]"),
-    ).find((button) => button.dataset.modelPickerProvider === props.selectedInstanceId);
-    if (!selectedButton) {
-      setSelectedIndicatorTop(null);
-      return;
-    }
-    const contentRect = content.getBoundingClientRect();
-    const selectedButtonRect = selectedButton.getBoundingClientRect();
-    setSelectedIndicatorTop(
-      selectedButtonRect.top -
-        contentRect.top +
-        content.scrollTop +
-        selectedButtonRect.height / 2 -
-        10,
+  const smartView = (id: "recommended", label: string, icon: ReactNode) => {
+    const isSelected = props.selectedInstanceId === id;
+    return (
+      <button
+        type="button"
+        className={cn(
+          NAV_ITEM_CLASS,
+          "text-muted-foreground hover:bg-foreground/6 hover:text-foreground",
+          isSelected &&
+            "bg-foreground/[0.08] text-foreground before:absolute before:inset-y-1.5 before:left-0 before:w-0.5 before:rounded-r-full before:bg-primary",
+        )}
+        onClick={() => props.onSelectInstance(id)}
+        data-model-picker-provider={id}
+        aria-current={isSelected ? "page" : undefined}
+      >
+        <span className="flex size-5 shrink-0 items-center justify-center">{icon}</span>
+        <span className="min-w-0 flex-1 truncate font-medium">{label}</span>
+      </button>
     );
-  }, [props.instanceEntries, props.selectedInstanceId, showFavorites, showRecommended]);
+  };
 
   return (
-    <div
-      className="w-12 shrink-0 overflow-hidden border-r bg-muted/30"
+    <aside
+      className="flex w-52 shrink-0 flex-col border-r border-border/65 bg-muted/25"
       data-model-picker-sidebar="true"
+      aria-label="Model picker navigation"
     >
-      <div className="h-full overflow-y-auto overscroll-contain [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-        <div
-          ref={sidebarContentRef}
-          className="relative flex min-h-full flex-col gap-1 px-1 pb-1 pt-0.5"
-        >
-          {selectedIndicatorTop !== null ? (
-            <div
-              data-model-picker-selected-indicator="true"
-              className={cn(
-                SELECTED_INDICATOR_CLASS,
-                "right-0 translate-y-0 transition-[top] duration-200 ease-out",
-              )}
-              style={{ top: selectedIndicatorTop }}
-            />
-          ) : null}
-          {/* Smart views */}
-          {showRecommended || showFavorites ? (
-            <div className="mb-1 flex flex-col gap-1 border-b pb-1">
-              {showRecommended ? (
-                <div className="relative w-full">
-                  <Tooltip>
-                    <TooltipTrigger
-                      render={
-                        <button
-                          className="relative isolate flex w-full cursor-pointer aspect-square items-center justify-center rounded-md transition-colors hover:bg-[color-mix(in_srgb,var(--popover)_90%,var(--foreground))] focus-visible:bg-[color-mix(in_srgb,var(--popover)_90%,var(--foreground))] focus-visible:outline-none"
-                          onClick={() => handleSelect("recommended")}
-                          type="button"
-                          data-model-picker-provider="recommended"
-                          aria-label="Recommended models"
-                        >
-                          <SparklesIcon className="size-5 shrink-0" aria-hidden />
-                        </button>
-                      }
-                    />
-                    <TooltipPopup
-                      side={PICKER_TOOLTIP_SIDE}
-                      sideOffset={PICKER_TOOLTIP_SIDE_OFFSET}
-                      align="center"
-                      className={PICKER_TOOLTIP_CLASS}
-                    >
-                      Recommended models
-                    </TooltipPopup>
-                  </Tooltip>
-                </div>
-              ) : null}
-              {showFavorites ? (
-                <div className="relative w-full">
-                  <Tooltip>
-                    <TooltipTrigger
-                      render={
-                        <button
-                          className={cn(
-                            "relative isolate flex w-full cursor-pointer aspect-square items-center justify-center rounded-md transition-colors hover:bg-[color-mix(in_srgb,var(--popover)_90%,var(--foreground))] focus-visible:bg-[color-mix(in_srgb,var(--popover)_90%,var(--foreground))] focus-visible:outline-none",
-                          )}
-                          onClick={() => handleSelect("favorites")}
-                          type="button"
-                          data-model-picker-provider="favorites"
-                          aria-label="Favorites"
-                        >
-                          <StarIcon className="size-5 fill-current shrink-0" aria-hidden />
-                        </button>
-                      }
-                    />
-                    <TooltipPopup
-                      side={PICKER_TOOLTIP_SIDE}
-                      sideOffset={PICKER_TOOLTIP_SIDE_OFFSET}
-                      align="center"
-                      className={PICKER_TOOLTIP_CLASS}
-                    >
-                      Favorites
-                    </TooltipPopup>
-                  </Tooltip>
-                </div>
-              ) : null}
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 py-3">
+        {showRecommended ? (
+          <section>
+            <div className="px-2 pb-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground/65">
+              Views
             </div>
-          ) : null}
+            <div className="space-y-0.5">
+              {showRecommended
+                ? smartView(
+                    "recommended",
+                    "For you",
+                    <SparklesIcon className="size-4" aria-hidden />,
+                  )
+                : null}
+            </div>
+          </section>
+        ) : null}
 
-          {/* Instance buttons (one per configured instance — built-in + custom) */}
-          {props.instanceEntries.map((entry) => {
-            const isUnavailable = !isProviderInstancePickerReady(entry);
-            const isContextDisabled = props.disabledInstanceIds?.has(entry.instanceId) ?? false;
-            const isDisabled = isUnavailable || isContextDisabled;
-            const isSelected = props.selectedInstanceId === entry.instanceId;
-            const isHovered = hoveredInstanceId === entry.instanceId;
-            const showNewBadge = props.newBadgeInstanceIds?.has(entry.instanceId) ?? false;
-            const showInstanceBadge =
-              Boolean(entry.accentColor) || (duplicateDriverCounts.get(entry.driverKind) ?? 0) > 1;
-
-            const tooltip = isUnavailable
-              ? describeUnavailableInstance(entry)
-              : isContextDisabled
-                ? (props.getDisabledInstanceTooltip?.(entry) ?? entry.displayName)
-                : showNewBadge
-                  ? `${entry.displayName} — New`
+        <section className={cn(showRecommended && "mt-5")}>
+          <div className="px-2 pb-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground/65">
+            Accounts
+          </div>
+          <div className="space-y-0.5">
+            {props.instanceEntries.map((entry) => {
+              const isUnavailable = !isProviderInstancePickerReady(entry);
+              const isContextDisabled = props.disabledInstanceIds?.has(entry.instanceId) ?? false;
+              const isDisabled = isUnavailable || isContextDisabled;
+              const isSelected = props.selectedInstanceId === entry.instanceId;
+              const showAccountBadge =
+                Boolean(entry.accentColor) ||
+                (duplicateDriverCounts.get(entry.driverKind) ?? 0) > 1;
+              const tooltip = isUnavailable
+                ? describeUnavailableInstance(entry)
+                : isContextDisabled
+                  ? (props.getDisabledInstanceTooltip?.(entry) ?? entry.displayName)
                   : entry.displayName;
+              const accentStyle = entry.accentColor
+                ? ({ borderColor: entry.accentColor, color: entry.accentColor } as CSSProperties)
+                : undefined;
 
-            const button = (
-              <button
-                data-model-picker-provider={entry.instanceId}
-                className={cn(
-                  "relative isolate flex w-full cursor-pointer aspect-square items-center justify-center rounded-md transition-colors hover:bg-[color-mix(in_srgb,var(--popover)_90%,var(--foreground))] focus-visible:bg-[color-mix(in_srgb,var(--popover)_90%,var(--foreground))] focus-visible:outline-none",
-                  // The 0.75px edge indicator alone was too quiet to answer
-                  // "which provider am I looking at" at a glance.
-                  isSelected && !isDisabled && "bg-foreground/10",
-                  isDisabled && "opacity-50 cursor-not-allowed hover:bg-transparent",
-                  // Locked by the thread rather than broken. Dimming alone read
-                  // as "still loading", so mark it.
-                  isContextDisabled && "opacity-40",
-                )}
-                data-provider-accent-color={entry.accentColor}
-                onClick={() => !isDisabled && handleSelect(entry.instanceId)}
-                onMouseEnter={() => setHoveredInstanceId(entry.instanceId)}
-                onMouseLeave={() =>
-                  setHoveredInstanceId((current) => (current === entry.instanceId ? null : current))
-                }
-                onFocus={() => setHoveredInstanceId(entry.instanceId)}
-                onBlur={() =>
-                  setHoveredInstanceId((current) => (current === entry.instanceId ? null : current))
-                }
-                disabled={isDisabled}
-                type="button"
-                aria-label={
-                  isDisabled
-                    ? tooltip
-                    : showNewBadge
-                      ? `${entry.displayName}, new`
-                      : entry.displayName
-                }
-              >
-                <ProviderInstanceIcon
-                  driverKind={entry.driverKind}
-                  presetId={entry.presetId}
-                  displayName={entry.displayName}
-                  accentColor={entry.accentColor}
-                  showBadge={showInstanceBadge}
-                  className="size-6"
-                  iconClassName="size-5"
-                  indicatorBackground={
-                    isHovered && !isDisabled
-                      ? "var(--muted)"
-                      : isSelected
-                        ? "var(--background)"
-                        : "color-mix(in oklab, var(--muted) 30%, transparent)"
-                  }
-                  {...(entry.accentColor
-                    ? { badgeClassName: "h-3 min-w-3 px-0.5 text-[7px]" }
-                    : {})}
-                />
-                {showNewBadge ? (
-                  <span className={NEW_BADGE_CLASS} aria-hidden>
-                    <SparklesIcon className="size-2" />
-                  </span>
-                ) : null}
-                {isContextDisabled ? (
-                  <span className={LOCK_BADGE_CLASS} aria-hidden>
-                    <LockIcon className="size-2" />
-                  </span>
-                ) : null}
-              </button>
-            );
+              const button = (
+                <button
+                  key={entry.instanceId}
+                  type="button"
+                  className={cn(
+                    NAV_ITEM_CLASS,
+                    "text-muted-foreground hover:bg-foreground/6 hover:text-foreground",
+                    isSelected &&
+                      !isDisabled &&
+                      "bg-foreground/[0.08] text-foreground before:absolute before:inset-y-1.5 before:left-0 before:w-0.5 before:rounded-r-full before:bg-primary",
+                    isDisabled && "cursor-not-allowed opacity-45 hover:bg-transparent",
+                  )}
+                  onClick={() => !isDisabled && props.onSelectInstance(entry.instanceId)}
+                  disabled={isDisabled}
+                  data-model-picker-provider={entry.instanceId}
+                  aria-label={isDisabled ? tooltip : entry.displayName}
+                  aria-current={isSelected ? "page" : undefined}
+                >
+                  <ProviderInstanceIcon
+                    driverKind={entry.driverKind}
+                    presetId={entry.presetId}
+                    displayName={entry.displayName}
+                    accentColor={entry.accentColor}
+                    className="size-5"
+                    iconClassName="size-4.5"
+                    statusDotClassName={statusDotClassName(entry)}
+                    indicatorBackground="var(--popover)"
+                  />
+                  <span className="min-w-0 flex-1 truncate font-medium">{entry.displayName}</span>
+                  {isContextDisabled ? <LockIcon className="size-3" aria-hidden /> : null}
+                  {!isContextDisabled && showAccountBadge ? (
+                    <span
+                      className="flex h-4 min-w-5 items-center justify-center rounded border border-border/80 px-1 text-[8px] font-semibold leading-none text-muted-foreground"
+                      style={accentStyle}
+                      aria-hidden
+                    >
+                      {providerInstanceInitials(entry.displayName)}
+                    </span>
+                  ) : null}
+                </button>
+              );
 
-            const trigger = isDisabled ? (
-              <span className="relative block w-full">{button}</span>
-            ) : (
-              button
-            );
-
-            return (
-              <div key={entry.instanceId} className="relative w-full">
-                <Tooltip>
-                  <TooltipTrigger render={trigger} />
-                  <TooltipPopup
-                    side={PICKER_TOOLTIP_SIDE}
-                    sideOffset={PICKER_TOOLTIP_SIDE_OFFSET}
-                    align="center"
-                    className={PICKER_TOOLTIP_CLASS}
-                  >
+              if (!isDisabled) return button;
+              return (
+                <Tooltip key={entry.instanceId}>
+                  <TooltipTrigger render={<span className="block">{button}</span>} />
+                  <TooltipPopup side="right" align="center" className="max-w-72 text-balance">
                     {tooltip}
                   </TooltipPopup>
                 </Tooltip>
-              </div>
-            );
-          })}
-        </div>
+              );
+            })}
+          </div>
+        </section>
       </div>
-    </div>
+
+      {props.onManageProviders ? (
+        <div className="border-t border-border/55 p-2">
+          <button
+            type="button"
+            className={cn(
+              NAV_ITEM_CLASS,
+              "text-muted-foreground hover:bg-foreground/6 hover:text-foreground",
+            )}
+            onClick={props.onManageProviders}
+          >
+            <SettingsIcon className="size-4 shrink-0" aria-hidden />
+            <span className="truncate">Manage providers</span>
+          </button>
+        </div>
+      ) : null}
+    </aside>
   );
 });
