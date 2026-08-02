@@ -1,4 +1,5 @@
 import {
+  DEFAULT_SERVER_SETTINGS,
   ProviderDriverKind,
   ProviderInstanceId,
   type ServerProvider,
@@ -12,6 +13,7 @@ import {
   isProviderInstancePickerVisible,
   resolveDefaultProviderModelSelection,
   resolveSelectableProviderInstance,
+  type ProviderInstanceEntry,
   resolveProviderDriverKindForInstanceSelection,
 } from "./providerInstances";
 
@@ -462,5 +464,60 @@ describe("resolveDefaultProviderModelSelection", () => {
         null,
       ),
     ).toBeNull();
+  });
+});
+
+describe("applyProviderInstanceSettings preset branding", () => {
+  it("carries a BYOK preset id from the instance config", () => {
+    // One driver serves every API-key provider, so the logo has to follow
+    // the preset; without this DeepSeek and Kimi would render identically.
+    const entries = applyProviderInstanceSettings(
+      [
+        {
+          instanceId: ProviderInstanceId.make("byok_deepseek"),
+          driverKind: ProviderDriverKind.make("byok"),
+          displayName: "DeepSeek",
+          enabled: true,
+          installed: true,
+          status: "ready",
+          isDefault: false,
+          isAvailable: true,
+          models: [],
+        } as unknown as ProviderInstanceEntry,
+      ],
+      {
+        providers: DEFAULT_SERVER_SETTINGS.providers,
+        providerInstances: {
+          [ProviderInstanceId.make("byok_deepseek")]: {
+            driver: ProviderDriverKind.make("byok"),
+            enabled: true,
+            config: { preset: "deepseek" },
+          },
+        },
+      },
+    );
+
+    expect(entries[0]?.presetId).toBe("deepseek");
+  });
+
+  it("leaves non-BYOK instances without a preset id", () => {
+    const entries = applyProviderInstanceSettings(
+      [
+        {
+          instanceId: ProviderInstanceId.make("codex"),
+          driverKind: ProviderDriverKind.make("codex"),
+          displayName: "Codex",
+          enabled: true,
+          installed: true,
+          status: "ready",
+          isDefault: true,
+          isAvailable: true,
+          models: [],
+        } as unknown as ProviderInstanceEntry,
+      ],
+      { providers: DEFAULT_SERVER_SETTINGS.providers, providerInstances: {} },
+    );
+
+    expect(entries[0]?.presetId).toBeUndefined();
   });
 });

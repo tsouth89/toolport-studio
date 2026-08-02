@@ -1,7 +1,7 @@
 import { type CSSProperties, memo } from "react";
 import { type ProviderDriverKind } from "@toolport-studio/contracts";
 
-import { PROVIDER_ICON_BY_PROVIDER } from "./providerIconUtils";
+import { resolveProviderInstanceIcon } from "./providerIconUtils";
 import { cn } from "~/lib/utils";
 
 export function providerInstanceInitials(label: string): string {
@@ -16,6 +16,8 @@ export function providerInstanceInitials(label: string): string {
 
 export const ProviderInstanceIcon = memo(function ProviderInstanceIcon(props: {
   driverKind: ProviderDriverKind;
+  /** BYOK preset id, when this instance is an API-key provider. */
+  presetId?: string | undefined;
   displayName: string;
   accentColor?: string | undefined;
   showBadge?: boolean;
@@ -26,7 +28,10 @@ export const ProviderInstanceIcon = memo(function ProviderInstanceIcon(props: {
   statusDotClassName?: string;
   indicatorBackground?: string;
 }) {
-  const Icon = PROVIDER_ICON_BY_PROVIDER[props.driverKind] ?? null;
+  const Icon = resolveProviderInstanceIcon({
+    driverKind: props.driverKind,
+    presetId: props.presetId,
+  });
   const indicatorBackground = props.indicatorBackground ?? "var(--card)";
   const accentStyle = props.accentColor
     ? ({ "--provider-accent": props.accentColor } as CSSProperties)

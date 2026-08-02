@@ -415,6 +415,12 @@ export function ProviderInstanceCard({
   const versionAdvisory = getProviderVersionAdvisoryPresentation(liveProvider?.versionAdvisory);
   const updateCommand = versionAdvisory?.updateCommand ?? null;
   const FallbackIconComponent = driverOption?.icon;
+  // BYOK instances brand by preset, not driver kind — one driver serves
+  // every API-key provider.
+  const byokPresetId =
+    typeof instance.config === "object" && instance.config !== null
+      ? ((instance.config as { readonly preset?: unknown }).preset as string | undefined)
+      : undefined;
   const displayName =
     instance.displayName?.trim() || driverOption?.label || String(instance.driver);
   const accentColor = normalizeProviderAccentColor(instance.accentColor);
@@ -506,6 +512,7 @@ export function ProviderInstanceCard({
   const titleIconNode = driverKind ? (
     <ProviderInstanceIcon
       driverKind={driverKind}
+      presetId={byokPresetId}
       displayName={displayName}
       accentColor={accentColor}
       showBadge={Boolean(accentColor)}
