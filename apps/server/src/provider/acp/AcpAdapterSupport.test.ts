@@ -57,6 +57,19 @@ describe("AcpAdapterSupport", () => {
         }),
       ),
     ).toBe(true);
+
+    // Cursor: the session id sits between the two words and the code is the
+    // generic -32602, so neither the code check nor an adjacency match fired
+    // and a recycle died on the raw "Invalid params" defect.
+    expect(
+      isAcpSessionLoadNotFound(
+        new EffectAcpErrors.AcpRequestError({
+          code: -32602,
+          errorMessage: "Invalid params",
+          data: { message: 'Session "b50007b7-f065-44a0-b606-75c51359aa78" not found' },
+        }),
+      ),
+    ).toBe(true);
     // Schema-defect style surface: bare Error message + stack frames.
     const schemaStyle = new Error("Path not found");
     schemaStyle.stack =
