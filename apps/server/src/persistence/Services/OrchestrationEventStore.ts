@@ -16,6 +16,22 @@ import type * as Stream from "effect/Stream";
 
 import type { OrchestrationEventStoreError } from "../Errors.ts";
 
+export const ORCHESTRATION_SIDE_EFFECT_CONSUMERS = {
+  providerCommand: "side-effect.provider-command",
+  checkpoint: "side-effect.checkpoint",
+  threadDeletion: "side-effect.thread-deletion",
+  queuedTurn: "side-effect.queued-turn",
+} as const;
+
+export type OrchestrationSideEffectConsumer =
+  (typeof ORCHESTRATION_SIDE_EFFECT_CONSUMERS)[keyof typeof ORCHESTRATION_SIDE_EFFECT_CONSUMERS];
+
+export interface OrchestrationSideEffectDelivery {
+  readonly consumer: OrchestrationSideEffectConsumer;
+  readonly event: OrchestrationEvent;
+  readonly attemptCount: number;
+}
+
 /**
  * OrchestrationEventStoreShape - Service API for orchestration event persistence.
  */
@@ -61,6 +77,40 @@ export interface OrchestrationEventStoreShape {
   readonly deleteUpToSequenceInclusive: (
     sequenceInclusive: number,
   ) => Effect.Effect<void, OrchestrationEventStoreError>;
+
+  /**
+   * Reclaim deliveries left in `processing` by a previous process.
+   */
+  readonly recoverSideEffectDeliveries: (
+    consumer: OrchestrationSideEffectConsumer,
+  ) => Effect.Effect<void, OrchestrationEventStoreError>;
+
+  /**
+   * Atomically claim ready durable side effects for one consumer.
+   */
+  readonly claimSideEffectDeliveries: (input: {
+    readonly consumer: OrchestrationSideEffectConsumer;
+    readonly limit: number;
+    readonly nowMs: number;
+  }) => Effect.Effect<ReadonlyArray<OrchestrationSideEffectDelivery>, OrchestrationEventStoreError>;
+
+  readonly completeSideEffectDelivery: (input: {
+    readonly consumer: OrchestrationSideEffectConsumer;
+    readonly eventSequence: number;
+    readonly updatedAt: string;
+  }) => Effect.Effect<void, OrchestrationEventStoreError>;
+
+  readonly failSideEffectDelivery: (input: {
+    readonly consumer: OrchestrationSideEffectConsumer;
+    readonly eventSequence: number;
+    readonly availableAtMs: number;
+    readonly detail: string;
+    readonly updatedAt: string;
+  }) => Effect.Effect<void, OrchestrationEventStoreError>;
+
+  readonly countUnfinishedSideEffectDeliveries: (
+    consumer: OrchestrationSideEffectConsumer,
+  ) => Effect.Effect<number, OrchestrationEventStoreError>;
 }
 
 /**

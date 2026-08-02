@@ -130,6 +130,21 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       `;
 
       yield* sql`
+        INSERT INTO projection_thread_queued_turns (
+          thread_id,
+          message_id,
+          queued_turn_json,
+          created_at
+        )
+        VALUES (
+          'thread-1',
+          'queued-message-1',
+          '{"message":{"messageId":"queued-message-1","role":"user","text":"run next","attachments":[]},"runtimeMode":"full-access","interactionMode":"default","createdAt":"2026-02-24T00:00:04.500Z"}',
+          '2026-02-24T00:00:04.500Z'
+        )
+      `;
+
+      yield* sql`
         INSERT INTO projection_thread_proposed_plans (
           plan_id,
           thread_id,
@@ -252,6 +267,24 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         sequence += 1;
       }
 
+      yield* sql`
+        UPDATE projection_thread_queued_turns
+        SET queued_turn_json = 'not-valid-json'
+        WHERE thread_id = 'thread-1'
+      `;
+      const shellWithUndecodableQueuedTurn = yield* snapshotQuery.getThreadShellById(
+        ThreadId.make("thread-1"),
+      );
+      assert.equal(shellWithUndecodableQueuedTurn._tag, "Some");
+      if (shellWithUndecodableQueuedTurn._tag === "Some") {
+        assert.equal(shellWithUndecodableQueuedTurn.value.queuedTurnCount, 1);
+      }
+      yield* sql`
+        UPDATE projection_thread_queued_turns
+        SET queued_turn_json = '{"message":{"messageId":"queued-message-1","role":"user","text":"run next","attachments":[]},"runtimeMode":"full-access","interactionMode":"default","createdAt":"2026-02-24T00:00:04.500Z"}'
+        WHERE thread_id = 'thread-1'
+      `;
+
       const snapshot = yield* snapshotQuery.getSnapshot();
 
       assert.equal(snapshot.snapshotSequence, 5);
@@ -357,6 +390,19 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
               completedAt: "2026-02-24T00:00:08.000Z",
             },
           ],
+          queuedTurns: [
+            {
+              message: {
+                messageId: asMessageId("queued-message-1"),
+                role: "user",
+                text: "run next",
+                attachments: [],
+              },
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              createdAt: "2026-02-24T00:00:04.500Z",
+            },
+          ],
           session: {
             threadId: ThreadId.make("thread-1"),
             status: "running",
@@ -439,6 +485,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           hasPendingApprovals: true,
           hasPendingUserInput: false,
           hasActionableProposedPlan: false,
+          queuedTurnCount: 1,
         },
       ]);
 

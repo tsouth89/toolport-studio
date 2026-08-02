@@ -59,6 +59,7 @@ import {
   type OrchestrationEngineShape,
 } from "../src/orchestration/Services/OrchestrationEngine.ts";
 import { ThreadDeletionReactor } from "../src/orchestration/Services/ThreadDeletionReactor.ts";
+import { QueuedTurnReactor } from "../src/orchestration/Services/QueuedTurnReactor.ts";
 import { OrchestrationReactor } from "../src/orchestration/Services/OrchestrationReactor.ts";
 import { ProjectionSnapshotQuery } from "../src/orchestration/Services/ProjectionSnapshotQuery.ts";
 import {
@@ -364,6 +365,14 @@ export const makeOrchestrationIntegrationHarness = (
         Layer.succeed(ThreadDeletionReactor, {
           start: () => Effect.void,
           drain: Effect.void,
+          shutdown: Effect.void,
+        }),
+      ),
+      Layer.provideMerge(
+        Layer.succeed(QueuedTurnReactor, {
+          start: () => Effect.void,
+          drain: Effect.void,
+          shutdown: Effect.void,
         }),
       ),
       Layer.provideMerge(
@@ -376,6 +385,7 @@ export const makeOrchestrationIntegrationHarness = (
     const layer = Layer.empty.pipe(
       Layer.provideMerge(runtimeServicesLayer),
       Layer.provideMerge(orchestrationReactorLayer),
+      Layer.provideMerge(OrchestrationEventStoreLive.pipe(Layer.provide(persistenceLayer))),
       Layer.provideMerge(providerRegistryLayer),
       Layer.provide(persistenceLayer),
       Layer.provideMerge(RepositoryIdentityResolver.layer),

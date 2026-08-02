@@ -9,6 +9,7 @@ import { CheckpointReactor } from "../Services/CheckpointReactor.ts";
 import { ProviderCommandReactor } from "../Services/ProviderCommandReactor.ts";
 import { ProviderRuntimeIngestionService } from "../Services/ProviderRuntimeIngestion.ts";
 import { ThreadDeletionReactor } from "../Services/ThreadDeletionReactor.ts";
+import { QueuedTurnReactor } from "../Services/QueuedTurnReactor.ts";
 import * as AgentAwarenessRelay from "../../relay/AgentAwarenessRelay.ts";
 
 export const makeOrchestrationReactor = Effect.gen(function* () {
@@ -16,6 +17,7 @@ export const makeOrchestrationReactor = Effect.gen(function* () {
   const providerCommandReactor = yield* ProviderCommandReactor;
   const checkpointReactor = yield* CheckpointReactor;
   const threadDeletionReactor = yield* ThreadDeletionReactor;
+  const queuedTurnReactor = yield* QueuedTurnReactor;
   const agentAwarenessRelay = yield* AgentAwarenessRelay.AgentAwarenessRelay;
 
   const start: OrchestrationReactorShape["start"] = Effect.fn("start")(function* () {
@@ -23,11 +25,26 @@ export const makeOrchestrationReactor = Effect.gen(function* () {
     yield* providerCommandReactor.start();
     yield* checkpointReactor.start();
     yield* threadDeletionReactor.start();
+    yield* queuedTurnReactor.start();
     yield* agentAwarenessRelay.start();
+  });
+
+  const shutdown: OrchestrationReactorShape["shutdown"] = Effect.gen(function* () {
+    yield* Effect.all(
+      [
+        providerCommandReactor.shutdown,
+        checkpointReactor.shutdown,
+        threadDeletionReactor.shutdown,
+        queuedTurnReactor.shutdown,
+      ],
+      { concurrency: "unbounded", discard: true },
+    );
+    yield* providerRuntimeIngestion.drain;
   });
 
   return {
     start,
+    shutdown,
   } satisfies OrchestrationReactorShape;
 });
 

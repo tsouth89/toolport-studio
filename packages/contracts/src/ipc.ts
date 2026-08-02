@@ -1029,6 +1029,12 @@ export interface DesktopBridge {
     readonly environmentId: string;
     readonly threadId: string;
   }) => Promise<void>;
+  /**
+   * Keep the native close guard in sync with renderer-owned task state.
+   * The main process uses this only to decide whether closing the primary
+   * window needs an explicit confirmation.
+   */
+  setCloseConfirmationRequired?: (required: boolean) => Promise<void>;
   onMenuAction: (listener: (action: string) => void) => () => void;
   getWindowFullscreenState: () => boolean;
   onWindowFullscreenStateChange: (listener: (fullscreen: boolean) => void) => () => void;

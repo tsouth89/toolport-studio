@@ -9,6 +9,7 @@ import { CheckpointReactor } from "../Services/CheckpointReactor.ts";
 import { ProviderCommandReactor } from "../Services/ProviderCommandReactor.ts";
 import { ProviderRuntimeIngestionService } from "../Services/ProviderRuntimeIngestion.ts";
 import { ThreadDeletionReactor } from "../Services/ThreadDeletionReactor.ts";
+import { QueuedTurnReactor } from "../Services/QueuedTurnReactor.ts";
 import { OrchestrationReactor } from "../Services/OrchestrationReactor.ts";
 import { makeOrchestrationReactor } from "./OrchestrationReactor.ts";
 import * as AgentAwarenessRelay from "../../relay/AgentAwarenessRelay.ts";
@@ -25,6 +26,7 @@ describe("OrchestrationReactor", () => {
 
   it("starts provider ingestion, provider command, checkpoint, and thread deletion reactors", async () => {
     const started: string[] = [];
+    const stopped: string[] = [];
 
     runtime = ManagedRuntime.make(
       Layer.effect(OrchestrationReactor, makeOrchestrationReactor).pipe(
@@ -34,7 +36,9 @@ describe("OrchestrationReactor", () => {
               started.push("provider-runtime-ingestion");
               return Effect.void;
             },
-            drain: Effect.void,
+            drain: Effect.sync(() => {
+              stopped.push("provider-runtime-ingestion");
+            }),
           }),
         ),
         Layer.provideMerge(
@@ -44,6 +48,9 @@ describe("OrchestrationReactor", () => {
               return Effect.void;
             },
             drain: Effect.void,
+            shutdown: Effect.sync(() => {
+              stopped.push("provider-command-reactor");
+            }),
           }),
         ),
         Layer.provideMerge(
@@ -53,6 +60,9 @@ describe("OrchestrationReactor", () => {
               return Effect.void;
             },
             drain: Effect.void,
+            shutdown: Effect.sync(() => {
+              stopped.push("checkpoint-reactor");
+            }),
           }),
         ),
         Layer.provideMerge(
@@ -62,6 +72,21 @@ describe("OrchestrationReactor", () => {
               return Effect.void;
             },
             drain: Effect.void,
+            shutdown: Effect.sync(() => {
+              stopped.push("thread-deletion-reactor");
+            }),
+          }),
+        ),
+        Layer.provideMerge(
+          Layer.succeed(QueuedTurnReactor, {
+            start: () => {
+              started.push("queued-turn-reactor");
+              return Effect.void;
+            },
+            drain: Effect.void,
+            shutdown: Effect.sync(() => {
+              stopped.push("queued-turn-reactor");
+            }),
           }),
         ),
         Layer.provideMerge(
@@ -85,8 +110,20 @@ describe("OrchestrationReactor", () => {
       "provider-command-reactor",
       "checkpoint-reactor",
       "thread-deletion-reactor",
+      "queued-turn-reactor",
       "agent-awareness-relay",
     ]);
+
+    await runtime!.runPromise(reactor.shutdown);
+    expect(new Set(stopped.slice(0, 4))).toEqual(
+      new Set([
+        "provider-command-reactor",
+        "checkpoint-reactor",
+        "thread-deletion-reactor",
+        "queued-turn-reactor",
+      ]),
+    );
+    expect(stopped[4]).toBe("provider-runtime-ingestion");
 
     await Effect.runPromise(Scope.close(scope, Exit.void));
   });

@@ -15,6 +15,7 @@ import {
 import { isTemporaryWorktreeBranch, WORKTREE_BRANCH_PREFIX } from "@toolport-studio/shared/git";
 import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
+import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -22,8 +23,6 @@ import * as Equal from "effect/Equal";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import * as Stream from "effect/Stream";
-import { makeDrainableWorker } from "@toolport-studio/shared/DrainableWorker";
 
 import { resolveThreadWorkspaceCwd } from "../../checkpointing/Utils.ts";
 import { buildProviderHandoff } from "@toolport-studio/shared/providerHandoff";
@@ -35,7 +34,6 @@ import {
 } from "../providerSwitch.ts";
 import { increment, orchestrationEventsProcessedTotal } from "../../observability/Metrics.ts";
 import { ProviderAdapterRequestError } from "../../provider/Errors.ts";
-import type { ProviderServiceError } from "../../provider/Errors.ts";
 import { TextGeneration } from "../../textGeneration/TextGeneration.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
@@ -48,6 +46,8 @@ import {
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
+import { ORCHESTRATION_SIDE_EFFECT_CONSUMERS } from "../../persistence/Services/OrchestrationEventStore.ts";
+import { makeDurableSideEffectReactor } from "../DurableSideEffectReactor.ts";
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
 
@@ -94,6 +94,22 @@ const HANDLED_TURN_START_KEY_MAX = 10_000;
 const HANDLED_TURN_START_KEY_TTL = Duration.minutes(30);
 const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
 const DEFAULT_THREAD_TITLE = "New thread";
+const DEFAULT_PROVIDER_SESSION_OPERATION_TIMEOUT = Duration.minutes(2);
+const DEFAULT_PROVIDER_CONTROL_OPERATION_TIMEOUT = Duration.seconds(30);
+const DEFAULT_PROVIDER_COMMAND_LANE_IDLE_TIME_TO_LIVE = Duration.seconds(30);
+
+export interface ProviderCommandReactorOptions {
+  readonly sessionOperationTimeout?: Duration.Input;
+  readonly controlOperationTimeout?: Duration.Input;
+  readonly laneIdleTimeToLive?: Duration.Input;
+}
+
+export const ProviderCommandReactorConfig = Context.Reference<ProviderCommandReactorOptions>(
+  "t3/orchestration/Layers/ProviderCommandReactorConfig",
+  {
+    defaultValue: () => ({}),
+  },
+);
 
 /** First user message in the thread. Establishes what is being attempted. */
 function firstUserMessageText(
@@ -145,13 +161,13 @@ function canReplaceThreadTitle(currentTitle: string, titleSeed?: string): boolea
 }
 
 function findProviderAdapterRequestError(
-  cause: Cause.Cause<ProviderServiceError>,
+  cause: Cause.Cause<unknown>,
 ): ProviderAdapterRequestError | undefined {
   const failReason = cause.reasons.find(Cause.isFailReason);
   return isProviderAdapterRequestError(failReason?.error) ? failReason.error : undefined;
 }
 
-function isUnknownPendingApprovalRequestError(cause: Cause.Cause<ProviderServiceError>): boolean {
+function isUnknownPendingApprovalRequestError(cause: Cause.Cause<unknown>): boolean {
   const error = findProviderAdapterRequestError(cause);
   if (error) {
     const detail = error.detail.toLowerCase();
@@ -167,7 +183,7 @@ function isUnknownPendingApprovalRequestError(cause: Cause.Cause<ProviderService
   );
 }
 
-function isUnknownPendingUserInputRequestError(cause: Cause.Cause<ProviderServiceError>): boolean {
+function isUnknownPendingUserInputRequestError(cause: Cause.Cause<unknown>): boolean {
   const error = findProviderAdapterRequestError(cause);
   if (error) {
     const detail = error.detail.toLowerCase();
@@ -216,6 +232,13 @@ function buildGeneratedWorktreeBranchName(raw: string): string {
 }
 
 const make = Effect.gen(function* () {
+  const options = yield* ProviderCommandReactorConfig;
+  const sessionOperationTimeout =
+    options.sessionOperationTimeout ?? DEFAULT_PROVIDER_SESSION_OPERATION_TIMEOUT;
+  const controlOperationTimeout =
+    options.controlOperationTimeout ?? DEFAULT_PROVIDER_CONTROL_OPERATION_TIMEOUT;
+  const laneIdleTimeToLive =
+    options.laneIdleTimeToLive ?? DEFAULT_PROVIDER_COMMAND_LANE_IDLE_TIME_TO_LIVE;
   const crypto = yield* Crypto.Crypto;
   const orchestrationEngine = yield* OrchestrationEngineService;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
@@ -228,6 +251,28 @@ const make = Effect.gen(function* () {
   const serverCommandId = (tag: string) =>
     crypto.randomUUIDv4.pipe(Effect.map((uuid) => CommandId.make(`server:${tag}:${uuid}`)));
   const serverEventId = () => crypto.randomUUIDv4.pipe(Effect.map(EventId.make));
+  const withProviderOperationTimeout = <A, E, R>(
+    effect: Effect.Effect<A, E, R>,
+    input: {
+      readonly duration: Duration.Input;
+      readonly provider: string;
+      readonly method: string;
+      readonly operation: string;
+    },
+  ): Effect.Effect<A, E | ProviderAdapterRequestError, R> =>
+    effect.pipe(
+      Effect.timeoutOrElse({
+        duration: input.duration,
+        orElse: () =>
+          Effect.fail(
+            new ProviderAdapterRequestError({
+              provider: input.provider,
+              method: input.method,
+              detail: `${input.operation} timed out before the provider responded.`,
+            }),
+          ),
+      }),
+    );
   const handledTurnStartKeys = yield* Cache.make<string, true>({
     capacity: HANDLED_TURN_START_KEY_MAX,
     timeToLive: HANDLED_TURN_START_KEY_TTL,
@@ -934,7 +979,11 @@ const make = Effect.gen(function* () {
       const targetBranch = buildGeneratedWorktreeBranchName(generated.branch);
       if (targetBranch === oldBranch) return;
 
-      const renamed = yield* gitWorkflow.renameBranch({ cwd, oldBranch, newBranch: targetBranch });
+      const renamed = yield* gitWorkflow.renameBranch({
+        cwd,
+        oldBranch,
+        newBranch: targetBranch,
+      });
       yield* orchestrationEngine.dispatch({
         type: "thread.meta.update",
         commandId: yield* serverCommandId("worktree-branch-rename"),
@@ -1093,17 +1142,29 @@ const make = Effect.gen(function* () {
         ),
       );
 
-    const sendTurnRequest = yield* buildSendTurnRequestForThread({
-      threadId: event.payload.threadId,
-      messageText: message.text,
-      messageId: String(message.id),
-      ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
-      ...(event.payload.modelSelection !== undefined
-        ? { modelSelection: event.payload.modelSelection }
-        : {}),
-      interactionMode: event.payload.interactionMode,
-      createdAt: event.payload.createdAt,
-    }).pipe(
+    const sendTurnRequest = yield* withProviderOperationTimeout(
+      buildSendTurnRequestForThread({
+        threadId: event.payload.threadId,
+        messageText: message.text,
+        messageId: String(message.id),
+        ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
+        ...(event.payload.modelSelection !== undefined
+          ? { modelSelection: event.payload.modelSelection }
+          : {}),
+        interactionMode: event.payload.interactionMode,
+        createdAt: event.payload.createdAt,
+      }),
+      {
+        duration: sessionOperationTimeout,
+        provider: providerErrorLabelFromInstanceHint({
+          instanceId: event.payload.modelSelection?.instanceId,
+          modelSelectionInstanceId: thread.modelSelection.instanceId,
+          sessionProvider: thread.session?.providerName ?? undefined,
+        }),
+        method: "thread.start",
+        operation: "Provider session start",
+      },
+    ).pipe(
       Effect.map(Option.some),
       Effect.catchCause((cause) => handleTurnStartFailure(cause).pipe(Effect.as(Option.none()))),
     );
@@ -1112,9 +1173,16 @@ const make = Effect.gen(function* () {
       return;
     }
 
-    yield* providerService
-      .sendTurn(sendTurnRequest.value)
-      .pipe(Effect.catchCause(recoverTurnStartFailure), Effect.forkScoped);
+    yield* withProviderOperationTimeout(providerService.sendTurn(sendTurnRequest.value), {
+      duration: sessionOperationTimeout,
+      provider: providerErrorLabelFromInstanceHint({
+        instanceId: event.payload.modelSelection?.instanceId,
+        modelSelectionInstanceId: thread.modelSelection.instanceId,
+        sessionProvider: thread.session?.providerName ?? undefined,
+      }),
+      method: "turn.start",
+      operation: "Provider turn start",
+    }).pipe(Effect.catchCause(recoverTurnStartFailure));
   });
 
   /**
@@ -1176,7 +1244,15 @@ const make = Effect.gen(function* () {
     // Orchestration turn ids are not provider turn ids, so interrupt by session.
     // Provider rejections must not be swallowed by processDomainEventSafely —
     // Stop would look successful while the turn keeps running (SOU-376).
-    yield* providerService.interruptTurn({ threadId: event.payload.threadId }).pipe(
+    yield* withProviderOperationTimeout(
+      providerService.interruptTurn({ threadId: event.payload.threadId }),
+      {
+        duration: controlOperationTimeout,
+        provider: providerErrorLabel(thread.session?.providerName ?? undefined),
+        method: "turn.interrupt",
+        operation: "Provider turn interrupt",
+      },
+    ).pipe(
       Effect.tap(() =>
         forceSessionReadyAfterSuccessfulInterrupt({
           threadId: event.payload.threadId,
@@ -1232,27 +1308,33 @@ const make = Effect.gen(function* () {
       });
     }
 
-    yield* providerService
-      .respondToRequest({
+    yield* withProviderOperationTimeout(
+      providerService.respondToRequest({
         threadId: event.payload.threadId,
         requestId: event.payload.requestId,
         decision: event.payload.decision,
-      })
-      .pipe(
-        Effect.catchCause((cause) =>
-          appendProviderFailureActivity({
-            threadId: event.payload.threadId,
-            kind: "provider.approval.respond.failed",
-            summary: "Provider approval response failed",
-            detail: isUnknownPendingApprovalRequestError(cause)
-              ? stalePendingRequestDetail("approval", event.payload.requestId)
-              : Cause.pretty(cause),
-            turnId: null,
-            createdAt: event.payload.createdAt,
-            requestId: event.payload.requestId,
-          }),
-        ),
-      );
+      }),
+      {
+        duration: controlOperationTimeout,
+        provider: providerErrorLabel(thread.session?.providerName ?? undefined),
+        method: "approval.respond",
+        operation: "Provider approval response",
+      },
+    ).pipe(
+      Effect.catchCause((cause) =>
+        appendProviderFailureActivity({
+          threadId: event.payload.threadId,
+          kind: "provider.approval.respond.failed",
+          summary: "Provider approval response failed",
+          detail: isUnknownPendingApprovalRequestError(cause)
+            ? stalePendingRequestDetail("approval", event.payload.requestId)
+            : Cause.pretty(cause),
+          turnId: null,
+          createdAt: event.payload.createdAt,
+          requestId: event.payload.requestId,
+        }),
+      ),
+    );
   });
 
   const processUserInputResponseRequested = Effect.fn("processUserInputResponseRequested")(
@@ -1276,27 +1358,33 @@ const make = Effect.gen(function* () {
         });
       }
 
-      yield* providerService
-        .respondToUserInput({
+      yield* withProviderOperationTimeout(
+        providerService.respondToUserInput({
           threadId: event.payload.threadId,
           requestId: event.payload.requestId,
           answers: event.payload.answers,
-        })
-        .pipe(
-          Effect.catchCause((cause) =>
-            appendProviderFailureActivity({
-              threadId: event.payload.threadId,
-              kind: "provider.user-input.respond.failed",
-              summary: "Provider user input response failed",
-              detail: isUnknownPendingUserInputRequestError(cause)
-                ? stalePendingRequestDetail("user-input", event.payload.requestId)
-                : Cause.pretty(cause),
-              turnId: null,
-              createdAt: event.payload.createdAt,
-              requestId: event.payload.requestId,
-            }),
-          ),
-        );
+        }),
+        {
+          duration: controlOperationTimeout,
+          provider: providerErrorLabel(thread.session?.providerName ?? undefined),
+          method: "user-input.respond",
+          operation: "Provider user-input response",
+        },
+      ).pipe(
+        Effect.catchCause((cause) =>
+          appendProviderFailureActivity({
+            threadId: event.payload.threadId,
+            kind: "provider.user-input.respond.failed",
+            summary: "Provider user input response failed",
+            detail: isUnknownPendingUserInputRequestError(cause)
+              ? stalePendingRequestDetail("user-input", event.payload.requestId)
+              : Cause.pretty(cause),
+            turnId: null,
+            createdAt: event.payload.createdAt,
+            requestId: event.payload.requestId,
+          }),
+        ),
+      );
     },
   );
 
@@ -1310,7 +1398,33 @@ const make = Effect.gen(function* () {
 
     const now = event.payload.createdAt;
     if (thread.session && thread.session.status !== "stopped") {
-      yield* providerService.stopSession({ threadId: thread.id });
+      const stopped = yield* withProviderOperationTimeout(
+        providerService.stopSession({ threadId: thread.id }),
+        {
+          duration: controlOperationTimeout,
+          provider: providerErrorLabel(thread.session.providerName ?? undefined),
+          method: "session.stop",
+          operation: "Provider session stop",
+        },
+      ).pipe(
+        Effect.as(true),
+        Effect.catchCause((cause) => {
+          if (Cause.hasInterruptsOnly(cause)) {
+            return Effect.interrupt;
+          }
+          return appendProviderFailureActivity({
+            threadId: thread.id,
+            kind: "provider.session.stop.failed",
+            summary: "Provider session stop failed",
+            detail: formatFailureDetail(cause),
+            turnId: null,
+            createdAt: now,
+          }).pipe(Effect.as(false));
+        }),
+      );
+      if (!stopped) {
+        return;
+      }
     }
 
     yield* setThreadSession({
@@ -1349,10 +1463,33 @@ const make = Effect.gen(function* () {
           return;
         }
         const cachedModelSelection = threadModelSelections.get(event.payload.threadId);
-        yield* ensureSessionForThread(
-          event.payload.threadId,
-          event.occurredAt,
-          cachedModelSelection !== undefined ? { modelSelection: cachedModelSelection } : {},
+        yield* withProviderOperationTimeout(
+          ensureSessionForThread(
+            event.payload.threadId,
+            event.occurredAt,
+            cachedModelSelection !== undefined ? { modelSelection: cachedModelSelection } : {},
+          ),
+          {
+            duration: sessionOperationTimeout,
+            provider: providerErrorLabel(thread.session.providerName ?? undefined),
+            method: "session.restart",
+            operation: "Provider session restart",
+          },
+        ).pipe(
+          Effect.catchCause((cause) =>
+            setThreadSessionLastErrorPreservingLifecycle({
+              threadId: event.payload.threadId,
+              detail: formatFailureDetail(cause),
+              createdAt: event.occurredAt,
+            }).pipe(
+              Effect.andThen(
+                Effect.logWarning("provider runtime-mode session update failed", {
+                  threadId: event.payload.threadId,
+                  cause: Cause.pretty(cause),
+                }),
+              ),
+            ),
+          ),
         );
         return;
       }
@@ -1374,44 +1511,102 @@ const make = Effect.gen(function* () {
     }
   });
 
-  const processDomainEventSafely = (event: ProviderIntentEvent) =>
-    processDomainEvent(event).pipe(
-      Effect.catchCause((cause) => {
-        if (Cause.hasInterruptsOnly(cause)) {
-          return Effect.failCause(cause);
-        }
-        return Effect.logWarning("provider command reactor failed to process event", {
+  const isProviderIntentEvent = (event: OrchestrationEvent): event is ProviderIntentEvent =>
+    event.type === "thread.runtime-mode-set" ||
+    event.type === "thread.turn-start-requested" ||
+    event.type === "thread.turn-interrupt-requested" ||
+    event.type === "thread.approval-response-requested" ||
+    event.type === "thread.user-input-response-requested" ||
+    event.type === "thread.session-stop-requested";
+
+  const surfaceDurableProviderFailure = (
+    event: ProviderIntentEvent,
+    cause: Cause.Cause<unknown>,
+  ) => {
+    const detail = formatFailureDetail(cause);
+    const surfaceFailure =
+      event.type === "thread.runtime-mode-set"
+        ? setThreadSessionLastErrorPreservingLifecycle({
+            threadId: event.payload.threadId,
+            detail,
+            createdAt: event.occurredAt,
+          })
+        : appendProviderFailureActivity({
+            threadId: event.payload.threadId,
+            kind:
+              event.type === "thread.turn-start-requested"
+                ? "provider.turn.start.failed"
+                : event.type === "thread.turn-interrupt-requested"
+                  ? "provider.turn.interrupt.failed"
+                  : event.type === "thread.approval-response-requested"
+                    ? "provider.approval.respond.failed"
+                    : event.type === "thread.user-input-response-requested"
+                      ? "provider.user-input.respond.failed"
+                      : "provider.session.stop.failed",
+            summary:
+              event.type === "thread.turn-start-requested"
+                ? "Provider turn start failed"
+                : event.type === "thread.turn-interrupt-requested"
+                  ? "Provider turn interrupt failed"
+                  : event.type === "thread.approval-response-requested"
+                    ? "Provider approval response failed"
+                    : event.type === "thread.user-input-response-requested"
+                      ? "Provider user input response failed"
+                      : "Provider session stop failed",
+            detail,
+            turnId:
+              event.type === "thread.turn-interrupt-requested"
+                ? (event.payload.turnId ?? null)
+                : null,
+            createdAt: event.payload.createdAt,
+            ...(event.type === "thread.approval-response-requested" ||
+            event.type === "thread.user-input-response-requested"
+              ? { requestId: event.payload.requestId }
+              : {}),
+          }).pipe(Effect.asVoid);
+
+    return surfaceFailure.pipe(
+      Effect.catchCause((surfaceCause) =>
+        Effect.logWarning("failed to surface durable provider command failure", {
           eventType: event.type,
-          cause: Cause.pretty(cause),
-        });
-      }),
+          threadId: event.payload.threadId,
+          cause: Cause.pretty(surfaceCause),
+          originalCause: detail,
+        }),
+      ),
     );
+  };
 
-  const worker = yield* makeDrainableWorker(processDomainEventSafely);
-
-  const start: ProviderCommandReactorShape["start"] = Effect.fn("start")(function* () {
-    const processEvent = Effect.fn("processEvent")(function* (event: OrchestrationEvent) {
-      if (
-        event.type === "thread.runtime-mode-set" ||
-        event.type === "thread.turn-start-requested" ||
-        event.type === "thread.turn-interrupt-requested" ||
-        event.type === "thread.approval-response-requested" ||
-        event.type === "thread.user-input-response-requested" ||
-        event.type === "thread.session-stop-requested"
-      ) {
-        return yield* worker.enqueue(event);
-      }
-    });
-
-    yield* Effect.forkScoped(
-      Stream.runForEach(orchestrationEngine.streamDomainEvents, processEvent),
-    );
+  const durableReactor = yield* makeDurableSideEffectReactor({
+    consumer: ORCHESTRATION_SIDE_EFFECT_CONSUMERS.providerCommand,
+    decode: (event) => (isProviderIntentEvent(event) ? event : null),
+    key: (event) => event.payload.threadId,
+    keyLabel: String,
+    laneIdleTimeToLive,
+    process: processDomainEvent,
+    onFailure: (event, cause) =>
+      surfaceDurableProviderFailure(event, cause).pipe(
+        Effect.andThen(
+          Effect.logWarning("provider command reactor failed to process durable event", {
+            eventType: event.type,
+            threadId: event.payload.threadId,
+            cause: Cause.pretty(cause),
+          }),
+        ),
+      ),
   });
 
   return {
-    start,
-    drain: worker.drain,
+    start: durableReactor.start,
+    drain: durableReactor.drain,
+    shutdown: durableReactor.shutdown,
   } satisfies ProviderCommandReactorShape;
 });
 
-export const ProviderCommandReactorLive = Layer.effect(ProviderCommandReactor, make);
+export const makeProviderCommandReactorLayer = (options: ProviderCommandReactorOptions = {}) =>
+  Layer.effect(
+    ProviderCommandReactor,
+    make.pipe(Effect.provideService(ProviderCommandReactorConfig, options)),
+  );
+
+export const ProviderCommandReactorLive = makeProviderCommandReactorLayer();

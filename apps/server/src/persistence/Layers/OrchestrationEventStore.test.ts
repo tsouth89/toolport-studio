@@ -1,4 +1,4 @@
-import { CommandId, EventId, ProjectId } from "@toolport-studio/contracts";
+import { CommandId, EventId, ProjectId, ThreadId } from "@toolport-studio/contracts";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -7,7 +7,10 @@ import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { PersistenceDecodeError } from "../Errors.ts";
-import { OrchestrationEventStore } from "../Services/OrchestrationEventStore.ts";
+import {
+  ORCHESTRATION_SIDE_EFFECT_CONSUMERS,
+  OrchestrationEventStore,
+} from "../Services/OrchestrationEventStore.ts";
 import { OrchestrationEventStoreLive } from "./OrchestrationEventStore.ts";
 import { SqlitePersistenceMemory } from "./Sqlite.ts";
 const isPersistenceDecodeError = Schema.is(PersistenceDecodeError);
@@ -167,5 +170,100 @@ layer("OrchestrationEventStore", (it) => {
       );
       assert.ok(remainingDeleteBatch.every((event) => event.sequence > cutoffSequence));
     }),
+  );
+
+  it.effect(
+    "reclaims crash-interrupted side effects, retries failures, suppresses duplicates, and protects unfinished events",
+    () =>
+      Effect.gen(function* () {
+        const eventStore = yield* OrchestrationEventStore;
+        const now = "2026-01-01T00:00:00.000Z";
+        const consumer = ORCHESTRATION_SIDE_EFFECT_CONSUMERS.providerCommand;
+        const appendStopRequest = (suffix: string) =>
+          eventStore.append({
+            type: "thread.session-stop-requested",
+            eventId: EventId.make(`evt-stop-${suffix}`),
+            aggregateKind: "thread",
+            aggregateId: ThreadId.make(`thread-stop-${suffix}`),
+            occurredAt: now,
+            commandId: CommandId.make(`cmd-stop-${suffix}`),
+            causationEventId: null,
+            correlationId: CommandId.make(`cmd-stop-${suffix}`),
+            metadata: {},
+            payload: {
+              threadId: ThreadId.make(`thread-stop-${suffix}`),
+              createdAt: now,
+            },
+          });
+
+        const interrupted = yield* appendStopRequest("interrupted");
+        assert.equal(yield* eventStore.countUnfinishedSideEffectDeliveries(consumer), 1);
+
+        const firstClaim = yield* eventStore.claimSideEffectDeliveries({
+          consumer,
+          limit: 10,
+          nowMs: 1_000,
+        });
+        assert.equal(firstClaim.length, 1);
+        assert.equal(firstClaim[0]?.event.sequence, interrupted.sequence);
+        assert.equal(firstClaim[0]?.attemptCount, 1);
+
+        // Simulate process death after claim but before completion.
+        yield* eventStore.recoverSideEffectDeliveries(consumer);
+        const recoveredClaim = yield* eventStore.claimSideEffectDeliveries({
+          consumer,
+          limit: 10,
+          nowMs: 1_000,
+        });
+        assert.equal(recoveredClaim.length, 1);
+        assert.equal(recoveredClaim[0]?.attemptCount, 2);
+
+        yield* eventStore.failSideEffectDelivery({
+          consumer,
+          eventSequence: interrupted.sequence,
+          availableAtMs: 5_000,
+          detail: "provider temporarily unavailable",
+          updatedAt: now,
+        });
+        assert.equal(
+          (yield* eventStore.claimSideEffectDeliveries({
+            consumer,
+            limit: 10,
+            nowMs: 4_999,
+          })).length,
+          0,
+        );
+
+        const retryClaim = yield* eventStore.claimSideEffectDeliveries({
+          consumer,
+          limit: 10,
+          nowMs: 5_000,
+        });
+        assert.equal(retryClaim.length, 1);
+        assert.equal(retryClaim[0]?.attemptCount, 3);
+
+        yield* eventStore.completeSideEffectDelivery({
+          consumer,
+          eventSequence: interrupted.sequence,
+          updatedAt: now,
+        });
+        assert.equal(yield* eventStore.countUnfinishedSideEffectDeliveries(consumer), 0);
+        assert.equal(
+          (yield* eventStore.claimSideEffectDeliveries({
+            consumer,
+            limit: 10,
+            nowMs: 10_000,
+          })).length,
+          0,
+        );
+
+        const pending = yield* appendStopRequest("pending");
+        yield* eventStore.deleteUpToSequenceInclusive(pending.sequence);
+        const retained = yield* Stream.runCollect(eventStore.readFromSequence(0, 20)).pipe(
+          Effect.map((chunk) => Array.from(chunk)),
+        );
+        assert.ok(!retained.some((event) => event.sequence === interrupted.sequence));
+        assert.ok(retained.some((event) => event.sequence === pending.sequence));
+      }),
   );
 });
