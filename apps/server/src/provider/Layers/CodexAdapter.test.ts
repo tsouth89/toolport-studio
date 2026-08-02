@@ -335,6 +335,9 @@ validationLayer("CodexAdapterLive validation", (it) => {
       NodeAssert.deepStrictEqual(validationRuntimeFactory.factory.mock.calls[0]?.[0], {
         binaryPath: "codex",
         cwd: process.cwd(),
+        // The runtime stamps sessions and events with this, so it has to
+        // follow the instance rather than the harness.
+        driverKind: ProviderDriverKind.make("codex"),
         launchArgs: "",
         model: "gpt-5.3-codex",
         providerInstanceId: ProviderInstanceId.make("codex"),

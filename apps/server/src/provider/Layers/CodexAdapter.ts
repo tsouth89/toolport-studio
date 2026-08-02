@@ -1716,6 +1716,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       const runtimeInput: CodexSessionRuntimeOptions = {
         threadId: session.threadId,
         providerInstanceId: boundInstanceId,
+        driverKind: boundDriverKind,
         cwd: previous?.cwd ?? session.cwd,
         binaryPath: codexConfig.binaryPath,
         launchArgs: resolveCodexLaunchArgs(codexConfig.launchArgs, options?.environment),
@@ -1818,6 +1819,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         const runtimeInput: CodexSessionRuntimeOptions = {
           threadId: input.threadId,
           providerInstanceId: boundInstanceId,
+          driverKind: boundDriverKind,
           cwd,
           binaryPath: codexConfig.binaryPath,
           launchArgs: resolveCodexLaunchArgs(codexConfig.launchArgs, options?.environment),
