@@ -782,6 +782,58 @@ describe("applyThreadDetailEvent", () => {
         expect(removed.thread.queuedTurns).toEqual([]);
       }
     });
+
+    it("keeps FIFO position when a queued turn event is replayed", () => {
+      const firstQueuedTurn = {
+        message: {
+          messageId: MessageId.make("queued-message-1"),
+          role: "user" as const,
+          text: "Run first",
+          attachments: [],
+        },
+        runtimeMode: "full-access" as const,
+        interactionMode: "default" as const,
+        createdAt: "2026-04-01T12:00:00.000Z",
+      };
+      const secondQueuedTurn = {
+        ...firstQueuedTurn,
+        message: {
+          ...firstQueuedTurn.message,
+          messageId: MessageId.make("queued-message-2"),
+          text: "Run second",
+        },
+        createdAt: "2026-04-01T12:01:00.000Z",
+      };
+      const threadWithQueue = {
+        ...baseThread,
+        queuedTurns: [firstQueuedTurn, secondQueuedTurn],
+      };
+
+      const replayed = applyThreadDetailEvent(threadWithQueue, {
+        ...baseEventFields,
+        sequence: 17,
+        occurredAt: "2026-04-01T12:02:00.000Z",
+        aggregateKind: "thread",
+        aggregateId: baseThread.id,
+        type: "thread.turn-queued",
+        payload: {
+          threadId: baseThread.id,
+          queuedTurn: {
+            ...firstQueuedTurn,
+            message: { ...firstQueuedTurn.message, text: "Run first (replayed)" },
+          },
+        },
+      });
+
+      expect(replayed.kind).toBe("updated");
+      if (replayed.kind === "updated") {
+        expect(replayed.thread.queuedTurns?.map((turn) => turn.message.messageId)).toEqual([
+          firstQueuedTurn.message.messageId,
+          secondQueuedTurn.message.messageId,
+        ]);
+        expect(replayed.thread.queuedTurns?.[0]?.message.text).toBe("Run first (replayed)");
+      }
+    });
   });
 
   describe("no-op events", () => {

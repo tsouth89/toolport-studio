@@ -663,7 +663,7 @@ it.layer(
 it.layer(
   Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-attachments-rollback-")),
 )("OrchestrationProjectionPipeline", (it) => {
-  it.effect("does not persist attachment files when projector transaction rolls back", () =>
+  it.effect("replays idempotent projection writes when the cursor update fails", () =>
     Effect.gen(function* () {
       const projectionPipeline = yield* OrchestrationProjectionPipeline;
       const eventStore = yield* OrchestrationEventStore;
@@ -773,12 +773,44 @@ it.layer(
         FROM projection_thread_messages
         WHERE message_id = 'message-rollback'
       `;
-      assert.equal(rows[0]?.count ?? 0, 0);
+      // Projection rows commit before attachment IO/cursor advancement so no
+      // filesystem work holds the SQLite write transaction open. The cursor
+      // remains behind, making the already-applied upsert replayable.
+      assert.equal(rows[0]?.count ?? 0, 1);
+
+      const cursorBeforeRetry = yield* sql<{
+        readonly lastAppliedSequence: number;
+      }>`
+        SELECT last_applied_sequence AS "lastAppliedSequence"
+        FROM projection_state
+        WHERE projector = 'projection.thread-messages'
+      `;
+      assert.equal(cursorBeforeRetry[0]?.lastAppliedSequence, 2);
 
       const { attachmentsDir } = yield* ServerConfig;
       const attachmentPath = path.join(attachmentsDir, "thread-rollback-att-1.png");
       assert.isFalse(yield* exists(attachmentPath));
       yield* sql`DROP TRIGGER IF EXISTS fail_thread_messages_projection_state_update`;
+
+      yield* projectionPipeline.bootstrap;
+
+      const rowsAfterRetry = yield* sql<{
+        readonly count: number;
+      }>`
+        SELECT COUNT(*) AS "count"
+        FROM projection_thread_messages
+        WHERE message_id = 'message-rollback'
+      `;
+      assert.equal(rowsAfterRetry[0]?.count ?? 0, 1);
+
+      const cursorAfterRetry = yield* sql<{
+        readonly lastAppliedSequence: number;
+      }>`
+        SELECT last_applied_sequence AS "lastAppliedSequence"
+        FROM projection_state
+        WHERE projector = 'projection.thread-messages'
+      `;
+      assert.equal(cursorAfterRetry[0]?.lastAppliedSequence, 3);
     }),
   );
 });

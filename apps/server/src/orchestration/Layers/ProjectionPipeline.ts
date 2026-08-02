@@ -1667,24 +1667,26 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         prunedThreadRelativePaths: new Map<string, Set<string>>(),
       };
 
+      // Commit projection rows before filesystem cleanup so directory walks
+      // and deletes never hold a SQLite write transaction open. Projector
+      // writes are idempotent, so a crash before the cursor advances safely
+      // replays this step.
+      yield* sql.withTransaction(projector.apply(event, attachmentSideEffects));
+
+      // Filesystem cleanup is idempotent and must finish before the durable
+      // projector cursor advances. A crash or partial failure therefore
+      // replays the event instead of silently losing cleanup.
+      yield* runAttachmentSideEffects(attachmentSideEffects).pipe(
+        Effect.mapError((cause) =>
+          toPersistenceSqlError("ProjectionPipeline.runAttachmentSideEffects")(cause),
+        ),
+      );
+
       yield* sql.withTransaction(
-        Effect.gen(function* () {
-          yield* projector.apply(event, attachmentSideEffects);
-
-          // Filesystem cleanup is idempotent and must finish before the
-          // durable projector cursor advances. A crash or partial failure
-          // therefore replays the event instead of silently losing cleanup.
-          yield* runAttachmentSideEffects(attachmentSideEffects).pipe(
-            Effect.mapError((cause) =>
-              toPersistenceSqlError("ProjectionPipeline.runAttachmentSideEffects")(cause),
-            ),
-          );
-
-          yield* projectionStateRepository.upsert({
-            projector: projector.name,
-            lastAppliedSequence: event.sequence,
-            updatedAt: event.occurredAt,
-          });
+        projectionStateRepository.upsert({
+          projector: projector.name,
+          lastAppliedSequence: event.sequence,
+          updatedAt: event.occurredAt,
         }),
       );
     });

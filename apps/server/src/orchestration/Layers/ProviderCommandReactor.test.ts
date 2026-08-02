@@ -150,6 +150,7 @@ describe("ProviderCommandReactor", () => {
     readonly startSessionEffect?: (
       session: ProviderSession,
     ) => Effect.Effect<ProviderSession, ProviderAdapterRequestError>;
+    readonly sendTurnEffect?: ProviderServiceShape["sendTurn"];
     readonly interruptTurnEffect?: ProviderServiceShape["interruptTurn"];
     readonly stopSessionEffect?: ProviderServiceShape["stopSession"];
     readonly reactorOptions?: ProviderCommandReactorOptions;
@@ -229,11 +230,13 @@ describe("ProviderCommandReactor", () => {
         ),
       );
     });
-    const sendTurn = vi.fn((_: unknown) =>
-      Effect.succeed({
-        threadId: ThreadId.make("thread-1"),
-        turnId: asTurnId("turn-1"),
-      }),
+    const sendTurn = vi.fn<ProviderServiceShape["sendTurn"]>(
+      (request) =>
+        input?.sendTurnEffect?.(request) ??
+        Effect.succeed({
+          threadId: ThreadId.make("thread-1"),
+          turnId: asTurnId("turn-1"),
+        }),
     );
     const interruptTurn = vi.fn<ProviderServiceShape["interruptTurn"]>(
       (request) => input?.interruptTurnEffect?.(request) ?? Effect.void,
@@ -675,6 +678,62 @@ describe("ProviderCommandReactor", () => {
         }),
       ).pipe(Effect.timeout("5 seconds"));
 
+      const readModel = yield* Effect.promise(() => harness.readModel());
+      const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+      expect(thread?.session?.status).toBe("error");
+      expect(thread?.session?.lastError?.toLowerCase()).toContain("timed out");
+      expect(
+        thread?.activities.find((activity) => activity.kind === "provider.turn.start.failed")
+          ?.payload,
+      ).toMatchObject({
+        detail: expect.stringMatching(/timed out/i),
+      });
+    }),
+  );
+
+  effectIt.effect("times out a wedged provider turn send and releases durable delivery", () =>
+    Effect.gen(function* () {
+      const harness = yield* Effect.promise(() =>
+        createHarness({
+          reactorOptions: {
+            sessionOperationTimeout: "1 second",
+          },
+          sendTurnEffect: () => Effect.never,
+        }),
+      );
+      const now = "2026-01-01T00:00:00.000Z";
+
+      yield* harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-send-timeout"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-send-timeout"),
+          role: "user",
+          text: "this provider will not accept the turn",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      });
+
+      yield* Effect.promise(() => waitFor(() => harness.sendTurn.mock.calls.length === 1)).pipe(
+        Effect.timeout("5 seconds"),
+      );
+      yield* Effect.promise(() =>
+        waitFor(async () => {
+          const readModel = await harness.readModel();
+          const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+          return (
+            thread?.activities.some((activity) => activity.kind === "provider.turn.start.failed") ??
+            false
+          );
+        }),
+      ).pipe(Effect.timeout("5 seconds"));
+      yield* Effect.promise(harness.drain).pipe(Effect.timeout("5 seconds"));
+
+      expect(harness.sendTurn).toHaveBeenCalledTimes(1);
       const readModel = yield* Effect.promise(() => harness.readModel());
       const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
       expect(thread?.session?.status).toBe("error");

@@ -1173,9 +1173,16 @@ const make = Effect.gen(function* () {
       return;
     }
 
-    yield* providerService
-      .sendTurn(sendTurnRequest.value)
-      .pipe(Effect.catchCause(recoverTurnStartFailure));
+    yield* withProviderOperationTimeout(providerService.sendTurn(sendTurnRequest.value), {
+      duration: sessionOperationTimeout,
+      provider: providerErrorLabelFromInstanceHint({
+        instanceId: event.payload.modelSelection?.instanceId,
+        modelSelectionInstanceId: thread.modelSelection.instanceId,
+        sessionProvider: thread.session?.providerName ?? undefined,
+      }),
+      method: "turn.start",
+      operation: "Provider turn start",
+    }).pipe(Effect.catchCause(recoverTurnStartFailure));
   });
 
   /**

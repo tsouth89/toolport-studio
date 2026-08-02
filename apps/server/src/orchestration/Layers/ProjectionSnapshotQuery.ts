@@ -119,6 +119,9 @@ const ProjectionQueuedTurnCountDbRowSchema = Schema.Struct({
   threadId: ThreadId,
   count: NonNegativeInt,
 });
+const ProjectionQueuedTurnCountForThreadDbRowSchema = Schema.Struct({
+  count: NonNegativeInt,
+});
 const WorkspaceRootLookupInput = Schema.Struct({
   workspaceRoot: Schema.String,
 });
@@ -484,6 +487,17 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         SELECT thread_id AS "threadId", COUNT(*) AS count
         FROM projection_thread_queued_turns
         GROUP BY thread_id
+      `,
+  });
+
+  const getQueuedTurnCountByThread = SqlSchema.findOne({
+    Request: ThreadIdLookupInput,
+    Result: ProjectionQueuedTurnCountForThreadDbRowSchema,
+    execute: ({ threadId }) =>
+      sql`
+        SELECT COUNT(*) AS count
+        FROM projection_thread_queued_turns
+        WHERE thread_id = ${threadId}
       `,
   });
 
@@ -1994,7 +2008,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
 
   const getThreadShellById: ProjectionSnapshotQueryShape["getThreadShellById"] = (threadId) =>
     Effect.gen(function* () {
-      const [threadRow, latestTurnRow, sessionRow, queuedTurnRows] = yield* Effect.all([
+      const [threadRow, latestTurnRow, sessionRow, queuedTurnCountRow] = yield* Effect.all([
         getActiveThreadRowById({ threadId }).pipe(
           Effect.mapError(
             toPersistenceSqlOrDecodeError(
@@ -2019,11 +2033,11 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             ),
           ),
         ),
-        listQueuedTurnRowsByThread({ threadId }).pipe(
+        getQueuedTurnCountByThread({ threadId }).pipe(
           Effect.mapError(
             toPersistenceSqlOrDecodeError(
-              "ProjectionSnapshotQuery.getThreadShellById:listQueuedTurns:query",
-              "ProjectionSnapshotQuery.getThreadShellById:listQueuedTurns:decodeRows",
+              "ProjectionSnapshotQuery.getThreadShellById:getQueuedTurnCount:query",
+              "ProjectionSnapshotQuery.getThreadShellById:getQueuedTurnCount:decodeRow",
             ),
           ),
         ),
@@ -2055,7 +2069,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         hasPendingApprovals: threadRow.value.pendingApprovalCount > 0,
         hasPendingUserInput: threadRow.value.pendingUserInputCount > 0,
         hasActionableProposedPlan: threadRow.value.hasActionableProposedPlan > 0,
-        queuedTurnCount: queuedTurnRows.length,
+        queuedTurnCount: queuedTurnCountRow.count,
       } satisfies OrchestrationThreadShell);
     });
 

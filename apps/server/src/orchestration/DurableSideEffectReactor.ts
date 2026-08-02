@@ -105,7 +105,9 @@ export const makeDurableSideEffectReactor = <K, E extends OrchestrationEvent, Er
               }),
             ),
           );
-        yield* options.onFailure?.(event, exit.cause) ?? Effect.void;
+        if (options.onFailure !== undefined) {
+          yield* options.onFailure(event, exit.cause);
+        }
       });
 
     const workerOptions = {

@@ -267,6 +267,24 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         sequence += 1;
       }
 
+      yield* sql`
+        UPDATE projection_thread_queued_turns
+        SET queued_turn_json = 'not-valid-json'
+        WHERE thread_id = 'thread-1'
+      `;
+      const shellWithUndecodableQueuedTurn = yield* snapshotQuery.getThreadShellById(
+        ThreadId.make("thread-1"),
+      );
+      assert.equal(shellWithUndecodableQueuedTurn._tag, "Some");
+      if (shellWithUndecodableQueuedTurn._tag === "Some") {
+        assert.equal(shellWithUndecodableQueuedTurn.value.queuedTurnCount, 1);
+      }
+      yield* sql`
+        UPDATE projection_thread_queued_turns
+        SET queued_turn_json = '{"message":{"messageId":"queued-message-1","role":"user","text":"run next","attachments":[]},"runtimeMode":"full-access","interactionMode":"default","createdAt":"2026-02-24T00:00:04.500Z"}'
+        WHERE thread_id = 'thread-1'
+      `;
+
       const snapshot = yield* snapshotQuery.getSnapshot();
 
       assert.equal(snapshot.snapshotSequence, 5);

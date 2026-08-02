@@ -109,12 +109,15 @@ export const makeKeyedSerialWorker = <K, A, R>(
             );
           }
 
-          yield* TxRef.update(outstanding, (count) => count + 1).pipe(Effect.tx);
-          const accepted = yield* Queue.offer(lane.queue, item);
-          if (!accepted) {
-            yield* TxRef.update(outstanding, (count) => count - 1).pipe(Effect.tx);
-            return;
-          }
+          const accepted = yield* Effect.gen(function* () {
+            yield* TxRef.update(outstanding, (count) => count + 1).pipe(Effect.tx);
+            const offered = yield* Queue.offer(lane.queue, item);
+            if (!offered) {
+              yield* TxRef.update(outstanding, (count) => count - 1).pipe(Effect.tx);
+            }
+            return offered;
+          }).pipe(Effect.uninterruptible);
+          if (!accepted) return;
 
           const depth = yield* Queue.size(lane.queue);
           if (
