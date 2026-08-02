@@ -194,6 +194,7 @@ function SidebarThreadTooltip({
   projectCwd,
   environmentLabel,
   driverKind,
+  presetId,
   modelInstanceId,
   modelLabel,
   branchMismatch,
@@ -203,6 +204,7 @@ function SidebarThreadTooltip({
   projectCwd: string | null;
   environmentLabel: string | null;
   driverKind: ProviderInstanceEntry["driverKind"] | null;
+  presetId: ProviderInstanceEntry["presetId"];
   modelInstanceId: string;
   modelLabel: string;
   branchMismatch: {
@@ -258,6 +260,7 @@ function SidebarThreadTooltip({
             <div className="flex min-w-0 items-center gap-2">
               <ProviderInstanceIcon
                 driverKind={driverKind}
+                presetId={presetId}
                 displayName={thread.session?.providerName ?? modelInstanceId}
                 iconClassName="size-4 shrink-0"
               />
@@ -400,6 +403,7 @@ const SidebarRow = memo(function SidebarRow(props: {
     props.providerEntryByInstanceId.get(thread.modelSelection.instanceId) ??
     null;
   const driverKind = providerEntry?.driverKind ?? null;
+  const presetId = providerEntry?.presetId;
   const selectedModel = providerEntry?.models.find(
     (model) => model.slug === thread.modelSelection.model,
   );
@@ -417,6 +421,7 @@ const SidebarRow = memo(function SidebarRow(props: {
       projectCwd={props.projectCwd}
       environmentLabel={props.environmentLabel}
       driverKind={driverKind}
+      presetId={presetId}
       modelInstanceId={modelInstanceId}
       modelLabel={modelLabel}
       branchMismatch={branchMismatch}
@@ -630,6 +635,7 @@ const SidebarRow = memo(function SidebarRow(props: {
                 {driverKind ? (
                   <ProviderInstanceIcon
                     driverKind={driverKind}
+                    presetId={presetId}
                     displayName={thread.session?.providerName ?? modelInstanceId}
                     iconClassName="size-3.5"
                   />

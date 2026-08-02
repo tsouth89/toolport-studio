@@ -125,11 +125,15 @@ const withInstanceIdentity =
     readonly displayName: string | undefined;
     readonly accentColor: string | undefined;
     readonly continuationGroupKey: string;
+    readonly presetId: string;
   }) =>
   (snapshot: ServerProviderDraft): ServerProvider => ({
     ...snapshot,
     instanceId: input.instanceId,
     driver: DRIVER_KIND,
+    // The driver kind is shared by every API-key provider, so the snapshot
+    // has to say which one this is for the client to brand it.
+    presetId: input.presetId,
     ...(input.displayName ? { displayName: input.displayName } : {}),
     ...(input.accentColor ? { accentColor: input.accentColor } : {}),
     continuation: { groupKey: input.continuationGroupKey },
@@ -200,6 +204,7 @@ export const ByokDriver: ProviderDriver<ByokSettings, ByokDriverEnv> = {
         displayName: displayName ?? preset.label,
         accentColor,
         continuationGroupKey: continuationIdentity.continuationKey,
+        presetId: preset.id,
       });
       const stampAuth = applyByokIdentity({ preset, hasApiKey });
 

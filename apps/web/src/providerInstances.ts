@@ -180,6 +180,7 @@ export function deriveProviderInstanceEntries(
       enabled: snapshot.enabled,
       installed: snapshot.installed,
       status: snapshot.status,
+      ...(snapshot.presetId ? { presetId: snapshot.presetId } : {}),
       isDefault,
       isAvailable: snapshot.availability !== "unavailable",
       snapshot,
@@ -225,7 +226,9 @@ export function applyProviderInstanceSettings(
       : entry.isDefault
         ? (legacyProviders[entry.driverKind]?.enabled ?? entry.enabled)
         : false;
-    const presetId = readByokPresetId(explicitInstance?.config);
+    // The snapshot is authoritative: stored config omits fields left at
+    // their default, so a preset chosen implicitly is absent there.
+    const presetId = entry.presetId ?? readByokPresetId(explicitInstance?.config);
     if (enabled === entry.enabled && presetId === entry.presetId) return entry;
     return { ...entry, enabled, ...(presetId ? { presetId } : {}) };
   });

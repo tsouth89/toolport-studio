@@ -500,6 +500,40 @@ describe("applyProviderInstanceSettings preset branding", () => {
     expect(entries[0]?.presetId).toBe("deepseek");
   });
 
+  it("prefers the snapshot's preset over stored config", () => {
+    // Stored config omits fields left at their default, so an instance
+    // created without touching the Provider field has no `preset` key at
+    // all. The snapshot always carries it.
+    const entries = applyProviderInstanceSettings(
+      [
+        {
+          instanceId: ProviderInstanceId.make("byok_deepseek"),
+          driverKind: ProviderDriverKind.make("byok"),
+          displayName: "DeepSeek",
+          presetId: "deepseek",
+          enabled: true,
+          installed: true,
+          status: "ready",
+          isDefault: false,
+          isAvailable: true,
+          models: [],
+        } as unknown as ProviderInstanceEntry,
+      ],
+      {
+        providers: DEFAULT_SERVER_SETTINGS.providers,
+        providerInstances: {
+          [ProviderInstanceId.make("byok_deepseek")]: {
+            driver: ProviderDriverKind.make("byok"),
+            enabled: true,
+            config: {},
+          },
+        },
+      },
+    );
+
+    expect(entries[0]?.presetId).toBe("deepseek");
+  });
+
   it("leaves non-BYOK instances without a preset id", () => {
     const entries = applyProviderInstanceSettings(
       [

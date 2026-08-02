@@ -37,6 +37,8 @@ type ModelPickerItem = {
   subProvider?: string;
   instanceId: ProviderInstanceId;
   driverKind: ProviderDriverKind;
+  /** BYOK preset id, so the row can show the provider's own logo. */
+  presetId?: string | undefined;
   instanceDisplayName: string;
   instanceAccentColor?: string | undefined;
   continuationGroupKey?: string | undefined;
@@ -214,6 +216,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
           ...(model.isDefault !== undefined ? { isDefault: model.isDefault } : {}),
           instanceId,
           driverKind: entry.driverKind,
+          ...(entry.presetId ? { presetId: entry.presetId } : {}),
           instanceDisplayName: entry.displayName,
           ...(entry.accentColor ? { instanceAccentColor: entry.accentColor } : {}),
           ...(entry.continuationGroupKey
@@ -726,6 +729,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                         model={model}
                         instanceId={model.instanceId}
                         driverKind={model.driverKind}
+                        presetId={model.presetId}
                         providerDisplayName={model.instanceDisplayName}
                         providerAccentColor={model.instanceAccentColor}
                         isFavorite={favoritesSet.has(modelKey)}

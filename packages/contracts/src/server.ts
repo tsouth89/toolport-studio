@@ -179,6 +179,14 @@ export const ServerProvider = Schema.Struct({
   driver: ProviderDriverKind,
   displayName: Schema.optional(TrimmedNonEmptyString),
   accentColor: Schema.optional(TrimmedNonEmptyString),
+  /**
+   * Which branded provider sits behind a generic driver, when the driver
+   * kind alone does not identify one. A single BYOK driver serves DeepSeek,
+   * Kimi, and every other API-key provider, so the client needs this to pick
+   * a logo — and it must come from the snapshot rather than from stored
+   * config, because config omits fields left at their default.
+   */
+  presetId: Schema.optional(TrimmedNonEmptyString),
   badgeLabel: Schema.optional(TrimmedNonEmptyString),
   continuation: Schema.optional(ServerProviderContinuation),
   showInteractionModeToggle: Schema.optional(Schema.Boolean),

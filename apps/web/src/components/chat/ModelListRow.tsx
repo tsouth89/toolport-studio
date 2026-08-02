@@ -5,7 +5,7 @@ import {
   getDisplayModelName,
   getTriggerDisplayModelLabel,
   type ModelEsque,
-  PROVIDER_ICON_BY_PROVIDER,
+  resolveProviderInstanceIcon,
 } from "./providerIconUtils";
 import { ComboboxItem } from "../ui/combobox";
 import { Button } from "../ui/button";
@@ -20,6 +20,7 @@ export const ModelListRow = memo(function ModelListRow(props: {
   instanceId: ProviderInstanceId;
   /** Driver kind of the instance — used for the provider icon glyph. */
   driverKind: ProviderDriverKind;
+  presetId?: string | undefined;
   /**
    * Display name to show in the secondary line (provider footer). Usually
    * the instance's configured `displayName` so custom instances like
@@ -37,7 +38,10 @@ export const ModelListRow = memo(function ModelListRow(props: {
   disabledReason?: string | null;
   onToggleFavorite: () => void;
 }) {
-  const ProviderIcon = PROVIDER_ICON_BY_PROVIDER[props.driverKind] ?? null;
+  const ProviderIcon = resolveProviderInstanceIcon({
+    driverKind: props.driverKind,
+    presetId: props.presetId,
+  });
   const providerLabel = props.model.subProvider
     ? `${props.providerDisplayName} · ${props.model.subProvider}`
     : props.providerDisplayName;
