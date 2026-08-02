@@ -177,9 +177,11 @@ interface CursorSessionContext {
    */
   turnAssistantText: string;
   /**
-   * How many `session/update` notifications the live turn projected. Zero at
-   * turn end means the agent said nothing we could show, which is the visible
-   * shape of a broken notification stream.
+   * How many visible events the live turn projected off the notification
+   * stream: reasoning and assistant deltas, tool calls, plans, and the
+   * assistant segment lifecycle derived from them. Zero at turn end means the
+   * agent said nothing we could show, which is the visible shape of a broken
+   * notification stream.
    */
   turnProjectedUpdateCount: number;
   /** Bumped on dispose so a late notification finalizer cannot stomp a recycle. */
@@ -233,10 +235,11 @@ const isCursorSubagentTask = isAcpSubagentTaskToolCall;
 /**
  * Whether a finished turn produced nothing the user could see.
  *
- * A healthy Cursor turn projects at least one `session/update` — reasoning,
- * assistant text, or a tool call. Zero of them plus a clean `end_turn` is the
- * signature of a notification stream that stopped reaching the adapter: the
- * prompt RPC still resolves, so the turn just ends in silence with no error.
+ * A healthy Cursor turn projects at least one visible event off the
+ * notification stream — reasoning, assistant text, or a tool call. Zero of
+ * them plus a clean `end_turn` is the signature of a stream that stopped
+ * reaching the adapter: the prompt RPC still resolves, so the turn just ends
+ * in silence with no error.
  * Cancelled turns are excluded; stopping early is expected to produce nothing.
  */
 export function cursorTurnEndedWithoutOutput(input: {
