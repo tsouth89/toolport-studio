@@ -54,6 +54,7 @@ import {
   makeProviderSnapshotSettingsSource,
   type ProviderSnapshotSettings,
 } from "../../providerUpdateSettings.ts";
+import { type ByokApiKeyStatus, probeByokApiKey } from "./byokApiKeyProbe.ts";
 import { materializeByokCodexHome } from "./byokCodexHome.ts";
 import { findByokPreset, type ByokPreset } from "./byokPresets.ts";
 
@@ -96,16 +97,34 @@ export type ByokDriverEnv =
  */
 export function applyByokIdentity(input: {
   readonly preset: ByokPreset;
-  readonly hasApiKey: boolean;
+  readonly keyStatus: ByokApiKeyStatus | "missing";
 }): (snapshot: ServerProvider) => ServerProvider {
-  const { preset, hasApiKey } = input;
+  const { preset, keyStatus } = input;
   return (snapshot) => {
-    if (!hasApiKey) {
+    if (keyStatus === "missing") {
       return {
         ...snapshot,
         status: "error",
         auth: { status: "unauthenticated" },
         message: `${preset.label} needs an API key. Add ${preset.envKey} as a sensitive environment variable on this instance (create one at ${preset.apiKeysUrl}).`,
+      };
+    }
+    if (keyStatus === "invalid") {
+      return {
+        ...snapshot,
+        status: "error",
+        auth: { status: "unauthenticated" },
+        message: `${preset.label} rejected the API key in ${preset.envKey}. Check it has not been revoked, or create a new one at ${preset.apiKeysUrl}.`,
+      };
+    }
+    if (keyStatus === "unknown") {
+      // Reaching the provider failed. The key may be perfectly good, so warn
+      // rather than accuse it, and leave the instance usable.
+      return {
+        ...snapshot,
+        status: "warning",
+        auth: { status: "unknown" },
+        message: `Could not reach ${preset.label} to verify the API key. Turns may still work.`,
       };
     }
     return {
@@ -169,7 +188,7 @@ export const ByokDriver: ProviderDriver<ByokSettings, ByokDriverEnv> = {
       }
 
       const processEnv = mergeProviderInstanceEnvironment(environment);
-      const hasApiKey = (processEnv[preset.envKey] ?? "").trim().length > 0;
+      const apiKey = (processEnv[preset.envKey] ?? "").trim();
       const defaultModel = preset.models[0]?.slug ?? "";
 
       const homePath = path.join(serverConfig.stateDir, BYOK_HOME_DIRECTORY, instanceId);
@@ -206,7 +225,14 @@ export const ByokDriver: ProviderDriver<ByokSettings, ByokDriverEnv> = {
         continuationGroupKey: continuationIdentity.continuationKey,
         presetId: preset.id,
       });
-      const stampAuth = applyByokIdentity({ preset, hasApiKey });
+      // Re-run per refresh so a key added, fixed, or revoked after startup is
+      // reflected without restarting the instance.
+      const resolveKeyStatus: Effect.Effect<ByokApiKeyStatus | "missing"> =
+        apiKey.length === 0
+          ? Effect.succeed("missing" as const)
+          : probeByokApiKey({ preset, apiKey }).pipe(
+              Effect.provideService(HttpClient.HttpClient, httpClient),
+            );
 
       const adapter = yield* makeCodexAdapter(codexConfig, {
         instanceId,
@@ -218,11 +244,14 @@ export const ByokDriver: ProviderDriver<ByokSettings, ByokDriverEnv> = {
       });
       const textGeneration = yield* makeCodexTextGeneration(codexConfig, processEnv);
 
-      const checkProvider = checkCodexProviderStatus(codexConfig, undefined, processEnv).pipe(
-        Effect.map(stampIdentity),
-        Effect.map(stampAuth),
-        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-      );
+      const checkProvider = Effect.gen(function* () {
+        const snapshot = yield* checkCodexProviderStatus(codexConfig, undefined, processEnv).pipe(
+          Effect.map(stampIdentity),
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        );
+        const keyStatus = yield* resolveKeyStatus;
+        return applyByokIdentity({ preset, keyStatus })(snapshot);
+      });
 
       const snapshotSettings = makeProviderSnapshotSettingsSource(codexConfig, serverSettings);
       const snapshot = yield* makeManagedServerProvider<ProviderSnapshotSettings<CodexSettings>>({
@@ -237,7 +266,13 @@ export const ByokDriver: ProviderDriver<ByokSettings, ByokDriverEnv> = {
         initialSnapshot: (settings) =>
           makePendingCodexProvider(settings.provider).pipe(
             Effect.map(stampIdentity),
-            Effect.map(stampAuth),
+            // Before the first probe all we know is whether a key exists.
+            Effect.map(
+              applyByokIdentity({
+                preset,
+                keyStatus: apiKey.length === 0 ? "missing" : "unknown",
+              }),
+            ),
           ),
         checkProvider,
         enrichSnapshot: ({ snapshot, publishSnapshot }) => publishSnapshot(snapshot),

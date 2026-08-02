@@ -32,7 +32,7 @@ const snapshot: ServerProvider = {
 
 describe("applyByokIdentity", () => {
   it("reports the provider's own key rather than the harness account", () => {
-    const result = applyByokIdentity({ preset: deepseek, hasApiKey: true })(snapshot);
+    const result = applyByokIdentity({ preset: deepseek, keyStatus: "valid" })(snapshot);
     expect(result.auth).toEqual({
       status: "authenticated",
       type: "apiKey",
@@ -44,15 +44,32 @@ describe("applyByokIdentity", () => {
   it("fails loudly when the key is missing instead of looking healthy", () => {
     // Codex would happily report `ready` here and only fail on the first
     // turn, which is the failure mode this exists to prevent.
-    const result = applyByokIdentity({ preset: deepseek, hasApiKey: false })(snapshot);
+    const result = applyByokIdentity({ preset: deepseek, keyStatus: "missing" })(snapshot);
     expect(result.status).toBe("error");
     expect(result.auth).toEqual({ status: "unauthenticated" });
     expect(result.message).toContain("DEEPSEEK_API_KEY");
     expect(result.message).toContain(deepseek.apiKeysUrl);
   });
 
+  it("blames the key when the provider rejects it, not the harness", () => {
+    const result = applyByokIdentity({ preset: deepseek, keyStatus: "invalid" })(snapshot);
+    expect(result.status).toBe("error");
+    expect(result.auth).toEqual({ status: "unauthenticated" });
+    expect(result.message).toContain("rejected the API key");
+    expect(result.message).toContain("DEEPSEEK_API_KEY");
+  });
+
+  it("warns rather than accusing the key when the provider is unreachable", () => {
+    // A failed network call says nothing about the credential. Reporting it
+    // as invalid would make an offline instance look permanently broken.
+    const result = applyByokIdentity({ preset: deepseek, keyStatus: "unknown" })(snapshot);
+    expect(result.status).toBe("warning");
+    expect(result.auth).toEqual({ status: "unknown" });
+    expect(result.message).toContain("Could not reach");
+  });
+
   it("leaves everything else on the snapshot untouched", () => {
-    const result = applyByokIdentity({ preset: deepseek, hasApiKey: true })(snapshot);
+    const result = applyByokIdentity({ preset: deepseek, keyStatus: "valid" })(snapshot);
     expect(result.instanceId).toBe(snapshot.instanceId);
     expect(result.version).toBe(snapshot.version);
     expect(result.checkedAt).toBe(snapshot.checkedAt);

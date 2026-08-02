@@ -45,6 +45,16 @@ export function getProviderSummary(provider: ServerProvider | undefined) {
         "This provider is installed but disabled for new sessions in Toolport Studio.",
     };
   }
+  // Auth is checked before installation because a credential problem can
+  // prevent the harness from ever starting, leaving `installed` false. Saying
+  // "Not found" then blames the binary for a missing or rejected key, which
+  // sends the user looking in entirely the wrong place.
+  if (provider.auth.status === "unauthenticated") {
+    return {
+      headline: "Not authenticated",
+      detail: provider.message ?? null,
+    };
+  }
   if (!provider.installed) {
     return {
       headline: "Not found",
@@ -55,12 +65,6 @@ export function getProviderSummary(provider: ServerProvider | undefined) {
     const authLabel = provider.auth.label ?? provider.auth.type;
     return {
       headline: authLabel ? `Authenticated · ${authLabel}` : "Authenticated",
-      detail: provider.message ?? null,
-    };
-  }
-  if (provider.auth.status === "unauthenticated") {
-    return {
-      headline: "Not authenticated",
       detail: provider.message ?? null,
     };
   }
