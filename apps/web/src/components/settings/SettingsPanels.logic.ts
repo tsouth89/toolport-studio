@@ -8,6 +8,22 @@ import type {
 } from "@toolport-studio/contracts";
 import { DEFAULT_UNIFIED_SETTINGS } from "@toolport-studio/contracts/settings";
 
+/**
+ * Whether a driver has a legacy `ServerSettings.providers.<kind>` blob, and
+ * therefore a permanent "default instance" slot rendered on the Providers
+ * panel whether or not the user has configured anything.
+ *
+ * Newer drivers deliberately have no legacy mirror — a BYOK provider with no
+ * API key is not something to show every user on upgrade — so they appear
+ * only once an explicit `providerInstances` entry exists. Driving this off
+ * the settings shape rather than a hand-maintained list keeps the next such
+ * driver from reintroducing the crash this replaced: the default-instance
+ * row builder reads `providers[driver].enabled` behind a non-null assertion.
+ */
+export function hasLegacyProviderSlot(driver: ProviderDriverKind): boolean {
+  return Object.hasOwn(DEFAULT_UNIFIED_SETTINGS.providers, driver);
+}
+
 export function isProjectGroupingEnabled(mode: SidebarProjectGroupingMode): boolean {
   return mode !== "separate";
 }

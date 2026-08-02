@@ -84,6 +84,7 @@ import { DRIVER_OPTIONS, getDriverOption } from "./providerDriverMeta";
 import {
   buildProviderInstanceUpdatePatch,
   formatDiagnosticsDescription,
+  hasLegacyProviderSlot,
   isProjectGroupingEnabled,
   projectGroupingModeFromToggle,
   readLastEnabledProjectGroupingMode,
@@ -138,7 +139,14 @@ function withoutProviderInstanceFavorites(
   return favorites.filter((favorite) => favorite.provider !== instanceId);
 }
 
-const PROVIDER_SETTINGS = DRIVER_OPTIONS.map((definition) => ({
+/**
+ * Drivers that own a permanent default-instance card. Excludes drivers with
+ * no legacy `providers.<kind>` blob (see `hasLegacyProviderSlot`); those
+ * render only from explicit `providerInstances` entries further down.
+ */
+const PROVIDER_SETTINGS = DRIVER_OPTIONS.filter((definition) =>
+  hasLegacyProviderSlot(definition.value),
+).map((definition) => ({
   provider: definition.value,
 }));
 
