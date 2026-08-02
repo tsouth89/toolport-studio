@@ -56,6 +56,16 @@ it("normalizes empty successful notification responses to accepted", () => {
   expect(resultResponse.status).toBe(200);
 });
 
+it("fingerprints rejected credentials without exposing them", () => {
+  const token = "34hRC-3rDR0lZEn1G7GbkDZkDwyWWDTVD39csGOoM4Y";
+  const fingerprint = McpHttpServer.mcpCredentialFingerprint(token);
+
+  expect(fingerprint).toMatch(/^[0-9a-f]{8}$/);
+  expect(McpHttpServer.mcpCredentialFingerprint(token)).toBe(fingerprint);
+  expect(McpHttpServer.mcpCredentialFingerprint(`${token}x`)).not.toBe(fingerprint);
+  expect(token).not.toContain(fingerprint);
+});
+
 it.effect("returns bounded structural preview snapshot failures", () =>
   Effect.scoped(
     Effect.gen(function* () {

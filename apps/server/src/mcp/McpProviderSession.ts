@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import type { EnvironmentId, ProviderInstanceId, ThreadId } from "@toolport-studio/contracts";
+import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
@@ -473,9 +474,38 @@ export function resolvePreviewMcpDeliveryMode(
 }
 
 /**
+ * Short, non-reversible digest of the preview credential a binding set carries.
+ * Hashed because catalog keys are logged when an adapter recycles its child.
+ */
+function previewCredentialDigest(bindings: ReadonlyArray<McpProviderBinding>): string {
+  const direct = bindings.find((binding) => binding.name === INTERNAL_MCP_SERVER_NAME);
+  const toolport = bindings.find((binding) => binding.name === TOOLPORT_MCP_SERVER_NAME);
+  const parts =
+    direct?.transport === "http"
+      ? [direct.url, direct.headers.Authorization]
+      : toolport?.transport === "stdio"
+        ? [
+            toolport.env.TOOLPORT_REGISTRY,
+            toolport.env[`TOOLPORT_SECRET_${STUDIO_PREVIEW_SECRET_ENV_KEY}`],
+          ]
+        : [];
+  const material = parts.filter((part): part is string => Boolean(part)).join("\0");
+  if (!material) return "none";
+  return NodeCrypto.createHash("sha256").update(material).digest("hex").slice(0, 12);
+}
+
+/**
  * Stable fingerprint for adapter rebind/recycle checks.
+ *
  * Includes server names plus whether Toolport carries Studio preview (secret
  * attached), so a silent drop from via-toolport to bare toolport still rebinds.
+ *
+ * Also includes a digest of the preview endpoint + bearer. Providers bake the
+ * bearer into launch-time config (`-c mcp_servers.toolport.env.*`) with no
+ * refresh channel, so a credential rotated under a live child — session reaped
+ * for inactivity, thread stopped, instance switched — leaves that child holding
+ * a revoked token and every `preview_*` call failing 401 forever. Names and
+ * lane are identical across a rotation; only the digest moves.
  */
 export function mcpBindingCatalogKey(bindings: ReadonlyArray<McpProviderBinding>): string {
   const names = bindings
@@ -490,7 +520,7 @@ export function mcpBindingCatalogKey(bindings: ReadonlyArray<McpProviderBinding>
     Boolean(toolport.env[`TOOLPORT_SECRET_${STUDIO_PREVIEW_SECRET_ENV_KEY}`]);
   const hasDirectPreview = bindings.some((binding) => binding.name === INTERNAL_MCP_SERVER_NAME);
   const previewLane = previewVia ? "via" : hasDirectPreview ? "direct" : "none";
-  return `${names}\0preview:${previewLane}`;
+  return `${names}\0preview:${previewLane}\0cred:${previewCredentialDigest(bindings)}`;
 }
 
 function toolportBindingCarriesPreview(binding: McpProviderBinding | undefined): boolean {

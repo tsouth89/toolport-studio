@@ -63,6 +63,20 @@ export const normalizeMcpHttpResponse = (
     : response;
 };
 
+/**
+ * Correlation id for a rejected bearer. Not a secret: a 32-bit FNV-1a digest of
+ * a 256-bit token, logged so a 401 can be matched against the credential a
+ * provider child was launched with (`TOOLPORT_SECRET_STUDIO_PREVIEW_BEARER`).
+ */
+export const mcpCredentialFingerprint = (token: string): string => {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < token.length; index += 1) {
+    hash ^= token.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, "0");
+};
+
 const makeMcpAuthMiddleware = McpSessionRegistry.McpSessionRegistry.pipe(
   Effect.map(
     (registry): McpAuthMiddleware =>
@@ -74,7 +88,27 @@ const makeMcpAuthMiddleware = McpSessionRegistry.McpSessionRegistry.pipe(
             ? authorization.slice("Bearer ".length).trim()
             : "";
         const invocation = yield* registry.resolve(token);
-        if (!invocation) return unauthorized;
+        if (!invocation) {
+          // A rejected bearer used to be silent, so a provider child stranded on
+          // a revoked credential looked like an upstream OAuth failure (Toolport
+          // reports "no stored OAuth state to refresh" for any 401). Name it.
+          const reason = token.length === 0 ? "missing_bearer" : "unknown_bearer";
+          const credentialFingerprint = token.length === 0 ? null : mcpCredentialFingerprint(token);
+          yield* Effect.annotateCurrentSpan({
+            "mcp.credential.rejected": true,
+            "mcp.credential.reason": reason,
+            ...(credentialFingerprint
+              ? { "mcp.credential.fingerprint": credentialFingerprint }
+              : {}),
+          });
+          yield* Effect.logWarning("mcp.credential.rejected", {
+            reason,
+            credentialFingerprint,
+            method: request.method,
+            userAgent: request.headers["user-agent"] ?? null,
+          });
+          return unauthorized;
+        }
         return yield* httpEffect.pipe(
           Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
           Effect.map(normalizeMcpHttpResponse),

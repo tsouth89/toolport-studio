@@ -22,14 +22,14 @@ const encodeGatewayManifest = Schema.encodeSync(
   ),
 );
 
-function setInternalPreviewSession(): void {
+function setInternalPreviewSession(bearer = "preview-token"): void {
   McpProviderSession.setMcpProviderSession({
     environmentId: EnvironmentId.make("environment-local"),
     threadId,
     providerSessionId: "provider-session",
     providerInstanceId: ProviderInstanceId.make("codex"),
     endpoint: "http://127.0.0.1:43123/mcp",
-    authorizationHeader: "Bearer preview-token",
+    authorizationHeader: `Bearer ${bearer}`,
   });
 }
 
@@ -257,6 +257,73 @@ it.effect("falls back to direct preview when via-toolport overlay cannot be writ
         "C:\\Users\\tester",
       ),
     ).toBe("direct");
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect("catalog key moves when the via-toolport preview bearer rotates", () =>
+  Effect.sync(() => {
+    McpProviderSession.clearAllMcpProviderSessions();
+    setInternalPreviewSession();
+
+    const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "toolport-cred-rotation-"));
+    const gatewayPath = NodePath.join(root, "toolport-gateway.exe");
+    NodeFS.writeFileSync(gatewayPath, "");
+    const environment = {
+      TOOLPORT_GATEWAY_PATH: gatewayPath,
+      TOOLPORT_STUDIO_TOOLPORT_MCP: "on",
+      TOOLPORT_STUDIO_PREVIEW_REGISTRY: NodePath.join(root, "overlay.json"),
+      TOOLPORT_DATA_DIR: NodePath.join(root, "no-reg"),
+    };
+    const catalogKey = () =>
+      McpProviderSession.mcpBindingCatalogKey(
+        McpProviderSession.readMcpProviderBindings(
+          threadId,
+          environment,
+          "win32",
+          "C:\\Users\\tester",
+        ),
+      );
+
+    const issued = catalogKey();
+    // Re-issuing the same credential must not churn the provider child.
+    setInternalPreviewSession();
+    expect(catalogKey()).toBe(issued);
+
+    // Reaped session, thread restart, instance switch: same servers, same lane,
+    // new bearer. The stale child must be recycled rather than left on a token
+    // the MCP server now rejects.
+    setInternalPreviewSession("rotated-token");
+    const rotated = catalogKey();
+    expect(rotated).not.toBe(issued);
+    expect(rotated).toContain("preview:via");
+    expect(rotated).not.toContain("rotated-token");
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect("catalog key moves when the direct preview bearer rotates", () =>
+  Effect.sync(() => {
+    McpProviderSession.clearAllMcpProviderSessions();
+    setInternalPreviewSession();
+    McpProviderSession.armPreviewMcpForThread(threadId);
+
+    const environment = { PATH: "" };
+    const catalogKey = () =>
+      McpProviderSession.mcpBindingCatalogKey(
+        McpProviderSession.readMcpProviderBindings(
+          threadId,
+          environment,
+          "win32",
+          "C:\\Users\\tester",
+        ),
+      );
+
+    const issued = catalogKey();
+    setInternalPreviewSession("rotated-token");
+    const rotated = catalogKey();
+
+    expect(rotated).not.toBe(issued);
+    expect(rotated).toContain("preview:direct");
+    expect(rotated).not.toContain("rotated-token");
   }).pipe(Effect.provide(NodeServices.layer)),
 );
 
