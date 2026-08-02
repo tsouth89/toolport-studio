@@ -75,7 +75,7 @@ import { ProviderModelPicker } from "./ProviderModelPicker";
 import { type ComposerCommandItem, ComposerCommandMenu } from "./ComposerCommandMenu";
 import { ComposerPendingApprovalActions } from "./ComposerPendingApprovalActions";
 import { CompactComposerControlsMenu } from "./CompactComposerControlsMenu";
-import { ComposerPrimaryActions } from "./ComposerPrimaryActions";
+import { ComposerPrimaryActions, resolveRunningPrimaryAction } from "./ComposerPrimaryActions";
 import { ComposerPendingApprovalPanel } from "./ComposerPendingApprovalPanel";
 import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
 import { ComposerPlanFollowUpBanner } from "./ComposerPlanFollowUpBanner";
@@ -1247,16 +1247,25 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         : null,
     [activePendingIsResponding, activePendingProgress, activePendingResolvedAnswers],
   );
+  const collapsedRunningPrimaryAction =
+    phase === "running"
+      ? resolveRunningPrimaryAction({
+          hasSendableContent: composerSendState.hasSendableContent,
+          queuedMessageCount,
+        })
+      : null;
   const collapsedComposerPrimaryActionDisabled =
-    phase === "running" ||
     phase === "connecting" ||
     isSendBusy ||
     isConnecting ||
     noProviderAvailable ||
     projectSelectionRequired ||
     environmentUnavailable !== null ||
-    !composerSendState.hasSendableContent;
-  const collapsedComposerPrimaryActionLabel = "Send message";
+    (collapsedRunningPrimaryAction?.action === "send-now"
+      ? queuedMessageCount === 0
+      : !composerSendState.hasSendableContent);
+  const collapsedComposerPrimaryActionLabel =
+    collapsedRunningPrimaryAction?.ariaLabel ?? "Send message";
   const showMobilePendingAnswerActions =
     isMobileViewport && !isComposerCollapsedMobile && pendingPrimaryAction !== null;
 
@@ -2479,7 +2488,15 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 onPointerDown={(event) => event.preventDefault()}
                 onClick={(event) => {
                   event.stopPropagation();
-                  submitComposer();
+                  submitComposer(
+                    undefined,
+                    collapsedRunningPrimaryAction
+                      ? {
+                          intent:
+                            collapsedRunningPrimaryAction.action === "queue" ? "queue" : "steer",
+                        }
+                      : undefined,
+                  );
                 }}
               >
                 <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
