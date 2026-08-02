@@ -35,6 +35,7 @@ import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import * as CodexClient from "effect-codex-app-server/client";
+import type * as CodexProtocol from "effect-codex-app-server/protocol";
 import * as CodexErrors from "effect-codex-app-server/errors";
 import * as CodexRpc from "effect-codex-app-server/rpc";
 import * as EffectCodexSchema from "effect-codex-app-server/schema";
@@ -147,6 +148,20 @@ export interface CodexSessionRuntimeOptions {
   readonly pendingUserInputTimeoutMs?: number;
   /** Override how long a silent turn runs before Studio calls it stalled. */
   readonly turnStallTimeoutMs?: number;
+  /**
+   * Raw JSON-RPC frame logging, the same capability the ACP runtimes already
+   * wire up. Without it a codex session that stops delivering notifications is
+   * undiagnosable: the per-thread log only shows events that were already
+   * dispatched, so there is no way to tell a frame that never arrived from one
+   * that arrived and failed to decode.
+   */
+  readonly protocolLogging?: {
+    readonly logIncoming?: boolean;
+    readonly logOutgoing?: boolean;
+    readonly logger?: (
+      event: CodexProtocol.CodexAppServerProtocolLogEvent,
+    ) => Effect.Effect<void, never>;
+  };
 }
 
 export interface CodexSessionRuntimeSendTurnInput {
@@ -926,10 +941,15 @@ export const makeCodexSessionRuntime = (
         ),
       );
 
-    const clientContext = yield* CodexClient.layerChildProcess(child).pipe(
-      Layer.build,
-      Effect.provideService(Scope.Scope, runtimeScope),
-    );
+    const clientContext = yield* CodexClient.layerChildProcess(child, {
+      ...(options.protocolLogging?.logIncoming !== undefined
+        ? { logIncoming: options.protocolLogging.logIncoming }
+        : {}),
+      ...(options.protocolLogging?.logOutgoing !== undefined
+        ? { logOutgoing: options.protocolLogging.logOutgoing }
+        : {}),
+      ...(options.protocolLogging?.logger ? { logger: options.protocolLogging.logger } : {}),
+    }).pipe(Layer.build, Effect.provideService(Scope.Scope, runtimeScope));
     const client = yield* Effect.service(CodexClient.CodexAppServerClient).pipe(
       Effect.provide(clientContext),
     );

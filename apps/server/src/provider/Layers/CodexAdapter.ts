@@ -76,6 +76,7 @@ import {
   type CodexSessionRuntimeShape,
 } from "./CodexSessionRuntime.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
+import { makeCodexNativeProtocolLoggerFactory } from "./CodexNativeLogging.ts";
 import { resolveCodexLaunchArgs } from "./codexLaunchArgs.ts";
 const isCodexAppServerProcessExitedError = Schema.is(CodexErrors.CodexAppServerProcessExitedError);
 const isCodexAppServerTransportError = Schema.is(CodexErrors.CodexAppServerTransportError);
@@ -1639,6 +1640,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       : undefined);
   const managedNativeEventLogger =
     options?.nativeEventLogger === undefined ? nativeEventLogger : undefined;
+  const makeCodexNativeProtocolLogger = yield* makeCodexNativeProtocolLoggerFactory();
   const runtimeEventQueue = yield* Queue.unbounded<ProviderRuntimeEvent>();
   const sessions = new Map<ThreadId, CodexAdapterSessionContext>();
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
@@ -1914,6 +1916,11 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         ...(options?.pendingUserInputTimeoutMs !== undefined
           ? { pendingUserInputTimeoutMs: options.pendingUserInputTimeoutMs }
           : {}),
+        ...makeCodexNativeProtocolLogger({
+          nativeEventLogger,
+          provider: boundDriverKind,
+          threadId: session.threadId,
+        }),
       };
 
       const sessionScope = yield* Scope.make("sequential");
@@ -2019,6 +2026,11 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           ...(options?.pendingUserInputTimeoutMs !== undefined
             ? { pendingUserInputTimeoutMs: options.pendingUserInputTimeoutMs }
             : {}),
+          ...makeCodexNativeProtocolLogger({
+            nativeEventLogger,
+            provider: boundDriverKind,
+            threadId: input.threadId,
+          }),
         };
         const sessionScope = yield* Scope.make("sequential");
         let sessionScopeTransferred = false;
