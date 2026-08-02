@@ -20,6 +20,7 @@ import {
 import { resolveSpawnCommand } from "@toolport-studio/shared/shell";
 import { normalizeModelSlug } from "@toolport-studio/shared/model";
 import { extractProviderErrorMessage } from "@toolport-studio/shared/providerError";
+import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -61,6 +62,22 @@ const CODEX_APP_SERVER_FORCE_KILL_AFTER = "2 seconds" as const;
 const CODEX_PENDING_APPROVAL_TIMEOUT_MS = 3 * 60_000;
 /** Slightly longer for multi-question forms. */
 const CODEX_PENDING_USER_INPUT_TIMEOUT_MS = 5 * 60_000;
+/**
+ * How long a running turn may emit nothing at all before Studio calls it
+ * stalled.
+ *
+ * The app-server can accept `turn/start`, return a turn id, and then go
+ * completely silent — observed when one of its configured MCP servers never
+ * finishes starting up. Studio used to show Working forever with no output and
+ * no error, and follow-up messages folded into the dead turn via `turn/steer`
+ * and were never seen again. A turn that has produced no notification of any
+ * kind for this long is treated as stalled: the user is told, and the next
+ * message opens a fresh turn instead of steering into the void.
+ *
+ * Generous on purpose — codex streams reasoning and item events within seconds
+ * of a healthy turn, so total silence this long is not normal thinking time.
+ */
+const CODEX_TURN_STALL_TIMEOUT_MS = 90_000;
 const RECOVERABLE_THREAD_RESUME_ERROR_SNIPPETS = [
   "not found",
   "missing thread",
@@ -128,6 +145,8 @@ export interface CodexSessionRuntimeOptions {
   readonly pendingApprovalTimeoutMs?: number;
   /** Override pending user-input auto-cancel (default 5 minutes). */
   readonly pendingUserInputTimeoutMs?: number;
+  /** Override how long a silent turn runs before Studio calls it stalled. */
+  readonly turnStallTimeoutMs?: number;
 }
 
 export interface CodexSessionRuntimeSendTurnInput {
@@ -416,7 +435,12 @@ export function buildCodexTurnInput(input: {
 export function canSteerCodexSendTurn(input: {
   readonly status: string;
   readonly activeTurnId: TurnId | undefined;
+  /** A stalled turn is not steerable: the message would never be seen. */
+  readonly turnStalled?: boolean;
 }): TurnId | undefined {
+  if (input.turnStalled === true) {
+    return undefined;
+  }
   if (
     !canSteerSendTurn({
       promptsInFlight: input.status === "running" ? 1 : 0,
@@ -427,6 +451,26 @@ export function canSteerCodexSendTurn(input: {
     return undefined;
   }
   return input.activeTurnId;
+}
+
+/**
+ * Whether the live turn has gone silent long enough to be treated as stalled.
+ *
+ * `lastHeardAtMs` is the most recent moment the app-server said anything for
+ * this session, floored at the turn's own start so a turn that never emitted
+ * still ages out. Returns false when no turn is running.
+ */
+export function isCodexTurnStalled(input: {
+  readonly turnStartedAtMs: number | undefined;
+  readonly lastNotificationAtMs: number | undefined;
+  readonly nowMs: number;
+  readonly stallTimeoutMs: number;
+}): boolean {
+  if (input.turnStartedAtMs === undefined) {
+    return false;
+  }
+  const lastHeardAtMs = Math.max(input.turnStartedAtMs, input.lastNotificationAtMs ?? 0);
+  return input.nowMs - lastHeardAtMs >= input.stallTimeoutMs;
 }
 
 /**
@@ -841,6 +885,11 @@ export const makeCodexSessionRuntime = (
      */
     const needsContextRehydrationRef = yield* Ref.make(false);
     const closedRef = yield* Ref.make(false);
+    /** Liveness for the stall watchdog: last time the app-server said anything. */
+    const lastNotificationAtMsRef = yield* Ref.make<number | undefined>(undefined);
+    const activeTurnStartedAtMsRef = yield* Ref.make<number | undefined>(undefined);
+    /** Turns already reported as stalled, so the warning fires once per turn. */
+    const stallReportedTurnIdsRef = yield* Ref.make(new Set<string>());
 
     // `~` is not shell-expanded when env vars are set via
     // `child_process.spawn`; `expandHomePath` lets a configured
@@ -1057,6 +1106,9 @@ export const makeCodexSessionRuntime = (
 
     const handleRawNotification = (notification: CodexServerNotification) =>
       Effect.gen(function* () {
+        // Liveness first: every frame counts, including the ones suppressed
+        // below. A session that is talking to us is not stalled.
+        yield* Ref.set(lastNotificationAtMsRef, yield* Clock.currentTimeMillis);
         const payload = notification.params;
         const route = readRouteFields(notification);
         const collabReceiverTurns = yield* Ref.get(collabReceiverTurnsRef);
@@ -1187,11 +1239,15 @@ export const makeCodexSessionRuntime = (
             payload.turn.status === "failed" && "error" in payload.turn && payload.turn.error
               ? extractProviderErrorMessage(payload.turn.error.message)
               : undefined;
-          return updateSession(sessionRef, {
-            status: payload.turn.status === "failed" ? "error" : "ready",
-            activeTurnId: undefined,
-            ...(lastError ? { lastError } : {}),
-          });
+          return Ref.set(activeTurnStartedAtMsRef, undefined).pipe(
+            Effect.andThen(
+              updateSession(sessionRef, {
+                status: payload.turn.status === "failed" ? "error" : "ready",
+                activeTurnId: undefined,
+                ...(lastError ? { lastError } : {}),
+              }),
+            ),
+          );
         }),
       ),
     );
@@ -1518,6 +1574,56 @@ export const makeCodexSessionRuntime = (
       return session;
     });
 
+    const turnStallTimeoutMs = options.turnStallTimeoutMs ?? CODEX_TURN_STALL_TIMEOUT_MS;
+
+    const readTurnStalled = Effect.gen(function* () {
+      return isCodexTurnStalled({
+        turnStartedAtMs: yield* Ref.get(activeTurnStartedAtMsRef),
+        lastNotificationAtMs: yield* Ref.get(lastNotificationAtMsRef),
+        nowMs: yield* Clock.currentTimeMillis,
+        stallTimeoutMs: turnStallTimeoutMs,
+      });
+    });
+
+    /**
+     * Tell the user when a turn the app-server accepted produces nothing at
+     * all. Without this the thread sits on Working indefinitely and the only
+     * signal is that no answer ever arrives.
+     */
+    const watchTurnForStall = (turnId: TurnId) =>
+      Effect.gen(function* () {
+        yield* Effect.sleep(`${turnStallTimeoutMs} millis`);
+        const session = yield* Ref.get(sessionRef);
+        if (session.status !== "running" || String(session.activeTurnId) !== String(turnId)) {
+          return;
+        }
+        if (!(yield* readTurnStalled)) {
+          return;
+        }
+        const alreadyReported = (yield* Ref.get(stallReportedTurnIdsRef)).has(String(turnId));
+        if (alreadyReported) {
+          return;
+        }
+        yield* Ref.update(stallReportedTurnIdsRef, (current) => {
+          const next = new Set(current);
+          next.add(String(turnId));
+          return next;
+        });
+        const seconds = Math.round(turnStallTimeoutMs / 1000);
+        yield* Effect.logWarning("Codex turn produced no output; reporting stall", {
+          threadId: options.threadId,
+          turnId,
+          stallTimeoutMs: turnStallTimeoutMs,
+        });
+        yield* emitEvent({
+          kind: "notification",
+          threadId: options.threadId,
+          turnId,
+          method: "process/stderr",
+          message: `Codex accepted this turn but has sent nothing back for ${seconds}s. The app-server may be stuck starting an MCP server. Stop the turn and try again, or check the provider's MCP configuration.`,
+        });
+      });
+
     const readProviderThreadId = Effect.gen(function* () {
       const providerThreadId = currentProviderThreadId(yield* Ref.get(sessionRef));
       if (!providerThreadId) {
@@ -1597,9 +1703,18 @@ export const makeCodexSessionRuntime = (
           // turn while the first was still running (SOU-421), which is not what
           // the composer's "Following up" chrome promises.
           const liveSession = yield* Ref.get(sessionRef);
+          const turnStalled = yield* readTurnStalled;
+          if (turnStalled && liveSession.activeTurnId) {
+            yield* Effect.logInfo("Codex live turn is stalled; opening a new turn instead", {
+              threadId: options.threadId,
+              activeTurnId: liveSession.activeTurnId,
+              stallTimeoutMs: turnStallTimeoutMs,
+            });
+          }
           const steerTargetTurnId = canSteerCodexSendTurn({
             status: liveSession.status,
             activeTurnId: liveSession.activeTurnId,
+            turnStalled,
           });
           if (steerTargetTurnId) {
             const steerInput = buildCodexTurnInput({
@@ -1655,11 +1770,13 @@ export const makeCodexSessionRuntime = (
             ),
           );
           const turnId = TurnId.make(response.turn.id);
+          yield* Ref.set(activeTurnStartedAtMsRef, yield* Clock.currentTimeMillis);
           yield* updateSession(sessionRef, {
             status: "running",
             activeTurnId: turnId,
             ...(normalizedModel ? { model: normalizedModel } : {}),
           });
+          yield* watchTurnForStall(turnId).pipe(Effect.forkIn(runtimeScope));
           // Surface Working chrome as soon as turn/start returns; native
           // turn/started can lag slightly after the RPC response.
           yield* Ref.update(earlyTurnStartedIdsRef, (current) => {
@@ -1719,6 +1836,7 @@ export const makeCodexSessionRuntime = (
               next.add(String(effectiveTurnId));
               return next;
             });
+            yield* Ref.set(activeTurnStartedAtMsRef, undefined);
             yield* updateSession(sessionRef, {
               status: "ready",
               activeTurnId: undefined,

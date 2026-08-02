@@ -20,6 +20,7 @@ import {
   canSteerCodexSendTurn,
   hasConfiguredMcpServer,
   isCodexTurnNotSteerable,
+  isCodexTurnStalled,
   isRecoverableThreadResumeError,
   openCodexThread,
 } from "./CodexSessionRuntime.ts";
@@ -528,6 +529,82 @@ describe("canSteerCodexSendTurn", () => {
     NodeAssert.equal(
       canSteerCodexSendTurn({ status: "running", activeTurnId: undefined }),
       undefined,
+    );
+  });
+
+  it("opens a new turn rather than steering into a stalled one", () => {
+    // Steering into a turn the app-server has abandoned swallowed the message.
+    NodeAssert.equal(
+      canSteerCodexSendTurn({
+        status: "running",
+        activeTurnId: TurnId.make("turn-1"),
+        turnStalled: true,
+      }),
+      undefined,
+    );
+  });
+});
+
+describe("isCodexTurnStalled", () => {
+  const stallTimeoutMs = 90_000;
+
+  it("is never stalled without a running turn", () => {
+    NodeAssert.equal(
+      isCodexTurnStalled({
+        turnStartedAtMs: undefined,
+        lastNotificationAtMs: 0,
+        nowMs: 10 * stallTimeoutMs,
+        stallTimeoutMs,
+      }),
+      false,
+    );
+  });
+
+  it("is not stalled while the turn is still young", () => {
+    NodeAssert.equal(
+      isCodexTurnStalled({
+        turnStartedAtMs: 1_000,
+        lastNotificationAtMs: undefined,
+        nowMs: 1_000 + stallTimeoutMs - 1,
+        stallTimeoutMs,
+      }),
+      false,
+    );
+  });
+
+  it("is stalled once a turn that never emitted ages out", () => {
+    NodeAssert.equal(
+      isCodexTurnStalled({
+        turnStartedAtMs: 1_000,
+        lastNotificationAtMs: undefined,
+        nowMs: 1_000 + stallTimeoutMs,
+        stallTimeoutMs,
+      }),
+      true,
+    );
+  });
+
+  it("stays alive while the app-server keeps talking", () => {
+    NodeAssert.equal(
+      isCodexTurnStalled({
+        turnStartedAtMs: 1_000,
+        lastNotificationAtMs: 1_000 + stallTimeoutMs,
+        nowMs: 1_000 + stallTimeoutMs + 1,
+        stallTimeoutMs,
+      }),
+      false,
+    );
+  });
+
+  it("ignores chatter that predates the turn", () => {
+    NodeAssert.equal(
+      isCodexTurnStalled({
+        turnStartedAtMs: 500_000,
+        lastNotificationAtMs: 1_000,
+        nowMs: 500_000 + stallTimeoutMs,
+        stallTimeoutMs,
+      }),
+      true,
     );
   });
 });
