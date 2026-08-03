@@ -12,9 +12,12 @@ import type * as PlatformError from "effect/PlatformError";
 import { OrchestrationCommandInvariantError } from "./Errors.ts";
 import {
   listThreadsByProjectId,
+  listThreadsBySidebarGroupId,
   requireActiveProjectWorkspaceRootAbsent,
   requireProject,
   requireProjectAbsent,
+  requireSidebarFolder,
+  requireSidebarFolderAbsent,
   requireThread,
   requireThreadArchived,
   requireThreadAbsent,
@@ -339,6 +342,103 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         type: "project.deleted" as const,
         payload: {
           projectId: command.projectId,
+          deletedAt: occurredAt,
+        },
+      };
+    }
+
+    case "sidebar-folder.create": {
+      yield* requireSidebarFolderAbsent({
+        readModel,
+        command,
+        sidebarFolderId: command.sidebarFolderId,
+      });
+
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "sidebar-folder",
+          aggregateId: command.sidebarFolderId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "sidebar-folder.created",
+        payload: {
+          sidebarFolderId: command.sidebarFolderId,
+          title: command.title,
+          createdAt: command.createdAt,
+          updatedAt: command.createdAt,
+        },
+      };
+    }
+
+    case "sidebar-folder.meta.update": {
+      yield* requireSidebarFolder({
+        readModel,
+        command,
+        sidebarFolderId: command.sidebarFolderId,
+      });
+      const occurredAt = yield* nowIso;
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "sidebar-folder",
+          aggregateId: command.sidebarFolderId,
+          occurredAt,
+          commandId: command.commandId,
+        })),
+        type: "sidebar-folder.meta-updated",
+        payload: {
+          sidebarFolderId: command.sidebarFolderId,
+          ...(command.title !== undefined ? { title: command.title } : {}),
+          updatedAt: occurredAt,
+        },
+      };
+    }
+
+    case "sidebar-folder.delete": {
+      yield* requireSidebarFolder({
+        readModel,
+        command,
+        sidebarFolderId: command.sidebarFolderId,
+      });
+      // Decision 5: deleting a shelf never deletes conversations. Members are
+      // ungrouped first (archived ones included, so unarchiving cannot land a
+      // thread back on a shelf that no longer exists) and the folder is then
+      // soft-deleted.
+      const memberThreads = listThreadsBySidebarGroupId(readModel, command.sidebarFolderId).filter(
+        (thread) => thread.deletedAt === null,
+      );
+      if (memberThreads.length > 0) {
+        return yield* decideCommandSequence({
+          readModel,
+          commands: [
+            ...memberThreads.map(
+              (thread): Extract<OrchestrationCommand, { type: "thread.meta.update" }> => ({
+                type: "thread.meta.update",
+                commandId: command.commandId,
+                threadId: thread.id,
+                sidebarGroupId: null,
+              }),
+            ),
+            {
+              type: "sidebar-folder.delete",
+              commandId: command.commandId,
+              sidebarFolderId: command.sidebarFolderId,
+            },
+          ],
+        });
+      }
+
+      const occurredAt = yield* nowIso;
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "sidebar-folder",
+          aggregateId: command.sidebarFolderId,
+          occurredAt,
+          commandId: command.commandId,
+        })),
+        type: "sidebar-folder.deleted" as const,
+        payload: {
+          sidebarFolderId: command.sidebarFolderId,
           deletedAt: occurredAt,
         },
       };

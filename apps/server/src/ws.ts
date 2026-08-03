@@ -52,6 +52,7 @@ import {
   AssetWorkspaceContextNotFoundError,
   AssetWorkspaceContextResolutionError,
   EnvironmentAuthorizationError,
+  type SidebarFolderId,
   ThreadId,
   type TerminalAttachStreamEvent,
   type TerminalError,
@@ -627,6 +628,17 @@ const makeWsRpcLayer = (
                 projectId: event.payload.projectId,
               }),
             );
+          case "sidebar-folder.created":
+          case "sidebar-folder.meta-updated":
+            return sidebarFolderUpsertOrRemove(event.payload.sidebarFolderId, event.sequence);
+          case "sidebar-folder.deleted":
+            return Effect.succeed(
+              Option.some({
+                kind: "sidebar-folder-removed" as const,
+                sequence: event.sequence,
+                sidebarFolderId: event.payload.sidebarFolderId,
+              }),
+            );
           case "thread.deleted":
           case "thread.archived":
             return Effect.succeed(
@@ -652,7 +664,7 @@ const makeWsRpcLayer = (
       // If both attempts fail, log and drop the stream item; treating an error as
       // a missing row would incorrectly remove a still-active aggregate.
       const retryShellProjectionRead = <A, E>(
-        aggregateKind: "project" | "thread",
+        aggregateKind: "project" | "sidebar-folder" | "thread",
         aggregateId: string,
         read: Effect.Effect<A, E>,
       ): Effect.Effect<Option.Option<A>, never, never> =>
@@ -692,6 +704,35 @@ const makeWsRpcLayer = (
                     kind: "project-upserted" as const,
                     sequence,
                     project: nextProject,
+                  }),
+              }),
+            ),
+          ),
+        );
+
+      const sidebarFolderUpsertOrRemove = (
+        sidebarFolderId: SidebarFolderId,
+        sequence: number,
+      ): Effect.Effect<Option.Option<OrchestrationShellStreamEvent>, never, never> =>
+        retryShellProjectionRead(
+          "sidebar-folder",
+          sidebarFolderId,
+          projectionSnapshotQuery.getSidebarFolderShellById(sidebarFolderId),
+        ).pipe(
+          Effect.map(
+            Option.flatMap((sidebarFolder) =>
+              Option.match(sidebarFolder, {
+                onNone: () =>
+                  Option.some<OrchestrationShellStreamEvent>({
+                    kind: "sidebar-folder-removed" as const,
+                    sequence,
+                    sidebarFolderId,
+                  }),
+                onSome: (nextSidebarFolder) =>
+                  Option.some<OrchestrationShellStreamEvent>({
+                    kind: "sidebar-folder-upserted" as const,
+                    sequence,
+                    sidebarFolder: nextSidebarFolder,
                   }),
               }),
             ),

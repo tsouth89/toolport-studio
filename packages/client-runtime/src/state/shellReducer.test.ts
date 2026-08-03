@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { ProjectId, ProviderInstanceId, ThreadId } from "@toolport-studio/contracts";
+import {
+  ProjectId,
+  ProviderInstanceId,
+  SidebarFolderId,
+  ThreadId,
+} from "@toolport-studio/contracts";
 import type {
   OrchestrationShellSnapshot,
   OrchestrationShellStreamEvent,
@@ -11,6 +16,7 @@ import { applyShellStreamEvent } from "./shellReducer.ts";
 const baseSnapshot: OrchestrationShellSnapshot = {
   snapshotSequence: 0,
   projects: [],
+  sidebarFolders: [],
   threads: [],
   updatedAt: "2026-04-01T00:00:00.000Z",
 };
@@ -22,6 +28,13 @@ const stubProject = {
   repositoryIdentity: null,
   defaultModelSelection: null,
   scripts: [],
+  createdAt: "2026-04-01T00:00:00.000Z",
+  updatedAt: "2026-04-01T00:00:00.000Z",
+} as const;
+
+const stubSidebarFolder = {
+  id: SidebarFolderId.make("folder-1"),
+  title: "Research",
   createdAt: "2026-04-01T00:00:00.000Z",
   updatedAt: "2026-04-01T00:00:00.000Z",
 } as const;
@@ -121,6 +134,61 @@ describe("applyShellStreamEvent", () => {
       const next = applyShellStreamEvent(snapshotWithProject, event);
 
       expect(next.projects).toHaveLength(0);
+      expect(next.snapshotSequence).toBe(3);
+    });
+  });
+
+  describe("sidebar-folder-upserted", () => {
+    it("adds a new sidebar folder", () => {
+      const event: OrchestrationShellStreamEvent = {
+        kind: "sidebar-folder-upserted",
+        sequence: 1,
+        sidebarFolder: stubSidebarFolder,
+      };
+
+      const next = applyShellStreamEvent(baseSnapshot, event);
+
+      expect(next.sidebarFolders).toHaveLength(1);
+      expect(next.sidebarFolders[0]?.id).toBe("folder-1");
+      expect(next.snapshotSequence).toBe(1);
+    });
+
+    it("renames an existing sidebar folder without touching threads", () => {
+      const snapshotWithFolder: OrchestrationShellSnapshot = {
+        ...baseSnapshot,
+        sidebarFolders: [stubSidebarFolder],
+        threads: [stubThread],
+      };
+
+      const next = applyShellStreamEvent(snapshotWithFolder, {
+        kind: "sidebar-folder-upserted",
+        sequence: 2,
+        sidebarFolder: { ...stubSidebarFolder, title: "Deep work" },
+      });
+
+      expect(next.sidebarFolders).toHaveLength(1);
+      expect(next.sidebarFolders[0]?.title).toBe("Deep work");
+      expect(next.threads).toEqual(snapshotWithFolder.threads);
+      expect(next.snapshotSequence).toBe(2);
+    });
+  });
+
+  describe("sidebar-folder-removed", () => {
+    it("removes a sidebar folder by id and keeps threads", () => {
+      const snapshotWithFolder: OrchestrationShellSnapshot = {
+        ...baseSnapshot,
+        sidebarFolders: [stubSidebarFolder],
+        threads: [stubThread],
+      };
+
+      const next = applyShellStreamEvent(snapshotWithFolder, {
+        kind: "sidebar-folder-removed",
+        sequence: 3,
+        sidebarFolderId: SidebarFolderId.make("folder-1"),
+      });
+
+      expect(next.sidebarFolders).toHaveLength(0);
+      expect(next.threads).toHaveLength(1);
       expect(next.snapshotSequence).toBe(3);
     });
   });

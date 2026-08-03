@@ -108,6 +108,7 @@ const THREAD_SHELL = {
 const SNAPSHOT: OrchestrationShellSnapshot = {
   snapshotSequence: 1,
   updatedAt: "2026-06-01T00:00:00.000Z",
+  sidebarFolders: [],
   projects: [
     {
       id: PROJECT_ID,

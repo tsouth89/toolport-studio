@@ -14,9 +14,11 @@ import type {
   OrchestrationReadModel,
   OrchestrationShellSnapshot,
   OrchestrationThread,
+  OrchestrationSidebarFolderShell,
   OrchestrationThreadDetailSnapshot,
   OrchestrationThreadShell,
   ProjectId,
+  SidebarFolderId,
   ThreadId,
 } from "@toolport-studio/contracts";
 import * as Context from "effect/Context";
@@ -121,6 +123,13 @@ export interface ProjectionSnapshotQueryShape {
   readonly getProjectShellById: (
     projectId: ProjectId,
   ) => Effect.Effect<Option.Option<OrchestrationProjectShell>, ProjectionRepositoryError>;
+
+  /**
+   * Read a single active (not soft-deleted) sidebar folder shell row by id.
+   */
+  readonly getSidebarFolderShellById: (
+    sidebarFolderId: SidebarFolderId,
+  ) => Effect.Effect<Option.Option<OrchestrationSidebarFolderShell>, ProjectionRepositoryError>;
 
   /**
    * Read the earliest active thread for a project.

@@ -3,6 +3,7 @@ import {
   EventId,
   MessageId,
   ProjectId,
+  SidebarFolderId,
   ThreadId,
   TurnId,
   ProviderInstanceId,
@@ -11,6 +12,7 @@ import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
@@ -1596,6 +1598,61 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       const shellSnapshot = yield* snapshotQuery.getShellSnapshot();
       assert.equal(shellSnapshot.projects.length, 0);
       assert.equal(shellSnapshot.threads.length, 0);
+    }),
+  );
+
+  it.effect("hides soft-deleted sidebar folders from shell reads but keeps them for replay", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* sql`DELETE FROM projection_projects`;
+      yield* sql`DELETE FROM projection_threads`;
+      yield* sql`DELETE FROM projection_sidebar_folders`;
+      yield* sql`DELETE FROM projection_state`;
+
+      yield* sql`
+        INSERT INTO projection_sidebar_folders (
+          sidebar_folder_id,
+          title,
+          created_at,
+          updated_at,
+          deleted_at
+        )
+        VALUES
+          ('folder-active', 'Research', '2026-05-01T00:00:00.000Z', '2026-05-01T00:00:01.000Z', NULL),
+          (
+            'folder-deleted',
+            'Old shelf',
+            '2026-05-01T00:00:02.000Z',
+            '2026-05-01T00:00:03.000Z',
+            '2026-05-01T00:00:04.000Z'
+          )
+      `;
+
+      const shellSnapshot = yield* snapshotQuery.getShellSnapshot();
+      assert.deepEqual(shellSnapshot.sidebarFolders, [
+        {
+          id: SidebarFolderId.make("folder-active"),
+          title: "Research",
+          createdAt: "2026-05-01T00:00:00.000Z",
+          updatedAt: "2026-05-01T00:00:01.000Z",
+        },
+      ]);
+
+      // The decider needs the tombstone so a delete cannot be replayed twice.
+      const commandReadModel = yield* snapshotQuery.getCommandReadModel();
+      assert.equal(commandReadModel.sidebarFolders.length, 2);
+      assert.equal(commandReadModel.sidebarFolders[1]?.deletedAt, "2026-05-01T00:00:04.000Z");
+
+      const activeById = yield* snapshotQuery.getSidebarFolderShellById(
+        SidebarFolderId.make("folder-active"),
+      );
+      assert.equal(Option.isSome(activeById), true);
+      const deletedById = yield* snapshotQuery.getSidebarFolderShellById(
+        SidebarFolderId.make("folder-deleted"),
+      );
+      assert.equal(Option.isNone(deletedById), true);
     }),
   );
 });

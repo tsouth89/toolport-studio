@@ -51,6 +51,7 @@ import Migration0035 from "./Migrations/035_TruncateHistoricalToolActivityPayloa
 import Migration0036 from "./Migrations/036_OrchestrationSideEffectDeliveries.ts";
 import Migration0037 from "./Migrations/037_ProjectionThreadQueuedTurns.ts";
 import Migration0038 from "./Migrations/038_ProjectionThreadsSidebarGroupId.ts";
+import Migration0039 from "./Migrations/039_ProjectionSidebarFolders.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -101,6 +102,7 @@ export const migrationEntries = [
   [36, "OrchestrationSideEffectDeliveries", Migration0036],
   [37, "ProjectionThreadQueuedTurns", Migration0037],
   [38, "ProjectionThreadsSidebarGroupId", Migration0038],
+  [39, "ProjectionSidebarFolders", Migration0039],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>

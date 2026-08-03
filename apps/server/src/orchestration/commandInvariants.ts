@@ -2,8 +2,10 @@ import type {
   OrchestrationCommand,
   OrchestrationProject,
   OrchestrationReadModel,
+  OrchestrationSidebarFolder,
   OrchestrationThread,
   ProjectId,
+  SidebarFolderId,
   ThreadId,
 } from "@toolport-studio/contracts";
 import { normalizeProjectPathForComparison } from "@toolport-studio/shared/path";
@@ -37,6 +39,58 @@ export function listThreadsByProjectId(
   projectId: ProjectId,
 ): ReadonlyArray<OrchestrationThread> {
   return readModel.threads.filter((thread) => thread.projectId === projectId);
+}
+
+export function findSidebarFolderById(
+  readModel: OrchestrationReadModel,
+  sidebarFolderId: SidebarFolderId,
+): OrchestrationSidebarFolder | undefined {
+  return readModel.sidebarFolders.find((folder) => folder.id === sidebarFolderId);
+}
+
+/**
+ * Threads currently filed under a sidebar shelf. Matches on `sidebarGroupId`
+ * only — workspace attachment (`projectId`) is a separate key and never
+ * implies shelf membership.
+ */
+export function listThreadsBySidebarGroupId(
+  readModel: OrchestrationReadModel,
+  sidebarGroupId: SidebarFolderId,
+): ReadonlyArray<OrchestrationThread> {
+  return readModel.threads.filter((thread) => thread.sidebarGroupId === sidebarGroupId);
+}
+
+export function requireSidebarFolder(input: {
+  readonly readModel: OrchestrationReadModel;
+  readonly command: OrchestrationCommand;
+  readonly sidebarFolderId: SidebarFolderId;
+}): Effect.Effect<OrchestrationSidebarFolder, OrchestrationCommandInvariantError> {
+  const folder = findSidebarFolderById(input.readModel, input.sidebarFolderId);
+  if (folder && folder.deletedAt === null) {
+    return Effect.succeed(folder);
+  }
+  return Effect.fail(
+    invariantError(
+      input.command.type,
+      `Sidebar folder '${input.sidebarFolderId}' does not exist for command '${input.command.type}'.`,
+    ),
+  );
+}
+
+export function requireSidebarFolderAbsent(input: {
+  readonly readModel: OrchestrationReadModel;
+  readonly command: OrchestrationCommand;
+  readonly sidebarFolderId: SidebarFolderId;
+}): Effect.Effect<void, OrchestrationCommandInvariantError> {
+  if (!findSidebarFolderById(input.readModel, input.sidebarFolderId)) {
+    return Effect.void;
+  }
+  return Effect.fail(
+    invariantError(
+      input.command.type,
+      `Sidebar folder '${input.sidebarFolderId}' already exists and cannot be created twice.`,
+    ),
+  );
 }
 
 export function requireProject(input: {
