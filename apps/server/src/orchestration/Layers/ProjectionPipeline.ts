@@ -4,6 +4,7 @@ import {
   type OrchestrationEvent,
   OrchestrationQueuedTurn,
   type OrchestrationSessionStatus,
+  SidebarFolderId,
   ThreadId,
 } from "@toolport-studio/contracts";
 import * as Effect from "effect/Effect";
@@ -604,6 +605,11 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           yield* projectionThreadRepository.upsert({
             threadId: event.payload.threadId,
             projectId: event.payload.projectId,
+            sidebarGroupId:
+              event.payload.sidebarGroupId !== undefined
+                ? event.payload.sidebarGroupId
+                : // Legacy create events: shelf matched workspace project.
+                  SidebarFolderId.make(event.payload.projectId),
             title: event.payload.title,
             modelSelection: event.payload.modelSelection,
             runtimeMode: event.payload.runtimeMode,
@@ -731,6 +737,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             ...existingRow.value,
             ...(event.payload.projectId !== undefined
               ? { projectId: event.payload.projectId }
+              : {}),
+            ...(event.payload.sidebarGroupId !== undefined
+              ? { sidebarGroupId: event.payload.sidebarGroupId }
               : {}),
             ...(event.payload.title !== undefined ? { title: event.payload.title } : {}),
             ...(event.payload.modelSelection !== undefined

@@ -355,6 +355,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      // Default ungrouped: new sessions stay off project shelves until filed.
+      const sidebarGroupId = command.sidebarGroupId === undefined ? null : command.sidebarGroupId;
       return {
         ...(yield* withEventBase({
           aggregateKind: "thread",
@@ -366,6 +368,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           threadId: command.threadId,
           projectId: command.projectId,
+          sidebarGroupId,
           title: command.title,
           modelSelection: command.modelSelection,
           runtimeMode: command.runtimeMode,
@@ -680,6 +683,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           threadId: command.threadId,
           ...(command.projectId !== undefined ? { projectId: command.projectId } : {}),
+          ...(command.sidebarGroupId !== undefined
+            ? { sidebarGroupId: command.sidebarGroupId }
+            : {}),
           ...(command.title !== undefined ? { title: command.title } : {}),
           ...(command.modelSelection !== undefined
             ? { modelSelection: command.modelSelection }

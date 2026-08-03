@@ -8,6 +8,7 @@ import {
   OrchestrationMessage,
   OrchestrationSession,
   OrchestrationThread,
+  SidebarFolderId,
 } from "@toolport-studio/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -288,6 +289,12 @@ export function projectEvent(
           {
             id: payload.threadId,
             projectId: payload.projectId,
+            // Historical events omit the field → keep legacy shelf = workspace.
+            // New creates always set it (null = ungrouped).
+            sidebarGroupId:
+              payload.sidebarGroupId !== undefined
+                ? payload.sidebarGroupId
+                : SidebarFolderId.make(payload.projectId),
             title: payload.title,
             modelSelection: payload.modelSelection,
             runtimeMode: payload.runtimeMode,
@@ -408,6 +415,9 @@ export function projectEvent(
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
             ...(payload.projectId !== undefined ? { projectId: payload.projectId } : {}),
+            ...(payload.sidebarGroupId !== undefined
+              ? { sidebarGroupId: payload.sidebarGroupId }
+              : {}),
             ...(payload.title !== undefined ? { title: payload.title } : {}),
             ...(payload.modelSelection !== undefined
               ? { modelSelection: payload.modelSelection }

@@ -1,4 +1,9 @@
-import { ProjectId, ThreadId, ProviderInstanceId } from "@toolport-studio/contracts";
+import {
+  ProjectId,
+  ProviderInstanceId,
+  SidebarFolderId,
+  ThreadId,
+} from "@toolport-studio/contracts";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -78,6 +83,7 @@ projectionRepositoriesLayer("Projection repositories", (it) => {
       yield* threads.upsert({
         threadId: ThreadId.make("thread-null-options"),
         projectId: ProjectId.make("project-null-options"),
+        sidebarGroupId: null,
         title: "Null options thread",
         modelSelection: {
           instanceId: ProviderInstanceId.make("claudeAgent"),
@@ -140,6 +146,7 @@ projectionRepositoriesLayer("Projection repositories", (it) => {
       yield* threads.upsert({
         threadId: ThreadId.make("thread-settled"),
         projectId: ProjectId.make("project-1"),
+        sidebarGroupId: SidebarFolderId.make("project-1"),
         title: "Settled thread",
         modelSelection: {
           instanceId: ProviderInstanceId.make("codex"),
