@@ -696,7 +696,9 @@ describe("ProviderCommandReactor", () => {
       const harness = yield* Effect.promise(() =>
         createHarness({
           reactorOptions: {
-            sessionOperationTimeout: "1 second",
+            // Explicit short turn timeout for the wedge case. Product default
+            // leaves sendTurn unbounded so multi-minute Grok/Cursor turns live.
+            turnOperationTimeout: "1 second",
           },
           sendTurnEffect: () => Effect.never,
         }),
