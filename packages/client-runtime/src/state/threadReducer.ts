@@ -63,10 +63,16 @@ export function applyThreadDetailEvent(
         thread: {
           id: event.payload.threadId,
           projectId: event.payload.projectId,
-          // New creates set null (ungrouped). Historical events omit → workspace shelf.
+          // New creates set null (ungrouped). Historical events omit → workspace
+          // shelf, and a projectless thread has no workspace to inherit one from.
           ...(event.payload.sidebarGroupId !== undefined
             ? { sidebarGroupId: event.payload.sidebarGroupId }
-            : { sidebarGroupId: SidebarFolderId.make(event.payload.projectId) }),
+            : {
+                sidebarGroupId:
+                  event.payload.projectId === null
+                    ? null
+                    : SidebarFolderId.make(event.payload.projectId),
+              }),
           title: event.payload.title,
           modelSelection: event.payload.modelSelection,
           runtimeMode: event.payload.runtimeMode,

@@ -3,6 +3,7 @@ import {
   type OrchestrationCommand,
   type OrchestrationEvent,
   type OrchestrationReadModel,
+  type SidebarFolderId,
 } from "@toolport-studio/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Crypto from "effect/Crypto";
@@ -11,10 +12,15 @@ import type * as PlatformError from "effect/PlatformError";
 
 import { OrchestrationCommandInvariantError } from "./Errors.ts";
 import {
+  findProjectById,
+  findSidebarFolderById,
   listThreadsByProjectId,
+  listThreadsBySidebarGroupId,
   requireActiveProjectWorkspaceRootAbsent,
   requireProject,
   requireProjectAbsent,
+  requireSidebarFolder,
+  requireSidebarFolderAbsent,
   requireThread,
   requireThreadArchived,
   requireThreadAbsent,
@@ -23,6 +29,33 @@ import {
 import { projectEvent } from "./projector.ts";
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
+
+/**
+ * `sidebarGroupId` can reference either a free-form sidebar folder OR a
+ * project shelf id (the client writes a project id when dropping onto a
+ * legacy project shelf). Accept both so valid shelf moves aren't rejected.
+ */
+const requireValidSidebarGroupId = Effect.fn("requireValidSidebarGroupId")(function* (input: {
+  readonly readModel: OrchestrationReadModel;
+  readonly command: OrchestrationCommand;
+  readonly sidebarGroupId: SidebarFolderId;
+}) {
+  const folder = findSidebarFolderById(input.readModel, input.sidebarGroupId);
+  if (folder && folder.deletedAt === null) {
+    return;
+  }
+  if (
+    input.readModel.projects.some(
+      (p) => (p.id as string) === input.sidebarGroupId && p.deletedAt === null,
+    )
+  ) {
+    return;
+  }
+  return yield* new OrchestrationCommandInvariantError({
+    commandType: input.command.type,
+    detail: `Sidebar group '${input.sidebarGroupId}' is not an active folder or project.`,
+  });
+});
 
 // Session adoption takes seconds; a user message still unadopted after this
 // window is a failed/stale start, not pending work. Mirrors the client's
@@ -344,12 +377,112 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
-    case "thread.create": {
-      yield* requireProject({
+    case "sidebar-folder.create": {
+      yield* requireSidebarFolderAbsent({
         readModel,
         command,
-        projectId: command.projectId,
+        sidebarFolderId: command.sidebarFolderId,
       });
+
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "sidebar-folder",
+          aggregateId: command.sidebarFolderId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "sidebar-folder.created",
+        payload: {
+          sidebarFolderId: command.sidebarFolderId,
+          title: command.title,
+          createdAt: command.createdAt,
+          updatedAt: command.createdAt,
+        },
+      };
+    }
+
+    case "sidebar-folder.meta.update": {
+      yield* requireSidebarFolder({
+        readModel,
+        command,
+        sidebarFolderId: command.sidebarFolderId,
+      });
+      const occurredAt = yield* nowIso;
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "sidebar-folder",
+          aggregateId: command.sidebarFolderId,
+          occurredAt,
+          commandId: command.commandId,
+        })),
+        type: "sidebar-folder.meta-updated",
+        payload: {
+          sidebarFolderId: command.sidebarFolderId,
+          ...(command.title !== undefined ? { title: command.title } : {}),
+          updatedAt: occurredAt,
+        },
+      };
+    }
+
+    case "sidebar-folder.delete": {
+      yield* requireSidebarFolder({
+        readModel,
+        command,
+        sidebarFolderId: command.sidebarFolderId,
+      });
+      // Decision 5: deleting a shelf never deletes conversations. Members are
+      // ungrouped first (archived ones included, so unarchiving cannot land a
+      // thread back on a shelf that no longer exists) and the folder is then
+      // soft-deleted.
+      const memberThreads = listThreadsBySidebarGroupId(readModel, command.sidebarFolderId).filter(
+        (thread) => thread.deletedAt === null,
+      );
+      if (memberThreads.length > 0) {
+        return yield* decideCommandSequence({
+          readModel,
+          commands: [
+            ...memberThreads.map(
+              (thread): Extract<OrchestrationCommand, { type: "thread.meta.update" }> => ({
+                type: "thread.meta.update",
+                commandId: command.commandId,
+                threadId: thread.id,
+                sidebarGroupId: null,
+              }),
+            ),
+            {
+              type: "sidebar-folder.delete",
+              commandId: command.commandId,
+              sidebarFolderId: command.sidebarFolderId,
+            },
+          ],
+        });
+      }
+
+      const occurredAt = yield* nowIso;
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "sidebar-folder",
+          aggregateId: command.sidebarFolderId,
+          occurredAt,
+          commandId: command.commandId,
+        })),
+        type: "sidebar-folder.deleted" as const,
+        payload: {
+          sidebarFolderId: command.sidebarFolderId,
+          deletedAt: occurredAt,
+        },
+      };
+    }
+
+    case "thread.create": {
+      // null = projectless: there is no workspace to validate.
+      if (command.projectId !== null) {
+        yield* requireProject({
+          readModel,
+          command,
+          projectId: command.projectId,
+        });
+      }
       yield* requireThreadAbsent({
         readModel,
         command,
@@ -357,6 +490,13 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       });
       // Default ungrouped: new sessions stay off project shelves until filed.
       const sidebarGroupId = command.sidebarGroupId === undefined ? null : command.sidebarGroupId;
+      if (sidebarGroupId !== null) {
+        yield* requireValidSidebarGroupId({
+          readModel,
+          command,
+          sidebarGroupId: sidebarGroupId,
+        });
+      }
       return {
         ...(yield* withEventBase({
           aggregateKind: "thread",
@@ -639,12 +779,24 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
-      if (command.projectId !== undefined) {
-        yield* requireProject({
+      if (command.sidebarGroupId !== undefined && command.sidebarGroupId !== null) {
+        yield* requireValidSidebarGroupId({
           readModel,
           command,
-          projectId: command.projectId,
+          sidebarGroupId: command.sidebarGroupId,
         });
+      }
+      // projectId set = attach/move, null = detach to projectless, omitted =
+      // leave the workspace alone. Both attach and detach change the cwd the
+      // agent runs in, so both are gated on the same session/worktree checks.
+      if (command.projectId !== undefined) {
+        if (command.projectId !== null) {
+          yield* requireProject({
+            readModel,
+            command,
+            projectId: command.projectId,
+          });
+        }
         if (
           command.projectId !== thread.projectId &&
           (thread.session?.status === "starting" || thread.session?.status === "running")

@@ -12,13 +12,16 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { SqlitePersistenceMemory } from "./Sqlite.ts";
 import { ProjectionProjectRepositoryLive } from "./ProjectionProjects.ts";
+import { ProjectionSidebarFolderRepositoryLive } from "./ProjectionSidebarFolders.ts";
 import { ProjectionThreadRepositoryLive } from "./ProjectionThreads.ts";
 import { ProjectionProjectRepository } from "../Services/ProjectionProjects.ts";
+import { ProjectionSidebarFolderRepository } from "../Services/ProjectionSidebarFolders.ts";
 import { ProjectionThreadRepository } from "../Services/ProjectionThreads.ts";
 
 const projectionRepositoriesLayer = it.layer(
   Layer.mergeAll(
     ProjectionProjectRepositoryLive.pipe(Layer.provideMerge(SqlitePersistenceMemory)),
+    ProjectionSidebarFolderRepositoryLive.pipe(Layer.provideMerge(SqlitePersistenceMemory)),
     ProjectionThreadRepositoryLive.pipe(Layer.provideMerge(SqlitePersistenceMemory)),
     SqlitePersistenceMemory,
   ),
@@ -200,6 +203,54 @@ projectionRepositoriesLayer("Projection repositories", (it) => {
       assert.strictEqual(updated?.settledAt, null);
       assert.strictEqual(updated?.snoozedUntil, null);
       assert.strictEqual(updated?.snoozedAt, null);
+    }),
+  );
+
+  it.effect("round-trips sidebar folder rows through rename and soft delete", () =>
+    Effect.gen(function* () {
+      const sidebarFolders = yield* ProjectionSidebarFolderRepository;
+
+      yield* sidebarFolders.upsert({
+        sidebarFolderId: SidebarFolderId.make("folder-round-trip"),
+        title: "Research",
+        createdAt: "2026-05-01T00:00:00.000Z",
+        updatedAt: "2026-05-01T00:00:00.000Z",
+        deletedAt: null,
+      });
+
+      const created = Option.getOrNull(
+        yield* sidebarFolders.getById({
+          sidebarFolderId: SidebarFolderId.make("folder-round-trip"),
+        }),
+      );
+      if (!created) {
+        return yield* Effect.die("Expected projection_sidebar_folders row to exist.");
+      }
+      assert.strictEqual(created.title, "Research");
+      assert.strictEqual(created.deletedAt, null);
+
+      yield* sidebarFolders.upsert({
+        ...created,
+        title: "Deep work",
+        updatedAt: "2026-05-02T00:00:00.000Z",
+      });
+      yield* sidebarFolders.upsert({
+        ...created,
+        title: "Deep work",
+        updatedAt: "2026-05-03T00:00:00.000Z",
+        deletedAt: "2026-05-03T00:00:00.000Z",
+      });
+
+      const deleted = Option.getOrNull(
+        yield* sidebarFolders.getById({
+          sidebarFolderId: SidebarFolderId.make("folder-round-trip"),
+        }),
+      );
+      assert.strictEqual(deleted?.title, "Deep work");
+      assert.strictEqual(deleted?.deletedAt, "2026-05-03T00:00:00.000Z");
+      // Soft delete keeps the row listed so replays stay deterministic.
+      const listed = yield* sidebarFolders.listAll();
+      assert.strictEqual(listed.length, 1);
     }),
   );
 });

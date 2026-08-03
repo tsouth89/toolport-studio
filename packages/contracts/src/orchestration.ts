@@ -223,6 +223,20 @@ export const OrchestrationProject = Schema.Struct({
 });
 export type OrchestrationProject = typeof OrchestrationProject.Type;
 
+/**
+ * A free-form sidebar shelf. Organization only: a folder carries no workspace,
+ * no cwd, and no git state — threads reference it through `sidebarGroupId`
+ * while `projectId` keeps pointing at whatever workspace they are attached to.
+ */
+export const OrchestrationSidebarFolder = Schema.Struct({
+  id: SidebarFolderId,
+  title: TrimmedNonEmptyString,
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+  deletedAt: Schema.NullOr(IsoDateTime),
+});
+export type OrchestrationSidebarFolder = typeof OrchestrationSidebarFolder.Type;
+
 export const OrchestrationMessageRole = Schema.Literals(["user", "assistant", "system"]);
 export type OrchestrationMessageRole = typeof OrchestrationMessageRole.Type;
 
@@ -360,7 +374,12 @@ export type OrchestrationLatestTurn = typeof OrchestrationLatestTurn.Type;
 
 export const OrchestrationThread = Schema.Struct({
   id: ThreadId,
-  projectId: ProjectId,
+  /**
+   * Workspace attachment (cwd). null = projectless: the session runs against a
+   * neutral non-project directory and workspace features (worktrees,
+   * checkpoints, scripts, project git chrome) stay off until it is attached.
+   */
+  projectId: Schema.NullOr(ProjectId),
   /**
    * Sidebar shelf membership only. null = ungrouped. Absent on legacy payloads
    * means "derive from projectId" on the client until projections are migrated.
@@ -403,6 +422,10 @@ export type OrchestrationThread = typeof OrchestrationThread.Type;
 export const OrchestrationReadModel = Schema.Struct({
   snapshotSequence: NonNegativeInt,
   projects: Schema.Array(OrchestrationProject),
+  // Absent on snapshots written before free-form folders existed.
+  sidebarFolders: Schema.Array(OrchestrationSidebarFolder).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
   threads: Schema.Array(OrchestrationThread),
   updatedAt: IsoDateTime,
 });
@@ -420,9 +443,19 @@ export const OrchestrationProjectShell = Schema.Struct({
 });
 export type OrchestrationProjectShell = typeof OrchestrationProjectShell.Type;
 
+/** Shell view of a free-form sidebar folder; soft-deleted folders are omitted. */
+export const OrchestrationSidebarFolderShell = Schema.Struct({
+  id: SidebarFolderId,
+  title: TrimmedNonEmptyString,
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+});
+export type OrchestrationSidebarFolderShell = typeof OrchestrationSidebarFolderShell.Type;
+
 export const OrchestrationThreadShell = Schema.Struct({
   id: ThreadId,
-  projectId: ProjectId,
+  /** Workspace attachment; null = projectless. See OrchestrationThread.projectId. */
+  projectId: Schema.NullOr(ProjectId),
   /** Sidebar shelf only; null = ungrouped. See OrchestrationThread.sidebarGroupId. */
   sidebarGroupId: Schema.optional(Schema.NullOr(SidebarFolderId)),
   title: TrimmedNonEmptyString,
@@ -455,6 +488,11 @@ export type OrchestrationThreadShell = typeof OrchestrationThreadShell.Type;
 export const OrchestrationShellSnapshot = Schema.Struct({
   snapshotSequence: NonNegativeInt,
   projects: Schema.Array(OrchestrationProjectShell),
+  // Absent from servers predating free-form folders, and from cached snapshots
+  // written by those servers, so it decodes to an empty list.
+  sidebarFolders: Schema.Array(OrchestrationSidebarFolderShell).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
   threads: Schema.Array(OrchestrationThreadShell),
   updatedAt: IsoDateTime,
 });
@@ -470,6 +508,16 @@ export const OrchestrationShellStreamEvent = Schema.Union([
     kind: Schema.Literal("project-removed"),
     sequence: NonNegativeInt,
     projectId: ProjectId,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("sidebar-folder-upserted"),
+    sequence: NonNegativeInt,
+    sidebarFolder: OrchestrationSidebarFolderShell,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("sidebar-folder-removed"),
+    sequence: NonNegativeInt,
+    sidebarFolderId: SidebarFolderId,
   }),
   Schema.Struct({
     kind: Schema.Literal("thread-upserted"),
@@ -566,11 +614,37 @@ const ProjectDeleteCommand = Schema.Struct({
   force: Schema.optional(Schema.Boolean),
 });
 
+const SidebarFolderCreateCommand = Schema.Struct({
+  type: Schema.Literal("sidebar-folder.create"),
+  commandId: CommandId,
+  sidebarFolderId: SidebarFolderId,
+  title: TrimmedNonEmptyString,
+  createdAt: IsoDateTime,
+});
+
+const SidebarFolderMetaUpdateCommand = Schema.Struct({
+  type: Schema.Literal("sidebar-folder.meta.update"),
+  commandId: CommandId,
+  sidebarFolderId: SidebarFolderId,
+  title: Schema.optional(TrimmedNonEmptyString),
+});
+
+/**
+ * Deleting a shelf never deletes conversations: member threads are ungrouped
+ * (`sidebarGroupId` → null) and the folder is soft-deleted.
+ */
+const SidebarFolderDeleteCommand = Schema.Struct({
+  type: Schema.Literal("sidebar-folder.delete"),
+  commandId: CommandId,
+  sidebarFolderId: SidebarFolderId,
+});
+
 const ThreadCreateCommand = Schema.Struct({
   type: Schema.Literal("thread.create"),
   commandId: CommandId,
   threadId: ThreadId,
-  projectId: ProjectId,
+  // null = projectless (no workspace attached yet).
+  projectId: Schema.NullOr(ProjectId),
   // null = ungrouped (default). Omitted treats as ungrouped for new creates.
   sidebarGroupId: Schema.optional(Schema.NullOr(SidebarFolderId)),
   title: TrimmedNonEmptyString,
@@ -643,7 +717,8 @@ const ThreadMetaUpdateCommand = Schema.Struct({
   type: Schema.Literal("thread.meta.update"),
   commandId: CommandId,
   threadId: ThreadId,
-  projectId: Schema.optional(ProjectId),
+  // Attach (set) or detach (null) the workspace. Omitted leaves it untouched.
+  projectId: Schema.optional(Schema.NullOr(ProjectId)),
   // Organize only: set to a folder id, or null to ungroup. Does not change workspace.
   sidebarGroupId: Schema.optional(Schema.NullOr(SidebarFolderId)),
   title: Schema.optional(TrimmedNonEmptyString),
@@ -670,7 +745,7 @@ const ThreadInteractionModeSetCommand = Schema.Struct({
 });
 
 const ThreadTurnStartBootstrapCreateThread = Schema.Struct({
-  projectId: ProjectId,
+  projectId: Schema.NullOr(ProjectId),
   sidebarGroupId: Schema.optional(Schema.NullOr(SidebarFolderId)),
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
@@ -819,6 +894,9 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ProjectCreateCommand,
   ProjectMetaUpdateCommand,
   ProjectDeleteCommand,
+  SidebarFolderCreateCommand,
+  SidebarFolderMetaUpdateCommand,
+  SidebarFolderDeleteCommand,
   ThreadCreateCommand,
   ThreadDeleteCommand,
   ThreadArchiveCommand,
@@ -847,6 +925,9 @@ export const ClientOrchestrationCommand = Schema.Union([
   ProjectCreateCommand,
   ProjectMetaUpdateCommand,
   ProjectDeleteCommand,
+  SidebarFolderCreateCommand,
+  SidebarFolderMetaUpdateCommand,
+  SidebarFolderDeleteCommand,
   ThreadCreateCommand,
   ThreadDeleteCommand,
   ThreadArchiveCommand,
@@ -956,6 +1037,9 @@ export const OrchestrationEventType = Schema.Literals([
   "project.created",
   "project.meta-updated",
   "project.deleted",
+  "sidebar-folder.created",
+  "sidebar-folder.meta-updated",
+  "sidebar-folder.deleted",
   "thread.created",
   "thread.deleted",
   "thread.archived",
@@ -984,7 +1068,7 @@ export const OrchestrationEventType = Schema.Literals([
 ]);
 export type OrchestrationEventType = typeof OrchestrationEventType.Type;
 
-export const OrchestrationAggregateKind = Schema.Literals(["project", "thread"]);
+export const OrchestrationAggregateKind = Schema.Literals(["project", "sidebar-folder", "thread"]);
 export type OrchestrationAggregateKind = typeof OrchestrationAggregateKind.Type;
 export const OrchestrationActorKind = Schema.Literals(["client", "server", "provider"]);
 
@@ -1014,9 +1098,27 @@ export const ProjectDeletedPayload = Schema.Struct({
   deletedAt: IsoDateTime,
 });
 
+export const SidebarFolderCreatedPayload = Schema.Struct({
+  sidebarFolderId: SidebarFolderId,
+  title: TrimmedNonEmptyString,
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+});
+
+export const SidebarFolderMetaUpdatedPayload = Schema.Struct({
+  sidebarFolderId: SidebarFolderId,
+  title: Schema.optional(TrimmedNonEmptyString),
+  updatedAt: IsoDateTime,
+});
+
+export const SidebarFolderDeletedPayload = Schema.Struct({
+  sidebarFolderId: SidebarFolderId,
+  deletedAt: IsoDateTime,
+});
+
 export const ThreadCreatedPayload = Schema.Struct({
   threadId: ThreadId,
-  projectId: ProjectId,
+  projectId: Schema.NullOr(ProjectId),
   // Absent on historical events → projector derives shelf from projectId.
   sidebarGroupId: Schema.optional(Schema.NullOr(SidebarFolderId)),
   title: TrimmedNonEmptyString,
@@ -1078,7 +1180,7 @@ export const ThreadUnsnoozedPayload = Schema.Struct({
 
 export const ThreadMetaUpdatedPayload = Schema.Struct({
   threadId: ThreadId,
-  projectId: Schema.optional(ProjectId),
+  projectId: Schema.optional(Schema.NullOr(ProjectId)),
   sidebarGroupId: Schema.optional(Schema.NullOr(SidebarFolderId)),
   title: Schema.optional(TrimmedNonEmptyString),
   modelSelection: Schema.optional(ModelSelection),
@@ -1212,7 +1314,7 @@ const EventBaseFields = {
   sequence: NonNegativeInt,
   eventId: EventId,
   aggregateKind: OrchestrationAggregateKind,
-  aggregateId: Schema.Union([ProjectId, ThreadId]),
+  aggregateId: Schema.Union([ProjectId, SidebarFolderId, ThreadId]),
   occurredAt: IsoDateTime,
   commandId: Schema.NullOr(CommandId),
   causationEventId: Schema.NullOr(EventId),
@@ -1235,6 +1337,21 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("project.deleted"),
     payload: ProjectDeletedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("sidebar-folder.created"),
+    payload: SidebarFolderCreatedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("sidebar-folder.meta-updated"),
+    payload: SidebarFolderMetaUpdatedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("sidebar-folder.deleted"),
+    payload: SidebarFolderDeletedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

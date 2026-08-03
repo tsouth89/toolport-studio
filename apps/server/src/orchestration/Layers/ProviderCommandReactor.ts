@@ -515,7 +515,12 @@ const make = Effect.gen(function* () {
       Effect.asVoid,
     );
 
-  const resolveProject = Effect.fnUntraced(function* (projectId: ProjectId) {
+  // A projectless thread has no workspace to look up; its cwd comes from the
+  // projectless scratch directory instead.
+  const resolveProject = Effect.fnUntraced(function* (projectId: ProjectId | null) {
+    if (projectId === null) {
+      return undefined;
+    }
     return yield* projectionSnapshotQuery
       .getProjectShellById(projectId)
       .pipe(Effect.map(Option.getOrUndefined));

@@ -2,6 +2,7 @@ import type {
   OrchestrationEvent,
   OrchestrationReadModel,
   ProjectId,
+  SidebarFolderId,
   ThreadId,
 } from "@toolport-studio/contracts";
 import { OrchestrationCommand } from "@toolport-studio/contracts";
@@ -57,8 +58,8 @@ interface CommandEnvelope {
 }
 
 function commandToAggregateRef(command: OrchestrationCommand): {
-  readonly aggregateKind: "project" | "thread";
-  readonly aggregateId: ProjectId | ThreadId;
+  readonly aggregateKind: "project" | "sidebar-folder" | "thread";
+  readonly aggregateId: ProjectId | SidebarFolderId | ThreadId;
 } {
   switch (command.type) {
     case "project.create":
@@ -67,6 +68,13 @@ function commandToAggregateRef(command: OrchestrationCommand): {
       return {
         aggregateKind: "project",
         aggregateId: command.projectId,
+      };
+    case "sidebar-folder.create":
+    case "sidebar-folder.meta.update":
+    case "sidebar-folder.delete":
+      return {
+        aggregateKind: "sidebar-folder",
+        aggregateId: command.sidebarFolderId,
       };
     default:
       return {

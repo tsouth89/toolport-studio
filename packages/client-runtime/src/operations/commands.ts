@@ -31,6 +31,9 @@ type CommandInput<T extends CommandType> = Omit<
 export type CreateProjectInput = CommandInput<"project.create">;
 export type UpdateProjectInput = CommandInput<"project.meta.update">;
 export type DeleteProjectInput = CommandInput<"project.delete">;
+export type CreateSidebarFolderInput = CommandInput<"sidebar-folder.create">;
+export type UpdateSidebarFolderInput = CommandInput<"sidebar-folder.meta.update">;
+export type DeleteSidebarFolderInput = CommandInput<"sidebar-folder.delete">;
 export type CreateThreadInput = CommandInput<"thread.create">;
 export type DeleteThreadInput = CommandInput<"thread.delete">;
 export type ArchiveThreadInput = CommandInput<"thread.archive">;
@@ -114,6 +117,38 @@ export const deleteProject: (input: DeleteProjectInput) => CommandEffect = Effec
   return yield* dispatch({
     ...input,
     type: "project.delete",
+    commandId: yield* commandId(input),
+  });
+});
+
+export const createSidebarFolder: (input: CreateSidebarFolderInput) => CommandEffect = Effect.fn(
+  "EnvironmentCommands.createSidebarFolder",
+)(function* (input) {
+  const metadata = yield* timestampedCommandMetadata(input);
+  return yield* dispatch({
+    ...input,
+    type: "sidebar-folder.create",
+    commandId: metadata.commandId,
+    createdAt: metadata.createdAt,
+  });
+});
+
+export const updateSidebarFolder: (input: UpdateSidebarFolderInput) => CommandEffect = Effect.fn(
+  "EnvironmentCommands.updateSidebarFolder",
+)(function* (input) {
+  return yield* dispatch({
+    ...input,
+    type: "sidebar-folder.meta.update",
+    commandId: yield* commandId(input),
+  });
+});
+
+export const deleteSidebarFolder: (input: DeleteSidebarFolderInput) => CommandEffect = Effect.fn(
+  "EnvironmentCommands.deleteSidebarFolder",
+)(function* (input) {
+  return yield* dispatch({
+    ...input,
+    type: "sidebar-folder.delete",
     commandId: yield* commandId(input),
   });
 });

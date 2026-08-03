@@ -31,6 +31,20 @@ export function applyShellStreamEvent(
         projects: Arr.filter(snapshot.projects, (p) => p.id !== event.projectId),
         snapshotSequence: event.sequence,
       };
+    case "sidebar-folder-upserted": {
+      const sidebarFolders = snapshot.sidebarFolders.some((f) => f.id === event.sidebarFolder.id)
+        ? Arr.map(snapshot.sidebarFolders, (f) =>
+            f.id === event.sidebarFolder.id ? event.sidebarFolder : f,
+          )
+        : Arr.append(snapshot.sidebarFolders, event.sidebarFolder);
+      return { ...snapshot, sidebarFolders, snapshotSequence: event.sequence };
+    }
+    case "sidebar-folder-removed":
+      return {
+        ...snapshot,
+        sidebarFolders: Arr.filter(snapshot.sidebarFolders, (f) => f.id !== event.sidebarFolderId),
+        snapshotSequence: event.sequence,
+      };
     case "thread-upserted": {
       const threads = snapshot.threads.some((t) => t.id === event.thread.id)
         ? Arr.map(snapshot.threads, (t) => (t.id === event.thread.id ? event.thread : t))

@@ -20,11 +20,14 @@ import {
   type OrchestrationProposedPlan,
   type OrchestrationProject,
   type OrchestrationSession,
+  type OrchestrationSidebarFolder,
+  type OrchestrationSidebarFolderShell,
   type OrchestrationThreadActivity,
   type OrchestrationThreadShell,
   type OrchestrationQueuedTurn as OrchestrationQueuedTurnType,
   ModelSelection,
   ProjectId,
+  SidebarFolderId,
   ThreadId,
 } from "@toolport-studio/contracts";
 import * as Arr from "effect/Array";
@@ -45,6 +48,7 @@ import {
 } from "../../persistence/Errors.ts";
 import { ProjectionCheckpoint } from "../../persistence/Services/ProjectionCheckpoints.ts";
 import { ProjectionProject } from "../../persistence/Services/ProjectionProjects.ts";
+import { ProjectionSidebarFolder } from "../../persistence/Services/ProjectionSidebarFolders.ts";
 import { ProjectionState } from "../../persistence/Services/ProjectionState.ts";
 import { ProjectionThreadActivity } from "../../persistence/Services/ProjectionThreadActivities.ts";
 import { ProjectionThreadMessage } from "../../persistence/Services/ProjectionThreadMessages.ts";
@@ -70,6 +74,7 @@ const ProjectionProjectDbRowSchema = ProjectionProject.mapFields(
     scripts: Schema.fromJsonString(Schema.Array(ProjectScript)),
   }),
 );
+const ProjectionSidebarFolderDbRowSchema = ProjectionSidebarFolder;
 const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
   Struct.assign({
     isStreaming: Schema.Number,
@@ -127,6 +132,9 @@ const WorkspaceRootLookupInput = Schema.Struct({
 });
 const ProjectIdLookupInput = Schema.Struct({
   projectId: ProjectId,
+});
+const SidebarFolderIdLookupInput = Schema.Struct({
+  sidebarFolderId: SidebarFolderId,
 });
 const ThreadIdLookupInput = Schema.Struct({
   threadId: ThreadId,
@@ -254,6 +262,29 @@ function mapProjectShellRow(
   };
 }
 
+function mapSidebarFolderRow(
+  row: Schema.Schema.Type<typeof ProjectionSidebarFolderDbRowSchema>,
+): OrchestrationSidebarFolder {
+  return {
+    id: row.sidebarFolderId,
+    title: row.title,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    deletedAt: row.deletedAt,
+  };
+}
+
+function mapSidebarFolderShellRow(
+  row: Schema.Schema.Type<typeof ProjectionSidebarFolderDbRowSchema>,
+): OrchestrationSidebarFolderShell {
+  return {
+    id: row.sidebarFolderId,
+    title: row.title,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
 function mapProposedPlanRow(
   row: Schema.Schema.Type<typeof ProjectionThreadProposedPlanDbRowSchema>,
 ): OrchestrationProposedPlan {
@@ -327,6 +358,39 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           deleted_at AS "deletedAt"
         FROM projection_projects
         ORDER BY created_at ASC, project_id ASC
+      `,
+  });
+
+  const listSidebarFolderRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: ProjectionSidebarFolderDbRowSchema,
+    execute: () =>
+      sql`
+        SELECT
+          sidebar_folder_id AS "sidebarFolderId",
+          title,
+          created_at AS "createdAt",
+          updated_at AS "updatedAt",
+          deleted_at AS "deletedAt"
+        FROM projection_sidebar_folders
+        ORDER BY created_at ASC, sidebar_folder_id ASC
+      `,
+  });
+
+  const getSidebarFolderRow = SqlSchema.findOneOption({
+    Request: SidebarFolderIdLookupInput,
+    Result: ProjectionSidebarFolderDbRowSchema,
+    execute: ({ sidebarFolderId }) =>
+      sql`
+        SELECT
+          sidebar_folder_id AS "sidebarFolderId",
+          title,
+          created_at AS "createdAt",
+          updated_at AS "updatedAt",
+          deleted_at AS "deletedAt"
+        FROM projection_sidebar_folders
+        WHERE sidebar_folder_id = ${sidebarFolderId}
+          AND deleted_at IS NULL
       `,
   });
 
@@ -1028,6 +1092,14 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               ),
             ),
           ),
+          listSidebarFolderRows(undefined).pipe(
+            Effect.mapError(
+              toPersistenceSqlOrDecodeError(
+                "ProjectionSnapshotQuery.getSnapshot:listSidebarFolders:query",
+                "ProjectionSnapshotQuery.getSnapshot:listSidebarFolders:decodeRows",
+              ),
+            ),
+          ),
           listThreadRows(undefined).pipe(
             Effect.mapError(
               toPersistenceSqlOrDecodeError(
@@ -1106,6 +1178,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         Effect.flatMap(
           ([
             projectRows,
+            sidebarFolderRows,
             threadRows,
             messageRows,
             queuedTurnRows,
@@ -1128,6 +1201,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               let updatedAt: string | null = null;
 
               for (const row of projectRows) {
+                updatedAt = maxIso(updatedAt, row.updatedAt);
+              }
+              for (const row of sidebarFolderRows) {
                 updatedAt = maxIso(updatedAt, row.updatedAt);
               }
               for (const row of threadRows) {
@@ -1304,6 +1380,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               const snapshot = {
                 snapshotSequence: computeSnapshotSequence(stateRows),
                 projects,
+                sidebarFolders: sidebarFolderRows.map(mapSidebarFolderRow),
                 threads,
                 updatedAt: updatedAt ?? "1970-01-01T00:00:00.000Z",
               };
@@ -1332,6 +1409,14 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               toPersistenceSqlOrDecodeError(
                 "ProjectionSnapshotQuery.getCommandReadModel:listProjects:query",
                 "ProjectionSnapshotQuery.getCommandReadModel:listProjects:decodeRows",
+              ),
+            ),
+          ),
+          listSidebarFolderRows(undefined).pipe(
+            Effect.mapError(
+              toPersistenceSqlOrDecodeError(
+                "ProjectionSnapshotQuery.getCommandReadModel:listSidebarFolders:query",
+                "ProjectionSnapshotQuery.getCommandReadModel:listSidebarFolders:decodeRows",
               ),
             ),
           ),
@@ -1389,6 +1474,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         Effect.flatMap(
           ([
             projectRows,
+            sidebarFolderRows,
             threadRows,
             queuedTurnRows,
             proposedPlanRows,
@@ -1399,6 +1485,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             Effect.sync(() => {
               let updatedAt: string | null = null;
               const projects: OrchestrationProject[] = [];
+              const sidebarFolders: OrchestrationSidebarFolder[] = [];
               const threads: OrchestrationThread[] = [];
 
               for (let index = 0; index < projectRows.length; index += 1) {
@@ -1417,6 +1504,14 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   updatedAt: row.updatedAt,
                   deletedAt: row.deletedAt,
                 });
+              }
+              for (let index = 0; index < sidebarFolderRows.length; index += 1) {
+                const row = sidebarFolderRows[index];
+                if (!row) {
+                  continue;
+                }
+                updatedAt = maxIso(updatedAt, row.updatedAt);
+                sidebarFolders.push(mapSidebarFolderRow(row));
               }
               for (let index = 0; index < threadRows.length; index += 1) {
                 const row = threadRows[index];
@@ -1532,6 +1627,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               return {
                 snapshotSequence: computeSnapshotSequence(stateRows),
                 projects,
+                sidebarFolders,
                 threads,
                 updatedAt: updatedAt ?? "1970-01-01T00:00:00.000Z",
               } satisfies OrchestrationReadModel;
@@ -1554,6 +1650,14 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               toPersistenceSqlOrDecodeError(
                 "ProjectionSnapshotQuery.getShellSnapshot:listProjects:query",
                 "ProjectionSnapshotQuery.getShellSnapshot:listProjects:decodeRows",
+              ),
+            ),
+          ),
+          listSidebarFolderRows(undefined).pipe(
+            Effect.mapError(
+              toPersistenceSqlOrDecodeError(
+                "ProjectionSnapshotQuery.getShellSnapshot:listSidebarFolders:query",
+                "ProjectionSnapshotQuery.getShellSnapshot:listSidebarFolders:decodeRows",
               ),
             ),
           ),
@@ -1596,6 +1700,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         Effect.flatMap(
           ([
             projectRows,
+            sidebarFolderRows,
             threadRows,
             queuedTurnCountRows,
             sessionRows,
@@ -1605,6 +1710,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             Effect.gen(function* () {
               let updatedAt: string | null = null;
               for (const row of projectRows) {
+                updatedAt = maxIso(updatedAt, row.updatedAt);
+              }
+              for (const row of sidebarFolderRows) {
                 updatedAt = maxIso(updatedAt, row.updatedAt);
               }
               for (const row of threadRows) {
@@ -1645,6 +1753,11 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                     ? Result.succeed(
                         mapProjectShellRow(row, repositoryIdentities.get(row.projectId) ?? null),
                       )
+                    : Result.failVoid,
+                ),
+                sidebarFolders: Arr.filterMap(sidebarFolderRows, (row) =>
+                  row.deletedAt === null
+                    ? Result.succeed(mapSidebarFolderShellRow(row))
                     : Result.failVoid,
                 ),
                 threads: Arr.filterMap(threadRows, (row) =>
@@ -1708,6 +1821,14 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               ),
             ),
           ),
+          listSidebarFolderRows(undefined).pipe(
+            Effect.mapError(
+              toPersistenceSqlOrDecodeError(
+                "ProjectionSnapshotQuery.getArchivedShellSnapshot:listSidebarFolders:query",
+                "ProjectionSnapshotQuery.getArchivedShellSnapshot:listSidebarFolders:decodeRows",
+              ),
+            ),
+          ),
           listArchivedThreadRows(undefined).pipe(
             Effect.mapError(
               toPersistenceSqlOrDecodeError(
@@ -1747,6 +1868,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         Effect.flatMap(
           ([
             projectRows,
+            sidebarFolderRows,
             threadRows,
             queuedTurnCountRows,
             sessionRows,
@@ -1778,6 +1900,13 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               }
 
               const activeProjectIds = new Set(threadRows.map((row) => row.projectId));
+              // Only shelves the archived threads actually sit on, mirroring how
+              // the project list is narrowed to keep this payload small.
+              const archivedSidebarGroupIds = new Set(
+                threadRows.flatMap((row) =>
+                  row.sidebarGroupId === null ? [] : [row.sidebarGroupId],
+                ),
+              );
               const repositoryIdentities = yield* resolveRepositoryIdentitiesForProjects(
                 projectRows.filter((row) => activeProjectIds.has(row.projectId)),
               );
@@ -1798,6 +1927,11 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                     ? Result.succeed(
                         mapProjectShellRow(row, repositoryIdentities.get(row.projectId) ?? null),
                       )
+                    : Result.failVoid,
+                ),
+                sidebarFolders: Arr.filterMap(sidebarFolderRows, (row) =>
+                  row.deletedAt === null && archivedSidebarGroupIds.has(row.sidebarFolderId)
+                    ? Result.succeed(mapSidebarFolderShellRow(row))
                     : Result.failVoid,
                 ),
                 threads: threadRows.map(
@@ -1927,6 +2061,19 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 ),
               ),
       ),
+    );
+
+  const getSidebarFolderShellById: ProjectionSnapshotQueryShape["getSidebarFolderShellById"] = (
+    sidebarFolderId,
+  ) =>
+    getSidebarFolderRow({ sidebarFolderId }).pipe(
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionSnapshotQuery.getSidebarFolderShellById:query",
+          "ProjectionSnapshotQuery.getSidebarFolderShellById:decodeRow",
+        ),
+      ),
+      Effect.map(Option.map(mapSidebarFolderShellRow)),
     );
 
   const getFirstActiveThreadIdByProjectId: ProjectionSnapshotQueryShape["getFirstActiveThreadIdByProjectId"] =
@@ -2274,6 +2421,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     getCounts,
     getActiveProjectByWorkspaceRoot,
     getProjectShellById,
+    getSidebarFolderShellById,
     getFirstActiveThreadIdByProjectId,
     getThreadCheckpointContext,
     getFullThreadDiffContext,

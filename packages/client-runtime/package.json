@@ -111,6 +111,10 @@
       "types": "./src/state/shell.ts",
       "default": "./src/state/shell.ts"
     },
+    "./state/sidebar-folders": {
+      "types": "./src/state/sidebarFolderCommands.ts",
+      "default": "./src/state/sidebarFolderCommands.ts"
+    },
     "./state/source-control": {
       "types": "./src/state/sourceControl.ts",
       "default": "./src/state/sourceControl.ts"
