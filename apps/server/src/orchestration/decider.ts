@@ -3,6 +3,7 @@ import {
   type OrchestrationCommand,
   type OrchestrationEvent,
   type OrchestrationReadModel,
+  type SidebarFolderId,
 } from "@toolport-studio/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Crypto from "effect/Crypto";
@@ -11,6 +12,8 @@ import type * as PlatformError from "effect/PlatformError";
 
 import { OrchestrationCommandInvariantError } from "./Errors.ts";
 import {
+  findProjectById,
+  findSidebarFolderById,
   listThreadsByProjectId,
   listThreadsBySidebarGroupId,
   requireActiveProjectWorkspaceRootAbsent,
@@ -26,6 +29,33 @@ import {
 import { projectEvent } from "./projector.ts";
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
+
+/**
+ * `sidebarGroupId` can reference either a free-form sidebar folder OR a
+ * project shelf id (the client writes a project id when dropping onto a
+ * legacy project shelf). Accept both so valid shelf moves aren't rejected.
+ */
+const requireValidSidebarGroupId = Effect.fn("requireValidSidebarGroupId")(function* (input: {
+  readonly readModel: OrchestrationReadModel;
+  readonly command: OrchestrationCommand;
+  readonly sidebarGroupId: SidebarFolderId;
+}) {
+  const folder = findSidebarFolderById(input.readModel, input.sidebarGroupId);
+  if (folder && folder.deletedAt === null) {
+    return;
+  }
+  if (
+    input.readModel.projects.some(
+      (p) => (p.id as string) === input.sidebarGroupId && p.deletedAt === null,
+    )
+  ) {
+    return;
+  }
+  return yield* new OrchestrationCommandInvariantError({
+    commandType: input.command.type,
+    detail: `Sidebar group '${input.sidebarGroupId}' is not an active folder or project.`,
+  });
+});
 
 // Session adoption takes seconds; a user message still unadopted after this
 // window is a failed/stale start, not pending work. Mirrors the client's
@@ -461,10 +491,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       // Default ungrouped: new sessions stay off project shelves until filed.
       const sidebarGroupId = command.sidebarGroupId === undefined ? null : command.sidebarGroupId;
       if (sidebarGroupId !== null) {
-        yield* requireSidebarFolder({
+        yield* requireValidSidebarGroupId({
           readModel,
           command,
-          sidebarFolderId: sidebarGroupId,
+          sidebarGroupId: sidebarGroupId,
         });
       }
       return {
@@ -750,10 +780,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         threadId: command.threadId,
       });
       if (command.sidebarGroupId !== undefined && command.sidebarGroupId !== null) {
-        yield* requireSidebarFolder({
+        yield* requireValidSidebarGroupId({
           readModel,
           command,
-          sidebarFolderId: command.sidebarGroupId,
+          sidebarGroupId: command.sidebarGroupId,
         });
       }
       // projectId set = attach/move, null = detach to projectless, omitted =
