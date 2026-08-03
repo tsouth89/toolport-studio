@@ -1273,6 +1273,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               const threads: ReadonlyArray<OrchestrationThread> = threadRows.map((row) => ({
                 id: row.threadId,
                 projectId: row.projectId,
+                sidebarGroupId: row.sidebarGroupId,
                 title: row.title,
                 modelSelection: row.modelSelection,
                 runtimeMode: row.runtimeMode,
@@ -1499,6 +1500,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 threads.push({
                   id: row.threadId,
                   projectId: row.projectId,
+                  sidebarGroupId: row.sidebarGroupId,
                   title: row.title,
                   modelSelection: row.modelSelection,
                   runtimeMode: row.runtimeMode,
@@ -1646,6 +1648,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                     ? Result.succeed({
                         id: row.threadId,
                         projectId: row.projectId,
+                        sidebarGroupId: row.sidebarGroupId,
                         title: row.title,
                         modelSelection: row.modelSelection,
                         runtimeMode: row.runtimeMode,
@@ -1797,6 +1800,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   (row): OrchestrationThreadShell => ({
                     id: row.threadId,
                     projectId: row.projectId,
+                    sidebarGroupId: row.sidebarGroupId,
                     title: row.title,
                     modelSelection: row.modelSelection,
                     runtimeMode: row.runtimeMode,
@@ -2050,6 +2054,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       return Option.some({
         id: threadRow.value.threadId,
         projectId: threadRow.value.projectId,
+        sidebarGroupId: threadRow.value.sidebarGroupId,
         title: threadRow.value.title,
         modelSelection: threadRow.value.modelSelection,
         runtimeMode: threadRow.value.runtimeMode,
@@ -2158,6 +2163,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       const thread = {
         id: threadRow.value.threadId,
         projectId: threadRow.value.projectId,
+        sidebarGroupId: threadRow.value.sidebarGroupId,
         title: threadRow.value.title,
         modelSelection: threadRow.value.modelSelection,
         runtimeMode: threadRow.value.runtimeMode,

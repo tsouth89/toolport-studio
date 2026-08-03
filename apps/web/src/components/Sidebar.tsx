@@ -8,7 +8,8 @@ import {
 } from "@toolport-studio/client-runtime/environment";
 import {
   EnvironmentId,
-  ProjectId,
+  resolveThreadSidebarPlacementProjectId,
+  SidebarFolderId,
   ThreadId,
   type ScopedThreadRef,
   type SidebarProjectGroupingMode,
@@ -104,7 +105,7 @@ import {
   encodeSidebarThreadDragPayload,
   formatWorkingDurationLabel,
   hasUnseenCompletion,
-  isThreadAlreadyInProject,
+  isThreadAlreadyInSidebarGroup,
   isTrailingDoubleClick,
   orderItemsByPreferredIds,
   parseSidebarThreadDragPayload,
@@ -119,6 +120,7 @@ import {
   SIDEBAR_DND_THREAD_MIME,
   sortLogicalProjectsForSidebar,
   sortThreadsForSidebar,
+  type SidebarThreadDragPayload,
 } from "./Sidebar.logic";
 import { resolveLocalCheckoutBranchMismatch } from "./BranchToolbar.logic";
 import { prStatusIndicator, resolveThreadPr } from "./ThreadStatusIndicators";
@@ -1144,12 +1146,13 @@ export default function Sidebar() {
   // Archive removes from the sidebar entirely (Settings → Archive to restore).
   // Soft-done path is Archive; no Settled/Snooze shelves.
   const activeThreads = useMemo(() => {
-    const visible = threads.filter(
-      (thread) =>
-        thread.archivedAt === null &&
-        (scopedProjectKeys === null ||
-          scopedProjectKeys.has(`${thread.environmentId}:${thread.projectId}`)),
-    );
+    const visible = threads.filter((thread) => {
+      if (thread.archivedAt !== null) return false;
+      if (scopedProjectKeys === null) return true;
+      const placementProjectId = resolveThreadSidebarPlacementProjectId(thread);
+      if (placementProjectId === null) return false;
+      return scopedProjectKeys.has(`${thread.environmentId}:${placementProjectId}`);
+    });
     return sortThreadsForSidebar(visible);
   }, [scopedProjectKeys, threads]);
 
@@ -1237,6 +1240,7 @@ export default function Sidebar() {
         environmentId: thread.environmentId,
         threadId: thread.id,
         projectId: thread.projectId,
+        ...(thread.sidebarGroupId !== undefined ? { sidebarGroupId: thread.sidebarGroupId } : {}),
       });
       event.dataTransfer.setData(SIDEBAR_DND_THREAD_MIME, payload);
       event.dataTransfer.setData("text/plain", payload);
@@ -1265,14 +1269,7 @@ export default function Sidebar() {
   );
 
   const moveThreadToProjectGroup = useCallback(
-    async (
-      payload: {
-        environmentId: string;
-        threadId: string;
-        projectId: string;
-      },
-      targetProjectKey: string,
-    ) => {
+    async (payload: SidebarThreadDragPayload, targetProjectKey: string) => {
       const group = threadListProjectGroups.find((entry) => entry.projectKey === targetProjectKey);
       if (!group) return;
       const member = resolveSameEnvironmentProjectMember(
@@ -1289,22 +1286,24 @@ export default function Sidebar() {
         );
         return;
       }
+      const placementProjectId = resolveThreadSidebarPlacementProjectId({
+        projectId: payload.projectId,
+        ...(payload.sidebarGroupId !== undefined ? { sidebarGroupId: payload.sidebarGroupId } : {}),
+      });
       if (
-        isThreadAlreadyInProject({
-          sourceProjectId: payload.projectId,
+        isThreadAlreadyInSidebarGroup({
+          placementProjectId,
           targetProjectId: member.projectId,
         })
       ) {
         return;
       }
+      // Organize only: change shelf membership, leave workspace/cwd alone.
       const result = await updateThreadMetadata({
         environmentId: EnvironmentId.make(payload.environmentId),
         input: {
           threadId: ThreadId.make(payload.threadId),
-          projectId: ProjectId.make(member.projectId),
-          // Folder change invalidates checkout binding (same as command palette attach).
-          branch: null,
-          worktreePath: null,
+          sidebarGroupId: SidebarFolderId.make(member.projectId),
         },
       });
       if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {

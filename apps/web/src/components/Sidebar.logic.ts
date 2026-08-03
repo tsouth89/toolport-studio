@@ -1,5 +1,6 @@
 import * as React from "react";
 import type { ContextMenuItem } from "@toolport-studio/contracts";
+import { resolveThreadSidebarPlacementProjectId } from "@toolport-studio/contracts";
 import type {
   SidebarProjectSortOrder,
   SidebarThreadSortOrder,
@@ -707,6 +708,8 @@ export type SidebarThreadDragPayload = {
   readonly environmentId: string;
   readonly threadId: string;
   readonly projectId: string;
+  /** Current shelf placement (null = ungrouped). Independent of workspace projectId. */
+  readonly sidebarGroupId?: string | null | undefined;
 };
 
 export function encodeSidebarThreadDragPayload(payload: SidebarThreadDragPayload): string {
@@ -730,7 +733,21 @@ export function parseSidebarThreadDragPayload(raw: string): SidebarThreadDragPay
     if (environmentId.length === 0 || threadId.length === 0 || projectId.length === 0) {
       return null;
     }
-    return { environmentId, threadId, projectId };
+    const sidebarGroupIdRaw = (parsed as { sidebarGroupId?: unknown }).sidebarGroupId;
+    const sidebarGroupId =
+      sidebarGroupIdRaw === undefined
+        ? undefined
+        : sidebarGroupIdRaw === null
+          ? null
+          : typeof sidebarGroupIdRaw === "string"
+            ? sidebarGroupIdRaw
+            : undefined;
+    return {
+      environmentId,
+      threadId,
+      projectId,
+      ...(sidebarGroupId !== undefined ? { sidebarGroupId } : {}),
+    };
   } catch {
     return null;
   }
@@ -751,6 +768,14 @@ export function isThreadAlreadyInProject(input: {
   readonly targetProjectId: string;
 }): boolean {
   return input.sourceProjectId === input.targetProjectId;
+}
+
+/** True when the thread's sidebar shelf already matches the target shelf project. */
+export function isThreadAlreadyInSidebarGroup(input: {
+  readonly placementProjectId: string | null;
+  readonly targetProjectId: string;
+}): boolean {
+  return input.placementProjectId === input.targetProjectId;
 }
 
 /**
@@ -779,6 +804,8 @@ export function applyPinnedLogicalProjectOrder<T extends { readonly projectKey: 
 
 /**
  * Bucket active threads under project groups for the nested sidebar.
+ * Shelf membership uses {@link resolveThreadSidebarPlacementProjectId}:
+ * workspace `projectId` is independent of where the row appears.
  * Real project shelves are kept even when empty (Claude-style drop targets).
  * Empty "No project" is omitted. Within each group the input thread order is
  * preserved (caller sorts). Preview/expand uses {@link getVisibleThreadsForProject}.
@@ -788,6 +815,7 @@ export function buildActiveSidebarProjectPanels<
     readonly id: string;
     readonly environmentId: string;
     readonly projectId: string;
+    readonly sidebarGroupId?: string | null | undefined;
   },
   TProject extends {
     readonly projectKey: string;
@@ -808,7 +836,11 @@ export function buildActiveSidebarProjectPanels<
   readonly pinnedProjectKeys?: readonly string[];
 }): ActiveSidebarProjectPanel<TThread>[] {
   const projectKeyByRef = new Map<string, string>();
+  let noProjectGroupKey: string | null = null;
   for (const group of input.projectGroups) {
+    if (group.isNoProject === true) {
+      noProjectGroupKey = group.projectKey;
+    }
     for (const ref of group.memberProjectRefs) {
       projectKeyByRef.set(`${ref.environmentId}\0${ref.projectId}`, group.projectKey);
     }
@@ -816,7 +848,11 @@ export function buildActiveSidebarProjectPanels<
 
   const threadsByProjectKey = new Map<string, TThread[]>();
   for (const thread of input.activeThreads) {
-    const projectKey = projectKeyByRef.get(`${thread.environmentId}\0${thread.projectId}`);
+    const placementProjectId = resolveThreadSidebarPlacementProjectId(thread);
+    const projectKey =
+      placementProjectId === null
+        ? noProjectGroupKey
+        : projectKeyByRef.get(`${thread.environmentId}\0${placementProjectId}`);
     if (!projectKey) continue;
     const bucket = threadsByProjectKey.get(projectKey);
     if (bucket) {

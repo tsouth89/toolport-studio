@@ -12,6 +12,7 @@ import type {
   OrchestrationThreadActivity,
   TurnId,
 } from "@toolport-studio/contracts";
+import { SidebarFolderId } from "@toolport-studio/contracts";
 
 export type ThreadDetailReducerResult =
   | { readonly kind: "updated"; readonly thread: OrchestrationThread }
@@ -62,6 +63,10 @@ export function applyThreadDetailEvent(
         thread: {
           id: event.payload.threadId,
           projectId: event.payload.projectId,
+          // New creates set null (ungrouped). Historical events omit → workspace shelf.
+          ...(event.payload.sidebarGroupId !== undefined
+            ? { sidebarGroupId: event.payload.sidebarGroupId }
+            : { sidebarGroupId: SidebarFolderId.make(event.payload.projectId) }),
           title: event.payload.title,
           modelSelection: event.payload.modelSelection,
           runtimeMode: event.payload.runtimeMode,
@@ -156,6 +161,9 @@ export function applyThreadDetailEvent(
         thread: {
           ...thread,
           ...(event.payload.projectId !== undefined ? { projectId: event.payload.projectId } : {}),
+          ...(event.payload.sidebarGroupId !== undefined
+            ? { sidebarGroupId: event.payload.sidebarGroupId }
+            : {}),
           ...(event.payload.title !== undefined ? { title: event.payload.title } : {}),
           ...(event.payload.modelSelection !== undefined
             ? { modelSelection: event.payload.modelSelection }

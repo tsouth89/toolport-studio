@@ -31,6 +31,13 @@ export const ThreadId = makeEntityId("ThreadId");
 export type ThreadId = typeof ThreadId.Type;
 export const ProjectId = makeEntityId("ProjectId");
 export type ProjectId = typeof ProjectId.Type;
+/**
+ * Sidebar organization only (not workspace cwd). Phase-2 dual-key model:
+ * threads may sit under a shelf independently of their attached project.
+ * Until free-form folders exist, values often match a ProjectId string.
+ */
+export const SidebarFolderId = makeEntityId("SidebarFolderId");
+export type SidebarFolderId = typeof SidebarFolderId.Type;
 export const EnvironmentId = makeEntityId("EnvironmentId");
 export type EnvironmentId = typeof EnvironmentId.Type;
 export const CommandId = makeEntityId("CommandId");

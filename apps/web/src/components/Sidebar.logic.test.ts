@@ -28,6 +28,7 @@ import {
   resolveWorkingStartedAt,
   formatWorkingDurationLabel,
   isSidebarThreadRunningAttention,
+  isThreadAlreadyInSidebarGroup,
   selectRunningSidebarThreads,
   shouldNavigateAfterProjectRemoval,
   shouldClearThreadSelectionOnMouseDown,
@@ -1191,6 +1192,60 @@ describe("buildActiveSidebarProjectPanels", () => {
     expect(panels.map((panel) => panel.projectKey)).toEqual(["beta", "alpha"]);
     expect(panels[0]?.isPinned).toBe(true);
     expect(panels[1]?.isPinned).toBe(false);
+  });
+
+  it("buckets by sidebarGroupId independent of workspace projectId", () => {
+    const env = EnvironmentId.make("env-1");
+    const projectGroups = [
+      {
+        projectKey: "alpha",
+        displayName: "Alpha",
+        isNoProject: false,
+        memberProjectRefs: [{ environmentId: env, projectId: ProjectId.make("proj-a") }],
+      },
+      {
+        projectKey: "beta",
+        displayName: "Beta",
+        isNoProject: false,
+        memberProjectRefs: [{ environmentId: env, projectId: ProjectId.make("proj-b") }],
+      },
+      {
+        projectKey: "general",
+        displayName: "No project",
+        isNoProject: true,
+        memberProjectRefs: [{ environmentId: env, projectId: ProjectId.make("proj-g") }],
+      },
+    ];
+    const activeThreads = [
+      {
+        id: ThreadId.make("workspace-a-on-beta-shelf"),
+        environmentId: env,
+        projectId: ProjectId.make("proj-a"),
+        sidebarGroupId: ProjectId.make("proj-b"),
+      },
+      {
+        id: ThreadId.make("workspace-a-ungrouped"),
+        environmentId: env,
+        projectId: ProjectId.make("proj-a"),
+        sidebarGroupId: null,
+      },
+    ];
+    const panels = buildActiveSidebarProjectPanels({
+      projectGroups,
+      activeThreads,
+      expandedProjectKeys: new Set(["beta", "general"]),
+      previewLimit: 5,
+    });
+    const beta = panels.find((panel) => panel.projectKey === "beta");
+    const ungrouped = panels.find((panel) => panel.projectKey === "general");
+    expect(beta?.threads.map((thread) => thread.id)).toEqual(["workspace-a-on-beta-shelf"]);
+    expect(ungrouped?.threads.map((thread) => thread.id)).toEqual(["workspace-a-ungrouped"]);
+    expect(
+      isThreadAlreadyInSidebarGroup({
+        placementProjectId: ProjectId.make("proj-b"),
+        targetProjectId: ProjectId.make("proj-b"),
+      }),
+    ).toBe(true);
   });
 
   it("applyPinnedLogicalProjectOrder preserves unpinned relative order", () => {
