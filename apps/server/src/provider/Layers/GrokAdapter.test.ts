@@ -12,6 +12,7 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
@@ -472,6 +473,53 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
         ThreadId.make("missing-grok-session"),
         TurnId.make("missing-grok-turn"),
       );
+    }),
+  );
+
+  it.effect("keeps projecting after the fiber that started the session finishes", () =>
+    Effect.gen(function* () {
+      // startSession used to fork the notification consumer with forkChild, so
+      // the consumer was interrupted the moment the starting fiber completed
+      // and every later session/update was lost. In-process callers hid this
+      // because their fiber stays alive for the whole test; a real RPC handler
+      // fiber does not. Join the start before prompting to reproduce that.
+      const threadId = ThreadId.make("grok-detached-start-thread");
+      const adapter = yield* makeMockTestAdapter();
+
+      const events: Array<ProviderRuntimeEvent> = [];
+      yield* adapter.streamEvents.pipe(
+        Stream.runForEach((event) =>
+          Effect.sync(() => {
+            events.push(event);
+          }),
+        ),
+        Effect.forkChild,
+      );
+
+      const startScope = yield* Scope.make();
+      const startFiber = yield* adapter
+        .startSession({
+          threadId,
+          provider: ProviderDriverKind.make("grok"),
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("grok"),
+            model: "grok-mock-alt",
+          },
+        })
+        .pipe(Effect.forkIn(startScope));
+      yield* Fiber.join(startFiber);
+
+      yield* adapter.sendTurn({ threadId, input: "hello grok", attachments: [] });
+
+      assert.include(
+        events.map((event) => event.type),
+        "content.delta",
+        "notification consumer died with the fiber that started the session",
+      );
+
+      yield* adapter.stopSession(threadId);
     }),
   );
 

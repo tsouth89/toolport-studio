@@ -1908,7 +1908,13 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             yield* markAcpCompromised(ctx, "notification stream ended");
           }),
         ),
-        Effect.forkChild,
+        // Fork into the session scope, not the caller's fiber. `forkChild`
+        // made this consumer a child of the fiber running startSession (or
+        // recycle), so it was interrupted the moment that fiber completed and
+        // every later session/update was lost. Same bug Cursor/Codex fixed:
+        // in-process tests hide it because their fiber stays alive; a real RPC
+        // handler fiber finishes and the turn goes silent mid-stream.
+        Effect.forkIn(ctx.scope),
       );
     };
 
