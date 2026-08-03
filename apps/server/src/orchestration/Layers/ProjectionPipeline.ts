@@ -661,8 +661,11 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             sidebarGroupId:
               event.payload.sidebarGroupId !== undefined
                 ? event.payload.sidebarGroupId
-                : // Legacy create events: shelf matched workspace project.
-                  SidebarFolderId.make(event.payload.projectId),
+                : // Legacy create events: shelf matched workspace project, and a
+                  // projectless thread has no workspace to inherit a shelf from.
+                  event.payload.projectId === null
+                  ? null
+                  : SidebarFolderId.make(event.payload.projectId),
             title: event.payload.title,
             modelSelection: event.payload.modelSelection,
             runtimeMode: event.payload.runtimeMode,

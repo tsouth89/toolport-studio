@@ -374,7 +374,12 @@ export type OrchestrationLatestTurn = typeof OrchestrationLatestTurn.Type;
 
 export const OrchestrationThread = Schema.Struct({
   id: ThreadId,
-  projectId: ProjectId,
+  /**
+   * Workspace attachment (cwd). null = projectless: the session runs against a
+   * neutral non-project directory and workspace features (worktrees,
+   * checkpoints, scripts, project git chrome) stay off until it is attached.
+   */
+  projectId: Schema.NullOr(ProjectId),
   /**
    * Sidebar shelf membership only. null = ungrouped. Absent on legacy payloads
    * means "derive from projectId" on the client until projections are migrated.
@@ -449,7 +454,8 @@ export type OrchestrationSidebarFolderShell = typeof OrchestrationSidebarFolderS
 
 export const OrchestrationThreadShell = Schema.Struct({
   id: ThreadId,
-  projectId: ProjectId,
+  /** Workspace attachment; null = projectless. See OrchestrationThread.projectId. */
+  projectId: Schema.NullOr(ProjectId),
   /** Sidebar shelf only; null = ungrouped. See OrchestrationThread.sidebarGroupId. */
   sidebarGroupId: Schema.optional(Schema.NullOr(SidebarFolderId)),
   title: TrimmedNonEmptyString,
@@ -637,7 +643,8 @@ const ThreadCreateCommand = Schema.Struct({
   type: Schema.Literal("thread.create"),
   commandId: CommandId,
   threadId: ThreadId,
-  projectId: ProjectId,
+  // null = projectless (no workspace attached yet).
+  projectId: Schema.NullOr(ProjectId),
   // null = ungrouped (default). Omitted treats as ungrouped for new creates.
   sidebarGroupId: Schema.optional(Schema.NullOr(SidebarFolderId)),
   title: TrimmedNonEmptyString,
@@ -710,7 +717,8 @@ const ThreadMetaUpdateCommand = Schema.Struct({
   type: Schema.Literal("thread.meta.update"),
   commandId: CommandId,
   threadId: ThreadId,
-  projectId: Schema.optional(ProjectId),
+  // Attach (set) or detach (null) the workspace. Omitted leaves it untouched.
+  projectId: Schema.optional(Schema.NullOr(ProjectId)),
   // Organize only: set to a folder id, or null to ungroup. Does not change workspace.
   sidebarGroupId: Schema.optional(Schema.NullOr(SidebarFolderId)),
   title: Schema.optional(TrimmedNonEmptyString),
@@ -737,7 +745,7 @@ const ThreadInteractionModeSetCommand = Schema.Struct({
 });
 
 const ThreadTurnStartBootstrapCreateThread = Schema.Struct({
-  projectId: ProjectId,
+  projectId: Schema.NullOr(ProjectId),
   sidebarGroupId: Schema.optional(Schema.NullOr(SidebarFolderId)),
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
@@ -1110,7 +1118,7 @@ export const SidebarFolderDeletedPayload = Schema.Struct({
 
 export const ThreadCreatedPayload = Schema.Struct({
   threadId: ThreadId,
-  projectId: ProjectId,
+  projectId: Schema.NullOr(ProjectId),
   // Absent on historical events → projector derives shelf from projectId.
   sidebarGroupId: Schema.optional(Schema.NullOr(SidebarFolderId)),
   title: TrimmedNonEmptyString,
@@ -1172,7 +1180,7 @@ export const ThreadUnsnoozedPayload = Schema.Struct({
 
 export const ThreadMetaUpdatedPayload = Schema.Struct({
   threadId: ThreadId,
-  projectId: Schema.optional(ProjectId),
+  projectId: Schema.optional(Schema.NullOr(ProjectId)),
   sidebarGroupId: Schema.optional(Schema.NullOr(SidebarFolderId)),
   title: Schema.optional(TrimmedNonEmptyString),
   modelSelection: Schema.optional(ModelSelection),

@@ -360,7 +360,9 @@ export function projectEvent(
             sidebarGroupId:
               payload.sidebarGroupId !== undefined
                 ? payload.sidebarGroupId
-                : SidebarFolderId.make(payload.projectId),
+                : payload.projectId === null
+                  ? null
+                  : SidebarFolderId.make(payload.projectId),
             title: payload.title,
             modelSelection: payload.modelSelection,
             runtimeMode: payload.runtimeMode,

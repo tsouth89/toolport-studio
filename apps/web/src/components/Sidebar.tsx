@@ -1842,8 +1842,10 @@ export default function Sidebar() {
           case "new-thread-on-branch": {
             // Explicit branch carry-over: reuse the thread's worktree when it
             // has one, otherwise its branch on the local checkout.
+            if (thread.projectId === null) return;
+            const projectRef = scopeProjectRef(thread.environmentId, thread.projectId);
             const result = await settlePromise(() =>
-              handleNewThreadRef.current(scopeProjectRef(thread.environmentId, thread.projectId), {
+              handleNewThreadRef.current(projectRef, {
                 branch: thread.branch,
                 worktreePath: thread.worktreePath,
                 envMode: thread.worktreePath ? "worktree" : "local",
@@ -2157,9 +2159,11 @@ export default function Sidebar() {
                         projectCwdByKey.get(`${thread.environmentId}:${thread.projectId}`) ?? null
                       }
                       projectTitle={
-                        projectDisplayNameByKey.get(
-                          `${thread.environmentId}:${thread.projectId}`,
-                        ) ?? null
+                        (thread.projectId === null
+                          ? null
+                          : projectDisplayNameByKey.get(
+                              `${thread.environmentId}:${thread.projectId}`,
+                            )) ?? null
                       }
                       nestUnderProjectShelf={nestUnderProjectShelf}
                       isDragging={draggingThreadKey === threadKey}

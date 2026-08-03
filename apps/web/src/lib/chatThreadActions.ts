@@ -1,10 +1,10 @@
-import { scopeProjectRef } from "@toolport-studio/client-runtime/environment";
+import { scopeThreadProjectRef } from "@toolport-studio/client-runtime/environment";
 import type { EnvironmentId, ProjectId, ScopedProjectRef } from "@toolport-studio/contracts";
 import type { DraftThreadEnvMode } from "../composerDraftStore";
 
 interface ThreadContextLike {
   environmentId: EnvironmentId;
-  projectId: ProjectId;
+  projectId: ProjectId | null;
 }
 
 interface NewThreadHandler {
@@ -36,16 +36,11 @@ export function resolveNewDraftStartFromOrigin(input: {
 export function resolveThreadActionProjectRef(
   context: ChatThreadActionContext,
 ): ScopedProjectRef | null {
-  if (context.activeThread) {
-    return scopeProjectRef(context.activeThread.environmentId, context.activeThread.projectId);
-  }
-  if (context.activeDraftThread) {
-    return scopeProjectRef(
-      context.activeDraftThread.environmentId,
-      context.activeDraftThread.projectId,
-    );
-  }
-  return context.defaultProjectRef;
+  return (
+    scopeThreadProjectRef(context.activeThread) ??
+    scopeThreadProjectRef(context.activeDraftThread) ??
+    context.defaultProjectRef
+  );
 }
 
 // New threads inherit only the *project* from the current context. Branch,

@@ -35,7 +35,8 @@ type ScopedSidebarProject = SidebarProject & {
 
 type ScopedSidebarThread = ThreadSortInput & {
   environmentId: string;
-  projectId: string;
+  /** null = projectless, so the thread contributes to no project's activity. */
+  projectId: string | null;
   archivedAt: string | null;
 };
 
@@ -686,7 +687,8 @@ export const SIDEBAR_DND_THREAD_MIME = "application/x-toolport-sidebar-thread";
 export type SidebarThreadDragPayload = {
   readonly environmentId: string;
   readonly threadId: string;
-  readonly projectId: string;
+  /** null = projectless; carried so a drop can tell shelf from workspace. */
+  readonly projectId: string | null;
   /** Current shelf placement (null = ungrouped). Independent of workspace projectId. */
   readonly sidebarGroupId?: string | null | undefined;
 };
@@ -703,13 +705,18 @@ export function parseSidebarThreadDragPayload(raw: string): SidebarThreadDragPay
       parsed === null ||
       typeof parsed !== "object" ||
       typeof (parsed as { environmentId?: unknown }).environmentId !== "string" ||
-      typeof (parsed as { threadId?: unknown }).threadId !== "string" ||
-      typeof (parsed as { projectId?: unknown }).projectId !== "string"
+      typeof (parsed as { threadId?: unknown }).threadId !== "string"
     ) {
       return null;
     }
-    const { environmentId, threadId, projectId } = parsed as SidebarThreadDragPayload;
-    if (environmentId.length === 0 || threadId.length === 0 || projectId.length === 0) {
+    const projectIdRaw = (parsed as { projectId?: unknown }).projectId;
+    // null is a projectless session, not a malformed payload.
+    if (projectIdRaw !== null && typeof projectIdRaw !== "string") {
+      return null;
+    }
+    const { environmentId, threadId } = parsed as SidebarThreadDragPayload;
+    const projectId = projectIdRaw === null || projectIdRaw.length === 0 ? null : projectIdRaw;
+    if (environmentId.length === 0 || threadId.length === 0) {
       return null;
     }
     const sidebarGroupIdRaw = (parsed as { sidebarGroupId?: unknown }).sidebarGroupId;
@@ -835,7 +842,7 @@ export function buildActiveSidebarShelfPanels<
   TThread extends {
     readonly id: string;
     readonly environmentId: string;
-    readonly projectId: string;
+    readonly projectId: string | null;
     readonly sidebarGroupId?: string | null | undefined;
   },
   TFolder extends {
@@ -1133,6 +1140,8 @@ export function sortProjectsForSidebar<
 ): TProject[] {
   const threadsByProjectId = new Map<string, TThread[]>();
   for (const thread of threads) {
+    // Projectless threads belong to no project's activity window.
+    if (thread.projectId === null) continue;
     const existing = threadsByProjectId.get(thread.projectId) ?? [];
     existing.push(thread);
     threadsByProjectId.set(thread.projectId, existing);
@@ -1165,6 +1174,7 @@ export function sortLogicalProjectsForSidebar<
   const threadsByProjectKey = new Map<string, TThread[]>();
   for (const thread of threads) {
     if (thread.archivedAt !== null) continue;
+    if (thread.projectId === null) continue;
     const projectKey = groupKeyByProjectRef.get(`${thread.environmentId}\0${thread.projectId}`);
     if (!projectKey) continue;
     const existing = threadsByProjectKey.get(projectKey);
@@ -1202,6 +1212,9 @@ export function sortScopedProjectsForSidebar<
   const threadsByProject = new Map<string, TThread[]>();
   for (const thread of threads) {
     if (thread.archivedAt !== null) {
+      continue;
+    }
+    if (thread.projectId === null) {
       continue;
     }
     const key = scopedKey(thread.environmentId, thread.projectId);

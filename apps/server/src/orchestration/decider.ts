@@ -445,11 +445,14 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.create": {
-      yield* requireProject({
-        readModel,
-        command,
-        projectId: command.projectId,
-      });
+      // null = projectless: there is no workspace to validate.
+      if (command.projectId !== null) {
+        yield* requireProject({
+          readModel,
+          command,
+          projectId: command.projectId,
+        });
+      }
       yield* requireThreadAbsent({
         readModel,
         command,
@@ -739,12 +742,17 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      // projectId set = attach/move, null = detach to projectless, omitted =
+      // leave the workspace alone. Both attach and detach change the cwd the
+      // agent runs in, so both are gated on the same session/worktree checks.
       if (command.projectId !== undefined) {
-        yield* requireProject({
-          readModel,
-          command,
-          projectId: command.projectId,
-        });
+        if (command.projectId !== null) {
+          yield* requireProject({
+            readModel,
+            command,
+            projectId: command.projectId,
+          });
+        }
         if (
           command.projectId !== thread.projectId &&
           (thread.session?.status === "starting" || thread.session?.status === "running")

@@ -15,6 +15,23 @@ export function scopeProjectRef(
   return { environmentId, projectId };
 }
 
+/**
+ * Scope a thread's workspace, or null when it has none. Projectless threads
+ * carry `projectId: null`, so every "which project is this thread in" lookup
+ * has to answer "none" rather than fabricate a ref.
+ */
+export function scopeThreadProjectRef(
+  thread:
+    | { readonly environmentId: EnvironmentIdType; readonly projectId: ProjectIdType | null }
+    | null
+    | undefined,
+): ScopedProjectRef | null {
+  if (!thread || thread.projectId === null) {
+    return null;
+  }
+  return { environmentId: thread.environmentId, projectId: thread.projectId };
+}
+
 export function scopeThreadRef(
   environmentId: EnvironmentIdType,
   threadId: ThreadId,

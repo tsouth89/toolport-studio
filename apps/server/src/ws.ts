@@ -94,6 +94,7 @@ import * as PortScanner from "./preview/PortScanner.ts";
 import * as WorkspaceEntries from "./workspace/WorkspaceEntries.ts";
 import * as WorkspaceFileSystem from "./workspace/WorkspaceFileSystem.ts";
 import * as WorkspacePaths from "./workspace/WorkspacePaths.ts";
+import { projectlessWorkspaceRoot } from "./workspace/projectlessWorkspace.ts";
 import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
 import * as VcsProvisioningService from "./vcs/VcsProvisioningService.ts";
 import * as GitWorkflowService from "./git/GitWorkflowService.ts";
@@ -1776,6 +1777,14 @@ const makeWsRpcLayer = (
               if (Option.isNone(thread)) {
                 return yield* new AssetWorkspaceContextNotFoundError({
                   resource: input.resource,
+                });
+              }
+              // A projectless thread's assets live under the projectless
+              // scratch directory, so there is no project row to resolve.
+              if (thread.value.projectId === null) {
+                return yield* issueAssetUrl({
+                  resource: input.resource,
+                  workspaceRoot: thread.value.worktreePath ?? projectlessWorkspaceRoot(),
                 });
               }
               const project = yield* projectionSnapshotQuery
