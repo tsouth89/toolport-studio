@@ -70,6 +70,49 @@ describe("attachDraftSessionToProject", () => {
     expect(next.getDraftThreadByProjectRef(generalRef)).toBeNull();
     expect(next.getDraftThreadByProjectRef(targetRef)?.draftId).toBe(draftId);
   });
+
+  it("rebinding between two workspace projects keeps the same draft and prompt", () => {
+    const draftId = DraftId.make(newDraftId());
+    const threadId = ThreadId.make("thread-attach-2");
+    const sourceProjectId = ProjectId.make("proj-source");
+    const sourceRef = scopeProjectRef(ENVIRONMENT_ID, sourceProjectId);
+    const targetRef = scopeProjectRef(ENVIRONMENT_ID, TARGET_PROJECT_ID);
+    const store = useComposerDraftStore.getState();
+
+    store.setLogicalProjectDraftThreadId(scopedProjectKey(sourceRef), sourceRef, draftId, {
+      threadId,
+      createdAt: "2026-07-27T12:00:00.000Z",
+    });
+    store.setPrompt(draftId, "typed while still on project A");
+
+    attachDraftSessionToProject({
+      draftId,
+      draftThread: store.getDraftSession(draftId)!,
+      project: { environmentId: ENVIRONMENT_ID, id: TARGET_PROJECT_ID },
+      projects: [
+        {
+          environmentId: ENVIRONMENT_ID,
+          id: sourceProjectId,
+          workspaceRoot: "C:/projects/a",
+        },
+        {
+          environmentId: ENVIRONMENT_ID,
+          id: TARGET_PROJECT_ID,
+          workspaceRoot: "C:/projects/b",
+        },
+      ],
+      projectGroupingSettings: {
+        sidebarProjectGroupingMode: "separate",
+        sidebarProjectGroupingOverrides: {},
+      },
+    });
+
+    const next = useComposerDraftStore.getState();
+    expect(next.getComposerDraft(draftId)?.prompt).toBe("typed while still on project A");
+    expect(next.getDraftSession(draftId)?.projectId).toBe(TARGET_PROJECT_ID);
+    expect(next.getDraftThreadByProjectRef(sourceRef)).toBeNull();
+    expect(next.getDraftThreadByProjectRef(targetRef)?.draftId).toBe(draftId);
+  });
 });
 
 describe("attachSessionToProject", () => {

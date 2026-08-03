@@ -27,6 +27,8 @@ import {
   resolveThreadStatusPill,
   resolveWorkingStartedAt,
   formatWorkingDurationLabel,
+  isSidebarThreadRunningAttention,
+  selectRunningSidebarThreads,
   shouldNavigateAfterProjectRemoval,
   shouldClearThreadSelectionOnMouseDown,
   sortLogicalProjectsForSidebar,
@@ -656,6 +658,90 @@ describe("resolveSidebarStatus", () => {
 
   it("defaults to ready with no session", () => {
     expect(resolveSidebarStatus({ ...idle, session: null })).toBe("ready");
+  });
+});
+
+describe("selectRunningSidebarThreads", () => {
+  const baseSession = {
+    threadId: ThreadId.make("thread-1"),
+    status: "running" as const,
+    providerName: "Codex",
+    providerInstanceId: ProviderInstanceId.make("codex"),
+    runtimeMode: DEFAULT_RUNTIME_MODE,
+    activeTurnId: "turn-1" as never,
+    lastError: null,
+    updatedAt: "2026-03-09T10:00:00.000Z",
+  };
+
+  const thread = (input: {
+    id: string;
+    status?: "running" | "starting" | "error" | "ready" | "stopped";
+    hasPendingApprovals?: boolean;
+    hasPendingUserInput?: boolean;
+    updatedAt?: string;
+    createdAt?: string;
+  }) => ({
+    id: input.id,
+    hasPendingApprovals: input.hasPendingApprovals ?? false,
+    hasPendingUserInput: input.hasPendingUserInput ?? false,
+    session:
+      input.status === undefined
+        ? { ...baseSession, threadId: ThreadId.make(input.id) }
+        : input.status === "ready" || input.status === "stopped"
+          ? {
+              ...baseSession,
+              threadId: ThreadId.make(input.id),
+              status: input.status,
+              activeTurnId: null,
+            }
+          : {
+              ...baseSession,
+              threadId: ThreadId.make(input.id),
+              status: input.status,
+            },
+    updatedAt: input.updatedAt ?? "2026-03-09T10:00:00.000Z",
+    createdAt: input.createdAt ?? "2026-03-09T09:00:00.000Z",
+  });
+
+  it("keeps only live and needs-action sessions", () => {
+    const running = selectRunningSidebarThreads([
+      thread({ id: "ready", status: "ready" }),
+      thread({ id: "working", status: "running" }),
+      thread({ id: "approval", hasPendingApprovals: true, status: "running" }),
+      thread({ id: "input", hasPendingUserInput: true, status: "ready" }),
+      thread({ id: "failed", status: "error" }),
+    ]);
+    expect(running.map((entry) => entry.id)).toEqual(["approval", "input", "working", "failed"]);
+  });
+
+  it("orders by urgency then recency", () => {
+    const running = selectRunningSidebarThreads([
+      thread({
+        id: "older-working",
+        status: "running",
+        updatedAt: "2026-03-09T10:00:00.000Z",
+      }),
+      thread({
+        id: "newer-working",
+        status: "running",
+        updatedAt: "2026-03-09T11:00:00.000Z",
+      }),
+      thread({
+        id: "approval",
+        hasPendingApprovals: true,
+        updatedAt: "2026-03-09T08:00:00.000Z",
+      }),
+    ]);
+    expect(running.map((entry) => entry.id)).toEqual([
+      "approval",
+      "newer-working",
+      "older-working",
+    ]);
+  });
+
+  it("isSidebarThreadRunningAttention matches the Running section filter", () => {
+    expect(isSidebarThreadRunningAttention(thread({ id: "w", status: "running" }))).toBe(true);
+    expect(isSidebarThreadRunningAttention(thread({ id: "r", status: "ready" }))).toBe(false);
   });
 });
 

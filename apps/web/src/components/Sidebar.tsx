@@ -113,6 +113,7 @@ import {
   resolveSidebarProjectShelfExpanded,
   resolveSidebarStatus,
   resolveWorkingStartedAt,
+  selectRunningSidebarThreads,
   shouldNavigateAfterProjectRemoval,
   SIDEBAR_DND_PROJECT_MIME,
   SIDEBAR_DND_THREAD_MIME,
@@ -1174,6 +1175,10 @@ export default function Sidebar() {
     ],
   );
 
+  // Cross-shelf findability: live / needs-action sessions at the top so they
+  // are not buried when many project groups are expanded or collapsed.
+  const runningThreads = useMemo(() => selectRunningSidebarThreads(activeThreads), [activeThreads]);
+
   const [draggingProjectKey, setDraggingProjectKey] = useState<string | null>(null);
   const [draggingThreadKey, setDraggingThreadKey] = useState<string | null>(null);
   const [dragOverProjectKey, setDragOverProjectKey] = useState<string | null>(null);
@@ -2007,13 +2012,17 @@ export default function Sidebar() {
           >
             <ul ref={attachListAutoAnimateRef} role="list" className="flex flex-col gap-px">
               {(() => {
-                const renderThreadRow = (thread: EnvironmentThreadShell) => {
+                const renderThreadRow = (
+                  thread: EnvironmentThreadShell,
+                  options?: { readonly nestUnderProjectShelf?: boolean; readonly rowKey?: string },
+                ) => {
                   const threadKey = scopedThreadKey(
                     scopeThreadRef(thread.environmentId, thread.id),
                   );
+                  const nestUnderProjectShelf = options?.nestUnderProjectShelf ?? true;
                   return (
                     <SidebarRow
-                      key={threadKey}
+                      key={options?.rowKey ?? threadKey}
                       thread={thread}
                       isActive={routeThreadKey === threadKey}
                       jumpLabel={showJumpHints ? (jumpLabelByKey.get(threadKey) ?? null) : null}
@@ -2027,7 +2036,7 @@ export default function Sidebar() {
                           `${thread.environmentId}:${thread.projectId}`,
                         ) ?? null
                       }
-                      nestUnderProjectShelf
+                      nestUnderProjectShelf={nestUnderProjectShelf}
                       isDragging={draggingThreadKey === threadKey}
                       providerEntryByInstanceId={providerEntryByInstanceId}
                       onThreadClick={handleThreadClick}
@@ -2050,6 +2059,34 @@ export default function Sidebar() {
                 // Empty unpinned shelves stay hidden until a session drag so the
                 // list is not a wall of empty project folders.
                 const items: ReactNode[] = [];
+                if (runningThreads.length > 0 && projectScopeKey === null) {
+                  items.push(
+                    <li
+                      key="running-header"
+                      data-thread-selection-safe
+                      data-testid="sidebar-running-section-header"
+                      className="list-none"
+                    >
+                      <div className="mb-0.5 mt-1 flex h-6 w-full items-center gap-1 px-1.5 text-left">
+                        <span className="min-w-0 truncate text-[11px] font-medium tracking-wide text-sky-600/90 dark:text-sky-400/90">
+                          Running
+                        </span>
+                        <span className="shrink-0 pe-0.5 font-mono text-[10px] tabular-nums text-muted-foreground/40">
+                          {runningThreads.length}
+                        </span>
+                      </div>
+                    </li>,
+                  );
+                  for (const thread of runningThreads) {
+                    // Distinct React keys: the same thread also appears under its shelf.
+                    items.push(
+                      renderThreadRow(thread, {
+                        nestUnderProjectShelf: false,
+                        rowKey: `running:${scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id))}`,
+                      }),
+                    );
+                  }
+                }
                 for (const panel of activeProjectPanels) {
                   if (panel.threads.length === 0 && !panel.isPinned && draggingThreadKey == null) {
                     continue;

@@ -427,6 +427,47 @@ export function resolveSidebarStatus(thread: SidebarStatusInput): SidebarStatus 
   return "ready";
 }
 
+/** Sessions that need a glance from any shelf: live work or needs user action. */
+export function isSidebarThreadRunningAttention(thread: SidebarStatusInput): boolean {
+  const status = resolveSidebarStatus(thread);
+  return status === "working" || status === "approval" || status === "input" || status === "failed";
+}
+
+const RUNNING_SIDEBAR_STATUS_PRIORITY: Record<Exclude<SidebarStatus, "ready">, number> = {
+  approval: 4,
+  input: 3,
+  working: 2,
+  failed: 1,
+};
+
+/**
+ * Cross-shelf Running list: urgency first, then recency. Keeps active sessions
+ * findable when they would otherwise be buried under project groups.
+ */
+export function selectRunningSidebarThreads<
+  T extends SidebarStatusInput & {
+    readonly id: string;
+    readonly updatedAt: string;
+    readonly createdAt: string;
+  },
+>(threads: readonly T[]): T[] {
+  return threads
+    .filter((thread) => isSidebarThreadRunningAttention(thread))
+    .toSorted((left, right) => {
+      const leftStatus = resolveSidebarStatus(left);
+      const rightStatus = resolveSidebarStatus(right);
+      const leftPriority = leftStatus === "ready" ? 0 : RUNNING_SIDEBAR_STATUS_PRIORITY[leftStatus];
+      const rightPriority =
+        rightStatus === "ready" ? 0 : RUNNING_SIDEBAR_STATUS_PRIORITY[rightStatus];
+      return (
+        rightPriority - leftPriority ||
+        parseTimestampMs(right.updatedAt) - parseTimestampMs(left.updatedAt) ||
+        parseTimestampMs(right.createdAt) - parseTimestampMs(left.createdAt) ||
+        left.id.localeCompare(right.id)
+      );
+    });
+}
+
 /** NaN-safe Date.parse for sort comparators: a malformed timestamp must not
     poison the whole ordering, so it sinks to the epoch instead. */
 export function parseTimestampMs(isoDate: string): number {
