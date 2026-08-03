@@ -1722,6 +1722,26 @@ function ChatViewContent(props: ChatViewProps) {
     activeThread?.projectId === null ||
     (activeProject ? isGeneralChatProject(activeProject) : false);
   const activeTerminalCwd = activeProject?.workspaceRoot ?? GENERAL_CHAT_WORKSPACE_ROOT;
+
+  const prevProviderNameRef = useRef<string | null>(null);
+  const [providerChangeNotice, setProviderChangeNotice] = useState<{
+    from: string;
+    to: string;
+  } | null>(null);
+  useEffect(() => {
+    if (!activeThread) return;
+    const currentProvider = activeThread.session?.providerName ?? null;
+    const prevProvider = prevProviderNameRef.current;
+    if (currentProvider && prevProvider && currentProvider !== prevProvider) {
+      setProviderChangeNotice({ from: prevProvider, to: currentProvider });
+    }
+    prevProviderNameRef.current = currentProvider;
+  }, [activeThread?.session?.providerName]);
+  useEffect(() => {
+    if (providerChangeNotice === null) return;
+    const timer = setTimeout(() => setProviderChangeNotice(null), 6000);
+    return () => clearTimeout(timer);
+  }, [providerChangeNotice]);
   const activeEnvironmentShell = useEnvironmentQuery(
     activeThread ? environmentShell.stateAtom(activeThread.environmentId) : null,
   );
@@ -6136,6 +6156,17 @@ function ChatViewContent(props: ChatViewProps) {
           onDismiss={dismissThreadError}
           {...(canRetryLastUserMessage ? { onRetry: onRetryLastUserMessage } : {})}
         />
+        {providerChangeNotice && (
+          <div className="mx-auto flex w-full max-w-[720px] items-center gap-2 rounded-md bg-sky-50 px-3 py-2 text-sm text-sky-700 dark:bg-sky-950 dark:text-sky-300">
+            <span className="shrink-0 font-medium">Provider changed</span>
+            <span className="text-muted-foreground">
+              <span className="font-medium text-foreground">{providerChangeNotice.from}</span> →{" "}
+              <span className="font-medium text-foreground">
+                {activeThread?.session?.providerName ?? activeThread?.modelSelection.model}
+              </span>
+            </span>
+          </div>
+        )}
         {/* Main content area with optional plan sidebar */}
         <div className="flex min-h-0 min-w-0 flex-1">
           {/* Chat column */}

@@ -239,7 +239,7 @@ describe("hasUnseenCompletion", () => {
     ).toBe(true);
   });
 
-  it("treats a missing client visit marker as read", () => {
+  it("treats a missing client visit marker as unseen", () => {
     expect(
       hasUnseenCompletion({
         hasActionableProposedPlan: false,
@@ -250,7 +250,7 @@ describe("hasUnseenCompletion", () => {
         lastVisitedAt: undefined,
         session: null,
       }),
-    ).toBe(false);
+    ).toBe(true);
   });
 });
 
@@ -712,22 +712,22 @@ describe("selectRunningSidebarThreads", () => {
     expect(running.map((entry) => entry.id)).toEqual(["approval", "input", "working", "failed"]);
   });
 
-  it("orders by urgency then recency", () => {
+  it("orders by urgency then creation order", () => {
     const running = selectRunningSidebarThreads([
       thread({
         id: "older-working",
         status: "running",
-        updatedAt: "2026-03-09T10:00:00.000Z",
+        createdAt: "2026-03-09T10:00:00.000Z",
       }),
       thread({
         id: "newer-working",
         status: "running",
-        updatedAt: "2026-03-09T11:00:00.000Z",
+        createdAt: "2026-03-09T11:00:00.000Z",
       }),
       thread({
         id: "approval",
         hasPendingApprovals: true,
-        updatedAt: "2026-03-09T08:00:00.000Z",
+        createdAt: "2026-03-09T08:00:00.000Z",
       }),
     ]);
     expect(running.map((entry) => entry.id)).toEqual([
@@ -972,7 +972,7 @@ describe("resolveThreadStatusPill", () => {
     ).toMatchObject({ label: "Plan Ready", pulse: false });
   });
 
-  it("does not manufacture completed state without a client visit marker", () => {
+  it("returns completed for a turn that finished before any client visit", () => {
     expect(
       resolveThreadStatusPill({
         thread: {
@@ -985,7 +985,12 @@ describe("resolveThreadStatusPill", () => {
           },
         },
       }),
-    ).toBeNull();
+    ).toEqual({
+      label: "Completed",
+      colorClass: "text-emerald-600 dark:text-emerald-300/90",
+      dotClass: "bg-emerald-500 dark:bg-emerald-300/90",
+      pulse: false,
+    });
   });
 
   it("shows completed when there is an unseen completion and no active blocker", () => {

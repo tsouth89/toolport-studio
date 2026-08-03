@@ -229,7 +229,9 @@ export function hasUnseenCompletion(thread: ThreadStatusInput): boolean {
   if (!thread.latestTurn?.completedAt) return false;
   const completedAt = Date.parse(thread.latestTurn.completedAt);
   if (Number.isNaN(completedAt)) return false;
-  if (!thread.lastVisitedAt) return false;
+  // Never visited = the user hasn't seen this thread yet. A completed turn
+  // that was never viewed is implicitly unread.
+  if (!thread.lastVisitedAt) return true;
 
   const lastVisitedAt = Date.parse(thread.lastVisitedAt);
   if (Number.isNaN(lastVisitedAt)) return true;
@@ -443,8 +445,8 @@ const RUNNING_SIDEBAR_STATUS_PRIORITY: Record<Exclude<SidebarStatus, "ready">, n
 };
 
 /**
- * Cross-shelf Running list: urgency first, then recency. Keeps active sessions
- * findable when they would otherwise be buried under project groups.
+ * Cross-shelf Running list: urgency first, then creation order so a session
+ * holds its position from start to finish — newer sessions stack on top.
  */
 export function selectRunningSidebarThreads<
   T extends SidebarStatusInput & {
@@ -463,7 +465,6 @@ export function selectRunningSidebarThreads<
         rightStatus === "ready" ? 0 : RUNNING_SIDEBAR_STATUS_PRIORITY[rightStatus];
       return (
         rightPriority - leftPriority ||
-        parseTimestampMs(right.updatedAt) - parseTimestampMs(left.updatedAt) ||
         parseTimestampMs(right.createdAt) - parseTimestampMs(left.createdAt) ||
         left.id.localeCompare(right.id)
       );
