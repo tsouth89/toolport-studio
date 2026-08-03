@@ -222,14 +222,25 @@ export function useThreadActions() {
             return navigationResult;
           }
         } else {
-          router.navigate({ to: "/", replace: true });
+          const navigationResult = await settlePromise(() =>
+            router.navigate({ to: "/", replace: true }),
+          );
+          if (navigationResult._tag === "Failure") {
+            return navigationResult;
+          }
         }
         return archiveResult;
       }
 
       return archiveResult;
     },
-    [archiveThreadMutation, confirmThreadArchive, getCurrentRouteThreadRef, resolveThreadTarget],
+    [
+      archiveThreadMutation,
+      confirmThreadArchive,
+      getCurrentRouteThreadRef,
+      resolveThreadTarget,
+      router,
+    ],
   );
 
   const unarchiveThread = useCallback(
