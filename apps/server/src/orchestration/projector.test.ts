@@ -76,6 +76,8 @@ describe("orchestration projector", () => {
       {
         id: "thread-1",
         projectId: "project-1",
+        // Absent on historical creates → projector keeps shelf = workspace.
+        sidebarGroupId: "project-1",
         title: "demo",
         modelSelection: {
           instanceId: "codex",
