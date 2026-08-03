@@ -33,63 +33,72 @@ export function useProjectlessThreadHandler() {
   const handleNewThread = useNewThreadHandler();
   const pendingStartRef = useRef<Promise<boolean> | null>(null);
 
-  return useCallback((): Promise<boolean> => {
-    if (pendingStartRef.current) {
-      return pendingStartRef.current;
-    }
-
-    const pendingStart = (async () => {
-      const environmentId =
-        existingGeneralProject?.environmentId ??
-        primaryEnvironmentId ??
-        environments[0]?.environmentId ??
-        null;
-      if (environmentId === null) {
-        return false;
+  return useCallback(
+    (options?: { readonly replace?: boolean }): Promise<boolean> => {
+      if (pendingStartRef.current) {
+        return pendingStartRef.current;
       }
 
-      let projectId = existingGeneralProject?.id;
-      if (projectId === undefined) {
-        projectId = newProjectId();
-        const environmentProviders =
-          environments.find((environment) => environment.environmentId === environmentId)
-            ?.serverConfig?.providers ?? primaryProviders;
-        const createResult = await createProject({
-          environmentId,
-          input: {
-            projectId,
-            title: GENERAL_CHAT_TITLE,
-            workspaceRoot: GENERAL_CHAT_WORKSPACE_ROOT,
-            createWorkspaceRootIfMissing: true,
-            defaultModelSelection: resolveDefaultProviderModelSelection(environmentProviders, null),
-          },
-        });
-        if (createResult._tag === "Failure") {
-          if (isAtomCommandInterrupted(createResult)) {
-            return false;
-          }
-          throw squashAtomCommandFailure(createResult);
+      const pendingStart = (async () => {
+        const environmentId =
+          existingGeneralProject?.environmentId ??
+          primaryEnvironmentId ??
+          environments[0]?.environmentId ??
+          null;
+        if (environmentId === null) {
+          return false;
         }
-      }
 
-      await handleNewThread(scopeProjectRef(environmentId, projectId), {
-        envMode: "local",
-      });
-      return true;
-    })();
+        let projectId = existingGeneralProject?.id;
+        if (projectId === undefined) {
+          projectId = newProjectId();
+          const environmentProviders =
+            environments.find((environment) => environment.environmentId === environmentId)
+              ?.serverConfig?.providers ?? primaryProviders;
+          const createResult = await createProject({
+            environmentId,
+            input: {
+              projectId,
+              title: GENERAL_CHAT_TITLE,
+              workspaceRoot: GENERAL_CHAT_WORKSPACE_ROOT,
+              createWorkspaceRootIfMissing: true,
+              defaultModelSelection: resolveDefaultProviderModelSelection(
+                environmentProviders,
+                null,
+              ),
+            },
+          });
+          if (createResult._tag === "Failure") {
+            if (isAtomCommandInterrupted(createResult)) {
+              return false;
+            }
+            throw squashAtomCommandFailure(createResult);
+          }
+        }
 
-    pendingStartRef.current = pendingStart;
-    const clearPendingStart = () => {
-      if (pendingStartRef.current === pendingStart) pendingStartRef.current = null;
-    };
-    void pendingStart.then(clearPendingStart, clearPendingStart);
-    return pendingStart;
-  }, [
-    createProject,
-    environments,
-    existingGeneralProject,
-    handleNewThread,
-    primaryEnvironmentId,
-    primaryProviders,
-  ]);
+        // New sessions always land ungrouped (General / "No project"), even
+        // when the previous context was a workspace project.
+        await handleNewThread(scopeProjectRef(environmentId, projectId), {
+          envMode: "local",
+          replace: options?.replace ?? false,
+        });
+        return true;
+      })();
+
+      pendingStartRef.current = pendingStart;
+      const clearPendingStart = () => {
+        if (pendingStartRef.current === pendingStart) pendingStartRef.current = null;
+      };
+      void pendingStart.then(clearPendingStart, clearPendingStart);
+      return pendingStart;
+    },
+    [
+      createProject,
+      environments,
+      existingGeneralProject,
+      handleNewThread,
+      primaryEnvironmentId,
+      primaryProviders,
+    ],
+  );
 }

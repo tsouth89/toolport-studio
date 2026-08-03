@@ -1,34 +1,17 @@
-import { useAtomValue } from "@effect/atom-react";
-import { isAtomCommandInterrupted } from "@toolport-studio/client-runtime/state/runtime";
-import { scopeProjectRef } from "@toolport-studio/client-runtime/environment";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { LinkIcon, PlusIcon, RotateCcwIcon } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { openCommandPalette } from "../commandPaletteBus";
-import { sortScopedProjectsForSidebar } from "../components/Sidebar.logic";
 import { Button } from "../components/ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../components/ui/empty";
 import { SidebarInset } from "../components/ui/sidebar";
-import { useNewThreadHandler } from "../hooks/useHandleNewThread";
-import {
-  useAllEnvironmentShellsBootstrapped,
-  useProjects,
-  useThreadShells,
-} from "../state/entities";
+import { useProjectlessThreadHandler } from "../hooks/useProjectlessThread";
+import { useAllEnvironmentShellsBootstrapped } from "../state/entities";
 import { useEnvironments, usePrimaryEnvironmentId } from "../state/environments";
-import { projectEnvironment } from "../state/projects";
-import { primaryServerProvidersAtom } from "../state/server";
-import { useAtomCommand } from "../state/use-atom-command";
 import { APP_DISPLAY_NAME } from "~/branding";
 import { hasCloudPublicConfig } from "~/cloud/publicConfig";
-import {
-  GENERAL_CHAT_TITLE,
-  GENERAL_CHAT_WORKSPACE_ROOT,
-  isGeneralChatProject,
-} from "~/lib/generalChat";
-import { resolveDefaultProviderModelSelection } from "~/providerInstances";
-import { cn, newProjectId } from "~/lib/utils";
+import { cn } from "~/lib/utils";
 import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "~/workspaceTitlebar";
 
 function ChatIndexRouteView() {
@@ -43,118 +26,52 @@ function ChatIndexRouteView() {
 }
 
 /**
- * Landing on the index route drops straight into a draft thread for the most
- * recently active project, so the first screen is a prompt instead of a dead
- * end. When no project exists yet, auto-create the system General chat
- * workspace (SOU-357) instead of forcing "Add project".
+ * Landing on the index route always opens an ungrouped (projectless) draft.
+ * Workspace attachment is optional and explicit; do not inherit the most
+ * recently active project shelf (Claude Code-style new session).
  */
 function IndexDraftLanding() {
-  const projects = useProjects();
-  const threads = useThreadShells();
   const bootstrapped = useAllEnvironmentShellsBootstrapped();
-  const handleNewThread = useNewThreadHandler();
+  const startProjectlessThread = useProjectlessThreadHandler();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const { environments } = useEnvironments();
-  const providers = useAtomValue(primaryServerProvidersAtom);
-  const createProject = useAtomCommand(projectEnvironment.create, { reportFailure: false });
   const startingRef = useRef(false);
   const [startState, setStartState] = useState({ failed: false, retryRequest: 0 });
-
-  const mostRecentProject = useMemo(
-    () =>
-      bootstrapped
-        ? (sortScopedProjectsForSidebar(projects, threads, "updated_at")[0] ?? null)
-        : null,
-    [bootstrapped, projects, threads],
-  );
-
-  const existingGeneralProject = useMemo(
-    () => projects.find((project) => isGeneralChatProject(project)) ?? null,
-    [projects],
-  );
 
   useEffect(() => {
     if (!bootstrapped || startingRef.current) {
       return;
     }
 
-    if (mostRecentProject !== null) {
-      startingRef.current = true;
-      void handleNewThread(scopeProjectRef(mostRecentProject.environmentId, mostRecentProject.id), {
-        replace: true,
-      }).catch(() => {
-        startingRef.current = false;
-        setStartState((state) => ({ ...state, failed: true }));
-      });
-      return;
-    }
-
-    // No projects yet: open General chat (create if needed) so the home
-    // screen is a composer, not an Add project wall.
-    const environmentId =
-      existingGeneralProject?.environmentId ??
-      primaryEnvironmentId ??
-      environments[0]?.environmentId ??
-      null;
+    const environmentId = primaryEnvironmentId ?? environments[0]?.environmentId ?? null;
     if (environmentId === null) {
       return;
     }
 
     startingRef.current = true;
-    void (async () => {
-      try {
-        let projectId = existingGeneralProject?.id;
-        if (projectId === undefined) {
-          projectId = newProjectId();
-          const targetEnvironmentProviders =
-            environments.find((environment) => environment.environmentId === environmentId)
-              ?.serverConfig?.providers ?? providers;
-          const createResult = await createProject({
-            environmentId,
-            input: {
-              projectId,
-              title: GENERAL_CHAT_TITLE,
-              workspaceRoot: GENERAL_CHAT_WORKSPACE_ROOT,
-              createWorkspaceRootIfMissing: true,
-              defaultModelSelection: resolveDefaultProviderModelSelection(
-                targetEnvironmentProviders,
-                null,
-              ),
-            },
-          });
-          if (createResult._tag === "Failure") {
-            if (!isAtomCommandInterrupted(createResult)) {
-              startingRef.current = false;
-              setStartState((state) => ({ ...state, failed: true }));
-            }
-            return;
-          }
+    void startProjectlessThread({ replace: true })
+      .then((started) => {
+        if (!started) {
+          startingRef.current = false;
+          setStartState((state) => ({ ...state, failed: true }));
         }
-        await handleNewThread(scopeProjectRef(environmentId, projectId), {
-          replace: true,
-          envMode: "local",
-        });
-      } catch {
+      })
+      .catch(() => {
         startingRef.current = false;
         setStartState((state) => ({ ...state, failed: true }));
-      }
-    })();
+      });
   }, [
     bootstrapped,
-    createProject,
     environments,
-    existingGeneralProject,
-    handleNewThread,
-    mostRecentProject,
     primaryEnvironmentId,
-    providers,
+    startProjectlessThread,
     startState.retryRequest,
   ]);
 
   if (!bootstrapped) {
     return null;
   }
-  if (mostRecentProject !== null || existingGeneralProject !== null || primaryEnvironmentId) {
+  if (primaryEnvironmentId || environments.length > 0) {
     return startState.failed ? (
       <DraftStartError
         onRetry={() => {
@@ -175,9 +92,9 @@ function DraftStartError({ onRetry }: { readonly onRetry: () => void }) {
     <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground">
       <Empty className="flex-1">
         <EmptyHeader className="max-w-md">
-          <EmptyTitle className="text-foreground text-xl">Couldn’t start a new thread</EmptyTitle>
+          <EmptyTitle className="text-foreground text-xl">Couldn’t start a new chat</EmptyTitle>
           <EmptyDescription className="mt-2 text-sm text-muted-foreground/78">
-            The project is still available. Try opening the draft again.
+            Try opening a new ungrouped session again.
           </EmptyDescription>
           <div className="mt-5 flex justify-center">
             <Button size="sm" onClick={onRetry}>
