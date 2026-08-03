@@ -754,7 +754,6 @@ export default function Sidebar() {
   const projectOrder = useUiStateStore((store) => store.projectOrder);
   const pinnedProjectKeys = useUiStateStore((store) => store.pinnedProjectKeys);
   const projectExpandedById = useUiStateStore((store) => store.projectExpandedById);
-  const threadLastVisitedAtById = useUiStateStore((store) => store.threadLastVisitedAtById);
   const reorderProjectsInStore = useUiStateStore((store) => store.reorderProjects);
   const setProjectExpanded = useUiStateStore((store) => store.setProjectExpanded);
   const setProjectPinned = useUiStateStore((store) => store.setProjectPinned);
@@ -2233,45 +2232,16 @@ export default function Sidebar() {
                       : isDropTarget
                         ? "rounded-md bg-sidebar-row-hover/80"
                         : null;
-                  const isScopedProject = scopedProjectGroup?.projectKey === panel.projectKey;
                   const projectExpansionPreferenceKeys =
                     projectExpansionPreferenceKeysByProjectKey.get(panel.shelfKey) ?? [
                       panel.shelfKey,
                     ];
-                  const hasActiveThread = panel.threads.some(
-                    (thread) =>
-                      thread.id === routeThreadRef?.threadId &&
-                      thread.environmentId === routeThreadRef.environmentId,
-                  );
-                  const hasAttentionThread = panel.threads.some((thread) => {
-                    const threadStatus = resolveSidebarStatus(thread);
-                    if (
-                      threadStatus === "working" ||
-                      threadStatus === "approval" ||
-                      threadStatus === "input" ||
-                      threadStatus === "failed"
-                    ) {
-                      return true;
-                    }
-                    const threadKey = scopedThreadKey(
-                      scopeThreadRef(thread.environmentId, thread.id),
-                    );
-                    return hasUnseenCompletion({
-                      ...thread,
-                      lastVisitedAt: threadLastVisitedAtById[threadKey],
-                    });
-                  });
-                  // Unconfigured shelves stay quiet unless they are scoped or
-                  // need attention. Once a user toggles one, honor that choice.
+                  // Shelves open unless the user collapsed this one.
                   const isShelfExpanded = resolveSidebarProjectShelfExpanded({
                     persistedExpanded: resolveProjectExpandedPreference(
                       projectExpandedById,
                       projectExpansionPreferenceKeys,
                     ),
-                    isScoped: isScopedProject,
-                    hasActiveThread,
-                    hasAttentionThread,
-                    expandedByDefault: panel.kind === "ungrouped",
                   });
                   const isFolderShelf = panel.folderRef !== null;
                   items.push(

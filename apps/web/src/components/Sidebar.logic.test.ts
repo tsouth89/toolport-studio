@@ -1080,69 +1080,13 @@ describe("resolveProjectStatusIndicator", () => {
 });
 
 describe("resolveSidebarProjectShelfExpanded", () => {
-  it("keeps quiet unconfigured shelves collapsed", () => {
-    expect(
-      resolveSidebarProjectShelfExpanded({
-        persistedExpanded: undefined,
-        isScoped: false,
-        hasActiveThread: false,
-        hasAttentionThread: false,
-      }),
-    ).toBe(false);
-  });
-
-  it("opens unconfigured shelves when scoped, active, or needing attention", () => {
-    for (const relevantState of ["scoped", "active", "attention"] as const) {
-      expect(
-        resolveSidebarProjectShelfExpanded({
-          persistedExpanded: undefined,
-          isScoped: relevantState === "scoped",
-          hasActiveThread: relevantState === "active",
-          hasAttentionThread: relevantState === "attention",
-        }),
-      ).toBe(true);
-    }
-  });
-
-  it("opens shelves that default open, like Ungrouped", () => {
-    expect(
-      resolveSidebarProjectShelfExpanded({
-        persistedExpanded: undefined,
-        isScoped: false,
-        hasActiveThread: false,
-        hasAttentionThread: false,
-        expandedByDefault: true,
-      }),
-    ).toBe(true);
-    // A user who collapsed it still gets their choice back.
-    expect(
-      resolveSidebarProjectShelfExpanded({
-        persistedExpanded: false,
-        isScoped: false,
-        hasActiveThread: false,
-        hasAttentionThread: false,
-        expandedByDefault: true,
-      }),
-    ).toBe(false);
+  it("opens shelves that carry no explicit preference", () => {
+    expect(resolveSidebarProjectShelfExpanded({ persistedExpanded: undefined })).toBe(true);
   });
 
   it("honors an explicit persisted choice", () => {
-    expect(
-      resolveSidebarProjectShelfExpanded({
-        persistedExpanded: false,
-        isScoped: true,
-        hasActiveThread: true,
-        hasAttentionThread: true,
-      }),
-    ).toBe(false);
-    expect(
-      resolveSidebarProjectShelfExpanded({
-        persistedExpanded: true,
-        isScoped: false,
-        hasActiveThread: false,
-        hasAttentionThread: false,
-      }),
-    ).toBe(true);
+    expect(resolveSidebarProjectShelfExpanded({ persistedExpanded: false })).toBe(false);
+    expect(resolveSidebarProjectShelfExpanded({ persistedExpanded: true })).toBe(true);
   });
 });
 

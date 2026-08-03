@@ -669,29 +669,14 @@ export function resolveProjectStatusIndicator(
 }
 
 /**
- * Keep unconfigured project shelves collapsed unless the current context
- * makes their contents immediately relevant. An explicit user preference
- * always wins so manually collapsed shelves do not spring back open.
+ * Shelves open by default: a collapsed header hides work the user never asked
+ * to hide. An explicit preference always wins, so a shelf someone collapsed
+ * stays collapsed.
  */
 export function resolveSidebarProjectShelfExpanded(input: {
   readonly persistedExpanded: boolean | undefined;
-  readonly isScoped: boolean;
-  readonly hasActiveThread: boolean;
-  readonly hasAttentionThread: boolean;
-  /**
-   * Shelves that open on their own with no signal — Ungrouped, where every new
-   * session lands, would otherwise hide the user's newest work behind a
-   * collapsed header.
-   */
-  readonly expandedByDefault?: boolean;
 }): boolean {
-  return (
-    input.persistedExpanded ??
-    (input.expandedByDefault === true ||
-      input.isScoped ||
-      input.hasActiveThread ||
-      input.hasAttentionThread)
-  );
+  return input.persistedExpanded ?? true;
 }
 
 /** MIME types for sidebar HTML5 DnD (project reorder vs session move). */
