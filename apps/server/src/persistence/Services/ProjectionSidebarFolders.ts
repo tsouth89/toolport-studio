@@ -8,7 +8,7 @@
  *
  * @module ProjectionSidebarFolderRepository
  */
-import { IsoDateTime, SidebarFolderId } from "@toolport-studio/contracts";
+import { IsoDateTime, SidebarFolderId, TrimmedNonEmptyString } from "@toolport-studio/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Context from "effect/Context";
@@ -18,7 +18,7 @@ import type { ProjectionRepositoryError } from "../Errors.ts";
 
 export const ProjectionSidebarFolder = Schema.Struct({
   sidebarFolderId: SidebarFolderId,
-  title: Schema.String,
+  title: TrimmedNonEmptyString,
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   deletedAt: Schema.NullOr(IsoDateTime),

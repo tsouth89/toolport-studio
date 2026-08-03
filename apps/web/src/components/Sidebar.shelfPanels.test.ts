@@ -130,6 +130,13 @@ describe("buildActiveSidebarShelfPanels", () => {
       projectGroups: [projectShelf("alpha", "proj-a"), generalShelf],
       activeThreads: [
         {
+          id: ThreadId.make("projectless-no-shelf"),
+          environmentId: env,
+          // projectId: null and no sidebarGroupId: the legacy placement
+          // path falls back to projectId, which is null → Ungrouped.
+          projectId: null,
+        },
+        {
           id: ThreadId.make("explicitly-ungrouped"),
           environmentId: env,
           projectId: ProjectId.make("proj-a"),
@@ -156,7 +163,12 @@ describe("buildActiveSidebarShelfPanels", () => {
     expect(panels.some((panel) => panel.shelfKey === "general")).toBe(false);
     expect(
       findShelf(panels, UNGROUPED_SIDEBAR_SHELF_KEY)?.threads.map((thread) => thread.id),
-    ).toEqual(["explicitly-ungrouped", "legacy-general", "orphaned-folder"]);
+    ).toEqual([
+      "projectless-no-shelf",
+      "explicitly-ungrouped",
+      "legacy-general",
+      "orphaned-folder",
+    ]);
   });
 
   it("buckets by sidebarGroupId independent of workspace projectId", () => {

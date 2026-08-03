@@ -460,6 +460,13 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       });
       // Default ungrouped: new sessions stay off project shelves until filed.
       const sidebarGroupId = command.sidebarGroupId === undefined ? null : command.sidebarGroupId;
+      if (sidebarGroupId !== null) {
+        yield* requireSidebarFolder({
+          readModel,
+          command,
+          sidebarFolderId: sidebarGroupId,
+        });
+      }
       return {
         ...(yield* withEventBase({
           aggregateKind: "thread",
@@ -742,6 +749,13 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      if (command.sidebarGroupId !== undefined && command.sidebarGroupId !== null) {
+        yield* requireSidebarFolder({
+          readModel,
+          command,
+          sidebarFolderId: command.sidebarGroupId,
+        });
+      }
       // projectId set = attach/move, null = detach to projectless, omitted =
       // leave the workspace alone. Both attach and detach change the cwd the
       // agent runs in, so both are gated on the same session/worktree checks.

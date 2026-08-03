@@ -48,6 +48,7 @@ import {
   isAtomCommandInterrupted,
   settlePromise,
   squashAtomCommandFailure,
+  type AtomCommandResult,
 } from "@toolport-studio/client-runtime/state/runtime";
 import { isElectron } from "../env";
 import {
@@ -1366,17 +1367,20 @@ export default function Sidebar() {
     [activeShelfPanels, threadListProjectGroups, updateThreadMetadata],
   );
 
-  const reportFolderFailure = useCallback((title: string, result: { readonly _tag: string }) => {
-    if (result._tag !== "Failure" || isAtomCommandInterrupted(result as never)) return;
-    const error = squashAtomCommandFailure(result as never);
-    toastManager.add(
-      stackedThreadToast({
-        type: "error",
-        title,
-        description: error instanceof Error ? error.message : "An error occurred.",
-      }),
-    );
-  }, []);
+  const reportFolderFailure = useCallback(
+    (title: string, result: AtomCommandResult<unknown, unknown>) => {
+      if (result._tag !== "Failure" || isAtomCommandInterrupted(result)) return;
+      const error = squashAtomCommandFailure(result);
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title,
+          description: error instanceof Error ? error.message : "An error occurred.",
+        }),
+      );
+    },
+    [],
+  );
 
   const submitNewFolder = useCallback(async () => {
     const title = newFolderTitle.trim();
