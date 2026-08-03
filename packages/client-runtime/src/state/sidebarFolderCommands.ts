@@ -18,6 +18,8 @@ export type {
   UpdateSidebarFolderInput,
 } from "../operations/commands.ts";
 
+export * from "./sidebarFolderEntities.ts";
+
 /**
  * Commands for free-form sidebar folders. Folders are organization only —
  * nothing here touches a thread's workspace, cwd, or git state.

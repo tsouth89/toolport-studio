@@ -62,7 +62,7 @@ import { useShortcutModifierState } from "../shortcutModifierState";
 import { isTerminalFocused } from "../lib/terminalFocus";
 import { isModelPickerOpen } from "../modelPickerVisibility";
 import { selectThreadTerminalUiState, useTerminalUiStateStore } from "../terminalUiStateStore";
-import { isMacPlatform } from "~/lib/utils";
+import { isMacPlatform, newSidebarFolderId } from "~/lib/utils";
 import { useOpenPrLink } from "../lib/openPullRequestLink";
 import { readLocalApi } from "../localApi";
 import {
@@ -89,11 +89,13 @@ import { isGeneralChatProject } from "../lib/generalChat";
 import { useClientSettings, useUpdateClientSettings } from "../hooks/useSettings";
 import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
 import { useEnvironments, usePrimaryEnvironmentId } from "../state/environments";
-import { useProjects, useThreadShells } from "../state/entities";
+import { useProjects, useSidebarFolders, useThreadShells } from "../state/entities";
+import type { EnvironmentSidebarFolder } from "@toolport-studio/client-runtime/state/shell";
 import { primaryServerKeybindingsAtom } from "../state/server";
 import { vcsEnvironment } from "../state/vcs";
 import { threadEnvironment } from "../state/threads";
 import { projectEnvironment } from "../state/projects";
+import { sidebarFolderEnvironment } from "../state/sidebarFolders";
 import { useEnvironmentQuery } from "../state/query";
 import { useAtomCommand } from "../state/use-atom-command";
 import { buildThreadRouteParams, resolveThreadRouteTarget } from "../threadRoutes";
@@ -101,17 +103,18 @@ import { formatRelativeTimeLabel } from "../timestampFormat";
 import type { SidebarThreadSummary } from "../types";
 import { cn } from "~/lib/utils";
 import {
-  buildActiveSidebarProjectPanels,
+  buildActiveSidebarShelfPanels,
   encodeSidebarThreadDragPayload,
   formatWorkingDurationLabel,
   hasUnseenCompletion,
-  isThreadAlreadyInSidebarGroup,
+  isThreadAlreadyOnSidebarShelf,
   isTrailingDoubleClick,
   orderItemsByPreferredIds,
   parseSidebarThreadDragPayload,
   resolveAdjacentThreadId,
   resolveSameEnvironmentProjectMember,
   resolveSidebarProjectShelfExpanded,
+  resolveSidebarShelfDropGroupId,
   resolveSidebarStatus,
   resolveWorkingStartedAt,
   selectRunningSidebarThreads,
@@ -120,6 +123,7 @@ import {
   SIDEBAR_DND_THREAD_MIME,
   sortLogicalProjectsForSidebar,
   sortThreadsForSidebar,
+  type ActiveSidebarShelfPanel,
   type SidebarThreadDragPayload,
 } from "./Sidebar.logic";
 import { resolveLocalCheckoutBranchMismatch } from "./BranchToolbar.logic";
@@ -738,8 +742,11 @@ const SidebarRow = memo(function SidebarRow(props: {
   );
 });
 
+const EMPTY_SIDEBAR_FOLDERS: ReadonlyArray<EnvironmentSidebarFolder> = Object.freeze([]);
+
 export default function Sidebar() {
   const projects = useProjects();
+  const sidebarFolders = useSidebarFolders();
   const visibleProjects = useMemo(
     () => projects.filter((project) => !isGeneralChatProject(project)),
     [projects],
@@ -770,6 +777,15 @@ export default function Sidebar() {
   const updateProject = useAtomCommand(projectEnvironment.update, {
     reportFailure: false,
   });
+  const createSidebarFolder = useAtomCommand(sidebarFolderEnvironment.create, {
+    reportFailure: false,
+  });
+  const updateSidebarFolder = useAtomCommand(sidebarFolderEnvironment.update, {
+    reportFailure: false,
+  });
+  const deleteSidebarFolder = useAtomCommand(sidebarFolderEnvironment.delete, {
+    reportFailure: false,
+  });
   const updateSettings = useUpdateClientSettings();
   const { copyToClipboard: copyProjectPath } = useCopyToClipboard<{ path: string }>({
     onCopy: ({ path }) => {
@@ -793,6 +809,11 @@ export default function Sidebar() {
     null,
   );
   const [projectScopeMenuOpen, setProjectScopeMenuOpen] = useState(false);
+  const [folderActionsTarget, setFolderActionsTarget] =
+    useState<ActiveSidebarShelfPanel<EnvironmentThreadShell> | null>(null);
+  const [folderDraftTitle, setFolderDraftTitle] = useState("");
+  const [newFolderDialogOpen, setNewFolderDialogOpen] = useState(false);
+  const [newFolderTitle, setNewFolderTitle] = useState("");
   const newThreadContext = useHandleNewThread();
   const startProjectlessThread = useProjectlessThreadHandler();
   const openAddProjectCommandPalette = useCallback(
@@ -1145,6 +1166,13 @@ export default function Sidebar() {
 
   // Archive removes from the sidebar entirely (Settings → Archive to restore).
   // Soft-done path is Archive; no Settled/Snooze shelves.
+  // A project scope filters the list down to one workspace, so free-form
+  // folders (which cut across workspaces) have nothing to show under it.
+  const scopedSidebarFolders = useMemo(
+    () => (scopedProjectKeys === null ? sidebarFolders : EMPTY_SIDEBAR_FOLDERS),
+    [scopedProjectKeys, sidebarFolders],
+  );
+
   const activeThreads = useMemo(() => {
     const visible = threads.filter((thread) => {
       if (thread.archivedAt !== null) return false;
@@ -1156,16 +1184,17 @@ export default function Sidebar() {
     return sortThreadsForSidebar(visible);
   }, [scopedProjectKeys, threads]);
 
-  const activeProjectPanels = useMemo(
+  const activeShelfPanels = useMemo(
     () =>
-      buildActiveSidebarProjectPanels({
+      buildActiveSidebarShelfPanels({
+        sidebarFolders: scopedSidebarFolders,
         projectGroups: threadListProjectGroups,
         activeThreads,
         activeThreadId: routeThreadRef?.threadId ?? null,
         activeThreadEnvironmentId: routeThreadRef?.environmentId ?? null,
-        expandedProjectKeys,
+        expandedShelfKeys: expandedProjectKeys,
         previewLimit: sidebarThreadPreviewCount,
-        pinnedProjectKeys,
+        pinnedShelfKeys: pinnedProjectKeys,
       }),
     [
       activeThreads,
@@ -1173,6 +1202,7 @@ export default function Sidebar() {
       pinnedProjectKeys,
       routeThreadRef?.environmentId,
       routeThreadRef?.threadId,
+      scopedSidebarFolders,
       sidebarThreadPreviewCount,
       threadListProjectGroups,
     ],
@@ -1268,15 +1298,30 @@ export default function Sidebar() {
     [draggingThreadKey],
   );
 
-  const moveThreadToProjectGroup = useCallback(
-    async (payload: SidebarThreadDragPayload, targetProjectKey: string) => {
-      const group = threadListProjectGroups.find((entry) => entry.projectKey === targetProjectKey);
-      if (!group) return;
-      const member = resolveSameEnvironmentProjectMember(
-        group.memberProjectRefs,
-        payload.environmentId,
-      );
-      if (!member) {
+  const moveThreadToShelf = useCallback(
+    async (payload: SidebarThreadDragPayload, targetShelfKey: string) => {
+      const panel = activeShelfPanels.find((entry) => entry.shelfKey === targetShelfKey);
+      if (!panel) return;
+
+      const projectGroup =
+        panel.projectKey === null
+          ? null
+          : (threadListProjectGroups.find((entry) => entry.projectKey === panel.projectKey) ??
+            null);
+      const sameEnvironmentProjectId =
+        projectGroup === null
+          ? null
+          : (resolveSameEnvironmentProjectMember(
+              projectGroup.memberProjectRefs,
+              payload.environmentId,
+            )?.projectId ?? null);
+
+      const target = resolveSidebarShelfDropGroupId({
+        panel,
+        environmentId: payload.environmentId,
+        sameEnvironmentProjectId,
+      });
+      if (!target.ok) {
         toastManager.add(
           stackedThreadToast({
             type: "error",
@@ -1286,14 +1331,15 @@ export default function Sidebar() {
         );
         return;
       }
+
       const placementProjectId = resolveThreadSidebarPlacementProjectId({
         projectId: payload.projectId,
         ...(payload.sidebarGroupId !== undefined ? { sidebarGroupId: payload.sidebarGroupId } : {}),
       });
       if (
-        isThreadAlreadyInSidebarGroup({
+        isThreadAlreadyOnSidebarShelf({
           placementProjectId,
-          targetProjectId: member.projectId,
+          targetSidebarGroupId: target.sidebarGroupId,
         })
       ) {
         return;
@@ -1303,7 +1349,8 @@ export default function Sidebar() {
         environmentId: EnvironmentId.make(payload.environmentId),
         input: {
           threadId: ThreadId.make(payload.threadId),
-          sidebarGroupId: SidebarFolderId.make(member.projectId),
+          sidebarGroupId:
+            target.sidebarGroupId === null ? null : SidebarFolderId.make(target.sidebarGroupId),
         },
       });
       if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
@@ -1317,11 +1364,69 @@ export default function Sidebar() {
         );
       }
     },
-    [threadListProjectGroups, updateThreadMetadata],
+    [activeShelfPanels, threadListProjectGroups, updateThreadMetadata],
   );
 
+  const reportFolderFailure = useCallback((title: string, result: { readonly _tag: string }) => {
+    if (result._tag !== "Failure" || isAtomCommandInterrupted(result as never)) return;
+    const error = squashAtomCommandFailure(result as never);
+    toastManager.add(
+      stackedThreadToast({
+        type: "error",
+        title,
+        description: error instanceof Error ? error.message : "An error occurred.",
+      }),
+    );
+  }, []);
+
+  const submitNewFolder = useCallback(async () => {
+    const title = newFolderTitle.trim();
+    if (title.length === 0 || primaryEnvironmentId === null) return;
+    setNewFolderDialogOpen(false);
+    setNewFolderTitle("");
+    const result = await createSidebarFolder({
+      environmentId: primaryEnvironmentId,
+      input: {
+        sidebarFolderId: newSidebarFolderId(),
+        title,
+      },
+    });
+    reportFolderFailure("Couldn’t create folder", result);
+  }, [createSidebarFolder, newFolderTitle, primaryEnvironmentId, reportFolderFailure]);
+
+  const submitFolderRename = useCallback(async () => {
+    const folderRef = folderActionsTarget?.folderRef;
+    const title = folderDraftTitle.trim();
+    if (!folderRef || title.length === 0 || title === folderActionsTarget?.displayName) {
+      setFolderActionsTarget(null);
+      return;
+    }
+    setFolderActionsTarget(null);
+    const result = await updateSidebarFolder({
+      environmentId: EnvironmentId.make(folderRef.environmentId),
+      input: {
+        sidebarFolderId: SidebarFolderId.make(folderRef.folderId),
+        title,
+      },
+    });
+    reportFolderFailure("Couldn’t rename folder", result);
+  }, [folderActionsTarget, folderDraftTitle, reportFolderFailure, updateSidebarFolder]);
+
+  // Deleting a folder never deletes conversations: the server ungroups its
+  // members and the sessions stay under Ungrouped.
+  const submitFolderDelete = useCallback(async () => {
+    const folderRef = folderActionsTarget?.folderRef;
+    if (!folderRef) return;
+    setFolderActionsTarget(null);
+    const result = await deleteSidebarFolder({
+      environmentId: EnvironmentId.make(folderRef.environmentId),
+      input: { sidebarFolderId: SidebarFolderId.make(folderRef.folderId) },
+    });
+    reportFolderFailure("Couldn’t delete folder", result);
+  }, [deleteSidebarFolder, folderActionsTarget, reportFolderFailure]);
+
   const handleProjectGroupDrop = useCallback(
-    (event: ReactDragEvent, targetProjectKey: string) => {
+    (event: ReactDragEvent, targetShelfKey: string, targetProjectKey: string | null) => {
       event.preventDefault();
       const threadRaw =
         event.dataTransfer.getData(SIDEBAR_DND_THREAD_MIME) ||
@@ -1329,7 +1434,7 @@ export default function Sidebar() {
       const threadPayload = parseSidebarThreadDragPayload(threadRaw);
       if (threadPayload) {
         clearSidebarDragState();
-        void moveThreadToProjectGroup(threadPayload, targetProjectKey);
+        void moveThreadToShelf(threadPayload, targetShelfKey);
         return;
       }
 
@@ -1339,6 +1444,11 @@ export default function Sidebar() {
         draggingProjectKey ||
         "";
       clearSidebarDragState();
+      // Only project shelves reorder the physical project list; folders and
+      // Ungrouped are not projects and have nothing to reorder.
+      if (targetProjectKey === null) {
+        return;
+      }
       if (!draggedKey || draggedKey === targetProjectKey) {
         return;
       }
@@ -1375,7 +1485,7 @@ export default function Sidebar() {
       currentPhysicalOrder,
       draggingProjectKey,
       draggingThreadKey,
-      moveThreadToProjectGroup,
+      moveThreadToShelf,
       physicalKeysForProjectKey,
       pinnedProjectKeys,
       reorderPinnedProjectKeys,
@@ -2009,6 +2119,23 @@ export default function Sidebar() {
             closeDelay={0}
             timeout={400}
           >
+            {primaryEnvironmentId !== null && projectScopeKey === null ? (
+              <div className="flex items-center justify-end px-1">
+                <button
+                  type="button"
+                  data-testid="sidebar-new-folder"
+                  aria-label="New folder"
+                  title="New folder"
+                  onClick={() => {
+                    setNewFolderTitle("");
+                    setNewFolderDialogOpen(true);
+                  }}
+                  className="inline-flex size-5 items-center justify-center rounded-md text-muted-foreground/50 transition-colors hover:bg-sidebar-row-hover hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  <FolderPlusIcon className="size-3.5" />
+                </button>
+              </div>
+            ) : null}
             <ul ref={attachListAutoAnimateRef} role="list" className="flex flex-col gap-px">
               {(() => {
                 const renderThreadRow = (
@@ -2086,13 +2213,20 @@ export default function Sidebar() {
                     );
                   }
                 }
-                for (const panel of activeProjectPanels) {
-                  if (panel.threads.length === 0 && !panel.isPinned && draggingThreadKey == null) {
+                for (const panel of activeShelfPanels) {
+                  // Folders stay visible even when empty so they remain drop
+                  // targets; Ungrouped and unpinned project shelves stay hidden
+                  // until they hold work or a session is being dragged.
+                  const keepEmptyShelfVisible = panel.kind === "folder" || panel.isPinned;
+                  if (
+                    panel.threads.length === 0 &&
+                    !keepEmptyShelfVisible &&
+                    draggingThreadKey == null
+                  ) {
                     continue;
                   }
                   const isDropTarget =
-                    dragOverProjectKey === panel.projectKey &&
-                    draggingProjectKey !== panel.projectKey;
+                    dragOverProjectKey === panel.shelfKey && draggingProjectKey !== panel.shelfKey;
                   const dropHighlightClass =
                     isDropTarget && dragOverKind === "thread"
                       ? "rounded-md ring-1 ring-inset ring-sky-500/50 bg-sky-500/10"
@@ -2101,8 +2235,8 @@ export default function Sidebar() {
                         : null;
                   const isScopedProject = scopedProjectGroup?.projectKey === panel.projectKey;
                   const projectExpansionPreferenceKeys =
-                    projectExpansionPreferenceKeysByProjectKey.get(panel.projectKey) ?? [
-                      panel.projectKey,
+                    projectExpansionPreferenceKeysByProjectKey.get(panel.shelfKey) ?? [
+                      panel.shelfKey,
                     ];
                   const hasActiveThread = panel.threads.some(
                     (thread) =>
@@ -2137,24 +2271,34 @@ export default function Sidebar() {
                     isScoped: isScopedProject,
                     hasActiveThread,
                     hasAttentionThread,
+                    expandedByDefault: panel.kind === "ungrouped",
                   });
+                  const isFolderShelf = panel.folderRef !== null;
                   items.push(
                     <li
-                      key={`project-header:${panel.projectKey}`}
+                      key={`project-header:${panel.shelfKey}`}
                       data-thread-selection-safe
                       data-testid="sidebar-project-group-header"
-                      data-project-key={panel.projectKey}
+                      data-shelf-key={panel.shelfKey}
+                      data-shelf-kind={panel.kind}
+                      {...(panel.projectKey !== null
+                        ? { "data-project-key": panel.projectKey }
+                        : {})}
                       data-pinned={panel.isPinned ? "true" : "false"}
                       className={cn(
                         "list-none",
                         dropHighlightClass,
-                        draggingProjectKey === panel.projectKey && "opacity-60",
+                        draggingProjectKey === panel.shelfKey && "opacity-60",
                       )}
-                      draggable={draggingThreadKey == null}
-                      onDragStart={(event) => handleProjectGroupDragStart(event, panel.projectKey)}
-                      onDragOver={(event) => handleProjectGroupDragOver(event, panel.projectKey)}
-                      onDragLeave={(event) => handleProjectGroupDragLeave(event, panel.projectKey)}
-                      onDrop={(event) => handleProjectGroupDrop(event, panel.projectKey)}
+                      // Only project shelves reorder by drag; folders and
+                      // Ungrouped are drop targets only.
+                      draggable={draggingThreadKey == null && panel.kind === "project"}
+                      onDragStart={(event) => handleProjectGroupDragStart(event, panel.shelfKey)}
+                      onDragOver={(event) => handleProjectGroupDragOver(event, panel.shelfKey)}
+                      onDragLeave={(event) => handleProjectGroupDragLeave(event, panel.shelfKey)}
+                      onDrop={(event) =>
+                        handleProjectGroupDrop(event, panel.shelfKey, panel.projectKey)
+                      }
                       onDragEnd={handleProjectGroupDragEnd}
                     >
                       <div className="group/project-header mt-3 mb-0.5 flex h-6 w-full items-center gap-1 px-1 text-left first:mt-1">
@@ -2178,7 +2322,7 @@ export default function Sidebar() {
                           <span
                             className={cn(
                               "min-w-0 truncate text-[11px] font-medium tracking-wide",
-                              panel.isNoProject
+                              panel.kind === "ungrouped"
                                 ? "text-muted-foreground/70"
                                 : "text-sidebar-muted-foreground/85",
                             )}
@@ -2187,28 +2331,47 @@ export default function Sidebar() {
                             {panel.displayName}
                           </span>
                         </button>
-                        <button
-                          type="button"
-                          data-testid="sidebar-project-pin"
-                          aria-label={
-                            panel.isPinned
-                              ? `Unpin ${panel.displayName}`
-                              : `Pin ${panel.displayName}`
-                          }
-                          aria-pressed={panel.isPinned}
-                          title={panel.isPinned ? "Unpin project" : "Pin project"}
-                          onClick={(event) =>
-                            toggleProjectPinned(event, panel.projectKey, panel.isPinned)
-                          }
-                          className={cn(
-                            "inline-flex size-5 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-sidebar-row-hover hover:text-foreground",
-                            panel.isPinned
-                              ? "opacity-100 text-foreground"
-                              : "opacity-0 text-muted-foreground/50 group-hover/project-header:opacity-100 focus-visible:opacity-100",
-                          )}
-                        >
-                          <PinIcon className={cn("size-3", panel.isPinned && "fill-current")} />
-                        </button>
+                        {isFolderShelf ? (
+                          <button
+                            type="button"
+                            data-testid="sidebar-folder-actions"
+                            aria-label={`Folder actions for ${panel.displayName}`}
+                            title="Rename or delete folder"
+                            onClick={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              setFolderDraftTitle(panel.displayName);
+                              setFolderActionsTarget(panel);
+                            }}
+                            className="inline-flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/50 opacity-0 transition-colors group-hover/project-header:opacity-100 hover:bg-sidebar-row-hover hover:text-foreground focus-visible:opacity-100"
+                          >
+                            <EllipsisIcon className="size-3" />
+                          </button>
+                        ) : null}
+                        {panel.kind === "ungrouped" ? null : (
+                          <button
+                            type="button"
+                            data-testid="sidebar-project-pin"
+                            aria-label={
+                              panel.isPinned
+                                ? `Unpin ${panel.displayName}`
+                                : `Pin ${panel.displayName}`
+                            }
+                            aria-pressed={panel.isPinned}
+                            title={panel.isPinned ? "Unpin shelf" : "Pin shelf"}
+                            onClick={(event) =>
+                              toggleProjectPinned(event, panel.shelfKey, panel.isPinned)
+                            }
+                            className={cn(
+                              "inline-flex size-5 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-sidebar-row-hover hover:text-foreground",
+                              panel.isPinned
+                                ? "opacity-100 text-foreground"
+                                : "opacity-0 text-muted-foreground/50 group-hover/project-header:opacity-100 focus-visible:opacity-100",
+                            )}
+                          >
+                            <PinIcon className={cn("size-3", panel.isPinned && "fill-current")} />
+                          </button>
+                        )}
                         {panel.threads.length > 0 ? (
                           <span className="shrink-0 pe-0.5 font-mono text-[10px] tabular-nums text-muted-foreground/40">
                             {panel.threads.length}
@@ -2223,7 +2386,7 @@ export default function Sidebar() {
                   if (panel.threads.length === 0) {
                     items.push(
                       <li
-                        key={`project-empty:${panel.projectKey}`}
+                        key={`project-empty:${panel.shelfKey}`}
                         className={cn(
                           "list-none",
                           isDropTarget &&
@@ -2232,11 +2395,11 @@ export default function Sidebar() {
                         )}
                         data-thread-selection-safe
                         data-testid="sidebar-project-empty-hint"
-                        onDragOver={(event) => handleProjectGroupDragOver(event, panel.projectKey)}
-                        onDragLeave={(event) =>
-                          handleProjectGroupDragLeave(event, panel.projectKey)
+                        onDragOver={(event) => handleProjectGroupDragOver(event, panel.shelfKey)}
+                        onDragLeave={(event) => handleProjectGroupDragLeave(event, panel.shelfKey)}
+                        onDrop={(event) =>
+                          handleProjectGroupDrop(event, panel.shelfKey, panel.projectKey)
                         }
-                        onDrop={(event) => handleProjectGroupDrop(event, panel.projectKey)}
                       >
                         {draggingThreadKey != null ? (
                           <div className="mb-0.5 px-5 py-0.5 font-mono text-[10px] text-muted-foreground/40">
@@ -2250,17 +2413,17 @@ export default function Sidebar() {
                     items.push(renderThreadRow(thread));
                   }
                   if (panel.hasHiddenThreads) {
-                    const expanded = expandedProjectKeys.has(panel.projectKey);
+                    const expanded = expandedProjectKeys.has(panel.shelfKey);
                     items.push(
                       <li
-                        key={`project-show-more:${panel.projectKey}`}
+                        key={`project-show-more:${panel.shelfKey}`}
                         className="list-none"
                         data-thread-selection-safe
                       >
                         <button
                           type="button"
                           data-testid="sidebar-project-show-more"
-                          onClick={() => toggleProjectThreadListExpanded(panel.projectKey)}
+                          onClick={() => toggleProjectThreadListExpanded(panel.shelfKey)}
                           className="mb-0.5 flex h-6 w-full items-center justify-start gap-1.5 rounded-md px-2 ps-5 font-mono text-[11px] text-muted-foreground transition-colors hover:bg-sidebar-row-hover hover:text-foreground"
                         >
                           {expanded ? "Show less" : `Show ${panel.hiddenCount} more`}
@@ -2273,7 +2436,7 @@ export default function Sidebar() {
               })()}
             </ul>
           </TooltipProvider>
-          {activeThreads.length === 0 && activeProjectPanels.length === 0 ? (
+          {activeThreads.length === 0 && scopedSidebarFolders.length === 0 ? (
             <div className="flex flex-col items-center gap-2 px-2 py-6 text-center text-xs text-muted-foreground/60">
               {projects.length === 0 ? (
                 <>
@@ -2296,6 +2459,102 @@ export default function Sidebar() {
           ) : null}
         </SidebarGroup>
       </SidebarContent>
+      <Dialog
+        open={newFolderDialogOpen}
+        onOpenChange={(open) => {
+          setNewFolderDialogOpen(open);
+          if (!open) setNewFolderTitle("");
+        }}
+      >
+        <DialogPopup className="max-w-sm">
+          <DialogHeader className="gap-1.5">
+            <DialogTitle>New folder</DialogTitle>
+            <DialogDescription>
+              Folders organize the sidebar only. Moving a session into one never changes its
+              workspace.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogPanel>
+            <label className="grid gap-1.5">
+              <span className="font-medium text-foreground">Folder name</span>
+              <Input
+                autoFocus
+                data-testid="sidebar-new-folder-name"
+                value={newFolderTitle}
+                onChange={(event) => setNewFolderTitle(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    void submitNewFolder();
+                  }
+                }}
+                placeholder="Research"
+              />
+            </label>
+          </DialogPanel>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setNewFolderDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              data-testid="sidebar-new-folder-submit"
+              disabled={newFolderTitle.trim().length === 0}
+              onClick={() => void submitNewFolder()}
+            >
+              Create folder
+            </Button>
+          </DialogFooter>
+        </DialogPopup>
+      </Dialog>
+      <Dialog
+        open={folderActionsTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setFolderActionsTarget(null);
+        }}
+      >
+        <DialogPopup className="max-w-sm">
+          <DialogHeader className="gap-1.5">
+            <DialogTitle>Folder settings</DialogTitle>
+            <DialogDescription>
+              Deleting a folder keeps its conversations — they move to Ungrouped.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogPanel>
+            <label className="grid gap-1.5">
+              <span className="font-medium text-foreground">Folder name</span>
+              <Input
+                autoFocus
+                data-testid="sidebar-folder-rename"
+                value={folderDraftTitle}
+                onChange={(event) => setFolderDraftTitle(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    void submitFolderRename();
+                  }
+                }}
+              />
+            </label>
+          </DialogPanel>
+          <DialogFooter className="justify-between">
+            <Button
+              variant="ghost"
+              data-testid="sidebar-folder-delete"
+              className="text-destructive hover:text-destructive"
+              onClick={() => void submitFolderDelete()}
+            >
+              Delete folder
+            </Button>
+            <Button
+              data-testid="sidebar-folder-rename-submit"
+              disabled={folderDraftTitle.trim().length === 0}
+              onClick={() => void submitFolderRename()}
+            >
+              Save
+            </Button>
+          </DialogFooter>
+        </DialogPopup>
+      </Dialog>
       <Dialog
         open={projectActionsTarget !== null}
         onOpenChange={(open) => {

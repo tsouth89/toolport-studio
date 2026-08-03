@@ -669,22 +669,6 @@ export function resolveProjectStatusIndicator(
 }
 
 /**
- * One project section in the active sidebar list (SOU-417).
- * Groups use stable user order (manual + pins), not activity recency.
- * "No project" is a peer group when general/projectless chats exist.
- */
-export type ActiveSidebarProjectPanel<TThread> = {
-  readonly projectKey: string;
-  readonly displayName: string;
-  readonly isNoProject: boolean;
-  readonly isPinned: boolean;
-  readonly threads: readonly TThread[];
-  readonly visibleThreads: readonly TThread[];
-  readonly hasHiddenThreads: boolean;
-  readonly hiddenCount: number;
-};
-
-/**
  * Keep unconfigured project shelves collapsed unless the current context
  * makes their contents immediately relevant. An explicit user preference
  * always wins so manually collapsed shelves do not spring back open.
@@ -694,9 +678,19 @@ export function resolveSidebarProjectShelfExpanded(input: {
   readonly isScoped: boolean;
   readonly hasActiveThread: boolean;
   readonly hasAttentionThread: boolean;
+  /**
+   * Shelves that open on their own with no signal — Ungrouped, where every new
+   * session lands, would otherwise hide the user's newest work behind a
+   * collapsed header.
+   */
+  readonly expandedByDefault?: boolean;
 }): boolean {
   return (
-    input.persistedExpanded ?? (input.isScoped || input.hasActiveThread || input.hasAttentionThread)
+    input.persistedExpanded ??
+    (input.expandedByDefault === true ||
+      input.isScoped ||
+      input.hasActiveThread ||
+      input.hasAttentionThread)
   );
 }
 
@@ -770,52 +764,99 @@ export function isThreadAlreadyInProject(input: {
   return input.sourceProjectId === input.targetProjectId;
 }
 
-/** True when the thread's sidebar shelf already matches the target shelf project. */
-export function isThreadAlreadyInSidebarGroup(input: {
+/** Synthetic shelf holding every session with no folder (`sidebarGroupId` null). */
+export const UNGROUPED_SIDEBAR_SHELF_KEY = " ungrouped";
+
+export type SidebarShelfKind = "folder" | "project" | "ungrouped";
+
+export interface SidebarFolderRef {
+  readonly environmentId: string;
+  readonly folderId: string;
+}
+
+export function sidebarFolderShelfKey(ref: SidebarFolderRef): string {
+  return ` folder ${ref.environmentId} ${ref.folderId}`;
+}
+
+/**
+ * One shelf in the active sidebar list: a free-form folder, a legacy project
+ * shelf, or the synthetic Ungrouped bucket. Shelves are organization only —
+ * which shelf a session sits on never implies anything about its workspace.
+ */
+export type ActiveSidebarShelfPanel<TThread> = {
+  readonly shelfKey: string;
+  readonly kind: SidebarShelfKind;
+  readonly displayName: string;
+  /** Set only for project shelves, whose ordering/pin prefs key off it. */
+  readonly projectKey: string | null;
+  /** Set only for folder shelves; the drop target writes this folder's id. */
+  readonly folderRef: SidebarFolderRef | null;
+  readonly isPinned: boolean;
+  readonly threads: readonly TThread[];
+  readonly visibleThreads: readonly TThread[];
+  readonly hasHiddenThreads: boolean;
+  readonly hiddenCount: number;
+};
+
+/**
+ * The `sidebarGroupId` a drop on this shelf must write. Ungrouped always writes
+ * `null` rather than a stand-in project id, so ungrouping never smuggles a
+ * workspace back into shelf membership.
+ */
+export function resolveSidebarShelfDropGroupId<
+  TPanel extends Pick<ActiveSidebarShelfPanel<unknown>, "kind" | "folderRef">,
+>(input: {
+  readonly panel: TPanel;
+  readonly environmentId: string;
+  readonly sameEnvironmentProjectId: string | null;
+}): { readonly ok: true; readonly sidebarGroupId: string | null } | { readonly ok: false } {
+  if (input.panel.kind === "ungrouped") {
+    return { ok: true, sidebarGroupId: null };
+  }
+  if (input.panel.kind === "folder") {
+    const folderRef = input.panel.folderRef;
+    // Folders are environment-scoped; a cross-environment drop has no target.
+    if (folderRef === null || folderRef.environmentId !== input.environmentId) {
+      return { ok: false };
+    }
+    return { ok: true, sidebarGroupId: folderRef.folderId };
+  }
+  if (input.sameEnvironmentProjectId === null) {
+    return { ok: false };
+  }
+  return { ok: true, sidebarGroupId: input.sameEnvironmentProjectId };
+}
+
+/** True when the session already sits on the shelf the drop targets. */
+export function isThreadAlreadyOnSidebarShelf(input: {
   readonly placementProjectId: string | null;
-  readonly targetProjectId: string;
+  readonly targetSidebarGroupId: string | null;
 }): boolean {
-  return input.placementProjectId === input.targetProjectId;
+  return input.placementProjectId === input.targetSidebarGroupId;
 }
 
 /**
- * Place pinned logical project groups first (in pin order), then keep the
- * remaining groups in their incoming manual/shelf order.
+ * Bucket active threads onto sidebar shelves: free-form folders first, then
+ * legacy project shelves, then Ungrouped.
+ *
+ * Placement comes from {@link resolveThreadSidebarPlacementProjectId} — the
+ * workspace `projectId` never decides where a row appears. A placement id that
+ * matches no known folder or project (an orphan, e.g. a folder deleted by
+ * another client) falls back to Ungrouped so a session is never invisible.
+ * Folder and real project shelves are kept even when empty so they stay drop
+ * targets; Ungrouped is always emitted and the view hides it when it is empty.
  */
-export function applyPinnedLogicalProjectOrder<T extends { readonly projectKey: string }>(
-  groups: readonly T[],
-  pinnedProjectKeys: readonly string[],
-): T[] {
-  if (pinnedProjectKeys.length === 0 || groups.length === 0) {
-    return [...groups];
-  }
-  const byKey = new Map(groups.map((group) => [group.projectKey, group] as const));
-  const pinned: T[] = [];
-  const seen = new Set<string>();
-  for (const key of pinnedProjectKeys) {
-    const group = byKey.get(key);
-    if (!group || seen.has(key)) continue;
-    pinned.push(group);
-    seen.add(key);
-  }
-  const rest = groups.filter((group) => !seen.has(group.projectKey));
-  return [...pinned, ...rest];
-}
-
-/**
- * Bucket active threads under project groups for the nested sidebar.
- * Shelf membership uses {@link resolveThreadSidebarPlacementProjectId}:
- * workspace `projectId` is independent of where the row appears.
- * Real project shelves are kept even when empty (Claude-style drop targets).
- * Empty "No project" is omitted. Within each group the input thread order is
- * preserved (caller sorts). Preview/expand uses {@link getVisibleThreadsForProject}.
- */
-export function buildActiveSidebarProjectPanels<
+export function buildActiveSidebarShelfPanels<
   TThread extends {
     readonly id: string;
     readonly environmentId: string;
     readonly projectId: string;
     readonly sidebarGroupId?: string | null | undefined;
+  },
+  TFolder extends {
+    readonly environmentId: string;
+    readonly id: string;
+    readonly title: string;
   },
   TProject extends {
     readonly projectKey: string;
@@ -827,56 +868,111 @@ export function buildActiveSidebarProjectPanels<
     readonly isNoProject?: boolean;
   },
 >(input: {
+  readonly sidebarFolders: readonly TFolder[];
   readonly projectGroups: readonly TProject[];
   readonly activeThreads: readonly TThread[];
   readonly activeThreadId?: string | null;
   readonly activeThreadEnvironmentId?: string | null;
-  readonly expandedProjectKeys: ReadonlySet<string>;
+  readonly expandedShelfKeys: ReadonlySet<string>;
   readonly previewLimit: number;
-  readonly pinnedProjectKeys?: readonly string[];
-}): ActiveSidebarProjectPanel<TThread>[] {
-  const projectKeyByRef = new Map<string, string>();
-  let noProjectGroupKey: string | null = null;
+  readonly pinnedShelfKeys?: readonly string[];
+}): ActiveSidebarShelfPanel<TThread>[] {
+  const folderShelfKeyByRef = new Map<string, string>();
+  for (const folder of input.sidebarFolders) {
+    folderShelfKeyByRef.set(
+      `${folder.environmentId} ${folder.id}`,
+      sidebarFolderShelfKey({ environmentId: folder.environmentId, folderId: folder.id }),
+    );
+  }
+
+  const projectShelfKeyByRef = new Map<string, string>();
+  // General / "No project" shelves are presentation of ungrouped work, not a
+  // real shelf: fold their members into Ungrouped so the soft-killed General
+  // project stays invisible while it still backs projectless cwd.
+  const ungroupedProjectKeys = new Set<string>();
   for (const group of input.projectGroups) {
     if (group.isNoProject === true) {
-      noProjectGroupKey = group.projectKey;
+      ungroupedProjectKeys.add(group.projectKey);
     }
     for (const ref of group.memberProjectRefs) {
-      projectKeyByRef.set(`${ref.environmentId}\0${ref.projectId}`, group.projectKey);
+      projectShelfKeyByRef.set(`${ref.environmentId} ${ref.projectId}`, group.projectKey);
     }
   }
 
-  const threadsByProjectKey = new Map<string, TThread[]>();
-  for (const thread of input.activeThreads) {
-    const placementProjectId = resolveThreadSidebarPlacementProjectId(thread);
-    const projectKey =
-      placementProjectId === null
-        ? noProjectGroupKey
-        : projectKeyByRef.get(`${thread.environmentId}\0${placementProjectId}`);
-    if (!projectKey) continue;
-    const bucket = threadsByProjectKey.get(projectKey);
+  const threadsByShelfKey = new Map<string, TThread[]>();
+  const pushThread = (shelfKey: string, thread: TThread) => {
+    const bucket = threadsByShelfKey.get(shelfKey);
     if (bucket) {
       bucket.push(thread);
     } else {
-      threadsByProjectKey.set(projectKey, [thread]);
+      threadsByShelfKey.set(shelfKey, [thread]);
     }
+  };
+
+  for (const thread of input.activeThreads) {
+    const placementProjectId = resolveThreadSidebarPlacementProjectId(thread);
+    if (placementProjectId === null) {
+      pushThread(UNGROUPED_SIDEBAR_SHELF_KEY, thread);
+      continue;
+    }
+    const refKey = `${thread.environmentId} ${placementProjectId}`;
+    const folderShelfKey = folderShelfKeyByRef.get(refKey);
+    if (folderShelfKey !== undefined) {
+      pushThread(folderShelfKey, thread);
+      continue;
+    }
+    const projectKey = projectShelfKeyByRef.get(refKey);
+    if (projectKey === undefined || ungroupedProjectKeys.has(projectKey)) {
+      pushThread(UNGROUPED_SIDEBAR_SHELF_KEY, thread);
+      continue;
+    }
+    pushThread(projectKey, thread);
   }
 
-  const pinnedSet = new Set(input.pinnedProjectKeys ?? []);
-  const orderedGroups = applyPinnedLogicalProjectOrder(
-    input.projectGroups,
-    input.pinnedProjectKeys ?? [],
+  const folderShelves = input.sidebarFolders.map((folder) => {
+    const folderRef = { environmentId: folder.environmentId, folderId: folder.id };
+    return {
+      shelfKey: sidebarFolderShelfKey(folderRef),
+      kind: "folder" as const,
+      displayName: folder.title,
+      projectKey: null,
+      folderRef,
+    };
+  });
+  const projectShelves = input.projectGroups.flatMap((group) =>
+    ungroupedProjectKeys.has(group.projectKey)
+      ? []
+      : [
+          {
+            shelfKey: group.projectKey,
+            kind: "project" as const,
+            displayName: group.displayName,
+            projectKey: group.projectKey,
+            folderRef: null,
+          },
+        ],
   );
 
-  const panels: ActiveSidebarProjectPanel<TThread>[] = [];
-  for (const group of orderedGroups) {
-    const threads = threadsByProjectKey.get(group.projectKey) ?? [];
-    const isNoProject = group.isNoProject === true;
-    // Keep empty real projects as shelves; hide empty "No project".
-    if (threads.length === 0 && isNoProject) continue;
+  const pinnedSet = new Set(input.pinnedShelfKeys ?? []);
+  const orderedShelves = applyPinnedSidebarShelfOrder(
+    [...folderShelves, ...projectShelves],
+    input.pinnedShelfKeys ?? [],
+  );
+  const shelves = [
+    ...orderedShelves,
+    {
+      shelfKey: UNGROUPED_SIDEBAR_SHELF_KEY,
+      kind: "ungrouped" as const,
+      displayName: "Ungrouped",
+      projectKey: null,
+      folderRef: null,
+    },
+  ];
 
-    const isExpanded = input.expandedProjectKeys.has(group.projectKey);
-    const activeThreadIdForGroup =
+  return shelves.map((shelf) => {
+    const threads = threadsByShelfKey.get(shelf.shelfKey) ?? [];
+    const isExpanded = input.expandedShelfKeys.has(shelf.shelfKey);
+    const activeThreadIdForShelf =
       input.activeThreadId != null &&
       input.activeThreadEnvironmentId != null &&
       threads.some(
@@ -890,24 +986,45 @@ export function buildActiveSidebarProjectPanels<
     const visibility = getVisibleThreadsForProject({
       // getVisibleThreadsForProject brands ThreadId; panels only need id equality.
       threads: threads as Array<TThread & Pick<Thread, "id">>,
-      activeThreadId: activeThreadIdForGroup as Thread["id"] | undefined,
+      activeThreadId: activeThreadIdForShelf as Thread["id"] | undefined,
       isThreadListExpanded: isExpanded,
       previewLimit: input.previewLimit,
     });
 
-    panels.push({
-      projectKey: group.projectKey,
-      displayName: group.displayName,
-      isNoProject,
-      isPinned: pinnedSet.has(group.projectKey),
+    return {
+      ...shelf,
+      isPinned: pinnedSet.has(shelf.shelfKey),
       threads,
       visibleThreads: visibility.visibleThreads as TThread[],
       hasHiddenThreads: visibility.hasHiddenThreads,
       hiddenCount: visibility.hiddenThreads.length,
-    });
-  }
+    };
+  });
+}
 
-  return panels;
+/**
+ * Place pinned shelves first (in pin order), then keep the rest in their
+ * incoming order. Twin of {@link applyPinnedLogicalProjectOrder} keyed by
+ * shelf rather than project.
+ */
+export function applyPinnedSidebarShelfOrder<T extends { readonly shelfKey: string }>(
+  shelves: readonly T[],
+  pinnedShelfKeys: readonly string[],
+): T[] {
+  if (pinnedShelfKeys.length === 0 || shelves.length === 0) {
+    return [...shelves];
+  }
+  const byKey = new Map(shelves.map((shelf) => [shelf.shelfKey, shelf] as const));
+  const pinned: T[] = [];
+  const seen = new Set<string>();
+  for (const key of pinnedShelfKeys) {
+    const shelf = byKey.get(key);
+    if (!shelf || seen.has(key)) continue;
+    pinned.push(shelf);
+    seen.add(key);
+  }
+  const rest = shelves.filter((shelf) => !seen.has(shelf.shelfKey));
+  return [...pinned, ...rest];
 }
 
 export function getVisibleThreadsForProject<T extends Pick<Thread, "id">>(input: {

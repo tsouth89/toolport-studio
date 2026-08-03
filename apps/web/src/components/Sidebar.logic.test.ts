@@ -1,8 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   archiveSelectedThreadEntries,
-  applyPinnedLogicalProjectOrder,
-  buildActiveSidebarProjectPanels,
   buildMultiSelectThreadContextMenuItems,
   createThreadJumpHintVisibilityController,
   encodeSidebarThreadDragPayload,
@@ -28,7 +26,6 @@ import {
   resolveWorkingStartedAt,
   formatWorkingDurationLabel,
   isSidebarThreadRunningAttention,
-  isThreadAlreadyInSidebarGroup,
   selectRunningSidebarThreads,
   shouldNavigateAfterProjectRemoval,
   shouldClearThreadSelectionOnMouseDown,
@@ -1082,218 +1079,6 @@ describe("resolveProjectStatusIndicator", () => {
   });
 });
 
-describe("buildActiveSidebarProjectPanels", () => {
-  it("groups active threads under projects with preview and show-more", () => {
-    const env = EnvironmentId.make("env-1");
-    const projectGroups = [
-      {
-        projectKey: "toolport",
-        displayName: "toolport-studio",
-        isNoProject: false,
-        memberProjectRefs: [{ environmentId: env, projectId: ProjectId.make("proj-toolport") }],
-      },
-      {
-        projectKey: "general",
-        displayName: "No project",
-        isNoProject: true,
-        memberProjectRefs: [{ environmentId: env, projectId: ProjectId.make("proj-general") }],
-      },
-    ];
-    const activeThreads = Array.from({ length: 7 }, (_, index) => ({
-      id: ThreadId.make(`toolport-${index + 1}`),
-      environmentId: env,
-      projectId: ProjectId.make("proj-toolport"),
-    })).concat([
-      {
-        id: ThreadId.make("general-1"),
-        environmentId: env,
-        projectId: ProjectId.make("proj-general"),
-      },
-    ]);
-
-    const panels = buildActiveSidebarProjectPanels({
-      projectGroups,
-      activeThreads,
-      expandedProjectKeys: new Set(),
-      previewLimit: 5,
-    });
-
-    expect(panels.map((panel) => panel.projectKey)).toEqual(["toolport", "general"]);
-    expect(panels[0]?.visibleThreads).toHaveLength(5);
-    expect(panels[0]?.hasHiddenThreads).toBe(true);
-    expect(panels[0]?.hiddenCount).toBe(2);
-    expect(panels[0]?.isPinned).toBe(false);
-    expect(panels[1]?.isNoProject).toBe(true);
-    expect(panels[1]?.visibleThreads).toHaveLength(1);
-  });
-
-  it("keeps empty real project shelves and hides empty No project", () => {
-    const env = EnvironmentId.make("env-1");
-    const projectGroups = [
-      {
-        projectKey: "empty-shelf",
-        displayName: "Empty shelf",
-        isNoProject: false,
-        memberProjectRefs: [{ environmentId: env, projectId: ProjectId.make("proj-empty") }],
-      },
-      {
-        projectKey: "general",
-        displayName: "No project",
-        isNoProject: true,
-        memberProjectRefs: [{ environmentId: env, projectId: ProjectId.make("proj-g") }],
-      },
-    ];
-    const panels = buildActiveSidebarProjectPanels({
-      projectGroups,
-      activeThreads: [],
-      expandedProjectKeys: new Set(),
-      previewLimit: 5,
-    });
-    expect(panels.map((panel) => panel.projectKey)).toEqual(["empty-shelf"]);
-    expect(panels[0]?.threads).toHaveLength(0);
-    expect(panels[0]?.visibleThreads).toHaveLength(0);
-  });
-
-  it("floats pinned logical projects to the top", () => {
-    const env = EnvironmentId.make("env-1");
-    const projectGroups = [
-      {
-        projectKey: "alpha",
-        displayName: "Alpha",
-        isNoProject: false,
-        memberProjectRefs: [{ environmentId: env, projectId: ProjectId.make("proj-a") }],
-      },
-      {
-        projectKey: "beta",
-        displayName: "Beta",
-        isNoProject: false,
-        memberProjectRefs: [{ environmentId: env, projectId: ProjectId.make("proj-b") }],
-      },
-    ];
-    const activeThreads = [
-      {
-        id: ThreadId.make("a1"),
-        environmentId: env,
-        projectId: ProjectId.make("proj-a"),
-      },
-      {
-        id: ThreadId.make("b1"),
-        environmentId: env,
-        projectId: ProjectId.make("proj-b"),
-      },
-    ];
-    const panels = buildActiveSidebarProjectPanels({
-      projectGroups,
-      activeThreads,
-      expandedProjectKeys: new Set(),
-      previewLimit: 5,
-      pinnedProjectKeys: ["beta"],
-    });
-    expect(panels.map((panel) => panel.projectKey)).toEqual(["beta", "alpha"]);
-    expect(panels[0]?.isPinned).toBe(true);
-    expect(panels[1]?.isPinned).toBe(false);
-  });
-
-  it("buckets by sidebarGroupId independent of workspace projectId", () => {
-    const env = EnvironmentId.make("env-1");
-    const projectGroups = [
-      {
-        projectKey: "alpha",
-        displayName: "Alpha",
-        isNoProject: false,
-        memberProjectRefs: [{ environmentId: env, projectId: ProjectId.make("proj-a") }],
-      },
-      {
-        projectKey: "beta",
-        displayName: "Beta",
-        isNoProject: false,
-        memberProjectRefs: [{ environmentId: env, projectId: ProjectId.make("proj-b") }],
-      },
-      {
-        projectKey: "general",
-        displayName: "No project",
-        isNoProject: true,
-        memberProjectRefs: [{ environmentId: env, projectId: ProjectId.make("proj-g") }],
-      },
-    ];
-    const activeThreads = [
-      {
-        id: ThreadId.make("workspace-a-on-beta-shelf"),
-        environmentId: env,
-        projectId: ProjectId.make("proj-a"),
-        sidebarGroupId: ProjectId.make("proj-b"),
-      },
-      {
-        id: ThreadId.make("workspace-a-ungrouped"),
-        environmentId: env,
-        projectId: ProjectId.make("proj-a"),
-        sidebarGroupId: null,
-      },
-    ];
-    const panels = buildActiveSidebarProjectPanels({
-      projectGroups,
-      activeThreads,
-      expandedProjectKeys: new Set(["beta", "general"]),
-      previewLimit: 5,
-    });
-    const beta = panels.find((panel) => panel.projectKey === "beta");
-    const ungrouped = panels.find((panel) => panel.projectKey === "general");
-    expect(beta?.threads.map((thread) => thread.id)).toEqual(["workspace-a-on-beta-shelf"]);
-    expect(ungrouped?.threads.map((thread) => thread.id)).toEqual(["workspace-a-ungrouped"]);
-    expect(
-      isThreadAlreadyInSidebarGroup({
-        placementProjectId: ProjectId.make("proj-b"),
-        targetProjectId: ProjectId.make("proj-b"),
-      }),
-    ).toBe(true);
-  });
-
-  it("applyPinnedLogicalProjectOrder preserves unpinned relative order", () => {
-    const groups = [{ projectKey: "a" }, { projectKey: "b" }, { projectKey: "c" }];
-    expect(applyPinnedLogicalProjectOrder(groups, ["c"]).map((g) => g.projectKey)).toEqual([
-      "c",
-      "a",
-      "b",
-    ]);
-  });
-
-  it("does not hard-pin No project; respects projectGroups order", () => {
-    const env = EnvironmentId.make("env-1");
-    const projectGroups = [
-      {
-        projectKey: "recent-project",
-        displayName: "ceiling",
-        isNoProject: false,
-        memberProjectRefs: [{ environmentId: env, projectId: ProjectId.make("proj-a") }],
-      },
-      {
-        projectKey: "general",
-        displayName: "No project",
-        isNoProject: true,
-        memberProjectRefs: [{ environmentId: env, projectId: ProjectId.make("proj-g") }],
-      },
-    ];
-    const panels = buildActiveSidebarProjectPanels({
-      projectGroups,
-      activeThreads: [
-        {
-          id: ThreadId.make("a1"),
-          environmentId: env,
-          projectId: ProjectId.make("proj-a"),
-        },
-        {
-          id: ThreadId.make("g1"),
-          environmentId: env,
-          projectId: ProjectId.make("proj-g"),
-        },
-      ],
-      expandedProjectKeys: new Set(),
-      previewLimit: 5,
-    });
-    expect(panels.map((p) => p.projectKey)).toEqual(["recent-project", "general"]);
-  });
-});
-
 describe("resolveSidebarProjectShelfExpanded", () => {
   it("keeps quiet unconfigured shelves collapsed", () => {
     expect(
@@ -1317,6 +1102,28 @@ describe("resolveSidebarProjectShelfExpanded", () => {
         }),
       ).toBe(true);
     }
+  });
+
+  it("opens shelves that default open, like Ungrouped", () => {
+    expect(
+      resolveSidebarProjectShelfExpanded({
+        persistedExpanded: undefined,
+        isScoped: false,
+        hasActiveThread: false,
+        hasAttentionThread: false,
+        expandedByDefault: true,
+      }),
+    ).toBe(true);
+    // A user who collapsed it still gets their choice back.
+    expect(
+      resolveSidebarProjectShelfExpanded({
+        persistedExpanded: false,
+        isScoped: false,
+        hasActiveThread: false,
+        hasAttentionThread: false,
+        expandedByDefault: true,
+      }),
+    ).toBe(false);
   });
 
   it("honors an explicit persisted choice", () => {
