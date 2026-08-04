@@ -482,6 +482,14 @@ export const OrchestrationThreadShell = Schema.Struct({
   hasPendingUserInput: Schema.Boolean,
   hasActionableProposedPlan: Schema.Boolean,
   queuedTurnCount: Schema.optional(NonNegativeInt),
+  /**
+   * In-flight background tasks for this thread (running/pending, backgrounded).
+   * Lets the sidebar count work across threads the client has not opened, so a
+   * thread watching CI still reads as busy after its turn settles. Absent from
+   * servers predating background-task tracking, and from their cached
+   * snapshots; read it as 0.
+   */
+  runningBackgroundTaskCount: Schema.optional(NonNegativeInt),
 });
 export type OrchestrationThreadShell = typeof OrchestrationThreadShell.Type;
 

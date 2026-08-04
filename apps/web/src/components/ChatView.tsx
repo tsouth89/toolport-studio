@@ -154,6 +154,7 @@ import PlanSidebar from "./PlanSidebar";
 import { ActivityPanel } from "./ActivityPanel";
 import { AgentsPanel } from "./AgentsPanel";
 import { agentRunsForTurn, deriveAgentRuns, latestMessageTurnId } from "../agentRuns";
+import { deriveBackgroundTasks } from "../backgroundTasks";
 import { shouldShowThisTurnCard, ThisTurnCard } from "./ThisTurnCard";
 import ThreadTerminalDrawer from "./ThreadTerminalDrawer";
 import { deriveThreadActivityViewModel } from "../threadActivityViewModel";
@@ -1550,6 +1551,12 @@ function ChatViewContent(props: ChatViewProps) {
   const activeThread = isServerThread ? serverThread : localDraftThread;
   const agentRuns = useMemo(
     () => deriveAgentRuns(activeThread?.activities ?? []),
+    [activeThread?.activities],
+  );
+  // Not scoped to the active turn: background work outlives the turn that
+  // started it, which is the whole reason it needs its own status.
+  const backgroundTasks = useMemo(
+    () => deriveBackgroundTasks(activeThread?.activities ?? []),
     [activeThread?.activities],
   );
   const threadError = isServerThread
@@ -3399,7 +3406,8 @@ function ChatViewContent(props: ChatViewProps) {
   const thisTurnCardVisible =
     !dockedActivityOpen &&
     thisTurnCardDismissedKey !== thisTurnCardKey &&
-    (thisTurnCardForcedOpen || shouldShowThisTurnCard(activityViewModel, thisTurnAgentRuns));
+    (thisTurnCardForcedOpen ||
+      shouldShowThisTurnCard(activityViewModel, thisTurnAgentRuns, backgroundTasks));
   const openThisTurnCard = useCallback(() => {
     setThisTurnCardDismissedKey(null);
     setThisTurnCardForcedOpen(true);
@@ -6066,6 +6074,7 @@ function ChatViewContent(props: ChatViewProps) {
     ) : activeRightPanelSurface?.kind === "agents" ? (
       <AgentsPanel
         runs={agentRuns}
+        backgroundTasks={backgroundTasks}
         selectedAgentRunId={activeRightPanelSurface.selectedAgentRunId}
         onSelectAgent={openAgentsSurface}
       />
@@ -6252,6 +6261,7 @@ function ChatViewContent(props: ChatViewProps) {
                   <ThisTurnCard
                     model={activityViewModel}
                     agentRuns={thisTurnAgentRuns}
+                    backgroundTasks={backgroundTasks}
                     onDismiss={dismissThisTurnCard}
                     onOpenTurnDiff={isServerThread ? onOpenTurnDiff : undefined}
                     onOpenToolport={openToolportMcp}

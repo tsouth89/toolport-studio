@@ -179,6 +179,7 @@ const ProviderRuntimeEventType = Schema.Literals([
   "user-input.resolved",
   "task.started",
   "task.progress",
+  "task.updated",
   "task.completed",
   "agent.started",
   "agent.updated",
@@ -232,6 +233,7 @@ const UserInputRequestedType = Schema.Literal("user-input.requested");
 const UserInputResolvedType = Schema.Literal("user-input.resolved");
 const TaskStartedType = Schema.Literal("task.started");
 const TaskProgressType = Schema.Literal("task.progress");
+const TaskUpdatedType = Schema.Literal("task.updated");
 const TaskCompletedType = Schema.Literal("task.completed");
 const AgentStartedType = Schema.Literal("agent.started");
 const AgentUpdatedType = Schema.Literal("agent.updated");
@@ -468,12 +470,52 @@ const UserInputResolvedPayload = Schema.Struct({
 });
 export type UserInputResolvedPayload = typeof UserInputResolvedPayload.Type;
 
+/**
+ * Provider-neutral lifecycle state for a runtime task. Superset of
+ * TaskCompletedPayload's terminal statuses so a single roster projection can
+ * hold both in-flight and settled tasks. Providers map their own vocabulary
+ * onto this (Claude's `killed` → `stopped`).
+ */
+export const RuntimeTaskStatus = Schema.Literals([
+  "pending",
+  "running",
+  "paused",
+  "completed",
+  "failed",
+  "stopped",
+]);
+export type RuntimeTaskStatus = typeof RuntimeTaskStatus.Type;
+
 const TaskStartedPayload = Schema.Struct({
   taskId: RuntimeTaskId,
   description: Schema.optional(TrimmedNonEmptyStringSchema),
   taskType: Schema.optional(TrimmedNonEmptyStringSchema),
+  /**
+   * Ambient/housekeeping task. Clients hide these from the inline transcript;
+   * they still belong in a tasks roster.
+   */
+  skipTranscript: Schema.optional(Schema.Boolean),
 });
 export type TaskStartedPayload = typeof TaskStartedPayload.Type;
+
+/**
+ * Incremental patch to a task already announced by task.started. Carries the
+ * state that decides whether a task is still in flight — status and the
+ * backgrounded flag — so clients can hold a live roster rather than inferring
+ * one from transcript rows.
+ */
+const TaskUpdatedPayload = Schema.Struct({
+  taskId: RuntimeTaskId,
+  status: Schema.optional(RuntimeTaskStatus),
+  description: Schema.optional(TrimmedNonEmptyStringSchema),
+  taskType: Schema.optional(TrimmedNonEmptyStringSchema),
+  /** True once the task detaches from the foreground turn and runs on its own. */
+  backgrounded: Schema.optional(Schema.Boolean),
+  /** Shell command line; only present for shell-backed tasks. */
+  command: Schema.optional(TrimmedNonEmptyStringSchema),
+  error: Schema.optional(TrimmedNonEmptyStringSchema),
+});
+export type TaskUpdatedPayload = typeof TaskUpdatedPayload.Type;
 
 const TaskProgressPayload = Schema.Struct({
   taskId: RuntimeTaskId,
@@ -869,6 +911,13 @@ const ProviderRuntimeTaskProgressEvent = Schema.Struct({
 });
 export type ProviderRuntimeTaskProgressEvent = typeof ProviderRuntimeTaskProgressEvent.Type;
 
+const ProviderRuntimeTaskUpdatedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: TaskUpdatedType,
+  payload: TaskUpdatedPayload,
+});
+export type ProviderRuntimeTaskUpdatedEvent = typeof ProviderRuntimeTaskUpdatedEvent.Type;
+
 const ProviderRuntimeTaskCompletedEvent = Schema.Struct({
   ...ProviderRuntimeEventBase.fields,
   type: TaskCompletedType,
@@ -1050,6 +1099,7 @@ export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeUserInputResolvedEvent,
   ProviderRuntimeTaskStartedEvent,
   ProviderRuntimeTaskProgressEvent,
+  ProviderRuntimeTaskUpdatedEvent,
   ProviderRuntimeTaskCompletedEvent,
   ProviderRuntimeAgentStartedEvent,
   ProviderRuntimeAgentUpdatedEvent,

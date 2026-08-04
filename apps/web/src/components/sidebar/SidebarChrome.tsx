@@ -31,6 +31,7 @@ import {
   resolveSidebarChromeNavItems,
   type SidebarChromeNavId,
 } from "./SidebarChrome.logic";
+import { SidebarBackgroundTasksPill } from "./SidebarBackgroundTasksPill";
 import { SidebarProviderUpdatePill } from "./SidebarProviderUpdatePill";
 import { SidebarUpdatePill } from "./SidebarUpdatePill";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
@@ -216,6 +217,7 @@ export const SidebarChromeFooter = memo(function SidebarChromeFooter() {
 
   return (
     <SidebarFooter className="gap-1.5 border-t border-sidebar-border/60 p-2">
+      <SidebarBackgroundTasksPill />
       <SidebarProviderUpdatePill />
       <SidebarUpdatePill />
       <SidebarMenu className="gap-0.5">

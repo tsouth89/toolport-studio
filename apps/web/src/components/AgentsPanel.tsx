@@ -1,6 +1,19 @@
-import { Bot, CheckCircle2, Circle, Loader2, XCircle } from "lucide-react";
+import {
+  Bot,
+  CheckCircle2,
+  Circle,
+  Loader2,
+  PauseCircle,
+  TerminalSquare,
+  XCircle,
+} from "lucide-react";
 
 import type { AgentRun, AgentRunStatus } from "../agentRuns";
+import {
+  isBackgroundTaskInFlight,
+  type BackgroundTask,
+  type BackgroundTaskStatus,
+} from "../backgroundTasks";
 import { cn } from "../lib/utils";
 import { ScrollArea } from "./ui/scroll-area";
 
@@ -40,18 +53,109 @@ function statusLabel(status: AgentRunStatus): string {
   }
 }
 
+function TaskStatusIcon({ status }: { status: BackgroundTaskStatus }) {
+  switch (status) {
+    case "pending":
+      return <Circle className="size-3.5 text-muted-foreground" aria-hidden />;
+    case "running":
+      return <Loader2 className="size-3.5 animate-spin text-primary" aria-hidden />;
+    case "paused":
+      return <PauseCircle className="size-3.5 text-muted-foreground" aria-hidden />;
+    case "completed":
+      return <CheckCircle2 className="size-3.5 text-success" aria-hidden />;
+    case "failed":
+      return <XCircle className="size-3.5 text-destructive" aria-hidden />;
+    case "stopped":
+      return <XCircle className="size-3.5 text-muted-foreground" aria-hidden />;
+  }
+}
+
+function taskStatusLabel(task: BackgroundTask): string {
+  switch (task.status) {
+    case "pending":
+      return "Queued";
+    case "running":
+      return task.backgrounded ? "Watching" : "Running";
+    case "paused":
+      return "Paused";
+    case "completed":
+      return "Done";
+    case "failed":
+      return "Failed";
+    case "stopped":
+      return "Stopped";
+  }
+}
+
+/**
+ * Background work that outlives the turn (backgrounded shells, monitors,
+ * detached subagents). Sits above Subagents because it is the section that
+ * answers "is anything still going?" after a turn settles.
+ */
+function BackgroundTasksSection({ tasks }: { tasks: ReadonlyArray<BackgroundTask> }) {
+  const runningCount = tasks.filter(isBackgroundTaskInFlight).length;
+
+  return (
+    <div data-testid="background-tasks-section">
+      <div className="sticky top-0 z-10 flex items-center justify-between border-b border-border/45 bg-background/95 px-3 py-2 backdrop-blur">
+        <span className="text-[10px] font-semibold tracking-[0.14em] text-muted-foreground/80 uppercase">
+          Background tasks
+        </span>
+        <span className="text-[10px] tabular-nums text-muted-foreground" role="status">
+          {runningCount > 0
+            ? `${runningCount} running · ${tasks.length} total`
+            : `${tasks.length} total`}
+        </span>
+      </div>
+      <ul className="space-y-1 p-2">
+        {tasks.map((task) => (
+          <li
+            key={task.id}
+            className="flex w-full min-w-0 items-start gap-2 rounded-lg px-2 py-2 text-left"
+          >
+            <span className="mt-0.5 shrink-0">
+              <TaskStatusIcon status={task.status} />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-xs font-medium">{task.label}</span>
+              {task.command ? (
+                <span className="mt-0.5 flex min-w-0 items-center gap-1 text-[11px] text-muted-foreground">
+                  <TerminalSquare className="size-3 shrink-0" aria-hidden />
+                  <span className="truncate font-mono">{task.command}</span>
+                </span>
+              ) : null}
+              {task.error ? (
+                <span className="mt-0.5 block truncate text-[11px] text-destructive">
+                  {task.error}
+                </span>
+              ) : null}
+            </span>
+            <span className="flex shrink-0 items-center gap-1 text-[10px] text-muted-foreground">
+              {task.kind ? <span className="capitalize">{task.kind}</span> : null}
+              <span>·</span>
+              <span>{taskStatusLabel(task)}</span>
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 export function AgentsPanel(props: {
   runs: ReadonlyArray<AgentRun>;
+  backgroundTasks?: ReadonlyArray<BackgroundTask>;
   selectedAgentRunId: string | null;
   onSelectAgent: (agentRunId: string) => void;
 }) {
+  const backgroundTasks = props.backgroundTasks ?? [];
   const selected =
     props.runs.find((run) => run.id === props.selectedAgentRunId) ?? props.runs[0] ?? null;
   const activeCount = props.runs.filter(
     (run) => run.status === "pending" || run.status === "running",
   ).length;
 
-  if (props.runs.length === 0) {
+  if (props.runs.length === 0 && backgroundTasks.length === 0) {
     return (
       <div
         className="flex min-h-0 flex-1 items-center justify-center p-6"
@@ -59,11 +163,24 @@ export function AgentsPanel(props: {
       >
         <div className="max-w-xs text-center">
           <Bot className="mx-auto size-7 text-muted-foreground/65" aria-hidden />
-          <h3 className="mt-3 text-sm font-medium text-foreground">No subagents yet</h3>
+          <h3 className="mt-3 text-sm font-medium text-foreground">Nothing running</h3>
           <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-            Native provider subagents will appear here with their live status and recent work.
+            Subagents and background tasks — watched commands, monitors, detached work — appear here
+            with their live status.
           </p>
         </div>
+      </div>
+    );
+  }
+
+  // Tasks without subagents: the roster is the whole panel, so give it the
+  // full height instead of squeezing it above an empty Subagents list.
+  if (props.runs.length === 0) {
+    return (
+      <div className="flex min-h-0 flex-1 flex-col" data-testid="agents-panel">
+        <ScrollArea className="min-h-0 flex-1">
+          <BackgroundTasksSection tasks={backgroundTasks} />
+        </ScrollArea>
       </div>
     );
   }
@@ -74,6 +191,7 @@ export function AgentsPanel(props: {
       data-testid="agents-panel"
     >
       <ScrollArea className="min-h-0 border-b border-border/60">
+        {backgroundTasks.length > 0 ? <BackgroundTasksSection tasks={backgroundTasks} /> : null}
         <div className="sticky top-0 z-10 flex items-center justify-between border-b border-border/45 bg-background/95 px-3 py-2 backdrop-blur">
           <span className="text-[10px] font-semibold tracking-[0.14em] text-muted-foreground/80 uppercase">
             Subagents
