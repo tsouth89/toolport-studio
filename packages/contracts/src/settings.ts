@@ -341,13 +341,21 @@ export const GrokSettings = makeProviderSettingsSchema(
         providerSettingsForm: { placeholder: "grok", clearWhenEmpty: "omit" },
       }),
     ),
+    homePath: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "Home directory",
+        description: "Custom Grok home directory (GROK_HOME). Leave empty for default.",
+        providerSettingsForm: { placeholder: "~/.grok", clearWhenEmpty: "omit" },
+      }),
+    ),
     customModels: Schema.Array(Schema.String).pipe(
       Schema.withDecodingDefault(Effect.succeed([])),
       Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
     ),
   },
   {
-    order: ["binaryPath"],
+    order: ["binaryPath", "homePath"],
   },
 );
 export type GrokSettings = typeof GrokSettings.Type;

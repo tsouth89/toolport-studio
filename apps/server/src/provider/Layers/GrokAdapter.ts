@@ -2618,20 +2618,24 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 isSteering: steeringTurnId !== undefined,
               };
             }).pipe(
-              Effect.tapCause((cause) =>
+              Effect.tapCause(() =>
                 Effect.gen(function* () {
                   const liveCtx = sessions.get(input.threadId);
                   if (!liveCtx) {
                     return;
                   }
-                  // Only settle when prep bound a turn id (ready path / after turnId set).
                   const failedTurnId = liveCtx.activeTurnId ?? liveCtx.session.activeTurnId;
                   if (!failedTurnId) {
                     return;
                   }
-                  void cause;
-                  // turn.started already fired above — always emit terminal
-                  // completion so Working cannot stick after prep failure.
+                  yield* offerRuntimeEvent({
+                    type: "turn.aborted",
+                    ...(yield* makeEventStamp()),
+                    provider: PROVIDER,
+                    threadId: input.threadId,
+                    turnId: failedTurnId,
+                    payload: { reason: "Grok prompt preparation failed." },
+                  });
                   yield* settlePromptInFlight(input.threadId, failedTurnId, liveCtx.acpSessionId, {
                     errorMessage: "Grok prompt preparation failed.",
                     emitTurnCompletion: true,

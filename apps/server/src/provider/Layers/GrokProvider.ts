@@ -37,6 +37,7 @@ import {
   enrichProviderSnapshotWithVersionAdvisory,
   type ProviderMaintenanceCapabilities,
 } from "../providerMaintenance.ts";
+import { compareSemverVersions } from "@toolport-studio/shared/semver";
 import { makeGrokAcpRuntime, resolveGrokAcpBaseModelId } from "../acp/GrokAcpSupport.ts";
 import { readGrokAccount, type GrokAccount } from "../Drivers/GrokAccount.ts";
 
@@ -46,6 +47,9 @@ const GROK_PRESENTATION = {
   showInteractionModeToggle: false,
   requiresNewThreadForModelChange: true,
 } as const;
+
+/** Minimum Grok CLI version that supports the ACP features Toolport relies on. */
+const MINIMUM_GROK_VERSION = "0.2.112";
 
 /**
  * Grok agent reports live fill via `_meta.totalTokens` but not window size.
@@ -393,6 +397,27 @@ export const checkGrokProviderStatus = Effect.fn("checkGrokProviderStatus")(func
 
   const versionOutput = versionResult.success.value;
   const version = parseGenericCliVersion(`${versionOutput.stdout}\n${versionOutput.stderr}`);
+
+  // Version gate: a too-old CLI will pass the --version probe but lack ACP
+  // features Toolport relies on (concurrent prompt, turn_completed fallback).
+  // Block the probe here so users get a clear upgrade message before model
+  // discovery even runs.
+  if (version && compareSemverVersions(version, MINIMUM_GROK_VERSION) < 0) {
+    return buildServerProvider({
+      presentation: GROK_PRESENTATION,
+      enabled: grokSettings.enabled,
+      checkedAt,
+      models: fallbackModels,
+      probe: {
+        installed: true,
+        version,
+        status: "error",
+        auth: { status: "unknown" },
+        message: `Grok v${version} is too old. Upgrade to v${MINIMUM_GROK_VERSION} or newer via \`grok update\`.`,
+      },
+    });
+  }
+
   if (versionOutput.code !== 0) {
     yield* Effect.logWarning("Grok CLI version probe exited with a non-zero status.", {
       exitCode: versionOutput.code,
