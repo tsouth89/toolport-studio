@@ -1909,7 +1909,10 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             yield* markAcpCompromised(ctx, "notification stream ended");
           }),
         ),
-        Effect.forkChild,
+        // Fork into the session scope, not the caller's fiber. `forkChild`
+        // (the Cursor/Codex bug pattern) interrupted the consumer as soon as
+        // startSession returned, killing every later session/update frame.
+        Effect.forkIn(ctx.scope),
       );
     };
 
@@ -2865,10 +2868,14 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 });
               }
               if (prepared.usesContextRehydration) {
-                // Keep the replay armed until the ACP prompt actually returns.
-                // Preparation can fail or be interrupted before the blank
-                // replacement session receives any Studio history.
-                ctx.needsContextRehydration = false;
+                // Keep the replay armed until the ACP prompt actually returns
+                // with a non-cancelled result. Preparation can fail or be
+                // interrupted before the blank replacement session receives
+                // any Studio history, and a Stop-cancelled prompt never
+                // delivered the rehydration prefix.
+                if (result.stopReason !== "cancelled") {
+                  ctx.needsContextRehydration = false;
+                }
               }
               // Keep prompt settlement atomic with respect to Stop and steering.
               // interruptTurn marks its target before waiting for this lock, so
