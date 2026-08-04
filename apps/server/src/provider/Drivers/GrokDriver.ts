@@ -28,7 +28,7 @@ import {
 import type { ServerProviderDraft } from "../providerSnapshot.ts";
 import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
 import {
-  makeManualOnlyProviderMaintenanceCapabilities,
+  makeProviderMaintenanceCapabilities,
   makeStaticProviderMaintenanceResolver,
   resolveProviderMaintenanceCapabilitiesEffect,
 } from "../providerMaintenance.ts";
@@ -42,9 +42,12 @@ const decodeGrokSettings = Schema.decodeSync(GrokSettings);
 const DRIVER_KIND = ProviderDriverKind.make("grok");
 const SNAPSHOT_REFRESH_INTERVAL = Duration.minutes(5);
 const UPDATE = makeStaticProviderMaintenanceResolver(
-  makeManualOnlyProviderMaintenanceCapabilities({
+  makeProviderMaintenanceCapabilities({
     provider: DRIVER_KIND,
     packageName: null,
+    updateExecutable: "grok",
+    updateArgs: ["update"],
+    updateLockKey: "grok",
   }),
 );
 

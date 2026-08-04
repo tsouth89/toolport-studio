@@ -1378,19 +1378,20 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         }
         const notificationFiber = ctx.notificationFiber;
         const scope = ctx.scope;
-        // Invalidate in-flight notification finalizers before clearing the fiber
-        // so a late ensuring cannot stomp a recycled consumer.
         ctx.notificationGeneration += 1;
         ctx.notificationFiber = undefined;
         ctx.acpDisposed = true;
         if (notificationFiber) {
-          // Never block teardown on a stuck notification consumer. Scope
-          // finalizers can be uninterruptible, so fork rather than timeout.
           yield* Fiber.interrupt(notificationFiber).pipe(Effect.ignore, Effect.forkChild);
         }
-        // Fire-and-forget process teardown. Waiting on Scope.close can hang
-        // forever when the ACP child is wedged (uninterruptible finalizers).
-        yield* Effect.ignore(Scope.close(scope, Exit.void)).pipe(Effect.forkChild);
+        // Scope close can hang on uninterruptible child-process finalizers
+        // (e.g. a wedged ACP agent that never exits). Fork the close with a
+        // 5s timeout so we never block teardown. If the timeout wins the child
+        // is left orphaned, but the next sendTurn will recycle via a fresh
+        // spawn anyway.
+        yield* Effect.ignore(Scope.close(scope, Exit.void).pipe(Effect.timeout(5000))).pipe(
+          Effect.forkChild,
+        );
       });
 
     const stopSessionInternal = (ctx: GrokSessionContext) =>
