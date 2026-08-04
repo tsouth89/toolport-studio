@@ -3289,7 +3289,10 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             Effect.mapError((error) =>
               mapAcpToAdapterError(PROVIDER, threadId, "session/cancel", error),
             ),
-            Effect.timeout("2 seconds"),
+            // Match the cancel grace window (1.5s) + process disposal (5s)
+            // so the user-facing stop resolves promptly even when the child
+            // is wedged and the notification has to time out.
+            Effect.timeout("5 seconds"),
             Effect.ignore,
           );
           // Always recycle after Stop. Cooperative cancel is not trustworthy:
