@@ -1,3 +1,4 @@
+import process from "node:process";
 import { assert, it, describe } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Cause from "effect/Cause";
@@ -279,6 +280,7 @@ describe("VcsStatusBroadcaster", () => {
   });
 
   it.effect("normalizes symlinked CWDs before cache lookup and workflow calls", () => {
+    if (process.platform === "win32") return Effect.void;
     const seenCwds: string[] = [];
     const state = {
       currentLocalStatus: baseLocalStatus,

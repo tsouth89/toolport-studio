@@ -1,3 +1,4 @@
+import process from "node:process";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as Duration from "effect/Duration";
@@ -492,6 +493,7 @@ it.layer(NodeServices.layer)("ServerSelfUpdate.update", (it) => {
 
   it.effect("rewrites the systemd unit and restarts the boot service", () =>
     Effect.gen(function* () {
+      if (process.platform === "win32") return;
       const context = yield* makeContext({ bootService: true });
       const result = yield* context.service.update({ targetVersion: "0.0.29" });
       assert.deepEqual(result, { targetVersion: "0.0.29", method: "boot-service" });

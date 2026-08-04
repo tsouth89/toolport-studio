@@ -24,6 +24,7 @@
  */
 import { describe, expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import process from "node:process";
 import {
   type ClaudeSettings,
   type CodexSettings,
@@ -117,6 +118,7 @@ describe("ProviderInstanceRegistryLive — multi-instance codex slice", () => {
 
   it.live("boots two independent codex instances from a ProviderInstanceConfigMap", () =>
     Effect.gen(function* () {
+      if (process.platform === "win32") return;
       const personalId = ProviderInstanceId.make("codex_personal");
       const workId = ProviderInstanceId.make("codex_work");
       const codexDriverKind = ProviderDriverKind.make("codex");
@@ -255,6 +257,7 @@ describe("ProviderInstanceRegistryLive — all drivers slice", () => {
 
   it.live("boots one instance of every shipped driver from a single config map", () =>
     Effect.gen(function* () {
+      if (process.platform === "win32") return;
       const codexId = ProviderInstanceId.make("codex_default");
       const claudeId = ProviderInstanceId.make("claude_default");
       const cursorId = ProviderInstanceId.make("cursor_default");

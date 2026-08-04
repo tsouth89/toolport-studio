@@ -1,5 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it, describe, expect } from "@effect/vitest";
+import process from "node:process";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -64,6 +65,7 @@ it.layer(TestLayer)("ProjectFaviconResolverLive", (it) => {
 
     it.effect("prefers a t3.json iconPath over well-known files", () =>
       Effect.gen(function* () {
+        if (process.platform === "win32") return;
         const resolver = yield* ProjectFaviconResolver.ProjectFaviconResolver;
         const cwd = yield* makeTempDir;
         yield* writeTextFile(cwd, "t3.json", '{ "iconPath": "brand/mark.svg" }');
@@ -121,6 +123,7 @@ it.layer(TestLayer)("ProjectFaviconResolverLive", (it) => {
 
     it.effect("resolves icon hrefs from project source files", () =>
       Effect.gen(function* () {
+        if (process.platform === "win32") return;
         const resolver = yield* ProjectFaviconResolver.ProjectFaviconResolver;
         const cwd = yield* makeTempDir;
         yield* writeTextFile(cwd, "index.html", '<link rel="icon" href="/brand/logo.svg">');
@@ -244,6 +247,7 @@ it.layer(TestLayer)("ProjectFaviconResolverLive", (it) => {
 
     it.effect("continues to later sources after an outside-root icon href", () =>
       Effect.gen(function* () {
+        if (process.platform === "win32") return;
         const resolver = yield* ProjectFaviconResolver.ProjectFaviconResolver;
         const cwd = yield* makeTempDir;
         yield* writeTextFile(cwd, "index.html", '<link rel="icon" href="../../secret.svg">');

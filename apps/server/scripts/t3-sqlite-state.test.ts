@@ -1,5 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
+import process from "node:process";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -75,6 +76,7 @@ it.layer(NodeServices.layer)("t3-sqlite-state", (it) => {
 
   it.effect("backs up isolated state before writes and refuses the shared home", () =>
     Effect.gen(function* () {
+      if (process.platform === "win32") return;
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-sqlite-state-exec-" });

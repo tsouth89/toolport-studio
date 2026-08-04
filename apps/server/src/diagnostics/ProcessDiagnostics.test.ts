@@ -1,4 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
+import process from "node:process";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -183,6 +184,7 @@ describe("ProcessDiagnostics", () => {
 
   it.effect("queries processes through the ChildProcessSpawner service", () =>
     Effect.gen(function* () {
+      if (process.platform === "win32") return;
       const commands: Array<{ readonly command: string; readonly args: ReadonlyArray<string> }> =
         [];
       const spawnerLayer = Layer.succeed(

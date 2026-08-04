@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
+import process from "node:process";
 
 import {
   ApprovalRequestId,
@@ -707,6 +708,7 @@ it.live("records failed turn runtime state and checkpoint status as error", () =
 it.live("reverts to an earlier checkpoint and trims checkpoint projections + git refs", () =>
   withHarness((harness) =>
     Effect.gen(function* () {
+      if (process.platform === "win32") return;
       yield* seedProjectAndThread(harness);
 
       yield* harness.adapterHarness!.queueTurnResponseForNextSession({

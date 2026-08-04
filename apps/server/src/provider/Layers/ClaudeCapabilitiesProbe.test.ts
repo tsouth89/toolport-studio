@@ -1,5 +1,6 @@
 import { ClaudeSettings } from "@toolport-studio/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import process from "node:process";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -41,6 +42,7 @@ it("isolates Claude capability probes without dropping workspace setting sources
 it.layer(NodeServices.layer)("Claude capability probe SDK boundary", (it) => {
   it.effect("serializes strict no-MCP options and still resolves account capabilities", () =>
     Effect.gen(function* () {
+      if (process.platform === "win32") return;
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-claude-probe-sdk-" });

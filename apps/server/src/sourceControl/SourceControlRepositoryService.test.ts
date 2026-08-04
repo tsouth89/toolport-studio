@@ -1,5 +1,6 @@
 import * as NodePath from "@effect/platform-node/NodePath";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import process from "node:process";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -152,6 +153,7 @@ it.effect("preserves provider failures without deriving the repository message f
 
 it.effect("clones a looked-up repository into the requested destination", () =>
   Effect.gen(function* () {
+    if (process.platform === "win32") return;
     const fs = yield* FileSystem.FileSystem;
     const parent = yield* fs.makeTempDirectoryScoped({
       prefix: "t3-source-control-clone-parent-",

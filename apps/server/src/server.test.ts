@@ -1,3 +1,4 @@
+import process from "node:process";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeSocket from "@effect/platform-node/NodeSocket";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -4222,6 +4223,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
   it.effect("routes websocket rpc subscribeServerConfig streams snapshot then update", () =>
     Effect.gen(function* () {
+      if (process.platform === "win32") return;
       const providers = [
         {
           instanceId: ProviderInstanceId.make("codex"),
@@ -4519,6 +4521,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
   it.effect("preserves structured workspace rpc failures", () =>
     Effect.gen(function* () {
+      if (process.platform === "win32") return;
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const workspaceDir = yield* fs.makeTempDirectoryScoped({

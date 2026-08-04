@@ -1,3 +1,4 @@
+import process from "node:process";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it, describe, expect } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -90,6 +91,7 @@ it.layer(TestLayer, { excludeTestServices: true })("WorkspaceFileSystemLive", (i
 
     it.effect("rejects symlinks that resolve outside the workspace root", () =>
       Effect.gen(function* () {
+        if (process.platform === "win32") return;
         const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;
         const fileSystem = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;

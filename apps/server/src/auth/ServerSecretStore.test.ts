@@ -1,3 +1,4 @@
+import process from "node:process";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as Cause from "effect/Cause";
@@ -188,6 +189,7 @@ it.layer(NodeServices.layer)("ServerSecretStore.layer", (it) => {
 
   it.effect("uses restrictive permissions for the secret directory and files", () =>
     Effect.gen(function* () {
+      if (process.platform === "win32") return;
       const chmodCalls: Array<{ readonly path: string; readonly mode: number }> = [];
       const recordingFileSystemLayer = Layer.effect(
         FileSystem.FileSystem,

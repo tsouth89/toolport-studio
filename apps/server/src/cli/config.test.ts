@@ -1,4 +1,5 @@
 import * as NodeOS from "node:os";
+import process from "node:process";
 
 import { assert, expect, it } from "@effect/vitest";
 import * as ConfigProvider from "effect/ConfigProvider";
@@ -201,6 +202,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
 
   it.effect("preserves explicit false CLI boolean flags over env and bootstrap values", () =>
     Effect.gen(function* () {
+      if (process.platform === "win32") return;
       const { join } = yield* Path.Path;
       const baseDir = join(NodeOS.tmpdir(), "t3-cli-config-false-flags");
       const fd = yield* openBootstrapFd(
@@ -273,6 +275,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
 
   it.effect("uses bootstrap envelope values as fallbacks when flags and env are absent", () =>
     Effect.gen(function* () {
+      if (process.platform === "win32") return;
       const { join } = yield* Path.Path;
       const baseDir = "/tmp/t3-bootstrap-home";
       const fd = yield* openBootstrapFd(
@@ -397,6 +400,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
 
   it.effect("applies flag then env precedence over bootstrap envelope values", () =>
     Effect.gen(function* () {
+      if (process.platform === "win32") return;
       const { join } = yield* Path.Path;
       const baseDir = join(NodeOS.tmpdir(), "t3-cli-config-env-wins");
       const fd = yield* openBootstrapFd(

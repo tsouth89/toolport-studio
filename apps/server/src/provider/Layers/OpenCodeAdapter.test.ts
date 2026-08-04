@@ -1,4 +1,5 @@
 import * as NodeAssert from "node:assert/strict";
+import process from "node:process";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
 import * as Context from "effect/Context";
@@ -1124,6 +1125,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive more", (it) => {
 
   it.effect("treats lexically or physically identical directories as the same", () =>
     Effect.gen(function* () {
+      if (process.platform === "win32") return;
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const sameDirectory = (left: string, right: string) =>

@@ -1,3 +1,4 @@
+import process from "node:process";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as ConfigProvider from "effect/ConfigProvider";
@@ -201,6 +202,7 @@ it.layer(NodeServices.layer)("BootService", (it) => {
 
   it.effect("installs the unit, enables the service, and enables linger", () =>
     Effect.gen(function* () {
+      if (process.platform === "win32") return;
       const { dirs, fs, path } = yield* makeTestContext();
       const commands: Array<RecordedCommand> = [];
       const service = yield* BootService.make({

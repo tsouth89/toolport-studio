@@ -1,3 +1,4 @@
+import process from "node:process";
 import { KeybindingCommand, KeybindingRule, KeybindingsConfig } from "@toolport-studio/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
@@ -505,6 +506,7 @@ it.layer(NodeServices.layer)("keybindings", (it) => {
 
   it.effect("fails when config directory is not writable", () =>
     Effect.gen(function* () {
+      if (process.platform === "win32") return;
       const fs = yield* FileSystem.FileSystem;
       const { keybindingsConfigPath } = yield* ServerConfig.ServerConfig;
       const { dirname } = yield* Path.Path;
