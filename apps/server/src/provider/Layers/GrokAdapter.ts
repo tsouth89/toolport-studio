@@ -3228,6 +3228,20 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         if (observed._tag === "Ignore") {
           return;
         }
+        const { interruptedTurnId } = observed;
+
+        // Abort xAI pending completions BEFORE taking the lock. Grok's
+        // turn_completed xAI notification can arrive asynchronously and
+        // resolve a pending Deferred after settlePromptInFlight emits
+        // turn.completed(cancelled) but before ctx.acp.cancel →
+        // abortPendingPromptCompletions runs. That race delivers the
+        // Grok result even though the user already stopped the turn.
+        // Resolving the Deferreds now closes that window before we
+        // touch the lock or settle anything.
+        const ctx = sessions.get(threadId);
+        if (ctx) {
+          yield* ctx.acp.cancel.pipe(Effect.timeout("1 second"), Effect.ignore);
+        }
 
         const cancelTarget = yield* withThreadLock(
           threadId,
