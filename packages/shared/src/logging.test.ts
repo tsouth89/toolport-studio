@@ -69,16 +69,26 @@ describe("RotatingFileSink", () => {
     expect((thrown as RotatingFileSinkError).cause).toBeInstanceOf(Error);
   });
 
-  it("only treats a missing log file as an empty current size", () => {
-    const directory = makeTempDirectory();
-    const filePath = NodePath.join(directory, "a".repeat(300));
+  // Provoking a non-ENOENT `stat` failure needs a platform-specific trick. On POSIX an
+  // over-long filename gives ENAMETOOLONG; Windows collapses every malformed path we tried
+  // (over-long, reserved names, invalid characters, a file used as a parent) to ENOENT, which is
+  // the branch this test is trying to avoid. The code under test is platform-agnostic, so it stays
+  // covered by the POSIX runs.
+  it.skipIf(NodeOS.platform() === "win32")(
+    "only treats a missing log file as an empty current size",
+    () => {
+      const directory = makeTempDirectory();
+      const filePath = NodePath.join(directory, "a".repeat(300));
 
-    const thrown = captureError(() => new RotatingFileSink({ filePath, maxBytes: 1, maxFiles: 1 }));
+      const thrown = captureError(
+        () => new RotatingFileSink({ filePath, maxBytes: 1, maxFiles: 1 }),
+      );
 
-    expect(thrown).toBeInstanceOf(RotatingFileSinkError);
-    expect(thrown).toMatchObject({ operation: "read", filePath });
-    expect((thrown as RotatingFileSinkError).cause).toMatchObject({ code: "ENAMETOOLONG" });
-  });
+      expect(thrown).toBeInstanceOf(RotatingFileSinkError);
+      expect(thrown).toMatchObject({ operation: "read", filePath });
+      expect((thrown as RotatingFileSinkError).cause).toMatchObject({ code: "ENAMETOOLONG" });
+    },
+  );
 
   it("starts an absent log file at zero bytes", () => {
     const directory = makeTempDirectory();
