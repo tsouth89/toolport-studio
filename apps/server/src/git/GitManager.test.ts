@@ -602,6 +602,22 @@ function createGitHubCliWithFakeGh(scenario: FakeGhScenario = {}): {
   };
 }
 
+/**
+ * Budget for the cases that drive a full stacked action against real git.
+ *
+ * These spin up a repo, a bare remote, a push, and then a commit/push/PR flow,
+ * which is dozens of real `git` subprocesses. Process spawning on Windows costs
+ * roughly an order of magnitude more than on Linux, so the hand-tuned 12s and
+ * 20s budgets these carried were effectively Linux-only: measured alone on
+ * Windows, the cheapest of them already needed ~17s of a 20s budget, and the
+ * 12s ones could not finish at all.
+ *
+ * As with any test timeout, this bounds a hang rather than describing an
+ * expected duration, so it is set with enough headroom to survive a loaded
+ * machine. It does not slow down a passing run on any platform.
+ */
+const GIT_STACKED_ACTION_TEST_TIMEOUT_MS = 60_000;
+
 function runStackedAction(
   manager: GitManager.GitManager["Service"],
   input: {
@@ -1077,7 +1093,7 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
           "pr list --head jasonLaster:statemachine --state all --limit 20 --json number,title,url,baseRefName,headRefName,state,mergedAt,updatedAt,isCrossRepository,headRepository,headRepositoryOwner",
         );
       }),
-    20_000,
+    GIT_STACKED_ACTION_TEST_TIMEOUT_MS,
   );
 
   it.effect(
@@ -1193,7 +1209,7 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
           ),
         ).toBe(false);
       }),
-    20_000,
+    GIT_STACKED_ACTION_TEST_TIMEOUT_MS,
   );
 
   it.effect("status returns merged PR state when latest PR was merged", () =>
@@ -2169,7 +2185,7 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
         ).toBe(true);
         expect(ghCalls.some((call) => call.startsWith("pr create "))).toBe(false);
       }),
-    12_000,
+    GIT_STACKED_ACTION_TEST_TIMEOUT_MS,
   );
 
   it.effect(
@@ -2269,7 +2285,7 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
           false,
         );
       }),
-    20_000,
+    GIT_STACKED_ACTION_TEST_TIMEOUT_MS,
   );
 
   it.effect(
@@ -2344,7 +2360,7 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
         expect(ownerSelectorCallIndex).toBeGreaterThanOrEqual(0);
         expect(ghCalls.some((call) => call.startsWith("pr create "))).toBe(false);
       }),
-    12_000,
+    GIT_STACKED_ACTION_TEST_TIMEOUT_MS,
   );
 
   it.effect(
@@ -2411,7 +2427,7 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
           "pr list --head octocat:statemachine --state open --limit 1",
         );
       }),
-    12_000,
+    GIT_STACKED_ACTION_TEST_TIMEOUT_MS,
   );
 
   it.effect(
@@ -2452,7 +2468,7 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
         expect(result.pr.number).toBe(142);
         expect(ghCalls.some((call) => call.startsWith("pr create "))).toBe(true);
       }),
-    20_000,
+    GIT_STACKED_ACTION_TEST_TIMEOUT_MS,
   );
 
   it.effect("rejects same-repo PR metadata when matching a cross-repo head context", () =>
