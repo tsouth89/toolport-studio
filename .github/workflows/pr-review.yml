@@ -13,7 +13,7 @@ name: PR review
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, ready_for_review]
 
 # A second push reviews the new head, not race the old one.
 concurrency:
@@ -30,9 +30,16 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     timeout-minutes: 20
-    # Fork pull requests do not get repository secrets, so the model call
-    # would fail with a confusing auth error rather than an obvious skip.
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    # Fork PRs do not get repository secrets, and Dependabot-triggered runs get
+    # the Dependabot secret store rather than the repository one, so in both
+    # cases the model call would fail with a confusing auth error rather than
+    # an obvious skip. Drafts are skipped because reviewing code the author has
+    # already declared unfinished spends findings on known-incomplete work; the
+    # ready_for_review trigger picks the PR up the moment that changes.
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.actor != 'dependabot[bot]' &&
+      github.event.pull_request.draft == false
     steps:
       - name: Checkout
         uses: actions/checkout@v6
