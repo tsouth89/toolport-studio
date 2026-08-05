@@ -418,6 +418,9 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.sidebarThreadPreviewCount !== DEFAULT_UNIFIED_SETTINGS.sidebarThreadPreviewCount
         ? ["Visible threads"]
         : []),
+      ...(settings.sidebarGroupingAxis !== DEFAULT_UNIFIED_SETTINGS.sidebarGroupingAxis
+        ? ["Sidebar organization"]
+        : []),
       ...(settings.sidebarProjectGroupingMode !==
       DEFAULT_UNIFIED_SETTINGS.sidebarProjectGroupingMode
         ? ["Project Grouping"]
@@ -476,6 +479,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.enableAssistantStreaming,
       settings.enableProviderUpdateChecks,
       settings.injectToolportMcpInProviderSessions,
+      settings.sidebarGroupingAxis,
       settings.sidebarProjectGroupingMode,
       settings.sidebarThreadPreviewCount,
       settings.timestampFormat,
@@ -501,6 +505,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       diffIgnoreWhitespace: DEFAULT_UNIFIED_SETTINGS.diffIgnoreWhitespace,
       glassOpacity: DEFAULT_UNIFIED_SETTINGS.glassOpacity,
       sidebarThreadPreviewCount: DEFAULT_UNIFIED_SETTINGS.sidebarThreadPreviewCount,
+      sidebarGroupingAxis: DEFAULT_UNIFIED_SETTINGS.sidebarGroupingAxis,
       sidebarProjectGroupingMode: DEFAULT_UNIFIED_SETTINGS.sidebarProjectGroupingMode,
       autoOpenPlanSidebar: DEFAULT_UNIFIED_SETTINGS.autoOpenPlanSidebar,
       enableAssistantStreaming: DEFAULT_UNIFIED_SETTINGS.enableAssistantStreaming,
@@ -649,6 +654,32 @@ export function GeneralSettingsPanel() {
                 value={settings.glassOpacity}
               />
             </div>
+          }
+        />
+
+        <SettingsRow
+          title="Organize sidebar by project"
+          description="Off, sessions are organized only by folder and a session's repository shows as a mark on its row. On, each repository is also a shelf."
+          resetAction={
+            settings.sidebarGroupingAxis !== DEFAULT_UNIFIED_SETTINGS.sidebarGroupingAxis ? (
+              <SettingResetButton
+                label="sidebar organization"
+                onClick={() =>
+                  updateSettings({
+                    sidebarGroupingAxis: DEFAULT_UNIFIED_SETTINGS.sidebarGroupingAxis,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.sidebarGroupingAxis === "projects"}
+              onCheckedChange={(checked) => {
+                updateSettings({ sidebarGroupingAxis: checked ? "projects" : "folders" });
+              }}
+              aria-label="Organize sidebar by project"
+            />
           }
         />
 

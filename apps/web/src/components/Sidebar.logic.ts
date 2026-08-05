@@ -2,6 +2,7 @@ import * as React from "react";
 import type { ContextMenuItem } from "@toolport-studio/contracts";
 import { resolveThreadSidebarPlacementProjectId } from "@toolport-studio/contracts";
 import type {
+  SidebarGroupingAxis,
   SidebarProjectSortOrder,
   SidebarThreadSortOrder,
 } from "@toolport-studio/contracts/settings";
@@ -829,15 +830,31 @@ export function isThreadAlreadyOnSidebarShelf(input: {
 }
 
 /**
+ * How the sidebar is organized.
+ *
+ * `folders` is the product default and the simpler model: folders are the only
+ * shelves, and a workspace is an attribute of a session rather than a place it
+ * lives. `projects` keeps the older behavior where each workspace is also a
+ * shelf, for people who organize strictly by repo.
+ *
+ * These are deliberately a *view mode* rather than two structures on screen at
+ * once. When both were rendered, dragging a session had two meanings that
+ * looked identical: dropping on a folder filed it, while dropping on a project
+ * shelf silently cleared its folder, because only `sidebarGroupId` is ever
+ * written. One gesture, one meaning is the whole point of the split.
+ */
+export type SidebarGroupingMode = SidebarGroupingAxis;
+
+/**
  * Bucket active threads onto sidebar shelves: free-form folders first, then
- * legacy project shelves, then Ungrouped.
+ * project shelves when the mode asks for them, then the catch-all.
  *
  * Placement comes from {@link resolveThreadSidebarPlacementProjectId} — the
  * workspace `projectId` never decides where a row appears. A placement id that
  * matches no known folder or project (an orphan, e.g. a folder deleted by
- * another client) falls back to Ungrouped so a session is never invisible.
- * Folder and real project shelves are kept even when empty so they stay drop
- * targets; Ungrouped is always emitted and the view hides it when it is empty.
+ * another client) falls back to the catch-all so a session is never invisible.
+ * Shelves are kept even when empty so they stay drop targets; the catch-all is
+ * always emitted and the view hides it when it is empty.
  */
 export function buildActiveSidebarShelfPanels<
   TThread extends {
@@ -869,7 +886,14 @@ export function buildActiveSidebarShelfPanels<
   readonly expandedShelfKeys: ReadonlySet<string>;
   readonly previewLimit: number;
   readonly pinnedShelfKeys?: readonly string[];
+  readonly groupingMode?: SidebarGroupingMode;
 }): ActiveSidebarShelfPanel<TThread>[] {
+  const groupingMode = input.groupingMode ?? "folders";
+  // In folders mode a workspace is not a shelf, so the project groups are
+  // simply not in play: sessions that only have a workspace land in the
+  // catch-all, and no project drop target is ever rendered to be confused
+  // with a folder.
+  const projectGroups = groupingMode === "folders" ? [] : input.projectGroups;
   const folderShelfKeyByRef = new Map<string, string>();
   for (const folder of input.sidebarFolders) {
     folderShelfKeyByRef.set(
@@ -883,7 +907,7 @@ export function buildActiveSidebarShelfPanels<
   // real shelf: fold their members into Ungrouped so the soft-killed General
   // project stays invisible while it still backs projectless cwd.
   const ungroupedProjectKeys = new Set<string>();
-  for (const group of input.projectGroups) {
+  for (const group of projectGroups) {
     if (group.isNoProject === true) {
       ungroupedProjectKeys.add(group.projectKey);
     }
@@ -932,7 +956,7 @@ export function buildActiveSidebarShelfPanels<
       folderRef,
     };
   });
-  const projectShelves = input.projectGroups.flatMap((group) =>
+  const projectShelves = projectGroups.flatMap((group) =>
     ungroupedProjectKeys.has(group.projectKey)
       ? []
       : [
@@ -956,7 +980,9 @@ export function buildActiveSidebarShelfPanels<
     {
       shelfKey: UNGROUPED_SIDEBAR_SHELF_KEY,
       kind: "ungrouped" as const,
-      displayName: "Ungrouped",
+      // "Unfiled" reads as a state you can fix by filing it. "Ungrouped"
+      // only makes sense next to project groups, which folders mode has none of.
+      displayName: groupingMode === "folders" ? "Unfiled" : "Ungrouped",
       projectKey: null,
       folderRef: null,
     },

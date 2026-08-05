@@ -38,6 +38,7 @@ describe("buildActiveSidebarShelfPanels", () => {
     }));
 
     const panels = buildActiveSidebarShelfPanels({
+      groupingMode: "projects",
       sidebarFolders: [],
       projectGroups: [projectShelf("toolport", "proj-toolport", "toolport-studio")],
       activeThreads,
@@ -58,6 +59,7 @@ describe("buildActiveSidebarShelfPanels", () => {
 
   it("emits folder shelves even when empty, and Ungrouped last", () => {
     const panels = buildActiveSidebarShelfPanels({
+      groupingMode: "projects",
       sidebarFolders: [{ environmentId: env, id: "folder-1", title: "Research" }],
       projectGroups: [projectShelf("empty-shelf", "proj-empty", "Empty shelf")],
       activeThreads: [],
@@ -79,6 +81,7 @@ describe("buildActiveSidebarShelfPanels", () => {
 
   it("files a thread under the folder its sidebarGroupId names", () => {
     const panels = buildActiveSidebarShelfPanels({
+      groupingMode: "projects",
       sidebarFolders: [{ environmentId: env, id: "folder-1", title: "Research" }],
       projectGroups: [projectShelf("alpha", "proj-a")],
       activeThreads: [
@@ -102,6 +105,7 @@ describe("buildActiveSidebarShelfPanels", () => {
   it("keeps a folder id scoped to its environment", () => {
     const otherEnv = EnvironmentId.make("env-2");
     const panels = buildActiveSidebarShelfPanels({
+      groupingMode: "projects",
       sidebarFolders: [{ environmentId: env, id: "folder-1", title: "Research" }],
       projectGroups: [projectShelf("alpha", "proj-a")],
       activeThreads: [
@@ -126,6 +130,7 @@ describe("buildActiveSidebarShelfPanels", () => {
 
   it("folds null placement, General members, and orphans into Ungrouped", () => {
     const panels = buildActiveSidebarShelfPanels({
+      groupingMode: "projects",
       sidebarFolders: [],
       projectGroups: [projectShelf("alpha", "proj-a"), generalShelf],
       activeThreads: [
@@ -173,6 +178,7 @@ describe("buildActiveSidebarShelfPanels", () => {
 
   it("buckets by sidebarGroupId independent of workspace projectId", () => {
     const panels = buildActiveSidebarShelfPanels({
+      groupingMode: "projects",
       sidebarFolders: [],
       projectGroups: [projectShelf("alpha", "proj-a"), projectShelf("beta", "proj-b")],
       activeThreads: [
@@ -195,6 +201,7 @@ describe("buildActiveSidebarShelfPanels", () => {
 
   it("floats pinned shelves to the top but keeps Ungrouped last", () => {
     const panels = buildActiveSidebarShelfPanels({
+      groupingMode: "projects",
       sidebarFolders: [{ environmentId: env, id: "folder-1", title: "Research" }],
       projectGroups: [projectShelf("alpha", "proj-a"), projectShelf("beta", "proj-b")],
       activeThreads: [],
@@ -301,5 +308,72 @@ describe("resolveSidebarShelfDropGroupId", () => {
         targetSidebarGroupId: null,
       }),
     ).toBe(false);
+  });
+});
+
+describe("buildActiveSidebarShelfPanels in folders mode", () => {
+  it("renders no project shelves at all", () => {
+    // The whole point of the mode: a workspace is an attribute of a session,
+    // not a place it lives, so there is no project shelf to mistake for a
+    // folder when dragging.
+    const panels = buildActiveSidebarShelfPanels({
+      sidebarFolders: [],
+      projectGroups: [projectShelf("toolport", "proj-toolport", "toolport-studio")],
+      activeThreads: [
+        {
+          id: ThreadId.make("t1"),
+          environmentId: env,
+          projectId: ProjectId.make("proj-toolport"),
+        },
+      ],
+      expandedShelfKeys: new Set(),
+      previewLimit: 5,
+    });
+
+    expect(panels.every((panel) => panel.kind !== "project")).toBe(true);
+    expect(panels.map((panel) => panel.shelfKey)).toEqual([UNGROUPED_SIDEBAR_SHELF_KEY]);
+  });
+
+  it("puts a session with only a workspace into Unfiled", () => {
+    const panels = buildActiveSidebarShelfPanels({
+      sidebarFolders: [],
+      projectGroups: [projectShelf("toolport", "proj-toolport", "toolport-studio")],
+      activeThreads: [
+        {
+          id: ThreadId.make("t1"),
+          environmentId: env,
+          projectId: ProjectId.make("proj-toolport"),
+        },
+      ],
+      expandedShelfKeys: new Set(),
+      previewLimit: 5,
+    });
+
+    const unfiled = findShelf(panels, UNGROUPED_SIDEBAR_SHELF_KEY);
+    expect(unfiled?.displayName).toBe("Unfiled");
+    expect(unfiled?.visibleThreads).toHaveLength(1);
+  });
+
+  it("still files a session under the folder its sidebarGroupId names", () => {
+    // Folders keep working exactly as before; only the project axis is gone.
+    const panels = buildActiveSidebarShelfPanels({
+      sidebarFolders: [{ environmentId: env, id: "folder-1", title: "Ideas" }],
+      projectGroups: [projectShelf("toolport", "proj-toolport", "toolport-studio")],
+      activeThreads: [
+        {
+          id: ThreadId.make("t1"),
+          environmentId: env,
+          projectId: ProjectId.make("proj-toolport"),
+          sidebarGroupId: "folder-1",
+        },
+      ],
+      expandedShelfKeys: new Set(),
+      previewLimit: 5,
+    });
+
+    const folder = panels.find((panel) => panel.kind === "folder");
+    expect(folder?.displayName).toBe("Ideas");
+    expect(folder?.visibleThreads).toHaveLength(1);
+    expect(findShelf(panels, UNGROUPED_SIDEBAR_SHELF_KEY)?.visibleThreads).toHaveLength(0);
   });
 });
