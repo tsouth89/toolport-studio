@@ -6,6 +6,7 @@ import * as Effect from "effect/Effect";
 import * as Encoding from "effect/Encoding";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import { HttpClient, HttpClientResponse } from "effect/unstable/http";
@@ -18,12 +19,24 @@ import {
   makeCloudflaredRelayClient,
 } from "./relayClient.ts";
 
+// These tests run against the real filesystem, so the host platform and architecture are left at
+// their defaults rather than pinned. Pinning them (to `linux`/`x64`, say) on a Windows host makes
+// the manager demand a POSIX executable bit that `chmod` cannot set there, so every resolution
+// reports `missing`. Deriving the expected paths from the host keeps the assertions honest on
+// whichever platform the suite runs.
 const hostRuntimeLayer = (env: Record<string, string> = {}) =>
-  Layer.mergeAll(
-    Layer.succeed(HostProcessPlatform, "linux"),
-    Layer.succeed(HostProcessArchitecture, "x64"),
-    ConfigProvider.layer(ConfigProvider.fromEnv({ env })),
-  );
+  ConfigProvider.layer(ConfigProvider.fromEnv({ env }));
+
+const hostExecutableName = Effect.map(HostProcessPlatform, (platform) =>
+  platform === "win32" ? "cloudflared.exe" : "cloudflared",
+);
+
+const testReleaseAsset = (bytes: Uint8Array) =>
+  ({
+    url: "https://example.test/cloudflared",
+    sha256: Encoding.encodeHex(sha256(bytes)),
+    archive: "binary",
+  }) as const;
 
 function makeHandle(exitCode = 0) {
   return ChildProcessSpawner.makeHandle({
@@ -66,10 +79,11 @@ describe("RelayClient", () => {
   it.effect("resolves explicit overrides before managed and PATH executables", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
       const baseDir = yield* fileSystem.makeTempDirectoryScoped({
         prefix: "t3-cloudflared-test-",
       });
-      const overridePath = `${baseDir}/override-cloudflared`;
+      const overridePath = path.join(baseDir, "override-cloudflared");
       yield* fileSystem.writeFileString(overridePath, "override");
       yield* fileSystem.chmod(overridePath, 0o755);
       const manager = yield* makeCloudflaredRelayClient({
@@ -107,17 +121,16 @@ describe("RelayClient", () => {
   it.effect("downloads, verifies, validates, and atomically installs the managed executable", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const platform = yield* HostProcessPlatform;
+      const arch = yield* HostProcessArchitecture;
       const baseDir = yield* fileSystem.makeTempDirectoryScoped({
         prefix: "t3-cloudflared-test-",
       });
       const bytes = new TextEncoder().encode("test-cloudflared-binary");
       const manager = yield* makeCloudflaredRelayClient({
         baseDir,
-        releaseAsset: {
-          url: "https://example.test/cloudflared",
-          sha256: Encoding.encodeHex(sha256(bytes)),
-          archive: "binary",
-        },
+        releaseAsset: testReleaseAsset(bytes),
       });
 
       const progress: Array<string> = [];
@@ -128,7 +141,14 @@ describe("RelayClient", () => {
           }
         }),
       );
-      const managedPath = `${baseDir}/tools/cloudflared/${CLOUDFLARED_VERSION}/linux-x64/cloudflared`;
+      const managedPath = path.join(
+        baseDir,
+        "tools",
+        "cloudflared",
+        CLOUDFLARED_VERSION,
+        `${platform}-${arch}`,
+        yield* hostExecutableName,
+      );
       expect(installed).toEqual({
         status: "available",
         executablePath: managedPath,
@@ -169,11 +189,7 @@ describe("RelayClient", () => {
       });
       const manager = yield* makeCloudflaredRelayClient({
         baseDir,
-        releaseAsset: {
-          url: "https://example.test/cloudflared",
-          sha256: Encoding.encodeHex(sha256(new TextEncoder().encode("expected"))),
-          archive: "binary",
-        },
+        releaseAsset: testReleaseAsset(new TextEncoder().encode("expected")),
       });
 
       const error = yield* manager.install.pipe(Effect.flip);
@@ -202,11 +218,7 @@ describe("RelayClient", () => {
       });
       const manager = yield* makeCloudflaredRelayClient({
         baseDir,
-        releaseAsset: {
-          url: "https://example.test/cloudflared",
-          sha256: Encoding.encodeHex(sha256(bytes)),
-          archive: "binary",
-        },
+        releaseAsset: testReleaseAsset(bytes),
       });
 
       const [first, second] = yield* Effect.all([manager.install, manager.install], {
@@ -231,13 +243,17 @@ describe("RelayClient", () => {
     const env = { PATH: "" };
     return Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
       const baseDir = yield* fileSystem.makeTempDirectoryScoped({
         prefix: "t3-cloudflared-test-",
       });
-      const binDir = `${baseDir}/bin`;
-      const executablePath = `${binDir}/cloudflared`;
+      const binDir = path.join(baseDir, "bin");
+      const executablePath = path.join(binDir, yield* hostExecutableName);
       const manager = yield* makeCloudflaredRelayClient({
         baseDir,
+        // Pinned so the initial `missing` assertion does not depend on the host having an entry in
+        // the release-asset table (an absent entry resolves to `unsupported` instead).
+        releaseAsset: testReleaseAsset(new TextEncoder().encode("cloudflared")),
       });
 
       expect(yield* manager.resolve).toEqual({
