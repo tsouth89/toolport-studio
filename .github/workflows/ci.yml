@@ -83,6 +83,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          # This job runs PR-authored test code, and the suite shells out to real git
+          # constantly. All of that is local or mocked — nothing here does an authenticated
+          # remote operation — so the checkout token has no reason to stay available to
+          # later steps. (checkout@v6 persists credentials by default.)
+          persist-credentials: false
 
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
