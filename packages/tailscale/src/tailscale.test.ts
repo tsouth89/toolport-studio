@@ -1,3 +1,4 @@
+import { HostProcessPlatform } from "@toolport-studio/shared/hostProcess";
 import { assert, describe, it } from "@effect/vitest";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
@@ -60,21 +61,36 @@ function neverFinishingMockHandle() {
   });
 }
 
+// The spawned executable is the one thing here that varies by host (`tailscale.exe` on Windows,
+// `tailscale` elsewhere). These tests never touch a real process, so the platform is pinned rather
+// than inherited from the host — otherwise every assertion below silently asserts whatever the
+// developer happens to be running on, and the suite fails anywhere the mapping differs. The
+// win32 mapping gets its own case at the bottom instead of being an accident of the host.
+function hostPlatformLayer(platform: NodeJS.Platform) {
+  return Layer.succeed(HostProcessPlatform, platform);
+}
+
+const POSIX_HOST = hostPlatformLayer("linux");
+
 function mockSpawnerLayer(
   handler: (
     command: string,
     args: ReadonlyArray<string>,
   ) => { stdout?: string; stderr?: string; code?: number },
+  platform: NodeJS.Platform = "linux",
 ) {
-  return Layer.succeed(
-    ChildProcessSpawner.ChildProcessSpawner,
-    ChildProcessSpawner.make((command) => {
-      const childProcess = command as unknown as {
-        readonly command: string;
-        readonly args: ReadonlyArray<string>;
-      };
-      return Effect.succeed(mockHandle(handler(childProcess.command, childProcess.args)));
-    }),
+  return Layer.merge(
+    Layer.succeed(
+      ChildProcessSpawner.ChildProcessSpawner,
+      ChildProcessSpawner.make((command) => {
+        const childProcess = command as unknown as {
+          readonly command: string;
+          readonly args: ReadonlyArray<string>;
+        };
+        return Effect.succeed(mockHandle(handler(childProcess.command, childProcess.args)));
+      }),
+    ),
+    hostPlatformLayer(platform),
   );
 }
 
@@ -156,9 +172,12 @@ describe("tailscale", () => {
       method: "spawn",
       cause: systemCause,
     });
-    const layer = Layer.succeed(
-      ChildProcessSpawner.ChildProcessSpawner,
-      ChildProcessSpawner.make(() => Effect.fail(cause)),
+    const layer = Layer.merge(
+      Layer.succeed(
+        ChildProcessSpawner.ChildProcessSpawner,
+        ChildProcessSpawner.make(() => Effect.fail(cause)),
+      ),
+      POSIX_HOST,
     );
 
     return Effect.gen(function* () {
@@ -198,12 +217,13 @@ describe("tailscale", () => {
   });
 
   it.effect("times out tailscale status through TestClock", () => {
-    const layer = Layer.merge(
+    const layer = Layer.mergeAll(
       TestClock.layer(),
       Layer.succeed(
         ChildProcessSpawner.ChildProcessSpawner,
         ChildProcessSpawner.make(() => Effect.succeed(neverFinishingMockHandle())),
       ),
+      POSIX_HOST,
     );
 
     return Effect.gen(function* () {
@@ -273,6 +293,37 @@ describe("tailscale", () => {
       assert.deepEqual(commands, [
         { command: "tailscale", args: ["serve", "--https=8443", "off"] },
       ]);
+    });
+  });
+
+  // Windows ships `tailscale.exe`. Every case above pins a POSIX host, so without this the
+  // mapping in `tailscaleCommandForPlatform` would go unasserted.
+  it.effect("spawns tailscale.exe on Windows hosts", () => {
+    const layer = mockSpawnerLayer((command, args) => {
+      assert.equal(command, "tailscale.exe");
+      assert.deepEqual(args, ["status", "--json"]);
+      return { stdout: tailscaleStatusWithSingleIpJson };
+    }, "win32");
+
+    return Effect.gen(function* () {
+      const status = yield* readTailscaleStatus.pipe(Effect.provide(layer));
+      assert.deepEqual(status, {
+        magicDnsName: "desktop.tail.ts.net",
+        tailnetIpv4Addresses: ["100.90.1.2"],
+      });
+    });
+  });
+
+  it.effect("reports the Windows executable name in command diagnostics", () => {
+    const layer = mockSpawnerLayer(() => ({ code: 7, stderr: "not logged in" }), "win32");
+
+    return Effect.gen(function* () {
+      const error = yield* readTailscaleStatus.pipe(Effect.flip, Effect.provide(layer));
+
+      assert.instanceOf(error, TailscaleCommandExitError);
+      assert.equal(error.executable, "tailscale.exe");
+      // The human-readable message stays platform-neutral on purpose.
+      assert.equal(error.message, "tailscale status exited with code 7.");
     });
   });
 });

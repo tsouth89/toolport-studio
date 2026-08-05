@@ -69,12 +69,25 @@ describe("RotatingFileSink", () => {
     expect((thrown as RotatingFileSinkError).cause).toBeInstanceOf(Error);
   });
 
-  // Provoking a non-ENOENT `stat` failure needs a platform-specific trick. On POSIX an
-  // over-long filename gives ENAMETOOLONG; Windows collapses every malformed path we tried
-  // (over-long, reserved names, invalid characters, a file used as a parent) to ENOENT, which is
-  // the branch this test is trying to avoid. The code under test is platform-agnostic, so it stays
-  // covered by the POSIX runs.
-  it.skipIf(NodeOS.platform() === "win32")(
+  // This case needs `stat` to fail with something *other* than ENOENT, and the only portable way
+  // to provoke that is an over-long filename (ENAMETOOLONG on POSIX). Windows collapses every
+  // malformed path tried here — over-long, reserved names, invalid characters, a file used as a
+  // parent — to ENOENT, which is the branch this test exists to rule out.
+  //
+  // The guard therefore probes for the behaviour rather than naming a platform: run wherever the
+  // OS actually produces a non-ENOENT failure, skip where it does not. The code under test is
+  // platform-agnostic and stays covered by the POSIX runs.
+  const overLongNameFailsWithoutEnoent = ((): boolean => {
+    const probeDirectory = makeTempDirectory();
+    try {
+      NodeFS.statSync(NodePath.join(probeDirectory, "a".repeat(300)));
+      return false;
+    } catch (cause) {
+      return (cause as NodeJS.ErrnoException).code !== "ENOENT";
+    }
+  })();
+
+  it.skipIf(!overLongNameFailsWithoutEnoent)(
     "only treats a missing log file as an empty current size",
     () => {
       const directory = makeTempDirectory();
