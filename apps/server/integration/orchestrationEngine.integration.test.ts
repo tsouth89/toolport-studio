@@ -1,7 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
-import process from "node:process";
+import * as NodeProcess from "node:process";
 
 import {
   ApprovalRequestId,
@@ -37,6 +37,7 @@ import type {
   TurnProcessingQuiescedReceipt,
 } from "../src/orchestration/Services/RuntimeReceiptBus.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import { isHostWindows } from "@toolport-studio/shared/hostProcess";
 
 const asMessageId = (value: string): MessageId => MessageId.make(value);
 const asProjectId = (value: string): ProjectId => ProjectId.make(value);
@@ -267,7 +268,7 @@ it.live("runs a single turn end-to-end and persists checkpoint state in sqlite +
   ),
 );
 
-it.live.skipIf(!process.env.CODEX_BINARY_PATH)(
+it.live.skipIf(!NodeProcess.env.CODEX_BINARY_PATH)(
   "keeps the same Codex provider thread across runtime mode switches",
   () =>
     withRealCodexHarness((harness) =>
@@ -708,7 +709,7 @@ it.live("records failed turn runtime state and checkpoint status as error", () =
 it.live("reverts to an earlier checkpoint and trims checkpoint projections + git refs", () =>
   withHarness((harness) =>
     Effect.gen(function* () {
-      if (process.platform === "win32") return;
+      if (yield* isHostWindows) return;
       yield* seedProjectAndThread(harness);
 
       yield* harness.adapterHarness!.queueTurnResponseForNextSession({

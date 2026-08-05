@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import process from "node:process";
+import * as NodeProcess from "node:process";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -7,7 +7,7 @@ import * as Option from "effect/Option";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import { ChildProcessSpawner } from "effect/unstable/process";
-import { HostProcessPlatform } from "@toolport-studio/shared/hostProcess";
+import { HostProcessPlatform, isHostWindows } from "@toolport-studio/shared/hostProcess";
 
 import * as ProcessDiagnostics from "./ProcessDiagnostics.ts";
 
@@ -184,7 +184,7 @@ describe("ProcessDiagnostics", () => {
 
   it.effect("queries processes through the ChildProcessSpawner service", () =>
     Effect.gen(function* () {
-      if (process.platform === "win32") return;
+      if (yield* isHostWindows) return;
       const commands: Array<{ readonly command: string; readonly args: ReadonlyArray<string> }> =
         [];
       const spawnerLayer = Layer.succeed(
@@ -198,8 +198,8 @@ describe("ProcessDiagnostics", () => {
           return Effect.succeed(
             mockHandle({
               stdout: [
-                ` ${process.pid}     1 ${process.pid} Ss 0.0 1024 01:02.03 t3 server`,
-                ` 4242 ${process.pid} ${process.pid} S  1.5 2048 00:04 agent`,
+                ` ${NodeProcess.pid}     1 ${NodeProcess.pid} Ss 0.0 1024 01:02.03 t3 server`,
+                ` 4242 ${NodeProcess.pid} ${NodeProcess.pid} S  1.5 2048 00:04 agent`,
               ].join("\n"),
             }),
           );
@@ -247,7 +247,7 @@ describe("ProcessDiagnostics", () => {
         _tag: "ProcessDiagnosticsQueryFailedError",
         command: "ps",
         argCount: 2,
-        cwd: process.cwd(),
+        cwd: NodeProcess.cwd(),
         exitCode: 17,
         stdoutBytes: 22,
         stderrBytes: 21,
@@ -255,7 +255,7 @@ describe("ProcessDiagnostics", () => {
         stderrTruncated: false,
       });
       expect(error.message).toBe(
-        `Process diagnostics query 'ps' failed with exit code 17 in '${process.cwd()}'.`,
+        `Process diagnostics query 'ps' failed with exit code 17 in '${NodeProcess.cwd()}'.`,
       );
     }),
   );
@@ -268,8 +268,8 @@ describe("ProcessDiagnostics", () => {
           Effect.succeed(
             mockHandle({
               stdout: [
-                ` ${process.pid}     1 ${process.pid} Ss 0.0 1024 01:02.03 t3 server`,
-                ` 4242 ${process.pid} ${process.pid} R  1.5 2048 00:00 ps -axo pid=,ppid=,pgid=,stat=,pcpu=,rss=,etime=,command=`,
+                ` ${NodeProcess.pid}     1 ${NodeProcess.pid} Ss 0.0 1024 01:02.03 t3 server`,
+                ` 4242 ${NodeProcess.pid} ${NodeProcess.pid} R  1.5 2048 00:00 ps -axo pid=,ppid=,pgid=,stat=,pcpu=,rss=,etime=,command=`,
               ].join("\n"),
             }),
           ),

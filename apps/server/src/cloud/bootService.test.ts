@@ -1,4 +1,3 @@
-import process from "node:process";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as ConfigProvider from "effect/ConfigProvider";
@@ -13,6 +12,7 @@ import {
   HostProcessArguments,
   HostProcessExecutablePath,
   HostProcessPlatform,
+  isHostWindows,
 } from "@toolport-studio/shared/hostProcess";
 
 import { reconcileService } from "../cli/service.ts";
@@ -202,7 +202,7 @@ it.layer(NodeServices.layer)("BootService", (it) => {
 
   it.effect("installs the unit, enables the service, and enables linger", () =>
     Effect.gen(function* () {
-      if (process.platform === "win32") return;
+      if (yield* isHostWindows) return;
       const { dirs, fs, path } = yield* makeTestContext();
       const commands: Array<RecordedCommand> = [];
       const service = yield* BootService.make({

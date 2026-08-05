@@ -1,5 +1,4 @@
 // @effect-diagnostics nodeBuiltinImport:off
-import process from "node:process";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import * as NodeChildProcess from "node:child_process";
@@ -12,7 +11,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as TestClock from "effect/testing/TestClock";
 import { vi } from "vite-plus/test";
-import { HostProcessPlatform } from "@toolport-studio/shared/hostProcess";
+import { HostProcessPlatform, isHostWindows } from "@toolport-studio/shared/hostProcess";
 
 import {
   BootstrapEnvelopeDecodeError,
@@ -147,7 +146,7 @@ it.layer(NodeServices.layer)("readBootstrapEnvelope", (it) => {
 
   it.effect("returns none when the fd is unavailable", () =>
     Effect.gen(function* () {
-      if (process.platform === "win32") return;
+      if (yield* isHostWindows) return;
       const fd = NodeFS.openSync("/dev/null", "r");
       NodeFS.closeSync(fd);
 
@@ -158,7 +157,7 @@ it.layer(NodeServices.layer)("readBootstrapEnvelope", (it) => {
 
   it.effect("preserves fd and cause when stat fails for a non-availability reason", () =>
     Effect.gen(function* () {
-      if (process.platform === "win32") return;
+      if (yield* isHostWindows) return;
       const fd = yield* Effect.acquireRelease(
         Effect.sync(() => NodeFS.openSync("/dev/null", "r")),
         (fd) => Effect.sync(() => NodeFS.closeSync(fd)),
@@ -206,7 +205,7 @@ it.layer(NodeServices.layer)("readBootstrapEnvelope", (it) => {
 
   it.effect("returns none when the bootstrap read times out before any value arrives", () =>
     Effect.gen(function* () {
-      if (process.platform === "win32") return;
+      if (yield* isHostWindows) return;
       const fs = yield* FileSystem.FileSystem;
       const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-bootstrap-" });
       const fifoPath = NodePath.join(tempDir, "bootstrap.pipe");

@@ -1,5 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off
-import process from "node:process";
+import * as NodeProcess from "node:process";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
@@ -53,6 +53,7 @@ import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts"
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import { isHostWindows } from "@toolport-studio/shared/hostProcess";
 
 function makeTestServerSettingsLayer(overrides: Partial<ServerSettings> = {}) {
   return ServerSettingsService.layerTest(overrides);
@@ -242,7 +243,7 @@ describe("ProviderRuntimeIngestion", () => {
       Layer.provideMerge(SqlitePersistenceMemory),
       Layer.provideMerge(Layer.succeed(ProviderService, provider.service)),
       Layer.provideMerge(makeTestServerSettingsLayer(options?.serverSettings)),
-      Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+      Layer.provideMerge(ServerConfig.layerTest(NodeProcess.cwd(), NodeProcess.cwd())),
       Layer.provideMerge(NodeServices.layer),
     );
     runtime = ManagedRuntime.make(layer);
@@ -321,7 +322,9 @@ describe("ProviderRuntimeIngestion", () => {
     };
   }
 
-  (process.platform === "win32" ? it.skip : it)(
+  // Chosen at collection time, where there is no Effect to read HostProcessPlatform
+  // from. The explicit node:process namespace keeps it out of ambient globals.
+  (NodeProcess.platform === "win32" ? it.skip : it)(
     "maps turn started/completed events into thread session updates",
     async () => {
       const harness = await createHarness();
@@ -503,108 +506,106 @@ describe("ProviderRuntimeIngestion", () => {
   effectIt.effect(
     "keeps a reconnecting pending turn starting while ready clears stale active state",
     () =>
-      process.platform === "win32"
-        ? Effect.void
-        : Effect.gen(function* () {
-            const harness = yield* Effect.promise(() => createHarness());
-            const threadId = asThreadId("thread-1");
-            const staleTurnId = asTurnId("turn-stale-before-reconnect");
+      Effect.gen(function* () {
+        if (yield* isHostWindows) return;
+        const harness = yield* Effect.promise(() => createHarness());
+        const threadId = asThreadId("thread-1");
+        const staleTurnId = asTurnId("turn-stale-before-reconnect");
 
-            yield* harness.engine.dispatch({
-              type: "thread.turn.start",
-              commandId: CommandId.make("cmd-turn-start-pending-reconnect"),
-              threadId,
-              message: {
-                messageId: MessageId.make("message-pending-reconnect"),
-                role: "user",
-                text: "resume after reconnect",
-                attachments: [],
-              },
-              interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-              runtimeMode: "approval-required",
-              createdAt: "2026-01-01T00:00:01.000Z",
-            });
-            yield* harness.engine.dispatch({
-              type: "thread.session.set",
-              commandId: CommandId.make("cmd-session-starting-pending-reconnect"),
-              threadId,
-              session: {
-                threadId,
-                status: "starting",
-                providerName: "codex",
-                runtimeMode: "approval-required",
-                activeTurnId: staleTurnId,
-                lastError: null,
-                updatedAt: "2026-01-01T00:00:01.000Z",
-              },
-              createdAt: "2026-01-01T00:00:01.000Z",
-            });
+        yield* harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-turn-start-pending-reconnect"),
+          threadId,
+          message: {
+            messageId: MessageId.make("message-pending-reconnect"),
+            role: "user",
+            text: "resume after reconnect",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: "2026-01-01T00:00:01.000Z",
+        });
+        yield* harness.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make("cmd-session-starting-pending-reconnect"),
+          threadId,
+          session: {
+            threadId,
+            status: "starting",
+            providerName: "codex",
+            runtimeMode: "approval-required",
+            activeTurnId: staleTurnId,
+            lastError: null,
+            updatedAt: "2026-01-01T00:00:01.000Z",
+          },
+          createdAt: "2026-01-01T00:00:01.000Z",
+        });
 
-            harness.emit({
-              type: "session.state.changed",
-              eventId: asEventId("evt-session-ready-pending-reconnect"),
-              provider: ProviderDriverKind.make("codex"),
-              threadId,
-              createdAt: "2026-01-01T00:00:02.000Z",
-              payload: { state: "ready" },
-            });
+        harness.emit({
+          type: "session.state.changed",
+          eventId: asEventId("evt-session-ready-pending-reconnect"),
+          provider: ProviderDriverKind.make("codex"),
+          threadId,
+          createdAt: "2026-01-01T00:00:02.000Z",
+          payload: { state: "ready" },
+        });
 
-            let thread = yield* Effect.promise(() =>
-              waitForThread(
-                harness.readModel,
-                (entry) =>
-                  entry.session?.status === "starting" && entry.session.activeTurnId === null,
-              ),
-            );
-            expect(thread.session?.status).toBe("starting");
-            expect(thread.session?.activeTurnId).toBeNull();
+        let thread = yield* Effect.promise(() =>
+          waitForThread(
+            harness.readModel,
+            (entry) => entry.session?.status === "starting" && entry.session.activeTurnId === null,
+          ),
+        );
+        expect(thread.session?.status).toBe("starting");
+        expect(thread.session?.activeTurnId).toBeNull();
 
-            harness.emit({
-              type: "session.started",
-              eventId: asEventId("evt-session-started-pending-reconnect"),
-              provider: ProviderDriverKind.make("codex"),
-              threadId,
-              createdAt: "2026-01-01T00:00:03.000Z",
-            });
-            yield* Effect.promise(() => harness.drain());
-            thread = (yield* Effect.promise(() => harness.readModel())).threads.find(
-              (entry) => entry.id === threadId,
-            )!;
-            expect(thread.session?.status).toBe("starting");
-            expect(thread.session?.activeTurnId).toBeNull();
+        harness.emit({
+          type: "session.started",
+          eventId: asEventId("evt-session-started-pending-reconnect"),
+          provider: ProviderDriverKind.make("codex"),
+          threadId,
+          createdAt: "2026-01-01T00:00:03.000Z",
+        });
+        yield* Effect.promise(() => harness.drain());
+        thread = (yield* Effect.promise(() => harness.readModel())).threads.find(
+          (entry) => entry.id === threadId,
+        )!;
+        expect(thread.session?.status).toBe("starting");
+        expect(thread.session?.activeTurnId).toBeNull();
 
-            harness.emit({
-              type: "turn.started",
-              eventId: asEventId("evt-turn-started-pending-reconnect"),
-              provider: ProviderDriverKind.make("codex"),
-              threadId,
-              turnId: asTurnId("turn-after-reconnect"),
-              createdAt: "2026-01-01T00:00:04.000Z",
-            });
-            thread = yield* Effect.promise(() =>
-              waitForThread(
-                harness.readModel,
-                (entry) =>
-                  entry.session?.status === "running" &&
-                  entry.session.activeTurnId === asTurnId("turn-after-reconnect"),
-              ),
-            );
-            expect(thread.session?.status).toBe("running");
+        harness.emit({
+          type: "turn.started",
+          eventId: asEventId("evt-turn-started-pending-reconnect"),
+          provider: ProviderDriverKind.make("codex"),
+          threadId,
+          turnId: asTurnId("turn-after-reconnect"),
+          createdAt: "2026-01-01T00:00:04.000Z",
+        });
+        thread = yield* Effect.promise(() =>
+          waitForThread(
+            harness.readModel,
+            (entry) =>
+              entry.session?.status === "running" &&
+              entry.session.activeTurnId === asTurnId("turn-after-reconnect"),
+          ),
+        );
+        expect(thread.session?.status).toBe("running");
 
-            harness.emit({
-              type: "session.started",
-              eventId: asEventId("evt-session-started-duplicate-midturn"),
-              provider: ProviderDriverKind.make("codex"),
-              threadId,
-              createdAt: "2026-01-01T00:00:05.000Z",
-            });
-            yield* Effect.promise(() => harness.drain());
-            thread = (yield* Effect.promise(() => harness.readModel())).threads.find(
-              (entry) => entry.id === threadId,
-            )!;
-            expect(thread.session?.status).toBe("running");
-            expect(thread.session?.activeTurnId).toBe(asTurnId("turn-after-reconnect"));
-          }),
+        harness.emit({
+          type: "session.started",
+          eventId: asEventId("evt-session-started-duplicate-midturn"),
+          provider: ProviderDriverKind.make("codex"),
+          threadId,
+          createdAt: "2026-01-01T00:00:05.000Z",
+        });
+        yield* Effect.promise(() => harness.drain());
+        thread = (yield* Effect.promise(() => harness.readModel())).threads.find(
+          (entry) => entry.id === threadId,
+        )!;
+        expect(thread.session?.status).toBe("running");
+        expect(thread.session?.activeTurnId).toBe(asTurnId("turn-after-reconnect"));
+      }),
   );
 
   effectIt.effect("keeps an aborted pending start stopped across duplicate exit events", () =>
@@ -741,7 +742,9 @@ describe("ProviderRuntimeIngestion", () => {
     );
   });
 
-  (process.platform === "win32" ? it.skip : it)(
+  // Chosen at collection time, where there is no Effect to read HostProcessPlatform
+  // from. The explicit node:process namespace keeps it out of ambient globals.
+  (NodeProcess.platform === "win32" ? it.skip : it)(
     "accepts claude turn lifecycle when seeded thread id is a synthetic placeholder",
     async () => {
       const harness = await createHarness();
