@@ -653,6 +653,32 @@ export function GeneralSettingsPanel() {
         />
 
         <SettingsRow
+          title="Organize sidebar by project"
+          description="Off, sessions are organized only by folder and a session's repository shows as a mark on its row. On, each repository is also a shelf."
+          resetAction={
+            settings.sidebarGroupingAxis !== DEFAULT_UNIFIED_SETTINGS.sidebarGroupingAxis ? (
+              <SettingResetButton
+                label="sidebar organization"
+                onClick={() =>
+                  updateSettings({
+                    sidebarGroupingAxis: DEFAULT_UNIFIED_SETTINGS.sidebarGroupingAxis,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.sidebarGroupingAxis === "projects"}
+              onCheckedChange={(checked) => {
+                updateSettings({ sidebarGroupingAxis: checked ? "projects" : "folders" });
+              }}
+              aria-label="Organize sidebar by project"
+            />
+          }
+        />
+
+        <SettingsRow
           title="Project Grouping"
           description="Combine matching repositories across environments. Drag project headers in the sidebar to reorder shelves; pin to keep favorites on top."
           resetAction={

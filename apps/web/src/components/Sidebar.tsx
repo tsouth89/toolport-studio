@@ -671,7 +671,18 @@ const SidebarRow = memo(function SidebarRow(props: {
                 />
               ) : null}
             </span>
-            <div className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">{title}</div>
+            <div className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
+              {title}
+              {/* Without a project shelf there is nothing else on screen saying
+                  which repo this session belongs to, and the leading slot is
+                  usually taken by the provider icon. Shrinks before the title
+                  does: the name is what you scan for. */}
+              {!nestUnderProjectShelf && props.projectTitle && !isRenaming ? (
+                <span className="min-w-0 shrink truncate text-[11px] text-sidebar-muted-foreground/70">
+                  {props.projectTitle}
+                </span>
+              ) : null}
+            </div>
             {/* Fixed-width trailing rail: title truncates against this edge at rest
                 and on hover, so actions never sit on top of the name. Elapsed
                 "1m" / archive both fit here without shrinking the leading rails. */}
@@ -766,6 +777,7 @@ export default function Sidebar() {
   const confirmThreadDelete = useClientSettings((s) => s.confirmThreadDelete);
   const sidebarProjectSortOrder = useClientSettings((s) => s.sidebarProjectSortOrder);
   const sidebarThreadPreviewCount = useClientSettings((s) => s.sidebarThreadPreviewCount);
+  const sidebarGroupingAxis = useClientSettings((s) => s.sidebarGroupingAxis);
   const projectGroupingSettings = useClientSettings(selectProjectGroupingSettings);
   const { archiveThread, deleteThread } = useThreadActions();
   const updateThreadMetadata = useAtomCommand(threadEnvironment.updateMetadata, {
@@ -1195,6 +1207,7 @@ export default function Sidebar() {
         expandedShelfKeys: expandedProjectKeys,
         previewLimit: sidebarThreadPreviewCount,
         pinnedShelfKeys: pinnedProjectKeys,
+        groupingMode: sidebarGroupingAxis,
       }),
     [
       activeThreads,
@@ -1203,6 +1216,7 @@ export default function Sidebar() {
       routeThreadRef?.environmentId,
       routeThreadRef?.threadId,
       scopedSidebarFolders,
+      sidebarGroupingAxis,
       sidebarThreadPreviewCount,
       threadListProjectGroups,
     ],
@@ -2150,7 +2164,12 @@ export default function Sidebar() {
                   const threadKey = scopedThreadKey(
                     scopeThreadRef(thread.environmentId, thread.id),
                   );
-                  const nestUnderProjectShelf = options?.nestUnderProjectShelf ?? true;
+                  // Nesting only means anything under a project shelf, and
+                  // folders mode has none. Without this the row would still
+                  // suppress its workspace mark, leaving no way to tell which
+                  // repo a session belongs to now that the shelf is gone.
+                  const nestUnderProjectShelf =
+                    sidebarGroupingAxis === "projects" && (options?.nestUnderProjectShelf ?? true);
                   return (
                     <SidebarRow
                       key={options?.rowKey ?? threadKey}
@@ -2494,7 +2513,8 @@ export default function Sidebar() {
           <DialogHeader className="gap-1.5">
             <DialogTitle>Folder settings</DialogTitle>
             <DialogDescription>
-              Deleting a folder keeps its conversations — they move to Ungrouped.
+              Deleting a folder keeps its conversations — they move to{" "}
+              {sidebarGroupingAxis === "folders" ? "Unfiled" : "Ungrouped"}.
             </DialogDescription>
           </DialogHeader>
           <DialogPanel>
