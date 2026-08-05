@@ -3973,7 +3973,8 @@ describe("ClaudeAdapterLive", () => {
         attachments: [],
       });
 
-      assert.deepEqual(harness.query.setModelCalls, ["claude-opus-4-6[1m]"]);
+      // contextWindow defaults to 200k (no [1m] suffix); 1M is opt-in per thread.
+      assert.deepEqual(harness.query.setModelCalls, ["claude-opus-4-6"]);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
