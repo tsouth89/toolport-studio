@@ -206,6 +206,13 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
     "switches package-managed providers to vite-plus updates when the resolved binary lives in vite-plus global bin",
     () =>
       Effect.gen(function* () {
+        // Pins a POSIX platform against a real filesystem, which Windows cannot satisfy: the
+        // resolver demands an executable bit chmod cannot set there, and a Windows PATH entry
+        // carries a drive-letter colon that the POSIX delimiter split tears in half. That second
+        // part only bites when the repo and the temp directory sit on different drives, which is
+        // why this passes on a dev box and fails on CI. win32 resolution is covered separately by
+        // the bun case below.
+        if (yield* isHostWindows) return;
         const tempDir = yield* makeTempDir("t3-vite-plus-capabilities");
         const vitePlusBinDir = NodePath.join(tempDir, ".vite-plus", "bin");
         NodeFS.mkdirSync(vitePlusBinDir, { recursive: true });
@@ -279,6 +286,8 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
     "switches package-managed providers to pnpm updates when the resolved binary lives in pnpm's global bin",
     () =>
       Effect.gen(function* () {
+        // POSIX-only for the same reason as the vite-plus case above.
+        if (yield* isHostWindows) return;
         const tempDir = yield* makeTempDir("t3-pnpm-capabilities");
         const pnpmHomeDir = NodePath.join(tempDir, ".local", "share", "pnpm");
         NodeFS.mkdirSync(pnpmHomeDir, { recursive: true });
@@ -339,6 +348,8 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
     "switches native-package-tool to native updates when the binary resolves through the native installer",
     () =>
       Effect.gen(function* () {
+        // POSIX-only for the same reason as the vite-plus case above.
+        if (yield* isHostWindows) return;
         const tempDir = yield* makeTempDir("t3-native-package-tool-native-capabilities");
         const nativeBinDir = NodePath.join(tempDir, ".local", "bin");
         NodeFS.mkdirSync(nativeBinDir, { recursive: true });
@@ -376,6 +387,8 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
     "switches scoped-package-tool to native upgrades when the binary resolves through the standalone installer",
     () =>
       Effect.gen(function* () {
+        // POSIX-only for the same reason as the vite-plus case above.
+        if (yield* isHostWindows) return;
         const tempDir = yield* makeTempDir("t3-scoped-package-tool-native-capabilities");
         const nativeBinDir = NodePath.join(tempDir, ".scoped-package-tool", "bin");
         NodeFS.mkdirSync(nativeBinDir, { recursive: true });

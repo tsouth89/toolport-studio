@@ -1,3 +1,6 @@
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodeFSP from "node:fs/promises";
+
 import { assert, it, describe } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -42,12 +45,18 @@ export interface VcsDriverContractSuiteInput<R, E> {
 }
 
 export function runVcsDriverContractSuite<R, E>(input: VcsDriverContractSuiteInput<R, E>) {
+  // Resolved to its long form on purpose. Windows returns an 8.3 short path
+  // (`C:\Users\RUNNER~1\...`) when the temp directory has a component longer than eight
+  // characters, which is the case on CI where the runner profile is `runneradmin`. A VCS reports
+  // the long form for its own root, so a fixture left short makes repository-root assertions
+  // compare two spellings of one path.
   const makeTmpDir = (
     prefix = `t3-${input.kind}-vcs-contract-`,
   ): Effect.Effect<string, PlatformError.PlatformError, FileSystem.FileSystem | Scope.Scope> =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
-      return yield* fileSystem.makeTempDirectoryScoped({ prefix });
+      const directory = yield* fileSystem.makeTempDirectoryScoped({ prefix });
+      return yield* Effect.promise(() => NodeFSP.realpath(directory));
     });
 
   it.layer(input.layer)(`${input.name} VCS driver contract`, (it) => {
