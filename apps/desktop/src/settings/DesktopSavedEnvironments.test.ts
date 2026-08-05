@@ -1,5 +1,3 @@
-import * as NodePath from "node:path";
-
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import { EnvironmentId, type PersistedSavedEnvironmentRecord } from "@toolport-studio/contracts";
@@ -7,6 +5,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 
@@ -404,11 +403,12 @@ describe("DesktopSavedEnvironments", () => {
 
   it.effect("reports saved environment filesystem reads separately from document decoding", () =>
     Effect.gen(function* () {
+      const path = yield* Path.Path;
       const baseFileSystem = yield* FileSystem.FileSystem;
       const baseDir = yield* baseFileSystem.makeTempDirectoryScoped({
         prefix: "t3-desktop-saved-environments-test-",
       });
-      const registryPath = NodePath.join(baseDir, "userdata", "saved-environments.json");
+      const registryPath = path.join(baseDir, "userdata", "saved-environments.json");
       const permissionError = PlatformError.systemError({
         _tag: "PermissionDenied",
         module: "FileSystem",
@@ -436,6 +436,7 @@ describe("DesktopSavedEnvironments", () => {
 
   it.effect("reports the failed saved environment write operation and path", () =>
     Effect.gen(function* () {
+      const path = yield* Path.Path;
       const baseFileSystem = yield* FileSystem.FileSystem;
       const baseDir = yield* baseFileSystem.makeTempDirectoryScoped({
         prefix: "t3-desktop-saved-environments-test-",
@@ -444,7 +445,7 @@ describe("DesktopSavedEnvironments", () => {
         _tag: "PermissionDenied",
         module: "FileSystem",
         method: "makeDirectory",
-        pathOrDescriptor: NodePath.join(baseDir, "userdata"),
+        pathOrDescriptor: path.join(baseDir, "userdata"),
       });
       const fileSystemLayer = Layer.succeed(
         FileSystem.FileSystem,
@@ -460,11 +461,11 @@ describe("DesktopSavedEnvironments", () => {
       const error = yield* savedEnvironments.setRegistry([savedRegistryRecord]).pipe(Effect.flip);
       assert.instanceOf(error, DesktopSavedEnvironments.DesktopSavedEnvironmentsWriteError);
       assert.equal(error.operation, "create-directory");
-      assert.equal(error.path, NodePath.join(baseDir, "userdata"));
+      assert.equal(error.path, path.join(baseDir, "userdata"));
       assert.strictEqual(error.cause, permissionError);
       assert.equal(
         error.message,
-        `Desktop saved-environment write failed during create-directory at ${NodePath.join(baseDir, "userdata")}.`,
+        `Desktop saved-environment write failed during create-directory at ${path.join(baseDir, "userdata")}.`,
       );
       assert.notEqual(error.message, permissionError.message);
     }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
