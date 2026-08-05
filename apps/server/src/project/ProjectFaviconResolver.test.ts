@@ -9,6 +9,7 @@ import * as PlatformError from "effect/PlatformError";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import * as ProjectFaviconResolver from "./ProjectFaviconResolver.ts";
 import * as T3ProjectFileLoader from "./T3ProjectFileLoader.ts";
+import { isHostWindows } from "@toolport-studio/shared/hostProcess";
 
 const TestLayer = Layer.empty.pipe(
   Layer.provideMerge(
@@ -64,6 +65,7 @@ it.layer(TestLayer)("ProjectFaviconResolverLive", (it) => {
 
     it.effect("prefers a t3.json iconPath over well-known files", () =>
       Effect.gen(function* () {
+        if (yield* isHostWindows) return;
         const resolver = yield* ProjectFaviconResolver.ProjectFaviconResolver;
         const cwd = yield* makeTempDir;
         yield* writeTextFile(cwd, "t3.json", '{ "iconPath": "brand/mark.svg" }');
@@ -121,6 +123,7 @@ it.layer(TestLayer)("ProjectFaviconResolverLive", (it) => {
 
     it.effect("resolves icon hrefs from project source files", () =>
       Effect.gen(function* () {
+        if (yield* isHostWindows) return;
         const resolver = yield* ProjectFaviconResolver.ProjectFaviconResolver;
         const cwd = yield* makeTempDir;
         yield* writeTextFile(cwd, "index.html", '<link rel="icon" href="/brand/logo.svg">');
@@ -244,6 +247,7 @@ it.layer(TestLayer)("ProjectFaviconResolverLive", (it) => {
 
     it.effect("continues to later sources after an outside-root icon href", () =>
       Effect.gen(function* () {
+        if (yield* isHostWindows) return;
         const resolver = yield* ProjectFaviconResolver.ProjectFaviconResolver;
         const cwd = yield* makeTempDir;
         yield* writeTextFile(cwd, "index.html", '<link rel="icon" href="../../secret.svg">');

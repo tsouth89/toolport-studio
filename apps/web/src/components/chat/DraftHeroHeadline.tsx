@@ -1,5 +1,5 @@
 import type { ScopedProjectRef } from "@toolport-studio/contracts";
-import { scopedProjectKey, scopeProjectRef } from "@toolport-studio/client-runtime/environment";
+import { scopedProjectKey } from "@toolport-studio/client-runtime/environment";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
@@ -10,7 +10,6 @@ import { useCallback, useMemo } from "react";
 
 import { openCommandPalette } from "~/commandPaletteBus";
 import { useComposerDraftStore } from "~/composerDraftStore";
-import { useNewThreadHandler } from "~/hooks/useHandleNewThread";
 import { useClientSettings } from "~/hooks/useSettings";
 import { attachSessionToProject } from "~/lib/attachSessionToProject";
 import { isGeneralChatProject } from "~/lib/generalChat";
@@ -57,7 +56,6 @@ export function DraftHeroHeadline({
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const projectGroupingSettings = useClientSettings(selectProjectGroupingSettings);
   const projectSortOrder = useClientSettings((settings) => settings.sidebarProjectSortOrder);
-  const handleNewThread = useNewThreadHandler();
   const routeTarget = useParams({
     strict: false,
     select: (params) => resolveThreadRouteTarget(params),
@@ -72,6 +70,8 @@ export function DraftHeroHeadline({
     reportFailure: false,
   });
 
+  // Always rebind the *current* draft/session when changing folder. Minting a
+  // new project draft via handleNewThread used to wipe typed composer text.
   const attachCurrentSessionToProject = useCallback(
     async (project: {
       environmentId: ScopedProjectRef["environmentId"];
@@ -128,9 +128,6 @@ export function DraftHeroHeadline({
     ],
   );
 
-  // Projectless "What's on your mind?" must attach the *current* draft so typed
-  // text and attachments travel with the folder. Opening a brand-new project
-  // draft via handleNewThread is what used to wipe the composer.
   const openAttachOrAddProject = useCallback(() => {
     openCommandPalette({ open: isProjectless ? "attach-project" : "add-project" });
   }, [isProjectless]);
@@ -210,15 +207,9 @@ export function DraftHeroHeadline({
               return;
             }
             const project = entry.targetProject;
-            if (isProjectless) {
-              void attachCurrentSessionToProject({
-                environmentId: project.environmentId,
-                id: project.id,
-              });
-              return;
-            }
-            void handleNewThread(scopeProjectRef(project.environmentId, project.id), {
-              replace: true,
+            void attachCurrentSessionToProject({
+              environmentId: project.environmentId,
+              id: project.id,
             });
           }}
         >

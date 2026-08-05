@@ -3,6 +3,7 @@ import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 
 import * as DesktopAssets from "./DesktopAssets.ts";
@@ -19,7 +20,13 @@ const environmentLayer = DesktopEnvironment.layer({
   isPackaged: true,
   resourcesPath: "/Applications/Toolport Studio.app/Contents/Resources",
   runningUnderArm64Translation: false,
-}).pipe(Layer.provide(Layer.mergeAll(NodeServices.layer, DesktopConfig.layerTest({}))));
+}).pipe(
+  Layer.provide(
+    // Simulated non-Windows install: build paths with POSIX rules so the
+    // assertions hold on any host, not just the CI platform.
+    Layer.mergeAll(NodeServices.layer, Path.layer, DesktopConfig.layerTest({})),
+  ),
+);
 
 describe("DesktopAssets", () => {
   it.effect("preserves the failed asset candidate and filesystem cause", () =>

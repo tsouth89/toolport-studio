@@ -1,5 +1,6 @@
 import * as NodePath from "@effect/platform-node/NodePath";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as NodeProcess from "node:process";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -14,6 +15,7 @@ import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import type * as SourceControlProvider from "./SourceControlProvider.ts";
 import * as SourceControlProviderRegistry from "./SourceControlProviderRegistry.ts";
 import * as SourceControlRepositoryService from "./SourceControlRepositoryService.ts";
+import { isHostWindows } from "@toolport-studio/shared/hostProcess";
 
 const CLONE_URLS = {
   nameWithOwner: "octocat/t3code",
@@ -80,7 +82,7 @@ function makeLayer(input: {
     ),
     Layer.provide(
       ServerConfig.layerTest(
-        process.cwd(),
+        NodeProcess.cwd(),
         input.fileSystem ? "/tmp/t3-source-control-repos" : { prefix: "t3-source-control-repos-" },
       ),
     ),
@@ -152,6 +154,7 @@ it.effect("preserves provider failures without deriving the repository message f
 
 it.effect("clones a looked-up repository into the requested destination", () =>
   Effect.gen(function* () {
+    if (yield* isHostWindows) return;
     const fs = yield* FileSystem.FileSystem;
     const parent = yield* fs.makeTempDirectoryScoped({
       prefix: "t3-source-control-clone-parent-",

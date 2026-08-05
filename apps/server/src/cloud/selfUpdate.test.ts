@@ -13,6 +13,7 @@ import {
   HostProcessEnvironment,
   HostProcessExecutablePath,
   HostProcessPlatform,
+  isHostWindows,
 } from "@toolport-studio/shared/hostProcess";
 
 import * as ServerConfig from "../config.ts";
@@ -492,6 +493,7 @@ it.layer(NodeServices.layer)("ServerSelfUpdate.update", (it) => {
 
   it.effect("rewrites the systemd unit and restarts the boot service", () =>
     Effect.gen(function* () {
+      if (yield* isHostWindows) return;
       const context = yield* makeContext({ bootService: true });
       const result = yield* context.service.update({ targetVersion: "0.0.29" });
       assert.deepEqual(result, { targetVersion: "0.0.29", method: "boot-service" });

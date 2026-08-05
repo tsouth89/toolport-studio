@@ -14,6 +14,7 @@ import * as Arr from "effect/Array";
 import * as Result from "effect/Result";
 import { useState, type ReactNode } from "react";
 import {
+  BYOK_PRESET_CHOICES,
   isProviderDriverKind,
   type ProviderInstanceConfig,
   type ProviderInstanceEnvironmentVariable,
@@ -110,6 +111,34 @@ function nextConfigBlobWithValue(
   return base;
 }
 
+export function resolveByokPresetLabel(presetId: string | undefined): string | undefined {
+  return presetId
+    ? BYOK_PRESET_CHOICES.find((preset) => preset.value === presetId)?.label
+    : undefined;
+}
+
+/**
+ * What to call an instance the user never named.
+ *
+ * One driver serves every API-key provider, so its label is the generic "API
+ * Key Provider" — falling straight through to it names an unlabelled
+ * OpenRouter instance after the driver rather than the provider, which is the
+ * one thing the card exists to tell apart. The preset's own label goes first.
+ */
+export function resolveProviderInstanceDisplayName(input: {
+  readonly explicitName: string | undefined;
+  readonly byokPresetId: string | undefined;
+  readonly driverLabel: string | undefined;
+  readonly driverKind: string;
+}): string {
+  return (
+    input.explicitName?.trim() ||
+    resolveByokPresetLabel(input.byokPresetId) ||
+    input.driverLabel ||
+    input.driverKind
+  );
+}
+
 export function deriveProviderModelsForDisplay(input: {
   readonly liveModels: ReadonlyArray<ServerProviderModel> | undefined;
   readonly customModels: ReadonlyArray<string>;
@@ -120,15 +149,24 @@ export function deriveProviderModelsForDisplay(input: {
     ),
   );
   const serverModels = input.liveModels?.filter((model) => !model.isCustom) ?? [];
-  const customModels = input.customModels.map(
-    (slug) =>
-      liveCustomModelsBySlug.get(slug) ?? {
-        slug,
-        name: slug,
-        isCustom: true,
-        capabilities: null,
-      },
-  );
+  // A slug can be in both lists at once, and on a catalog-backed provider it
+  // always ends up there: adding it to `customModels` is what makes the server
+  // resolve it into the generated catalog, after which the next snapshot
+  // reports it as an ordinary built-in model. Rendering both copies duplicated
+  // the row and gave two children the same React key. The server's copy wins —
+  // it carries real capabilities where the settings copy carries none.
+  const serverModelSlugs = new Set(serverModels.map((model) => model.slug));
+  const customModels = input.customModels
+    .filter((slug) => !serverModelSlugs.has(slug))
+    .map(
+      (slug) =>
+        liveCustomModelsBySlug.get(slug) ?? {
+          slug,
+          name: slug,
+          isCustom: true,
+          capabilities: null,
+        },
+    );
   return [...serverModels, ...customModels];
 }
 
@@ -423,8 +461,13 @@ export function ProviderInstanceCard({
     (typeof instance.config === "object" && instance.config !== null
       ? ((instance.config as { readonly preset?: unknown }).preset as string | undefined)
       : undefined);
-  const displayName =
-    instance.displayName?.trim() || driverOption?.label || String(instance.driver);
+  const byokPresetLabel = resolveByokPresetLabel(byokPresetId);
+  const displayName = resolveProviderInstanceDisplayName({
+    explicitName: instance.displayName,
+    byokPresetId,
+    driverLabel: driverOption?.label,
+    driverKind: String(instance.driver),
+  });
   const accentColor = normalizeProviderAccentColor(instance.accentColor);
   const { copyToClipboard } = useCopyToClipboard<{ providerName: string }>({
     onCopy: ({ providerName }) => {
@@ -754,7 +797,7 @@ export function ProviderInstanceCard({
                   className="mt-1.5"
                   value={instance.displayName ?? ""}
                   onCommit={updateDisplayName}
-                  placeholder={driverOption?.label ?? "Instance label"}
+                  placeholder={byokPresetLabel ?? driverOption?.label ?? "Instance label"}
                   spellCheck={false}
                 />
                 <span className="mt-1 block text-xs text-muted-foreground">
@@ -796,6 +839,10 @@ export function ProviderInstanceCard({
                 driverKind={driverKind}
                 models={modelsForDisplay}
                 customModels={customModels}
+                // Only preset-backed instances have a catalog to browse. A
+                // driver with a fixed lineup would get a search box over the
+                // handful of slugs already listed above it.
+                supportsCatalogBrowse={byokPresetId !== undefined}
                 hiddenModels={hiddenModels}
                 favoriteModels={favoriteModels}
                 modelOrder={modelOrder}

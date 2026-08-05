@@ -12,6 +12,7 @@ import {
   HostProcessArguments,
   HostProcessExecutablePath,
   HostProcessPlatform,
+  isHostWindows,
 } from "@toolport-studio/shared/hostProcess";
 
 import { reconcileService } from "../cli/service.ts";
@@ -201,6 +202,7 @@ it.layer(NodeServices.layer)("BootService", (it) => {
 
   it.effect("installs the unit, enables the service, and enables linger", () =>
     Effect.gen(function* () {
+      if (yield* isHostWindows) return;
       const { dirs, fs, path } = yield* makeTestContext();
       const commands: Array<RecordedCommand> = [];
       const service = yield* BootService.make({

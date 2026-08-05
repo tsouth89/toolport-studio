@@ -1,5 +1,5 @@
 import {
-  scopeProjectRef,
+  scopeThreadProjectRef,
   scopedThreadKey,
   scopeThreadRef,
 } from "@toolport-studio/client-runtime/environment";
@@ -245,12 +245,7 @@ export function ThreadRowLeadingStatus({ thread }: { thread: SidebarThreadSummar
   const lastVisitedAt = useUiStateStore(
     (state) => state.threadLastVisitedAtById[scopedThreadKey(threadRef)],
   );
-  const threadProject = useProject(
-    useMemo(
-      () => scopeProjectRef(thread.environmentId, thread.projectId),
-      [thread.environmentId, thread.projectId],
-    ),
-  );
+  const threadProject = useProject(useMemo(() => scopeThreadProjectRef(thread), [thread]));
   const threadProjectCwd = threadProject?.workspaceRoot ?? null;
   const gitCwd = thread.worktreePath ?? threadProjectCwd;
   const gitStatus = useEnvironmentQuery(

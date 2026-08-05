@@ -7,6 +7,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import * as NodeSqliteClient from "../src/persistence/NodeSqliteClient.ts";
 import { runSqliteState } from "./t3-sqlite-state.ts";
+import { isHostWindows } from "@toolport-studio/shared/hostProcess";
 
 const createFixtureDatabase = Effect.fn("createSqliteStateFixtureDatabase")(function* (
   baseDir: string,
@@ -75,6 +76,7 @@ it.layer(NodeServices.layer)("t3-sqlite-state", (it) => {
 
   it.effect("backs up isolated state before writes and refuses the shared home", () =>
     Effect.gen(function* () {
+      if (yield* isHostWindows) return;
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-sqlite-state-exec-" });

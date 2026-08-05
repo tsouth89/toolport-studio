@@ -1,3 +1,4 @@
+import * as NodeProcess from "node:process";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as Cause from "effect/Cause";
@@ -11,9 +12,10 @@ import * as PlatformError from "effect/PlatformError";
 
 import * as ServerConfig from "../config.ts";
 import * as ServerSecretStore from "./ServerSecretStore.ts";
+import { isHostWindows } from "@toolport-studio/shared/hostProcess";
 
 const makeServerConfigLayer = () =>
-  ServerConfig.layerTest(process.cwd(), { prefix: "t3-secret-store-test-" });
+  ServerConfig.layerTest(NodeProcess.cwd(), { prefix: "t3-secret-store-test-" });
 
 const makeServerSecretStoreLayer = () =>
   Layer.provide(ServerSecretStore.layer, makeServerConfigLayer());
@@ -188,6 +190,7 @@ it.layer(NodeServices.layer)("ServerSecretStore.layer", (it) => {
 
   it.effect("uses restrictive permissions for the secret directory and files", () =>
     Effect.gen(function* () {
+      if (yield* isHostWindows) return;
       const chmodCalls: Array<{ readonly path: string; readonly mode: number }> = [];
       const recordingFileSystemLayer = Layer.effect(
         FileSystem.FileSystem,

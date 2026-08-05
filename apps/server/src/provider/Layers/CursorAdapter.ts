@@ -1743,6 +1743,14 @@ export function makeCursorAdapter(
                   const message =
                     error instanceof Error ? error.message : "Cursor prompt request failed.";
                   yield* offerRuntimeEvent({
+                    type: "turn.aborted",
+                    ...(yield* makeEventStamp()),
+                    provider: PROVIDER,
+                    threadId: input.threadId,
+                    turnId,
+                    payload: { reason: message },
+                  });
+                  yield* offerRuntimeEvent({
                     type: "runtime.error",
                     ...(yield* makeEventStamp()),
                     provider: PROVIDER,

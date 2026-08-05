@@ -197,6 +197,16 @@ export const ServerProvider = Schema.Struct({
    * answers confidently about a screenshot it never saw.
    */
   supportsImageInput: Schema.optional(Schema.Boolean),
+  /**
+   * Slugs on this instance that can read images, when that varies by model.
+   *
+   * A single-vendor provider is uniform and only needs `supportsImageInput`.
+   * A router is not: one OpenRouter key reaches vision models and text-only
+   * ones at once, so an instance-wide flag either blocks attachments that
+   * would have worked or permits ones that get silently dropped. Absent means
+   * the instance-wide flag is the whole answer.
+   */
+  visionModelSlugs: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
   badgeLabel: Schema.optional(TrimmedNonEmptyString),
   continuation: Schema.optional(ServerProviderContinuation),
   showInteractionModeToggle: Schema.optional(Schema.Boolean),

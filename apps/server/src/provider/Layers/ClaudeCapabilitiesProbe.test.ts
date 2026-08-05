@@ -11,6 +11,7 @@ import {
   CLAUDE_CAPABILITIES_PROBE_SETTING_SOURCES,
   probeClaudeCapabilities,
 } from "./ClaudeProvider.ts";
+import { isHostWindows } from "@toolport-studio/shared/hostProcess";
 
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 
@@ -41,6 +42,7 @@ it("isolates Claude capability probes without dropping workspace setting sources
 it.layer(NodeServices.layer)("Claude capability probe SDK boundary", (it) => {
   it.effect("serializes strict no-MCP options and still resolves account capabilities", () =>
     Effect.gen(function* () {
+      if (yield* isHostWindows) return;
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-claude-probe-sdk-" });

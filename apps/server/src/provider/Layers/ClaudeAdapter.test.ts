@@ -2274,6 +2274,94 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("maps background task lifecycle to task.updated and dedupes roster repeats", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => runtimeEvents.push(event)),
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      harness.query.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "t1",
+        description: "Watch CI",
+        task_type: "shell",
+        session_id: "session",
+        uuid: "ts",
+      } as unknown as SDKMessage);
+      // Detaching into the background is the transition the UI needs.
+      harness.query.emit({
+        type: "system",
+        subtype: "task_updated",
+        task_id: "t1",
+        patch: { status: "running", is_backgrounded: true },
+        session_id: "session",
+        uuid: "tu-1",
+      } as unknown as SDKMessage);
+      // Same state again: must not append a second row.
+      harness.query.emit({
+        type: "system",
+        subtype: "task_updated",
+        task_id: "t1",
+        patch: { status: "running", is_backgrounded: true },
+        session_id: "session",
+        uuid: "tu-2",
+      } as unknown as SDKMessage);
+      // Roster snapshot repeating the same task: also deduped.
+      harness.query.emit({
+        type: "system",
+        subtype: "background_tasks_changed",
+        tasks: [{ id: "t1", type: "shell", status: "running", description: "Watch CI" }],
+        session_id: "session",
+        uuid: "roster-1",
+      } as unknown as SDKMessage);
+      // Claude's `killed` maps onto the neutral `stopped`.
+      harness.query.emit({
+        type: "system",
+        subtype: "task_updated",
+        task_id: "t1",
+        patch: { status: "killed" },
+        session_id: "session",
+        uuid: "tu-3",
+      } as unknown as SDKMessage);
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+
+      const taskUpdates = runtimeEvents.filter((event) => event.type === "task.updated");
+      assert.deepEqual(
+        taskUpdates.map((event) =>
+          event.type === "task.updated"
+            ? `${event.payload.status ?? ""}:${event.payload.backgrounded === true}`
+            : "",
+        ),
+        ["running:true", "stopped:true"],
+      );
+      // The description seeded by task_started survives a patch that omits it.
+      assert.equal(
+        taskUpdates[0]?.type === "task.updated" ? taskUpdates[0].payload.description : null,
+        "Watch CI",
+      );
+      assert.deepEqual(
+        runtimeEvents.filter((event) => event.type === "runtime.warning"),
+        [],
+      );
+
+      yield* Fiber.interrupt(runtimeEventsFiber);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("consumes undeclared and UX-internal system subtypes without warning rows", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

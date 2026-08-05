@@ -340,8 +340,14 @@ export const makeXAiPromptCompletionRuntime = Effect.fn("makeXAiPromptCompletion
           .start()
           .pipe(Effect.tap((started) => Ref.set(activeSessionIdRef, started.sessionId))),
       prompt: withXAiPromptCompletion(runtime.prompt),
-      // Concurrent steer must get the same xAI prompt_complete race as primary.
-      promptConcurrent: withXAiPromptCompletion(runtime.promptConcurrent),
+      // Concurrent steer interjections do not need the xAI prompt_complete race.
+      // Wrapping them in withXAiPromptCompletion caused the primary prompt's
+      // turn_completed fallback to abort pending steer Deferreds via cancel →
+      // abortPendingPromptCompletions, silently discarding the user's follow-up
+      // message. A steer's purpose is to add context to the live turn; if the
+      // turn completes before the steer is processed, that is acceptable —
+      // silently losing the message is not.
+      promptConcurrent: runtime.promptConcurrent,
       cancel: Ref.get(activeSessionIdRef).pipe(
         Effect.flatMap((sessionId) =>
           sessionId === undefined

@@ -213,18 +213,34 @@ export function useThreadActions() {
       opts.onArchived?.();
 
       if (shouldNavigateToDraft) {
-        const navigationResult = await settlePromise(() =>
-          handleNewThreadRef.current(scopeProjectRef(thread.environmentId, thread.projectId)),
-        );
-        if (navigationResult._tag === "Failure") {
-          return navigationResult;
+        if (thread.projectId !== null) {
+          const projectRef = scopeProjectRef(thread.environmentId, thread.projectId);
+          const navigationResult = await settlePromise(() =>
+            handleNewThreadRef.current(projectRef),
+          );
+          if (navigationResult._tag === "Failure") {
+            return navigationResult;
+          }
+        } else {
+          const navigationResult = await settlePromise(() =>
+            router.navigate({ to: "/", replace: true }),
+          );
+          if (navigationResult._tag === "Failure") {
+            return navigationResult;
+          }
         }
         return archiveResult;
       }
 
       return archiveResult;
     },
-    [archiveThreadMutation, confirmThreadArchive, getCurrentRouteThreadRef, resolveThreadTarget],
+    [
+      archiveThreadMutation,
+      confirmThreadArchive,
+      getCurrentRouteThreadRef,
+      resolveThreadTarget,
+      router,
+    ],
   );
 
   const unarchiveThread = useCallback(
@@ -260,10 +276,13 @@ export function useThreadActions() {
         const shell = readThreadShell(ref);
         return shell === null ? [] : [shell];
       });
-      const threadProject = readProject({
-        environmentId: threadRef.environmentId,
-        projectId: thread.projectId,
-      });
+      const threadProject =
+        thread.projectId !== null
+          ? readProject({
+              environmentId: threadRef.environmentId,
+              projectId: thread.projectId,
+            })
+          : null;
       const deletedIds =
         opts.deletedThreadKeys && opts.deletedThreadKeys.size > 0
           ? new Set<ThreadId>(
@@ -336,10 +355,12 @@ export function useThreadActions() {
       }
       refreshArchivedThreadsForEnvironment(threadRef.environmentId);
       clearComposerDraftForThread(threadRef);
-      clearProjectDraftThreadById(
-        scopeProjectRef(threadRef.environmentId, thread.projectId),
-        threadRef,
-      );
+      if (thread.projectId !== null) {
+        clearProjectDraftThreadById(
+          scopeProjectRef(threadRef.environmentId, thread.projectId),
+          threadRef,
+        );
+      }
       clearTerminalUiState(threadRef);
 
       if (shouldNavigateToFallback) {

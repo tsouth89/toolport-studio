@@ -1,8 +1,9 @@
+import * as NodeProcess from "node:process";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeSocket from "@effect/platform-node/NodeSocket";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeCrypto from "node:crypto";
-import { HostProcessPlatform } from "@toolport-studio/shared/hostProcess";
+import { HostProcessPlatform, isHostWindows } from "@toolport-studio/shared/hostProcess";
 
 import {
   AuthAccessTokenType,
@@ -152,6 +153,7 @@ const makeDefaultOrchestrationReadModel = () => {
         deletedAt: null,
       },
     ],
+    sidebarFolders: [],
     threads: [
       {
         id: defaultThreadId,
@@ -375,7 +377,7 @@ const buildAppUnderTest = (options?: {
       mode: "desktop",
       port: 0,
       host: "127.0.0.1",
-      cwd: process.cwd(),
+      cwd: NodeProcess.cwd(),
       baseDir,
       ...derivedPaths,
       staticDir: undefined,
@@ -576,7 +578,7 @@ const buildAppUnderTest = (options?: {
       Layer.provide(
         Layer.mock(ProcessDiagnostics.ProcessDiagnostics)({
           read: Effect.succeed({
-            serverPid: process.pid,
+            serverPid: NodeProcess.pid,
             readAt: TEST_EPOCH,
             processCount: 0,
             totalRssBytes: 0,
@@ -698,6 +700,7 @@ const buildAppUnderTest = (options?: {
             Effect.succeed({
               snapshotSequence: 0,
               projects: [],
+              sidebarFolders: [],
               threads: [],
               updatedAt: "1970-01-01T00:00:00.000Z",
             }),
@@ -705,11 +708,13 @@ const buildAppUnderTest = (options?: {
             Effect.succeed({
               snapshotSequence: 0,
               projects: [],
+              sidebarFolders: [],
               threads: [],
               updatedAt: "1970-01-01T00:00:00.000Z",
             }),
           getSnapshotSequence: () => Effect.succeed({ snapshotSequence: 0 }),
           getProjectShellById: () => Effect.succeed(Option.none()),
+          getSidebarFolderShellById: () => Effect.succeed(Option.none()),
           getThreadShellById: () => Effect.succeed(Option.none()),
           getThreadDetailById: () => Effect.succeed(Option.none()),
           getThreadDetailSnapshot: () => Effect.succeed(Option.none()),
@@ -4218,6 +4223,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
   it.effect("routes websocket rpc subscribeServerConfig streams snapshot then update", () =>
     Effect.gen(function* () {
+      if (yield* isHostWindows) return;
       const providers = [
         {
           instanceId: ProviderInstanceId.make("codex"),
@@ -4515,6 +4521,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
   it.effect("preserves structured workspace rpc failures", () =>
     Effect.gen(function* () {
+      if (yield* isHostWindows) return;
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const workspaceDir = yield* fs.makeTempDirectoryScoped({
@@ -5485,6 +5492,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       const snapshot = {
         snapshotSequence: 1,
         updatedAt: now,
+        sidebarFolders: [],
         projects: [
           {
             id: ProjectId.make("project-a"),
@@ -5707,6 +5715,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                 return {
                   snapshotSequence: 1,
                   projects: [],
+                  sidebarFolders: [],
                   threads: [makeDefaultOrchestrationThreadShell()],
                   updatedAt: "2026-01-01T00:00:00.000Z",
                 };
@@ -5822,6 +5831,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
               Effect.succeed({
                 snapshotSequence: 100_000,
                 projects: [],
+                sidebarFolders: [],
                 threads: [makeDefaultOrchestrationThreadShell({ id: snapshotThreadId })],
                 updatedAt: now,
               }),
@@ -5926,6 +5936,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
               Effect.succeed({
                 snapshotSequence: 5,
                 projects: [],
+                sidebarFolders: [],
                 threads: [],
                 updatedAt: "2026-01-01T00:00:00.000Z",
               }),

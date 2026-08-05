@@ -3,12 +3,17 @@ import type {
   OrchestrationMessage,
   OrchestrationProjectShell,
   OrchestrationShellSnapshot,
+  OrchestrationSidebarFolderShell,
   OrchestrationThread,
   OrchestrationThreadShell,
   ThreadId,
 } from "@toolport-studio/contracts";
 
 export interface EnvironmentProject extends OrchestrationProjectShell {
+  readonly environmentId: EnvironmentId;
+}
+
+export interface EnvironmentSidebarFolder extends OrchestrationSidebarFolderShell {
   readonly environmentId: EnvironmentId;
 }
 
@@ -27,6 +32,13 @@ export function scopeProject(
   project: OrchestrationProjectShell,
 ): EnvironmentProject {
   return { ...project, environmentId };
+}
+
+export function scopeSidebarFolder(
+  environmentId: EnvironmentId,
+  sidebarFolder: OrchestrationSidebarFolderShell,
+): EnvironmentSidebarFolder {
+  return { ...sidebarFolder, environmentId };
 }
 
 export function scopeThreadShell(

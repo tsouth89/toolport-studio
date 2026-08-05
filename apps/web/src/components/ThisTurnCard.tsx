@@ -22,6 +22,11 @@ import {
   type AgentRun,
   type AgentRunStatus,
 } from "../agentRuns";
+import {
+  isBackgroundTaskInFlight,
+  summarizeBackgroundTasks,
+  type BackgroundTask,
+} from "../backgroundTasks";
 import { formatDuration } from "../session-logic";
 import type { ThreadActivityViewModel } from "../threadActivityViewModel";
 import { cn } from "../lib/utils";
@@ -33,6 +38,7 @@ import { DiffStatLabel, hasNonZeroStat } from "./chat/DiffStatLabel";
  */
 export const THIS_TURN_AUTO_COLLAPSE_MS = 4_000;
 const EMPTY_AGENT_RUNS: ReadonlyArray<AgentRun> = [];
+const EMPTY_BACKGROUND_TASKS: ReadonlyArray<BackgroundTask> = [];
 
 function useElapsedLabel(startedAt: string | null, active: boolean): string | null {
   const [now, setNow] = useState(() => Date.now());
@@ -114,6 +120,7 @@ function AgentStatusIcon({ status }: { status: AgentRunStatus }) {
 export function ThisTurnCard({
   model,
   agentRuns = EMPTY_AGENT_RUNS,
+  backgroundTasks = EMPTY_BACKGROUND_TASKS,
   onDismiss,
   onOpenTurnDiff,
   onOpenToolport,
@@ -125,6 +132,8 @@ export function ThisTurnCard({
 }: {
   model: ThreadActivityViewModel;
   agentRuns?: ReadonlyArray<AgentRun>;
+  /** Backgrounded work for this thread; surfaced as its own chip. */
+  backgroundTasks?: ReadonlyArray<BackgroundTask>;
   onDismiss: () => void;
   onOpenTurnDiff?: ((turnId: TurnId, filePath?: string) => void) | undefined;
   onOpenToolport?: (() => void) | undefined;
@@ -150,6 +159,7 @@ export function ThisTurnCard({
         : agentSummary.completedCount === agentSummary.totalCount
           ? `${agentSummary.totalCount} done`
           : `${agentSummary.totalCount} agent${agentSummary.totalCount === 1 ? "" : "s"}`;
+  const taskSummary = summarizeBackgroundTasks(backgroundTasks);
   const agentStatusKey = agentRuns.map((run) => `${run.id}:${run.status}`).join("|");
   const previousAgentStatusKey = useRef(agentStatusKey);
   const files = model.changedFiles;
@@ -163,7 +173,8 @@ export function ThisTurnCard({
     (files !== null && files.fileCount > 0) ||
     usedLabel !== null ||
     model.attention !== null ||
-    agentRuns.length > 0;
+    agentRuns.length > 0 ||
+    backgroundTasks.length > 0;
 
   // Fresh turn: brief expanded glance, then pill (unless attention / user pin).
   useEffect(() => {
@@ -276,6 +287,24 @@ export function ThisTurnCard({
                 <CheckCircle2 className="size-3 text-success" aria-hidden />
               )}
               {compactAgentLabel}
+            </button>
+          ) : null}
+          {onOpenAgents && taskSummary.label ? (
+            <button
+              type="button"
+              className={cn(
+                "inline-flex shrink-0 items-center gap-1 border-l border-border/50 px-2 text-[10px] font-semibold text-muted-foreground hover:bg-accent/35 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+                taskSummary.runningCount === 0 && taskSummary.failedCount > 0 && "text-destructive",
+              )}
+              onClick={() => onOpenAgents()}
+              aria-label={`Open ${taskSummary.label} in Agents`}
+            >
+              {taskSummary.runningCount > 0 ? (
+                <Loader2 className="size-3 animate-spin text-primary" aria-hidden />
+              ) : (
+                <XCircle className="size-3" aria-hidden />
+              )}
+              {taskSummary.label}
             </button>
           ) : null}
         </div>
@@ -479,9 +508,12 @@ export function ThisTurnCard({
 export function shouldShowThisTurnCard(
   model: ThreadActivityViewModel,
   agentRuns: ReadonlyArray<AgentRun> = [],
+  backgroundTasks: ReadonlyArray<BackgroundTask> = [],
 ): boolean {
   if (model.isWorking) return true;
   if (model.attention !== null) return true;
   if (agentRuns.length > 0) return true;
+  // A settled turn that left something watching still has status worth showing.
+  if (backgroundTasks.some(isBackgroundTaskInFlight)) return true;
   return false;
 }

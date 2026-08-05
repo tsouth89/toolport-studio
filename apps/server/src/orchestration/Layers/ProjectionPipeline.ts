@@ -4,6 +4,8 @@ import {
   type OrchestrationEvent,
   OrchestrationQueuedTurn,
   type OrchestrationSessionStatus,
+  type OrchestrationThreadActivity,
+  SidebarFolderId,
   ThreadId,
 } from "@toolport-studio/contracts";
 import * as Effect from "effect/Effect";
@@ -16,6 +18,7 @@ import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { toPersistenceSqlError, type ProjectionRepositoryError } from "../../persistence/Errors.ts";
+import { backgroundTaskProjectionFromActivity } from "../backgroundTasks.ts";
 import {
   MAX_PROJECTED_THREAD_ACTIVITIES,
   ORCHESTRATION_EVENT_RETENTION_SEQUENCE_CUSHION,
@@ -23,6 +26,7 @@ import {
 import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
 import { ProjectionPendingApprovalRepository } from "../../persistence/Services/ProjectionPendingApprovals.ts";
 import { ProjectionProjectRepository } from "../../persistence/Services/ProjectionProjects.ts";
+import { ProjectionSidebarFolderRepository } from "../../persistence/Services/ProjectionSidebarFolders.ts";
 import { ProjectionStateRepository } from "../../persistence/Services/ProjectionState.ts";
 import { ProjectionThreadActivityRepository } from "../../persistence/Services/ProjectionThreadActivities.ts";
 import { type ProjectionThreadActivity } from "../../persistence/Services/ProjectionThreadActivities.ts";
@@ -42,6 +46,7 @@ import {
 import { ProjectionThreadRepository } from "../../persistence/Services/ProjectionThreads.ts";
 import { ProjectionPendingApprovalRepositoryLive } from "../../persistence/Layers/ProjectionPendingApprovals.ts";
 import { ProjectionProjectRepositoryLive } from "../../persistence/Layers/ProjectionProjects.ts";
+import { ProjectionSidebarFolderRepositoryLive } from "../../persistence/Layers/ProjectionSidebarFolders.ts";
 import { ProjectionStateRepositoryLive } from "../../persistence/Layers/ProjectionState.ts";
 import { ProjectionThreadActivityRepositoryLive } from "../../persistence/Layers/ProjectionThreadActivities.ts";
 import { ProjectionThreadMessageRepositoryLive } from "../../persistence/Layers/ProjectionThreadMessages.ts";
@@ -63,6 +68,7 @@ import {
 
 export const ORCHESTRATION_PROJECTOR_NAMES = {
   projects: "projection.projects",
+  sidebarFolders: "projection.sidebar-folders",
   threads: "projection.threads",
   threadMessages: "projection.thread-messages",
   threadProposedPlans: "projection.thread-proposed-plans",
@@ -480,6 +486,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
     const eventStore = yield* OrchestrationEventStore;
     const projectionStateRepository = yield* ProjectionStateRepository;
     const projectionProjectRepository = yield* ProjectionProjectRepository;
+    const projectionSidebarFolderRepository = yield* ProjectionSidebarFolderRepository;
     const projectionThreadRepository = yield* ProjectionThreadRepository;
     const projectionThreadMessageRepository = yield* ProjectionThreadMessageRepository;
     const projectionThreadProposedPlanRepository = yield* ProjectionThreadProposedPlanRepository;
@@ -551,6 +558,116 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       }
     });
 
+    const applySidebarFoldersProjection: ProjectorDefinition["apply"] = Effect.fn(
+      "applySidebarFoldersProjection",
+    )(function* (event, _attachmentSideEffects) {
+      switch (event.type) {
+        case "sidebar-folder.created":
+          yield* projectionSidebarFolderRepository.upsert({
+            sidebarFolderId: event.payload.sidebarFolderId,
+            title: event.payload.title,
+            createdAt: event.payload.createdAt,
+            updatedAt: event.payload.updatedAt,
+            deletedAt: null,
+          });
+          return;
+
+        case "sidebar-folder.meta-updated": {
+          const existingRow = yield* projectionSidebarFolderRepository.getById({
+            sidebarFolderId: event.payload.sidebarFolderId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          yield* projectionSidebarFolderRepository.upsert({
+            ...existingRow.value,
+            ...(event.payload.title !== undefined ? { title: event.payload.title } : {}),
+            updatedAt: event.payload.updatedAt,
+          });
+          return;
+        }
+
+        case "sidebar-folder.deleted": {
+          const existingRow = yield* projectionSidebarFolderRepository.getById({
+            sidebarFolderId: event.payload.sidebarFolderId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          yield* projectionSidebarFolderRepository.upsert({
+            ...existingRow.value,
+            deletedAt: event.payload.deletedAt,
+            updatedAt: event.payload.deletedAt,
+          });
+          return;
+        }
+
+        default:
+          return;
+      }
+    });
+
+    /**
+     * Maintain the per-thread background-task roster from task.* activities.
+     *
+     * task.started seeds the row as foreground work (backgrounded = 0) so a
+     * later task.updated patch — which carries only what changed — still has a
+     * description and type to merge into. task.completed settles it; rows are
+     * kept rather than deleted so the panel can show what just finished.
+     */
+    const applyBackgroundTaskActivity = Effect.fn("applyBackgroundTaskActivity")(function* (
+      threadId: ThreadId,
+      activity: OrchestrationThreadActivity,
+      occurredAt: string,
+    ) {
+      const projection = backgroundTaskProjectionFromActivity(activity);
+      if (!projection) {
+        return;
+      }
+      yield* sql`
+          INSERT INTO projection_thread_background_tasks (
+            thread_id,
+            task_id,
+            task_type,
+            description,
+            command,
+            status,
+            backgrounded,
+            created_at,
+            updated_at
+          )
+          VALUES (
+            ${threadId},
+            ${projection.taskId},
+            ${projection.taskType},
+            ${projection.description},
+            ${projection.command},
+            ${projection.status},
+            ${projection.backgrounded ? 1 : 0},
+            ${occurredAt},
+            ${occurredAt}
+          )
+          ON CONFLICT (thread_id, task_id)
+          DO UPDATE SET
+            task_type = COALESCE(excluded.task_type, projection_thread_background_tasks.task_type),
+            description = COALESCE(
+              excluded.description,
+              projection_thread_background_tasks.description
+            ),
+            command = COALESCE(excluded.command, projection_thread_background_tasks.command),
+            status = excluded.status,
+            backgrounded = MAX(
+              excluded.backgrounded,
+              projection_thread_background_tasks.backgrounded
+            ),
+            updated_at = excluded.updated_at
+        `.pipe(
+        Effect.mapError(
+          toPersistenceSqlError("ProjectionPipeline.threadActivityAppended:upsertBackgroundTask"),
+        ),
+      );
+    });
+
     const refreshThreadShellSummary = Effect.fn("refreshThreadShellSummary")(function* (
       threadId: ThreadId,
     ) {
@@ -604,6 +721,14 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           yield* projectionThreadRepository.upsert({
             threadId: event.payload.threadId,
             projectId: event.payload.projectId,
+            sidebarGroupId:
+              event.payload.sidebarGroupId !== undefined
+                ? event.payload.sidebarGroupId
+                : // Legacy create events: shelf matched workspace project, and a
+                  // projectless thread has no workspace to inherit a shelf from.
+                  event.payload.projectId === null
+                  ? null
+                  : SidebarFolderId.make(event.payload.projectId),
             title: event.payload.title,
             modelSelection: event.payload.modelSelection,
             runtimeMode: event.payload.runtimeMode,
@@ -732,6 +857,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             ...(event.payload.projectId !== undefined
               ? { projectId: event.payload.projectId }
               : {}),
+            ...(event.payload.sidebarGroupId !== undefined
+              ? { sidebarGroupId: event.payload.sidebarGroupId }
+              : {}),
             ...(event.payload.title !== undefined ? { title: event.payload.title } : {}),
             ...(event.payload.modelSelection !== undefined
               ? { modelSelection: event.payload.modelSelection }
@@ -791,9 +919,31 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           return;
         }
 
+        case "thread.activity-appended": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          // Background-task rows are maintained here rather than derived at
+          // read time: the shell snapshot needs an in-flight count for every
+          // thread, including ones no client has opened.
+          yield* applyBackgroundTaskActivity(
+            event.payload.threadId,
+            event.payload.activity,
+            event.occurredAt,
+          );
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            updatedAt: event.occurredAt,
+          });
+          yield* refreshThreadShellSummary(event.payload.threadId);
+          return;
+        }
+
         case "thread.message-sent":
         case "thread.proposed-plan-upserted":
-        case "thread.activity-appended":
         case "thread.approval-response-requested":
         case "thread.user-input-response-requested": {
           const existingRow = yield* projectionThreadRepository.getById({
@@ -1625,6 +1775,10 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         apply: applyProjectsProjection,
       },
       {
+        name: ORCHESTRATION_PROJECTOR_NAMES.sidebarFolders,
+        apply: applySidebarFoldersProjection,
+      },
+      {
         name: ORCHESTRATION_PROJECTOR_NAMES.threadMessages,
         apply: applyThreadMessagesProjection,
       },
@@ -1792,6 +1946,7 @@ export const OrchestrationProjectionPipelineLive = Layer.effect(
   makeOrchestrationProjectionPipeline(),
 ).pipe(
   Layer.provideMerge(ProjectionProjectRepositoryLive),
+  Layer.provideMerge(ProjectionSidebarFolderRepositoryLive),
   Layer.provideMerge(ProjectionThreadRepositoryLive),
   Layer.provideMerge(ProjectionThreadMessageRepositoryLive),
   Layer.provideMerge(ProjectionThreadProposedPlanRepositoryLive),

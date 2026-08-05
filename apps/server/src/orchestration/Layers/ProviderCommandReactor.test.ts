@@ -71,6 +71,12 @@ const asTurnId = (value: string): TurnId => TurnId.make(value);
 const deriveServerPathsSync = (baseDir: string, devUrl: URL | undefined) =>
   Effect.runSync(deriveServerPaths(baseDir, devUrl).pipe(Effect.provide(NodeServices.layer)));
 
+/**
+ * Sleep between polls rather than `Effect.yieldNow`, which only defers to the
+ * microtask queue and lets the loop spin against the work it is waiting for.
+ * This helper already had a generous timeout, so it was not failing — but it
+ * was contributing to the load that made its neighbours fail.
+ */
 async function waitFor(
   predicate: () => boolean | Promise<boolean>,
   timeoutMs = 10_000,
@@ -83,7 +89,7 @@ async function waitFor(
     if ((await Effect.runPromise(Clock.currentTimeMillis)) >= deadline) {
       throw new Error("Timed out waiting for expectation.");
     }
-    await Effect.runPromise(Effect.yieldNow);
+    await Effect.runPromise(Effect.sleep(5));
     return poll();
   };
 
@@ -696,7 +702,9 @@ describe("ProviderCommandReactor", () => {
       const harness = yield* Effect.promise(() =>
         createHarness({
           reactorOptions: {
-            sessionOperationTimeout: "1 second",
+            // Explicit short turn timeout for the wedge case. Product default
+            // leaves sendTurn unbounded so multi-minute Grok/Cursor turns live.
+            turnOperationTimeout: "1 second",
           },
           sendTurnEffect: () => Effect.never,
         }),

@@ -1,6 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import type {
   EnvironmentProject,
+  EnvironmentSidebarFolder,
   EnvironmentThread,
   EnvironmentThreadShell,
 } from "@toolport-studio/client-runtime/state/shell";
@@ -24,6 +25,7 @@ import { appAtomRegistry } from "../rpc/atomRegistry";
 import { environmentProjects } from "./projects";
 import { environmentServerConfigsAtom } from "./server";
 import { allEnvironmentShellsBootstrappedAtom } from "./shell";
+import { environmentSidebarFolders } from "./sidebarFolders";
 import { environmentThreadDetails, environmentThreadShells } from "./threads";
 
 const EMPTY_PROJECT_REFS: ReadonlyArray<ScopedProjectRef> = Object.freeze([]);
@@ -114,6 +116,10 @@ export function useProjects(): ReadonlyArray<EnvironmentProject> {
 
 export function useServerConfigs(): ReadonlyMap<EnvironmentId, ServerConfig> {
   return useAtomValue(environmentServerConfigsAtom);
+}
+
+export function useSidebarFolders(): ReadonlyArray<EnvironmentSidebarFolder> {
+  return useAtomValue(environmentSidebarFolders.sidebarFoldersAtom);
 }
 
 export function useThreadShells(): ReadonlyArray<EnvironmentThreadShell> {

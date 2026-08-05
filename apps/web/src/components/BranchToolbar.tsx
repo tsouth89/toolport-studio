@@ -1,4 +1,8 @@
-import { scopeProjectRef, scopeThreadRef } from "@toolport-studio/client-runtime/environment";
+import {
+  scopeProjectRef,
+  scopeThreadProjectRef,
+  scopeThreadRef,
+} from "@toolport-studio/client-runtime/environment";
 import type { EnvironmentId, ThreadId } from "@toolport-studio/contracts";
 import {
   ChevronDownIcon,
@@ -239,11 +243,8 @@ export const BranchToolbar = memo(function BranchToolbar({
     draftId ? store.getDraftSession(draftId) : store.getDraftThreadByRef(threadRef),
   );
   const setDraftThreadContext = useComposerDraftStore((store) => store.setDraftThreadContext);
-  const activeProjectRef = serverThread
-    ? scopeProjectRef(serverThread.environmentId, serverThread.projectId)
-    : draftThread
-      ? scopeProjectRef(draftThread.environmentId, draftThread.projectId)
-      : null;
+  const activeProjectRef =
+    scopeThreadProjectRef(serverThread) ?? scopeThreadProjectRef(draftThread);
   const activeProject = useProject(activeProjectRef);
   const hasActiveThread = serverThread !== null || draftThread !== null;
   const activeWorktreePath = serverThread?.worktreePath ?? draftThread?.worktreePath ?? null;

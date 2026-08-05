@@ -723,6 +723,49 @@ export const ApiKeyProviderIcon: Icon = ({ className, ...props }) => (
   </svg>
 );
 
+/**
+ * Mark for the OpenRouter preset: one input fanning out to several models.
+ *
+ * Drawn here rather than copied from OpenRouter's brand assets, and in
+ * `currentColor` so it reads as part of our icon set. It only needs to be
+ * distinguishable from the neutral key at a glance — a routed instance and a
+ * direct-to-vendor one behave differently enough that telling them apart in
+ * the picker matters.
+ */
+export const OpenRouterIcon: Icon = ({ className, ...props }) => (
+  <svg
+    {...props}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    className={cn("text-black dark:text-white", className)}
+  >
+    <path d="M2 12h4" />
+    <path d="M6 12c4 0 4-6 8-6" />
+    <path d="M6 12c4 0 4 6 8 6" />
+    <circle cx="17" cy="6" r="2.5" />
+    <circle cx="17" cy="18" r="2.5" />
+  </svg>
+);
+
+/**
+ * Vercel's triangle, for the AI Gateway preset. Uses `currentColor` so it
+ * inherits the icon set's light/dark treatment rather than pinning black.
+ */
+export const VercelIcon: Icon = ({ className, ...props }) => (
+  <svg
+    {...props}
+    viewBox="0 0 24 24"
+    fill="currentColor"
+    className={cn("text-black dark:text-white", className)}
+  >
+    <path d="M12 3 22.5 21h-21L12 3Z" />
+  </svg>
+);
+
 export const PiAgentIcon: Icon = ({ className, ...props }) => (
   <svg {...props} viewBox="0 0 800 800" className={cn("fill-none", className)}>
     <rect width="800" height="800" rx="160" fill="#000" />

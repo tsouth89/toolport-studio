@@ -13,6 +13,7 @@ import {
   ProjectId,
   ProviderInteractionMode,
   RuntimeMode,
+  SidebarFolderId,
   ThreadId,
   TurnId,
 } from "@toolport-studio/contracts";
@@ -25,7 +26,10 @@ import type { ProjectionRepositoryError } from "../Errors.ts";
 
 export const ProjectionThread = Schema.Struct({
   threadId: ThreadId,
-  projectId: ProjectId,
+  /** Workspace attachment; null = projectless (no cwd of its own). */
+  projectId: Schema.NullOr(ProjectId),
+  /** Sidebar shelf only; null = ungrouped. Independent of workspace projectId. */
+  sidebarGroupId: Schema.NullOr(SidebarFolderId),
   title: Schema.String,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,

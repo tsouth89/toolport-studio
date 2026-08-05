@@ -14,6 +14,8 @@
   - [Claude](./providers/claude.md)
   - [Codex](./providers/codex.md)
   - [DeepSeek and API-key providers](./providers/deepseek.md)
+  - [OpenRouter](./providers/openrouter.md)
+  - [Vercel AI Gateway](./providers/vercel-ai-gateway.md)
 - Integrations
   - [Source-control providers](./integrations/source-control-providers.md)
 - User guides

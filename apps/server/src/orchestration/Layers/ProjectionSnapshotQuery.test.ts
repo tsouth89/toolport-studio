@@ -3,6 +3,7 @@ import {
   EventId,
   MessageId,
   ProjectId,
+  SidebarFolderId,
   ThreadId,
   TurnId,
   ProviderInstanceId,
@@ -11,6 +12,7 @@ import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
@@ -267,6 +269,59 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         sequence += 1;
       }
 
+      // Only backgrounded + still-working rows raise runningBackgroundTaskCount.
+      for (const [taskId, status, backgrounded] of [
+        ["task-running-bg", "running", 1],
+        ["task-paused-bg", "paused", 1],
+        // Foreground work: covered by the running turn, not the roster count.
+        ["task-running-fg", "running", 0],
+        // Settled work: listed in the panel, not counted as busy.
+        ["task-done-bg", "completed", 1],
+        ["task-failed-bg", "failed", 1],
+      ] as const) {
+        yield* sql`
+          INSERT INTO projection_thread_background_tasks (
+            thread_id,
+            task_id,
+            task_type,
+            description,
+            command,
+            status,
+            backgrounded,
+            created_at,
+            updated_at
+          )
+          VALUES (
+            'thread-1',
+            ${taskId},
+            'shell',
+            'Watch CI',
+            'gh run watch',
+            ${status},
+            ${backgrounded},
+            '2026-02-24T00:00:05.000Z',
+            '2026-02-24T00:00:05.000Z'
+          )
+        `;
+      }
+
+      const shellWithBackgroundTasks = yield* snapshotQuery.getThreadShellById(
+        ThreadId.make("thread-1"),
+      );
+      assert.equal(shellWithBackgroundTasks._tag, "Some");
+      if (shellWithBackgroundTasks._tag === "Some") {
+        assert.equal(shellWithBackgroundTasks.value.runningBackgroundTaskCount, 2);
+      }
+
+      const snapshotWithBackgroundTasks = yield* snapshotQuery.getShellSnapshot();
+      assert.equal(
+        snapshotWithBackgroundTasks.threads.find((thread) => thread.id === "thread-1")
+          ?.runningBackgroundTaskCount,
+        2,
+      );
+
+      yield* sql`DELETE FROM projection_thread_background_tasks WHERE thread_id = 'thread-1'`;
+
       yield* sql`
         UPDATE projection_thread_queued_turns
         SET queued_turn_json = 'not-valid-json'
@@ -317,6 +372,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         {
           id: ThreadId.make("thread-1"),
           projectId: asProjectId("project-1"),
+          sidebarGroupId: null,
           title: "Thread 1",
           modelSelection: {
             instanceId: ProviderInstanceId.make("codex"),
@@ -444,6 +500,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         {
           id: ThreadId.make("thread-1"),
           projectId: asProjectId("project-1"),
+          sidebarGroupId: null,
           title: "Thread 1",
           modelSelection: {
             instanceId: ProviderInstanceId.make("codex"),
@@ -486,6 +543,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           hasPendingUserInput: false,
           hasActionableProposedPlan: false,
           queuedTurnCount: 1,
+          runningBackgroundTaskCount: 0,
         },
       ]);
 
@@ -1594,6 +1652,61 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       const shellSnapshot = yield* snapshotQuery.getShellSnapshot();
       assert.equal(shellSnapshot.projects.length, 0);
       assert.equal(shellSnapshot.threads.length, 0);
+    }),
+  );
+
+  it.effect("hides soft-deleted sidebar folders from shell reads but keeps them for replay", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* sql`DELETE FROM projection_projects`;
+      yield* sql`DELETE FROM projection_threads`;
+      yield* sql`DELETE FROM projection_sidebar_folders`;
+      yield* sql`DELETE FROM projection_state`;
+
+      yield* sql`
+        INSERT INTO projection_sidebar_folders (
+          sidebar_folder_id,
+          title,
+          created_at,
+          updated_at,
+          deleted_at
+        )
+        VALUES
+          ('folder-active', 'Research', '2026-05-01T00:00:00.000Z', '2026-05-01T00:00:01.000Z', NULL),
+          (
+            'folder-deleted',
+            'Old shelf',
+            '2026-05-01T00:00:02.000Z',
+            '2026-05-01T00:00:03.000Z',
+            '2026-05-01T00:00:04.000Z'
+          )
+      `;
+
+      const shellSnapshot = yield* snapshotQuery.getShellSnapshot();
+      assert.deepEqual(shellSnapshot.sidebarFolders, [
+        {
+          id: SidebarFolderId.make("folder-active"),
+          title: "Research",
+          createdAt: "2026-05-01T00:00:00.000Z",
+          updatedAt: "2026-05-01T00:00:01.000Z",
+        },
+      ]);
+
+      // The decider needs the tombstone so a delete cannot be replayed twice.
+      const commandReadModel = yield* snapshotQuery.getCommandReadModel();
+      assert.equal(commandReadModel.sidebarFolders.length, 2);
+      assert.equal(commandReadModel.sidebarFolders[1]?.deletedAt, "2026-05-01T00:00:04.000Z");
+
+      const activeById = yield* snapshotQuery.getSidebarFolderShellById(
+        SidebarFolderId.make("folder-active"),
+      );
+      assert.equal(Option.isSome(activeById), true);
+      const deletedById = yield* snapshotQuery.getSidebarFolderShellById(
+        SidebarFolderId.make("folder-deleted"),
+      );
+      assert.equal(Option.isNone(deletedById), true);
     }),
   );
 });

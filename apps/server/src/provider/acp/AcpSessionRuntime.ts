@@ -955,24 +955,20 @@ export const make = (
             const cancelledResponse = {
               stopReason: "cancelled",
             } satisfies EffectAcpSchema.PromptResponse;
-            // Notify the agent first. Cooperative agents free session/prompt
-            // quickly; give them a short window before force-releasing locally.
+            // Notify the agent and wait up to 1s for a cooperative release.
+            // Grok needs more time than the old 200ms window because a wedged
+            // tool loop or long-running model inference won't checkpoint within
+            // 200ms. A 1500ms wall-clock window gives the agent a realistic
+            // chance to react before we force-release locally.
             yield* acp.agent
               .cancel({ sessionId: started.sessionId })
-              .pipe(Effect.ignore, Effect.forkIn(runtimeScope));
+              .pipe(Effect.timeout(1000), Effect.ignore, Effect.forkIn(runtimeScope));
 
-            // Wall-clock grace window. This must not use `TestClock.withLive`:
-            // that resolves the ambient Clock and casts it to a TestClock
-            // (`fiber.getRef(Clock.Clock) as TestClock`), so under a live
-            // runtime it throws `testClock.withLive is not a function`. Callers
-            // pipe cancel through `Effect.ignore`, so the defect was swallowed
-            // and the force-cancel path below never ran — Stop silently did
-            // nothing against an agent still holding the prompt.
             const stillActiveAfterGrace = yield* Ref.get(activePromptCancelRef).pipe(
               Effect.flatMap((current) =>
                 Option.isNone(current)
                   ? Effect.succeed(current)
-                  : sleepWallClock(200).pipe(Effect.andThen(Ref.get(activePromptCancelRef))),
+                  : sleepWallClock(1500).pipe(Effect.andThen(Ref.get(activePromptCancelRef))),
               ),
             );
 

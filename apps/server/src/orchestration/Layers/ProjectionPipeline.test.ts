@@ -1973,6 +1973,156 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
     }),
   );
 
+  it.effect("projects background task activities into the thread shell count", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const appendAndProject = (event: Parameters<typeof eventStore.append>[0]) =>
+        eventStore
+          .append(event)
+          .pipe(Effect.flatMap((savedEvent) => projectionPipeline.projectEvent(savedEvent)));
+
+      const threadId = ThreadId.make("thread-background-tasks");
+      const projectId = ProjectId.make("project-background-tasks");
+      let sequence = 0;
+      const appendActivity = (
+        kind: string,
+        payload: Record<string, unknown>,
+        tone: "info" | "error" = "info",
+      ) => {
+        sequence += 1;
+        const at = `2026-02-26T12:40:0${sequence}.000Z`;
+        return appendAndProject({
+          type: "thread.activity-appended",
+          eventId: EventId.make(`evt-bg-task-activity-${sequence}`),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: at,
+          commandId: CommandId.make(`cmd-bg-task-activity-${sequence}`),
+          causationEventId: null,
+          correlationId: CorrelationId.make(`cmd-bg-task-activity-${sequence}`),
+          metadata: {},
+          payload: {
+            threadId,
+            activity: {
+              id: EventId.make(`activity-bg-task-${sequence}`),
+              tone,
+              kind,
+              summary: kind,
+              payload,
+              turnId: null,
+              createdAt: at,
+            },
+          },
+        });
+      };
+
+      // Same predicate the shell snapshot counts with, so this pins the rows
+      // the sidebar chip ends up reading.
+      const readCount = Effect.gen(function* () {
+        const rows = yield* sql<{ readonly count: number }>`
+          SELECT COUNT(*) AS count
+          FROM projection_thread_background_tasks
+          WHERE thread_id = ${threadId}
+            AND backgrounded = 1
+            AND status IN ('pending', 'running', 'paused')
+        `;
+        return rows[0]?.count ?? -1;
+      });
+
+      yield* appendAndProject({
+        type: "project.created",
+        eventId: EventId.make("evt-bg-task-1"),
+        aggregateKind: "project",
+        aggregateId: projectId,
+        occurredAt: "2026-02-26T12:40:00.000Z",
+        commandId: CommandId.make("cmd-bg-task-1"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-bg-task-1"),
+        metadata: {},
+        payload: {
+          projectId,
+          title: "Project Background Tasks",
+          workspaceRoot: "/tmp/project-background-tasks",
+          defaultModelSelection: null,
+          scripts: [],
+          createdAt: "2026-02-26T12:40:00.000Z",
+          updatedAt: "2026-02-26T12:40:00.000Z",
+        },
+      });
+
+      yield* appendAndProject({
+        type: "thread.created",
+        eventId: EventId.make("evt-bg-task-2"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-02-26T12:40:00.500Z",
+        commandId: CommandId.make("cmd-bg-task-2"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-bg-task-2"),
+        metadata: {},
+        payload: {
+          threadId,
+          projectId,
+          title: "Thread Background Tasks",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("claudeAgent"),
+            model: "claude-opus-5",
+          },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdAt: "2026-02-26T12:40:00.500Z",
+          updatedAt: "2026-02-26T12:40:00.500Z",
+        },
+      });
+
+      // A foreground task is already covered by the running turn.
+      yield* appendActivity("task.started", {
+        taskId: "task-1",
+        taskType: "shell",
+        detail: "Watch CI",
+      });
+      assert.equal(yield* readCount, 0);
+
+      // Backgrounding it is what makes the thread read as busy.
+      yield* appendActivity("task.updated", {
+        taskId: "task-1",
+        status: "running",
+        backgrounded: true,
+        title: "Watch CI",
+        command: "gh run watch",
+      });
+      assert.equal(yield* readCount, 1);
+
+      // A second backgrounded task adds to the count.
+      yield* appendActivity("task.started", { taskId: "task-2", detail: "Watch deploy" });
+      yield* appendActivity("task.updated", {
+        taskId: "task-2",
+        status: "running",
+        backgrounded: true,
+      });
+      assert.equal(yield* readCount, 2);
+
+      // Settling one drops it back out without disturbing the other.
+      yield* appendActivity("task.completed", {
+        taskId: "task-1",
+        status: "completed",
+        title: "Watch CI",
+      });
+      assert.equal(yield* readCount, 1);
+
+      yield* appendActivity(
+        "task.completed",
+        { taskId: "task-2", status: "failed", title: "Watch deploy" },
+        "error",
+      );
+      assert.equal(yield* readCount, 0);
+    }),
+  );
+
   it.effect("clears stale pending user input from projected shell summaries", () =>
     Effect.gen(function* () {
       const projectionPipeline = yield* OrchestrationProjectionPipeline;

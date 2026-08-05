@@ -8,6 +8,12 @@
  * authenticates without spending tokens, so that is the cheapest honest
  * answer available.
  *
+ * `GET /models` is only the *default* though, and getting that wrong is
+ * silent. OpenRouter serves its listing publicly: it answers 200 to a key
+ * that does not exist, so probing it would report every mistyped key as
+ * authenticated and defer the failure to the first turn. A preset that knows
+ * better overrides {@link ByokPreset.probePath} — OpenRouter points at `key`.
+ *
  * The three-way result matters. Network failures, timeouts, and proxies must
  * report `unknown` rather than `invalid`: claiming a key is bad because we
  * could not reach the internet would be its own lie, and would make an
@@ -24,6 +30,9 @@ import type { ByokPreset } from "./byokPresets.ts";
 const PROBE_TIMEOUT_MS = 8_000;
 
 export type ByokApiKeyStatus = "valid" | "invalid" | "unknown";
+
+/** Used when a preset does not name its own authenticated endpoint. */
+export const DEFAULT_PROBE_PATH = "models";
 
 /** Join a preset base URL with a path without doubling or dropping slashes. */
 export function joinProviderUrl(baseUrl: string, path: string): string {
@@ -51,7 +60,8 @@ export const probeByokApiKey = Effect.fn("probeByokApiKey")(function* (input: {
   if (apiKey.length === 0) return "invalid";
 
   const client = yield* HttpClient.HttpClient;
-  const request = HttpClientRequest.get(joinProviderUrl(input.preset.baseUrl, "models")).pipe(
+  const probePath = input.preset.probePath ?? DEFAULT_PROBE_PATH;
+  const request = HttpClientRequest.get(joinProviderUrl(input.preset.baseUrl, probePath)).pipe(
     HttpClientRequest.setHeader("accept", "application/json"),
     HttpClientRequest.setHeader("authorization", `Bearer ${apiKey}`),
   );

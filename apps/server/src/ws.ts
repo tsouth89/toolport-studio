@@ -52,6 +52,9 @@ import {
   AssetWorkspaceContextNotFoundError,
   AssetWorkspaceContextResolutionError,
   EnvironmentAuthorizationError,
+  type ByokCatalogListResult,
+  type ProviderInstanceId,
+  type SidebarFolderId,
   ThreadId,
   type TerminalAttachStreamEvent,
   type TerminalError,
@@ -65,6 +68,12 @@ import { HttpRouter, HttpServerRequest, HttpServerRespondable } from "effect/uns
 import { RpcSerialization, RpcServer } from "effect/unstable/rpc";
 
 import * as CheckpointDiffQuery from "./checkpointing/CheckpointDiffQuery.ts";
+import {
+  browseByokCatalog,
+  BYOK_CATALOG_CACHE_FILE_NAME,
+} from "./provider/Drivers/Byok/byokModelCatalog.ts";
+import { findByokPreset } from "./provider/Drivers/Byok/byokPresets.ts";
+import * as Path from "effect/Path";
 import * as ServerConfig from "./config.ts";
 import { readToolportMcpStatusSnapshot } from "./mcp/ToolportRegistry.ts";
 import * as Keybindings from "./keybindings.ts";
@@ -93,6 +102,7 @@ import * as PortScanner from "./preview/PortScanner.ts";
 import * as WorkspaceEntries from "./workspace/WorkspaceEntries.ts";
 import * as WorkspaceFileSystem from "./workspace/WorkspaceFileSystem.ts";
 import * as WorkspacePaths from "./workspace/WorkspacePaths.ts";
+import { projectlessWorkspaceRoot } from "./workspace/projectlessWorkspace.ts";
 import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
 import * as VcsProvisioningService from "./vcs/VcsProvisioningService.ts";
 import * as GitWorkflowService from "./git/GitWorkflowService.ts";
@@ -293,6 +303,7 @@ const RPC_REQUIRED_SCOPE = new Map<string, AuthEnvironmentScope>([
   [WS_METHODS.serverGetProcessDiagnostics, AuthOrchestrationReadScope],
   [WS_METHODS.serverGetProcessResourceHistory, AuthOrchestrationReadScope],
   [WS_METHODS.serverSignalProcess, AuthOrchestrationOperateScope],
+  [WS_METHODS.serverListByokCatalog, AuthOrchestrationReadScope],
   [WS_METHODS.cloudGetRelayClientStatus, AuthRelayWriteScope],
   [WS_METHODS.cloudInstallRelayClient, AuthRelayWriteScope],
   [WS_METHODS.sourceControlLookupRepository, AuthOrchestrationReadScope],
@@ -627,6 +638,17 @@ const makeWsRpcLayer = (
                 projectId: event.payload.projectId,
               }),
             );
+          case "sidebar-folder.created":
+          case "sidebar-folder.meta-updated":
+            return sidebarFolderUpsertOrRemove(event.payload.sidebarFolderId, event.sequence);
+          case "sidebar-folder.deleted":
+            return Effect.succeed(
+              Option.some({
+                kind: "sidebar-folder-removed" as const,
+                sequence: event.sequence,
+                sidebarFolderId: event.payload.sidebarFolderId,
+              }),
+            );
           case "thread.deleted":
           case "thread.archived":
             return Effect.succeed(
@@ -652,7 +674,7 @@ const makeWsRpcLayer = (
       // If both attempts fail, log and drop the stream item; treating an error as
       // a missing row would incorrectly remove a still-active aggregate.
       const retryShellProjectionRead = <A, E>(
-        aggregateKind: "project" | "thread",
+        aggregateKind: "project" | "sidebar-folder" | "thread",
         aggregateId: string,
         read: Effect.Effect<A, E>,
       ): Effect.Effect<Option.Option<A>, never, never> =>
@@ -692,6 +714,35 @@ const makeWsRpcLayer = (
                     kind: "project-upserted" as const,
                     sequence,
                     project: nextProject,
+                  }),
+              }),
+            ),
+          ),
+        );
+
+      const sidebarFolderUpsertOrRemove = (
+        sidebarFolderId: SidebarFolderId,
+        sequence: number,
+      ): Effect.Effect<Option.Option<OrchestrationShellStreamEvent>, never, never> =>
+        retryShellProjectionRead(
+          "sidebar-folder",
+          sidebarFolderId,
+          projectionSnapshotQuery.getSidebarFolderShellById(sidebarFolderId),
+        ).pipe(
+          Effect.map(
+            Option.flatMap((sidebarFolder) =>
+              Option.match(sidebarFolder, {
+                onNone: () =>
+                  Option.some<OrchestrationShellStreamEvent>({
+                    kind: "sidebar-folder-removed" as const,
+                    sequence,
+                    sidebarFolderId,
+                  }),
+                onSome: (nextSidebarFolder) =>
+                  Option.some<OrchestrationShellStreamEvent>({
+                    kind: "sidebar-folder-upserted" as const,
+                    sequence,
+                    sidebarFolder: nextSidebarFolder,
                   }),
               }),
             ),
@@ -1058,6 +1109,53 @@ const makeWsRpcLayer = (
             ),
           );
       };
+
+      /**
+       * Models an API-key instance could be pointed at, for the settings
+       * browser.
+       *
+       * Reads the instance's own generated home rather than any global list,
+       * because the catalog is per instance: two OpenRouter instances on
+       * different accounts can legitimately see different models. An instance
+       * that is not preset-backed, or names a preset this build does not know,
+       * answers with an empty list instead of an error — the browser is an
+       * affordance, not a thing worth failing a settings screen over.
+       */
+      const EMPTY_BYOK_CATALOG: ByokCatalogListResult = { models: [], source: "seeds" };
+      const listByokCatalogForInstance = (instanceId: ProviderInstanceId) =>
+        Effect.gen(function* () {
+          const settings = yield* serverSettings.getSettings;
+          const instance = settings.providerInstances?.[instanceId];
+          const presetId =
+            instance && typeof instance.config === "object" && instance.config !== null
+              ? (instance.config as { readonly preset?: unknown }).preset
+              : undefined;
+          const preset = typeof presetId === "string" ? findByokPreset(presetId) : undefined;
+          if (!preset) return EMPTY_BYOK_CATALOG;
+
+          const path = yield* Path.Path;
+          const result = yield* browseByokCatalog({
+            preset,
+            cachePath: path.join(config.stateDir, "byok", instanceId, BYOK_CATALOG_CACHE_FILE_NAME),
+          });
+          const listed: ByokCatalogListResult = {
+            models: result.models.map((model) => ({
+              slug: model.slug,
+              displayName: model.displayName,
+              description: model.description,
+              contextWindow: model.contextWindow,
+              supportsVision: model.supportsVision,
+              reasoningEfforts: model.reasoningEfforts,
+            })),
+            source: result.source,
+          };
+          return listed;
+        }).pipe(
+          // A settings-read failure should degrade to an empty browser rather
+          // than failing the RPC: the list is an affordance on a settings
+          // screen, and the slug field still works without it.
+          Effect.orElseSucceed(() => EMPTY_BYOK_CATALOG),
+        );
 
       const loadServerConfig = Effect.gen(function* () {
         const keybindingsConfig = yield* keybindings.loadConfigState;
@@ -1557,6 +1655,12 @@ const makeWsRpcLayer = (
               "rpc.aggregate": "server",
             },
           ),
+        [WS_METHODS.serverListByokCatalog]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverListByokCatalog,
+            listByokCatalogForInstance(input.instanceId),
+            { "rpc.aggregate": "server" },
+          ),
         [WS_METHODS.serverGetProcessDiagnostics]: (_input) =>
           observeRpcEffect(WS_METHODS.serverGetProcessDiagnostics, processDiagnostics.read, {
             "rpc.aggregate": "server",
@@ -1735,6 +1839,14 @@ const makeWsRpcLayer = (
               if (Option.isNone(thread)) {
                 return yield* new AssetWorkspaceContextNotFoundError({
                   resource: input.resource,
+                });
+              }
+              // A projectless thread's assets live under the projectless
+              // scratch directory, so there is no project row to resolve.
+              if (thread.value.projectId === null) {
+                return yield* issueAssetUrl({
+                  resource: input.resource,
+                  workspaceRoot: thread.value.worktreePath ?? projectlessWorkspaceRoot(),
                 });
               }
               const project = yield* projectionSnapshotQuery

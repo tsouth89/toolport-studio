@@ -20,6 +20,7 @@ import type {
   VcsStatusStreamEvent,
 } from "@toolport-studio/contracts";
 import { GitManagerError } from "@toolport-studio/contracts";
+import { isHostWindows } from "@toolport-studio/shared/hostProcess";
 
 import * as VcsStatusBroadcaster from "./VcsStatusBroadcaster.ts";
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
@@ -317,6 +318,8 @@ describe("VcsStatusBroadcaster", () => {
     );
 
     return Effect.gen(function* () {
+      // Symlink creation needs privileges Windows CI does not grant.
+      if (yield* isHostWindows) return;
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const realDir = yield* fileSystem.makeTempDirectoryScoped({

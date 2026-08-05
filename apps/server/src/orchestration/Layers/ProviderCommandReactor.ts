@@ -94,12 +94,32 @@ const HANDLED_TURN_START_KEY_MAX = 10_000;
 const HANDLED_TURN_START_KEY_TTL = Duration.minutes(30);
 const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
 const DEFAULT_THREAD_TITLE = "New thread";
+/**
+ * Bounds session ensure / startSession / request build only.
+ * Must stay relatively short so a wedged spawn fails closed.
+ */
 const DEFAULT_PROVIDER_SESSION_OPERATION_TIMEOUT = Duration.minutes(2);
+/**
+ * Bounds the full `sendTurn` wait. ACP providers (Grok, Cursor) block
+ * `sendTurn` until the *entire* prompt settles, not until the turn merely
+ * starts. A short wall-clock here false-kills live multi-minute work with
+ * "Provider turn start timed out before the provider responded." while the
+ * agent is still streaming (SOU-399 / dogfood). Adapters own silence
+ * watchdogs and user Stop; this is only an absolute hang ceiling.
+ * `null` = no reactor-level timeout on sendTurn.
+ */
+const DEFAULT_PROVIDER_TURN_OPERATION_TIMEOUT: Duration.Duration | null = null;
 const DEFAULT_PROVIDER_CONTROL_OPERATION_TIMEOUT = Duration.seconds(30);
 const DEFAULT_PROVIDER_COMMAND_LANE_IDLE_TIME_TO_LIVE = Duration.seconds(30);
 
 export interface ProviderCommandReactorOptions {
   readonly sessionOperationTimeout?: Duration.Input;
+  /**
+   * Timeout for providerService.sendTurn. Prefer unset/null so long Grok/Cursor
+   * turns are not false-killed. Tests may set a short duration to prove wedge
+   * recovery.
+   */
+  readonly turnOperationTimeout?: Duration.Input | null;
   readonly controlOperationTimeout?: Duration.Input;
   readonly laneIdleTimeToLive?: Duration.Input;
 }
@@ -235,6 +255,12 @@ const make = Effect.gen(function* () {
   const options = yield* ProviderCommandReactorConfig;
   const sessionOperationTimeout =
     options.sessionOperationTimeout ?? DEFAULT_PROVIDER_SESSION_OPERATION_TIMEOUT;
+  // Explicit null disables the sendTurn wall-clock. Undefined falls back to
+  // product default (also null). Tests pass a short Duration to simulate wedges.
+  const turnOperationTimeout =
+    options.turnOperationTimeout === undefined
+      ? DEFAULT_PROVIDER_TURN_OPERATION_TIMEOUT
+      : options.turnOperationTimeout;
   const controlOperationTimeout =
     options.controlOperationTimeout ?? DEFAULT_PROVIDER_CONTROL_OPERATION_TIMEOUT;
   const laneIdleTimeToLive =
@@ -489,7 +515,12 @@ const make = Effect.gen(function* () {
       Effect.asVoid,
     );
 
-  const resolveProject = Effect.fnUntraced(function* (projectId: ProjectId) {
+  // A projectless thread has no workspace to look up; its cwd comes from the
+  // projectless scratch directory instead.
+  const resolveProject = Effect.fnUntraced(function* (projectId: ProjectId | null) {
+    if (projectId === null) {
+      return undefined;
+    }
     return yield* projectionSnapshotQuery
       .getProjectShellById(projectId)
       .pipe(Effect.map(Option.getOrUndefined));
@@ -1173,16 +1204,24 @@ const make = Effect.gen(function* () {
       return;
     }
 
-    yield* withProviderOperationTimeout(providerService.sendTurn(sendTurnRequest.value), {
-      duration: sessionOperationTimeout,
-      provider: providerErrorLabelFromInstanceHint({
-        instanceId: event.payload.modelSelection?.instanceId,
-        modelSelectionInstanceId: thread.modelSelection.instanceId,
-        sessionProvider: thread.session?.providerName ?? undefined,
-      }),
-      method: "turn.start",
-      operation: "Provider turn start",
-    }).pipe(Effect.catchCause(recoverTurnStartFailure));
+    // Do not reuse sessionOperationTimeout here. Grok/Cursor sendTurn blocks
+    // until the prompt finishes; a 2m "start" timeout interrupts live turns.
+    const sendTurnEffect = providerService.sendTurn(sendTurnRequest.value);
+    const providerLabel = providerErrorLabelFromInstanceHint({
+      instanceId: event.payload.modelSelection?.instanceId,
+      modelSelectionInstanceId: thread.modelSelection.instanceId,
+      sessionProvider: thread.session?.providerName ?? undefined,
+    });
+    yield* (
+      turnOperationTimeout === null
+        ? sendTurnEffect
+        : withProviderOperationTimeout(sendTurnEffect, {
+            duration: turnOperationTimeout,
+            provider: providerLabel,
+            method: "turn.start",
+            operation: "Provider turn",
+          })
+    ).pipe(Effect.catchCause(recoverTurnStartFailure));
   });
 
   /**

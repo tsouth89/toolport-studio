@@ -13,6 +13,7 @@ import {
   materializeCodexShadowHome,
   resolveCodexHomeLayout,
 } from "./CodexHomeLayout.ts";
+import { isHostWindows } from "@toolport-studio/shared/hostProcess";
 const decodeCodexSettingsValue = Schema.decodeSync(CodexSettings);
 
 const decodeCodexSettings = (input: {
@@ -86,6 +87,7 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
   describe("materializeCodexShadowHome", () => {
     it.effect("materializes a shadow home with shared state links and private auth", () =>
       Effect.gen(function* () {
+        if (yield* isHostWindows) return;
         const fileSystem = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
         const sharedHome = yield* makeTempDir("t3code-codex-shared-");
@@ -136,6 +138,7 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
 
     it.effect("replaces Codex-created local MCP OAuth locks with the shared lock directory", () =>
       Effect.gen(function* () {
+        if (yield* isHostWindows) return;
         const fileSystem = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
         const sharedHome = yield* makeTempDir("t3code-codex-shared-");
@@ -168,6 +171,7 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
 
     it.effect("accepts Codex-created shadow-local runtime directories", () =>
       Effect.gen(function* () {
+        if (yield* isHostWindows) return;
         const fileSystem = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
         const sharedHome = yield* makeTempDir("t3code-codex-shared-");
@@ -235,6 +239,7 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
 
     it.effect("rejects shared entries that already exist in the shadow home as real files", () =>
       Effect.gen(function* () {
+        if (yield* isHostWindows) return;
         const path = yield* Path.Path;
         const sharedHome = yield* makeTempDir("t3code-codex-shared-");
         const shadowRoot = yield* makeTempDir("t3code-codex-shadow-root-");

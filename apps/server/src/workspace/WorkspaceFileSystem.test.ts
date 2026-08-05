@@ -1,3 +1,4 @@
+import * as NodeProcess from "node:process";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it, describe, expect } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -11,6 +12,7 @@ import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as WorkspaceEntries from "./WorkspaceEntries.ts";
 import * as WorkspaceFileSystem from "./WorkspaceFileSystem.ts";
 import * as WorkspacePaths from "./WorkspacePaths.ts";
+import { isHostWindows } from "@toolport-studio/shared/hostProcess";
 
 const ProjectLayer = WorkspaceFileSystem.layer.pipe(
   Layer.provide(WorkspacePaths.layer),
@@ -23,7 +25,7 @@ const TestLayer = Layer.empty.pipe(
   Layer.provideMerge(WorkspacePaths.layer),
   Layer.provideMerge(VcsDriverRegistry.layer.pipe(Layer.provide(VcsProcess.layer))),
   Layer.provide(
-    ServerConfig.ServerConfig.layerTest(process.cwd(), {
+    ServerConfig.ServerConfig.layerTest(NodeProcess.cwd(), {
       prefix: "t3-workspace-files-test-",
     }),
   ),
@@ -90,6 +92,7 @@ it.layer(TestLayer, { excludeTestServices: true })("WorkspaceFileSystemLive", (i
 
     it.effect("rejects symlinks that resolve outside the workspace root", () =>
       Effect.gen(function* () {
+        if (yield* isHostWindows) return;
         const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;
         const fileSystem = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;

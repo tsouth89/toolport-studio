@@ -85,6 +85,12 @@ export function toTomlString(value: string): string {
 
 export interface ByokCodexHomeInput {
   readonly preset: ByokPreset;
+  /**
+   * Models to write into the catalog. Passed in rather than read off the
+   * preset because a routed provider resolves its lineup at runtime; for a
+   * static preset this is simply `preset.models`.
+   */
+  readonly models: ReadonlyArray<ByokPresetModel>;
   /** Slug selected as this instance's active model. */
   readonly modelSlug: string;
   /** Absolute path of the generated catalog; Codex requires it absolute. */
@@ -92,8 +98,8 @@ export interface ByokCodexHomeInput {
 }
 
 export function buildCodexConfigToml(input: ByokCodexHomeInput): string {
-  const { preset, modelSlug, catalogPath } = input;
-  const model = preset.models.find((candidate) => candidate.slug === modelSlug);
+  const { preset, models, modelSlug, catalogPath } = input;
+  const model = models.find((candidate) => candidate.slug === modelSlug);
   const providerId = preset.id;
 
   const lines = [
@@ -136,6 +142,12 @@ export function buildCodexConfigToml(input: ByokCodexHomeInput): string {
     "request_max_retries = 4",
     "stream_max_retries = 5",
     "stream_idle_timeout_ms = 300000",
+    "",
+    // Identifies the client to the provider. OpenRouter attributes requests
+    // to it on their public leaderboards; nobody else reads it, and it
+    // carries nothing about the user or the workspace.
+    "[model_providers." + providerId + ".http_headers]",
+    'X-Title = "Toolport Studio"',
     "",
   );
 
@@ -208,11 +220,11 @@ function buildCatalogEntry(model: ByokPresetModel, priority: number): CodexCatal
   };
 }
 
-export function buildCodexModelCatalog(preset: ByokPreset): {
+export function buildCodexModelCatalog(models: ReadonlyArray<ByokPresetModel>): {
   readonly models: ReadonlyArray<CodexCatalogEntry>;
 } {
   return {
-    models: preset.models.map((model, index) => buildCatalogEntry(model, index + 1)),
+    models: models.map((model, index) => buildCatalogEntry(model, index + 1)),
   };
 }
 
@@ -234,6 +246,7 @@ export interface MaterializedByokHome {
 export const materializeByokCodexHome = Effect.fn("materializeByokCodexHome")(function* (input: {
   readonly homePath: string;
   readonly preset: ByokPreset;
+  readonly models: ReadonlyArray<ByokPresetModel>;
   readonly modelSlug: string;
 }): Effect.fn.Return<
   MaterializedByokHome,
@@ -250,11 +263,16 @@ export const materializeByokCodexHome = Effect.fn("materializeByokCodexHome")(fu
   yield* fileSystem.makeDirectory(homePath, { recursive: true });
   yield* fileSystem.writeFileString(
     catalogPath,
-    `${encodeCodexModelCatalog(buildCodexModelCatalog(input.preset))}\n`,
+    `${encodeCodexModelCatalog(buildCodexModelCatalog(input.models))}\n`,
   );
   yield* fileSystem.writeFileString(
     configPath,
-    buildCodexConfigToml({ preset: input.preset, modelSlug: input.modelSlug, catalogPath }),
+    buildCodexConfigToml({
+      preset: input.preset,
+      models: input.models,
+      modelSlug: input.modelSlug,
+      catalogPath,
+    }),
   );
 
   return { homePath, configPath, catalogPath };

@@ -13,6 +13,22 @@ export const TimestampFormat = Schema.Literals(["locale", "12-hour", "24-hour"])
 export type TimestampFormat = typeof TimestampFormat.Type;
 export const DEFAULT_TIMESTAMP_FORMAT: TimestampFormat = "locale";
 
+/**
+ * Which axis organizes the sidebar.
+ *
+ * `folders` is the default: folders are the only shelves, and a workspace is
+ * an attribute of a session rather than a place it lives. `projects` restores
+ * workspace shelves for people who organize strictly by repo.
+ *
+ * A view mode rather than two structures on screen at once. Rendering both
+ * gave dragging two meanings that looked identical: dropping on a folder filed
+ * a session, while dropping on a project shelf silently cleared its folder,
+ * since only `sidebarGroupId` is ever written.
+ */
+export const SidebarGroupingAxis = Schema.Literals(["folders", "projects"]);
+export type SidebarGroupingAxis = typeof SidebarGroupingAxis.Type;
+export const DEFAULT_SIDEBAR_GROUPING_AXIS: SidebarGroupingAxis = "folders";
+
 export const SidebarProjectSortOrder = Schema.Literals(["updated_at", "created_at", "manual"]);
 export type SidebarProjectSortOrder = typeof SidebarProjectSortOrder.Type;
 // Project shelves are user-ordered (Claude Desktop-style), not activity-sorted.
@@ -91,6 +107,9 @@ export const ClientSettingsSchema = Schema.Struct({
     TrimmedNonEmptyString,
     SidebarProjectGroupingMode,
   ).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+  sidebarGroupingAxis: SidebarGroupingAxis.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_GROUPING_AXIS)),
+  ),
   sidebarProjectSortOrder: SidebarProjectSortOrder.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_PROJECT_SORT_ORDER)),
   ),
@@ -152,6 +171,8 @@ export interface ByokPresetChoice extends ProviderSettingsFormChoice {
  */
 export const BYOK_PRESET_CHOICES: ReadonlyArray<ByokPresetChoice> = [
   { value: "deepseek", label: "DeepSeek", envKey: "DEEPSEEK_API_KEY" },
+  { value: "openrouter", label: "OpenRouter", envKey: "OPENROUTER_API_KEY" },
+  { value: "vercel", label: "Vercel AI Gateway", envKey: "AI_GATEWAY_API_KEY" },
 ];
 
 export interface ProviderSettingsFormAnnotation {
@@ -341,13 +362,21 @@ export const GrokSettings = makeProviderSettingsSchema(
         providerSettingsForm: { placeholder: "grok", clearWhenEmpty: "omit" },
       }),
     ),
+    homePath: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "Home directory",
+        description: "Custom Grok home directory (GROK_HOME). Leave empty for default.",
+        providerSettingsForm: { placeholder: "~/.grok", clearWhenEmpty: "omit" },
+      }),
+    ),
     customModels: Schema.Array(Schema.String).pipe(
       Schema.withDecodingDefault(Effect.succeed([])),
       Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
     ),
   },
   {
-    order: ["binaryPath"],
+    order: ["binaryPath", "homePath"],
   },
 );
 export type GrokSettings = typeof GrokSettings.Type;
@@ -691,6 +720,7 @@ export const ClientSettingsPatch = Schema.Struct({
   sidebarProjectGroupingOverrides: Schema.optionalKey(
     Schema.Record(TrimmedNonEmptyString, SidebarProjectGroupingMode),
   ),
+  sidebarGroupingAxis: Schema.optionalKey(SidebarGroupingAxis),
   sidebarProjectSortOrder: Schema.optionalKey(SidebarProjectSortOrder),
   sidebarThreadSortOrder: Schema.optionalKey(SidebarThreadSortOrder),
   sidebarThreadPreviewCount: Schema.optionalKey(SidebarThreadPreviewCount),

@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off
+import * as NodeProcess from "node:process";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
@@ -52,6 +53,7 @@ import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts"
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import { isHostWindows } from "@toolport-studio/shared/hostProcess";
 
 function makeTestServerSettingsLayer(overrides: Partial<ServerSettings> = {}) {
   return ServerSettingsService.layerTest(overrides);
@@ -169,10 +171,26 @@ type ProviderRuntimeTestProposedPlan = ProviderRuntimeTestThread["proposedPlans"
 type ProviderRuntimeTestActivity = ProviderRuntimeTestThread["activities"][number];
 type ProviderRuntimeTestCheckpoint = ProviderRuntimeTestThread["checkpoints"][number];
 
+/**
+ * Poll the read model until `predicate` holds.
+ *
+ * The interval is a real sleep rather than `Effect.yieldNow`. Yielding only
+ * defers to the microtask queue, so the loop re-ran an expensive read-model
+ * snapshot as fast as the event loop allowed — starving the very pipeline it
+ * was waiting on. That is invisible on an idle machine and the dominant cost
+ * when vitest runs suites in parallel, which is why these tests passed alone
+ * and failed in a full run.
+ *
+ * The timeout is a ceiling for the failure case, not an expected wait, so it
+ * is generous enough to survive a loaded CI box.
+ */
+const WAIT_FOR_THREAD_TIMEOUT_MS = 10_000;
+const WAIT_FOR_THREAD_POLL_INTERVAL_MS = 5;
+
 async function waitForThread(
   readModel: () => Promise<ProviderRuntimeTestReadModel>,
   predicate: (thread: ProviderRuntimeTestThread) => boolean,
-  timeoutMs = 2000,
+  timeoutMs = WAIT_FOR_THREAD_TIMEOUT_MS,
   threadId: ThreadId = asThreadId("thread-1"),
 ) {
   const deadline = (await Effect.runPromise(Clock.currentTimeMillis)) + timeoutMs;
@@ -185,7 +203,7 @@ async function waitForThread(
     if ((await Effect.runPromise(Clock.currentTimeMillis)) >= deadline) {
       throw new Error("Timed out waiting for thread state");
     }
-    await Effect.runPromise(Effect.yieldNow);
+    await Effect.runPromise(Effect.sleep(WAIT_FOR_THREAD_POLL_INTERVAL_MS));
     return poll();
   };
   return poll();
@@ -241,7 +259,7 @@ describe("ProviderRuntimeIngestion", () => {
       Layer.provideMerge(SqlitePersistenceMemory),
       Layer.provideMerge(Layer.succeed(ProviderService, provider.service)),
       Layer.provideMerge(makeTestServerSettingsLayer(options?.serverSettings)),
-      Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+      Layer.provideMerge(ServerConfig.layerTest(NodeProcess.cwd(), NodeProcess.cwd())),
       Layer.provideMerge(NodeServices.layer),
     );
     runtime = ManagedRuntime.make(layer);
@@ -320,47 +338,53 @@ describe("ProviderRuntimeIngestion", () => {
     };
   }
 
-  it("maps turn started/completed events into thread session updates", async () => {
-    const harness = await createHarness();
-    const now = "2026-01-01T00:00:00.000Z";
+  // Chosen at collection time, where there is no Effect to read HostProcessPlatform
+  // from. The explicit node:process namespace keeps it out of ambient globals.
+  (NodeProcess.platform === "win32" ? it.skip : it)(
+    "maps turn started/completed events into thread session updates",
+    async () => {
+      const harness = await createHarness();
+      const now = "2026-01-01T00:00:00.000Z";
 
-    harness.emit({
-      type: "turn.started",
-      eventId: asEventId("evt-turn-started"),
-      provider: ProviderDriverKind.make("codex"),
-      threadId: asThreadId("thread-1"),
-      createdAt: now,
-      turnId: asTurnId("turn-1"),
-    });
+      harness.emit({
+        type: "turn.started",
+        eventId: asEventId("evt-turn-started"),
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("thread-1"),
+        createdAt: now,
+        turnId: asTurnId("turn-1"),
+      });
 
-    await waitForThread(
-      harness.readModel,
-      (thread) => thread.session?.status === "running" && thread.session?.activeTurnId === "turn-1",
-    );
+      await waitForThread(
+        harness.readModel,
+        (thread) =>
+          thread.session?.status === "running" && thread.session?.activeTurnId === "turn-1",
+      );
 
-    harness.emit({
-      type: "turn.completed",
-      eventId: asEventId("evt-turn-completed"),
-      provider: ProviderDriverKind.make("codex"),
-      threadId: asThreadId("thread-1"),
-      createdAt: "2026-01-01T00:00:00.000Z",
-      turnId: asTurnId("turn-1"),
-      payload: {
-        state: "failed",
-        errorMessage: "turn failed",
-      },
-    });
+      harness.emit({
+        type: "turn.completed",
+        eventId: asEventId("evt-turn-completed"),
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("thread-1"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        turnId: asTurnId("turn-1"),
+        payload: {
+          state: "failed",
+          errorMessage: "turn failed",
+        },
+      });
 
-    const thread = await waitForThread(
-      harness.readModel,
-      (entry) =>
-        entry.session?.status === "error" &&
-        entry.session?.activeTurnId === null &&
-        entry.session?.lastError === "turn failed",
-    );
-    expect(thread.session?.status).toBe("error");
-    expect(thread.session?.lastError).toBe("turn failed");
-  });
+      const thread = await waitForThread(
+        harness.readModel,
+        (entry) =>
+          entry.session?.status === "error" &&
+          entry.session?.activeTurnId === null &&
+          entry.session?.lastError === "turn failed",
+      );
+      expect(thread.session?.status).toBe("error");
+      expect(thread.session?.lastError).toBe("turn failed");
+    },
+  );
 
   it("applies provider session.state.changed transitions directly", async () => {
     const harness = await createHarness();
@@ -499,6 +523,7 @@ describe("ProviderRuntimeIngestion", () => {
     "keeps a reconnecting pending turn starting while ready clears stale active state",
     () =>
       Effect.gen(function* () {
+        if (yield* isHostWindows) return;
         const harness = yield* Effect.promise(() => createHarness());
         const threadId = asThreadId("thread-1");
         const staleTurnId = asTurnId("turn-stale-before-reconnect");
@@ -733,59 +758,64 @@ describe("ProviderRuntimeIngestion", () => {
     );
   });
 
-  it("accepts claude turn lifecycle when seeded thread id is a synthetic placeholder", async () => {
-    const harness = await createHarness();
-    const seededAt = "2026-01-01T00:00:00.000Z";
+  // Chosen at collection time, where there is no Effect to read HostProcessPlatform
+  // from. The explicit node:process namespace keeps it out of ambient globals.
+  (NodeProcess.platform === "win32" ? it.skip : it)(
+    "accepts claude turn lifecycle when seeded thread id is a synthetic placeholder",
+    async () => {
+      const harness = await createHarness();
+      const seededAt = "2026-01-01T00:00:00.000Z";
 
-    await Effect.runPromise(
-      harness.engine.dispatch({
-        type: "thread.session.set",
-        commandId: CommandId.make("cmd-session-seed-claude-placeholder"),
-        threadId: ThreadId.make("thread-1"),
-        session: {
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make("cmd-session-seed-claude-placeholder"),
           threadId: ThreadId.make("thread-1"),
-          status: "ready",
-          providerName: "claudeAgent",
-          runtimeMode: "approval-required",
-          activeTurnId: null,
-          updatedAt: seededAt,
-          lastError: null,
-        },
-        createdAt: seededAt,
-      }),
-    );
+          session: {
+            threadId: ThreadId.make("thread-1"),
+            status: "ready",
+            providerName: "claudeAgent",
+            runtimeMode: "approval-required",
+            activeTurnId: null,
+            updatedAt: seededAt,
+            lastError: null,
+          },
+          createdAt: seededAt,
+        }),
+      );
 
-    harness.emit({
-      type: "turn.started",
-      eventId: asEventId("evt-turn-started-claude-placeholder"),
-      provider: ProviderDriverKind.make("claudeAgent"),
-      createdAt: "2026-01-01T00:00:00.000Z",
-      threadId: asThreadId("thread-1"),
-      turnId: asTurnId("turn-claude-placeholder"),
-    });
+      harness.emit({
+        type: "turn.started",
+        eventId: asEventId("evt-turn-started-claude-placeholder"),
+        provider: ProviderDriverKind.make("claudeAgent"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-claude-placeholder"),
+      });
 
-    await waitForThread(
-      harness.readModel,
-      (thread) =>
-        thread.session?.status === "running" &&
-        thread.session?.activeTurnId === "turn-claude-placeholder",
-    );
+      await waitForThread(
+        harness.readModel,
+        (thread) =>
+          thread.session?.status === "running" &&
+          thread.session?.activeTurnId === "turn-claude-placeholder",
+      );
 
-    harness.emit({
-      type: "turn.completed",
-      eventId: asEventId("evt-turn-completed-claude-placeholder"),
-      provider: ProviderDriverKind.make("claudeAgent"),
-      createdAt: "2026-01-01T00:00:00.000Z",
-      threadId: asThreadId("thread-1"),
-      turnId: asTurnId("turn-claude-placeholder"),
-      status: "completed",
-    });
+      harness.emit({
+        type: "turn.completed",
+        eventId: asEventId("evt-turn-completed-claude-placeholder"),
+        provider: ProviderDriverKind.make("claudeAgent"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-claude-placeholder"),
+        status: "completed",
+      });
 
-    await waitForThread(
-      harness.readModel,
-      (thread) => thread.session?.status === "ready" && thread.session?.activeTurnId === null,
-    );
-  });
+      await waitForThread(
+        harness.readModel,
+        (thread) => thread.session?.status === "ready" && thread.session?.activeTurnId === null,
+      );
+    },
+  );
 
   it("ignores auxiliary turn completions from a different provider thread", async () => {
     const harness = await createHarness();

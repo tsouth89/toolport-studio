@@ -1,4 +1,10 @@
-import { CommandId, MessageId, ProjectId, ThreadId } from "@toolport-studio/contracts";
+import {
+  CommandId,
+  MessageId,
+  ProjectId,
+  SidebarFolderId,
+  ThreadId,
+} from "@toolport-studio/contracts";
 import { type CxOptions, cx } from "class-variance-authority";
 import * as Encoding from "effect/Encoding";
 import { twMerge } from "tailwind-merge";
@@ -35,6 +41,8 @@ export function randomUUID(): string {
 export const newCommandId = (): CommandId => CommandId.make(randomUUID());
 
 export const newProjectId = (): ProjectId => ProjectId.make(randomUUID());
+
+export const newSidebarFolderId = (): SidebarFolderId => SidebarFolderId.make(randomUUID());
 
 export const newThreadId = (): ThreadId => ThreadId.make(randomUUID());
 

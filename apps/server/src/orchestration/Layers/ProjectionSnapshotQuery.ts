@@ -20,11 +20,14 @@ import {
   type OrchestrationProposedPlan,
   type OrchestrationProject,
   type OrchestrationSession,
+  type OrchestrationSidebarFolder,
+  type OrchestrationSidebarFolderShell,
   type OrchestrationThreadActivity,
   type OrchestrationThreadShell,
   type OrchestrationQueuedTurn as OrchestrationQueuedTurnType,
   ModelSelection,
   ProjectId,
+  SidebarFolderId,
   ThreadId,
 } from "@toolport-studio/contracts";
 import * as Arr from "effect/Array";
@@ -45,6 +48,7 @@ import {
 } from "../../persistence/Errors.ts";
 import { ProjectionCheckpoint } from "../../persistence/Services/ProjectionCheckpoints.ts";
 import { ProjectionProject } from "../../persistence/Services/ProjectionProjects.ts";
+import { ProjectionSidebarFolder } from "../../persistence/Services/ProjectionSidebarFolders.ts";
 import { ProjectionState } from "../../persistence/Services/ProjectionState.ts";
 import { ProjectionThreadActivity } from "../../persistence/Services/ProjectionThreadActivities.ts";
 import { ProjectionThreadMessage } from "../../persistence/Services/ProjectionThreadMessages.ts";
@@ -70,6 +74,7 @@ const ProjectionProjectDbRowSchema = ProjectionProject.mapFields(
     scripts: Schema.fromJsonString(Schema.Array(ProjectScript)),
   }),
 );
+const ProjectionSidebarFolderDbRowSchema = ProjectionSidebarFolder;
 const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
   Struct.assign({
     isStreaming: Schema.Number,
@@ -122,11 +127,21 @@ const ProjectionQueuedTurnCountDbRowSchema = Schema.Struct({
 const ProjectionQueuedTurnCountForThreadDbRowSchema = Schema.Struct({
   count: NonNegativeInt,
 });
+const ProjectionBackgroundTaskCountDbRowSchema = Schema.Struct({
+  threadId: ThreadId,
+  count: NonNegativeInt,
+});
+const ProjectionBackgroundTaskCountForThreadDbRowSchema = Schema.Struct({
+  count: NonNegativeInt,
+});
 const WorkspaceRootLookupInput = Schema.Struct({
   workspaceRoot: Schema.String,
 });
 const ProjectIdLookupInput = Schema.Struct({
   projectId: ProjectId,
+});
+const SidebarFolderIdLookupInput = Schema.Struct({
+  sidebarFolderId: SidebarFolderId,
 });
 const ThreadIdLookupInput = Schema.Struct({
   threadId: ThreadId,
@@ -254,6 +269,29 @@ function mapProjectShellRow(
   };
 }
 
+function mapSidebarFolderRow(
+  row: Schema.Schema.Type<typeof ProjectionSidebarFolderDbRowSchema>,
+): OrchestrationSidebarFolder {
+  return {
+    id: row.sidebarFolderId,
+    title: row.title,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    deletedAt: row.deletedAt,
+  };
+}
+
+function mapSidebarFolderShellRow(
+  row: Schema.Schema.Type<typeof ProjectionSidebarFolderDbRowSchema>,
+): OrchestrationSidebarFolderShell {
+  return {
+    id: row.sidebarFolderId,
+    title: row.title,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
 function mapProposedPlanRow(
   row: Schema.Schema.Type<typeof ProjectionThreadProposedPlanDbRowSchema>,
 ): OrchestrationProposedPlan {
@@ -330,6 +368,39 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       `,
   });
 
+  const listSidebarFolderRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: ProjectionSidebarFolderDbRowSchema,
+    execute: () =>
+      sql`
+        SELECT
+          sidebar_folder_id AS "sidebarFolderId",
+          title,
+          created_at AS "createdAt",
+          updated_at AS "updatedAt",
+          deleted_at AS "deletedAt"
+        FROM projection_sidebar_folders
+        ORDER BY created_at ASC, sidebar_folder_id ASC
+      `,
+  });
+
+  const getSidebarFolderRow = SqlSchema.findOneOption({
+    Request: SidebarFolderIdLookupInput,
+    Result: ProjectionSidebarFolderDbRowSchema,
+    execute: ({ sidebarFolderId }) =>
+      sql`
+        SELECT
+          sidebar_folder_id AS "sidebarFolderId",
+          title,
+          created_at AS "createdAt",
+          updated_at AS "updatedAt",
+          deleted_at AS "deletedAt"
+        FROM projection_sidebar_folders
+        WHERE sidebar_folder_id = ${sidebarFolderId}
+          AND deleted_at IS NULL
+      `,
+  });
+
   const listThreadRows = SqlSchema.findAll({
     Request: Schema.Void,
     Result: ProjectionThreadDbRowSchema,
@@ -338,6 +409,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         SELECT
           thread_id AS "threadId",
           project_id AS "projectId",
+          sidebar_group_id AS "sidebarGroupId",
           title,
           model_selection_json AS "modelSelection",
           runtime_mode AS "runtimeMode",
@@ -370,6 +442,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         SELECT
           thread_id AS "threadId",
           project_id AS "projectId",
+          sidebar_group_id AS "sidebarGroupId",
           title,
           model_selection_json AS "modelSelection",
           runtime_mode AS "runtimeMode",
@@ -404,6 +477,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         SELECT
           thread_id AS "threadId",
           project_id AS "projectId",
+          sidebar_group_id AS "sidebarGroupId",
           title,
           model_selection_json AS "modelSelection",
           runtime_mode AS "runtimeMode",
@@ -498,6 +572,33 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         SELECT COUNT(*) AS count
         FROM projection_thread_queued_turns
         WHERE thread_id = ${threadId}
+      `,
+  });
+
+  // Only backgrounded, still-working tasks count: a foreground shell is already
+  // covered by the thread's running turn, and a settled task is not work.
+  const listBackgroundTaskCountRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: ProjectionBackgroundTaskCountDbRowSchema,
+    execute: () =>
+      sql`
+        SELECT thread_id AS "threadId", COUNT(*) AS count
+        FROM projection_thread_background_tasks
+        WHERE backgrounded = 1 AND status IN ('pending', 'running', 'paused')
+        GROUP BY thread_id
+      `,
+  });
+
+  const getBackgroundTaskCountByThread = SqlSchema.findOne({
+    Request: ThreadIdLookupInput,
+    Result: ProjectionBackgroundTaskCountForThreadDbRowSchema,
+    execute: ({ threadId }) =>
+      sql`
+        SELECT COUNT(*) AS count
+        FROM projection_thread_background_tasks
+        WHERE thread_id = ${threadId}
+          AND backgrounded = 1
+          AND status IN ('pending', 'running', 'paused')
       `,
   });
 
@@ -821,6 +922,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         SELECT
           thread_id AS "threadId",
           project_id AS "projectId",
+          sidebar_group_id AS "sidebarGroupId",
           title,
           model_selection_json AS "modelSelection",
           runtime_mode AS "runtimeMode",
@@ -1024,6 +1126,14 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               ),
             ),
           ),
+          listSidebarFolderRows(undefined).pipe(
+            Effect.mapError(
+              toPersistenceSqlOrDecodeError(
+                "ProjectionSnapshotQuery.getSnapshot:listSidebarFolders:query",
+                "ProjectionSnapshotQuery.getSnapshot:listSidebarFolders:decodeRows",
+              ),
+            ),
+          ),
           listThreadRows(undefined).pipe(
             Effect.mapError(
               toPersistenceSqlOrDecodeError(
@@ -1102,6 +1212,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         Effect.flatMap(
           ([
             projectRows,
+            sidebarFolderRows,
             threadRows,
             messageRows,
             queuedTurnRows,
@@ -1124,6 +1235,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               let updatedAt: string | null = null;
 
               for (const row of projectRows) {
+                updatedAt = maxIso(updatedAt, row.updatedAt);
+              }
+              for (const row of sidebarFolderRows) {
                 updatedAt = maxIso(updatedAt, row.updatedAt);
               }
               for (const row of threadRows) {
@@ -1273,6 +1387,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               const threads: ReadonlyArray<OrchestrationThread> = threadRows.map((row) => ({
                 id: row.threadId,
                 projectId: row.projectId,
+                sidebarGroupId: row.sidebarGroupId,
                 title: row.title,
                 modelSelection: row.modelSelection,
                 runtimeMode: row.runtimeMode,
@@ -1299,6 +1414,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               const snapshot = {
                 snapshotSequence: computeSnapshotSequence(stateRows),
                 projects,
+                sidebarFolders: sidebarFolderRows.map(mapSidebarFolderRow),
                 threads,
                 updatedAt: updatedAt ?? "1970-01-01T00:00:00.000Z",
               };
@@ -1327,6 +1443,14 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               toPersistenceSqlOrDecodeError(
                 "ProjectionSnapshotQuery.getCommandReadModel:listProjects:query",
                 "ProjectionSnapshotQuery.getCommandReadModel:listProjects:decodeRows",
+              ),
+            ),
+          ),
+          listSidebarFolderRows(undefined).pipe(
+            Effect.mapError(
+              toPersistenceSqlOrDecodeError(
+                "ProjectionSnapshotQuery.getCommandReadModel:listSidebarFolders:query",
+                "ProjectionSnapshotQuery.getCommandReadModel:listSidebarFolders:decodeRows",
               ),
             ),
           ),
@@ -1384,6 +1508,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         Effect.flatMap(
           ([
             projectRows,
+            sidebarFolderRows,
             threadRows,
             queuedTurnRows,
             proposedPlanRows,
@@ -1394,6 +1519,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             Effect.sync(() => {
               let updatedAt: string | null = null;
               const projects: OrchestrationProject[] = [];
+              const sidebarFolders: OrchestrationSidebarFolder[] = [];
               const threads: OrchestrationThread[] = [];
 
               for (let index = 0; index < projectRows.length; index += 1) {
@@ -1412,6 +1538,14 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   updatedAt: row.updatedAt,
                   deletedAt: row.deletedAt,
                 });
+              }
+              for (let index = 0; index < sidebarFolderRows.length; index += 1) {
+                const row = sidebarFolderRows[index];
+                if (!row) {
+                  continue;
+                }
+                updatedAt = maxIso(updatedAt, row.updatedAt);
+                sidebarFolders.push(mapSidebarFolderRow(row));
               }
               for (let index = 0; index < threadRows.length; index += 1) {
                 const row = threadRows[index];
@@ -1499,6 +1633,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 threads.push({
                   id: row.threadId,
                   projectId: row.projectId,
+                  sidebarGroupId: row.sidebarGroupId,
                   title: row.title,
                   modelSelection: row.modelSelection,
                   runtimeMode: row.runtimeMode,
@@ -1526,6 +1661,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               return {
                 snapshotSequence: computeSnapshotSequence(stateRows),
                 projects,
+                sidebarFolders,
                 threads,
                 updatedAt: updatedAt ?? "1970-01-01T00:00:00.000Z",
               } satisfies OrchestrationReadModel;
@@ -1551,6 +1687,14 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               ),
             ),
           ),
+          listSidebarFolderRows(undefined).pipe(
+            Effect.mapError(
+              toPersistenceSqlOrDecodeError(
+                "ProjectionSnapshotQuery.getShellSnapshot:listSidebarFolders:query",
+                "ProjectionSnapshotQuery.getShellSnapshot:listSidebarFolders:decodeRows",
+              ),
+            ),
+          ),
           listActiveThreadRows(undefined).pipe(
             Effect.mapError(
               toPersistenceSqlOrDecodeError(
@@ -1560,6 +1704,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             ),
           ),
           listQueuedTurnCountRows(undefined),
+          listBackgroundTaskCountRows(undefined),
           listActiveThreadSessionRows(undefined).pipe(
             Effect.mapError(
               toPersistenceSqlOrDecodeError(
@@ -1590,8 +1735,10 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         Effect.flatMap(
           ([
             projectRows,
+            sidebarFolderRows,
             threadRows,
             queuedTurnCountRows,
+            backgroundTaskCountRows,
             sessionRows,
             latestTurnRows,
             stateRows,
@@ -1599,6 +1746,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             Effect.gen(function* () {
               let updatedAt: string | null = null;
               for (const row of projectRows) {
+                updatedAt = maxIso(updatedAt, row.updatedAt);
+              }
+              for (const row of sidebarFolderRows) {
                 updatedAt = maxIso(updatedAt, row.updatedAt);
               }
               for (const row of threadRows) {
@@ -1631,6 +1781,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               const queuedTurnCountByThread = new Map(
                 queuedTurnCountRows.map((row) => [row.threadId, row.count] as const),
               );
+              const backgroundTaskCountByThread = new Map(
+                backgroundTaskCountRows.map((row) => [row.threadId, row.count] as const),
+              );
 
               const snapshot = {
                 snapshotSequence: computeSnapshotSequence(stateRows),
@@ -1641,11 +1794,17 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                       )
                     : Result.failVoid,
                 ),
+                sidebarFolders: Arr.filterMap(sidebarFolderRows, (row) =>
+                  row.deletedAt === null
+                    ? Result.succeed(mapSidebarFolderShellRow(row))
+                    : Result.failVoid,
+                ),
                 threads: Arr.filterMap(threadRows, (row) =>
                   row.deletedAt === null
                     ? Result.succeed({
                         id: row.threadId,
                         projectId: row.projectId,
+                        sidebarGroupId: row.sidebarGroupId,
                         title: row.title,
                         modelSelection: row.modelSelection,
                         runtimeMode: row.runtimeMode,
@@ -1666,6 +1825,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                         hasPendingUserInput: row.pendingUserInputCount > 0,
                         hasActionableProposedPlan: row.hasActionableProposedPlan > 0,
                         queuedTurnCount: queuedTurnCountByThread.get(row.threadId) ?? 0,
+                        runningBackgroundTaskCount:
+                          backgroundTaskCountByThread.get(row.threadId) ?? 0,
                       } satisfies OrchestrationThreadShell)
                     : Result.failVoid,
                 ),
@@ -1701,6 +1862,14 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               ),
             ),
           ),
+          listSidebarFolderRows(undefined).pipe(
+            Effect.mapError(
+              toPersistenceSqlOrDecodeError(
+                "ProjectionSnapshotQuery.getArchivedShellSnapshot:listSidebarFolders:query",
+                "ProjectionSnapshotQuery.getArchivedShellSnapshot:listSidebarFolders:decodeRows",
+              ),
+            ),
+          ),
           listArchivedThreadRows(undefined).pipe(
             Effect.mapError(
               toPersistenceSqlOrDecodeError(
@@ -1710,6 +1879,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             ),
           ),
           listQueuedTurnCountRows(undefined),
+          listBackgroundTaskCountRows(undefined),
           listArchivedThreadSessionRows(undefined).pipe(
             Effect.mapError(
               toPersistenceSqlOrDecodeError(
@@ -1740,8 +1910,10 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         Effect.flatMap(
           ([
             projectRows,
+            sidebarFolderRows,
             threadRows,
             queuedTurnCountRows,
+            backgroundTaskCountRows,
             sessionRows,
             latestTurnRows,
             stateRows,
@@ -1771,6 +1943,13 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               }
 
               const activeProjectIds = new Set(threadRows.map((row) => row.projectId));
+              // Only shelves the archived threads actually sit on, mirroring how
+              // the project list is narrowed to keep this payload small.
+              const archivedSidebarGroupIds = new Set(
+                threadRows.flatMap((row) =>
+                  row.sidebarGroupId === null ? [] : [row.sidebarGroupId],
+                ),
+              );
               const repositoryIdentities = yield* resolveRepositoryIdentitiesForProjects(
                 projectRows.filter((row) => activeProjectIds.has(row.projectId)),
               );
@@ -1783,6 +1962,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               const queuedTurnCountByThread = new Map(
                 queuedTurnCountRows.map((row) => [row.threadId, row.count] as const),
               );
+              const backgroundTaskCountByThread = new Map(
+                backgroundTaskCountRows.map((row) => [row.threadId, row.count] as const),
+              );
 
               const snapshot = {
                 snapshotSequence: computeSnapshotSequence(stateRows),
@@ -1793,10 +1975,16 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                       )
                     : Result.failVoid,
                 ),
+                sidebarFolders: Arr.filterMap(sidebarFolderRows, (row) =>
+                  row.deletedAt === null && archivedSidebarGroupIds.has(row.sidebarFolderId)
+                    ? Result.succeed(mapSidebarFolderShellRow(row))
+                    : Result.failVoid,
+                ),
                 threads: threadRows.map(
                   (row): OrchestrationThreadShell => ({
                     id: row.threadId,
                     projectId: row.projectId,
+                    sidebarGroupId: row.sidebarGroupId,
                     title: row.title,
                     modelSelection: row.modelSelection,
                     runtimeMode: row.runtimeMode,
@@ -1817,6 +2005,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                     hasPendingUserInput: row.pendingUserInputCount > 0,
                     hasActionableProposedPlan: row.hasActionableProposedPlan > 0,
                     queuedTurnCount: queuedTurnCountByThread.get(row.threadId) ?? 0,
+                    runningBackgroundTaskCount: backgroundTaskCountByThread.get(row.threadId) ?? 0,
                   }),
                 ),
                 updatedAt: updatedAt ?? "1970-01-01T00:00:00.000Z",
@@ -1921,6 +2110,19 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       ),
     );
 
+  const getSidebarFolderShellById: ProjectionSnapshotQueryShape["getSidebarFolderShellById"] = (
+    sidebarFolderId,
+  ) =>
+    getSidebarFolderRow({ sidebarFolderId }).pipe(
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionSnapshotQuery.getSidebarFolderShellById:query",
+          "ProjectionSnapshotQuery.getSidebarFolderShellById:decodeRow",
+        ),
+      ),
+      Effect.map(Option.map(mapSidebarFolderShellRow)),
+    );
+
   const getFirstActiveThreadIdByProjectId: ProjectionSnapshotQueryShape["getFirstActiveThreadIdByProjectId"] =
     (projectId) =>
       getFirstActiveThreadIdByProject({ projectId }).pipe(
@@ -2008,40 +2210,49 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
 
   const getThreadShellById: ProjectionSnapshotQueryShape["getThreadShellById"] = (threadId) =>
     Effect.gen(function* () {
-      const [threadRow, latestTurnRow, sessionRow, queuedTurnCountRow] = yield* Effect.all([
-        getActiveThreadRowById({ threadId }).pipe(
-          Effect.mapError(
-            toPersistenceSqlOrDecodeError(
-              "ProjectionSnapshotQuery.getThreadShellById:getThread:query",
-              "ProjectionSnapshotQuery.getThreadShellById:getThread:decodeRow",
+      const [threadRow, latestTurnRow, sessionRow, queuedTurnCountRow, backgroundTaskCountRow] =
+        yield* Effect.all([
+          getActiveThreadRowById({ threadId }).pipe(
+            Effect.mapError(
+              toPersistenceSqlOrDecodeError(
+                "ProjectionSnapshotQuery.getThreadShellById:getThread:query",
+                "ProjectionSnapshotQuery.getThreadShellById:getThread:decodeRow",
+              ),
             ),
           ),
-        ),
-        getLatestTurnRowByThread({ threadId }).pipe(
-          Effect.mapError(
-            toPersistenceSqlOrDecodeError(
-              "ProjectionSnapshotQuery.getThreadShellById:getLatestTurn:query",
-              "ProjectionSnapshotQuery.getThreadShellById:getLatestTurn:decodeRow",
+          getLatestTurnRowByThread({ threadId }).pipe(
+            Effect.mapError(
+              toPersistenceSqlOrDecodeError(
+                "ProjectionSnapshotQuery.getThreadShellById:getLatestTurn:query",
+                "ProjectionSnapshotQuery.getThreadShellById:getLatestTurn:decodeRow",
+              ),
             ),
           ),
-        ),
-        getThreadSessionRowByThread({ threadId }).pipe(
-          Effect.mapError(
-            toPersistenceSqlOrDecodeError(
-              "ProjectionSnapshotQuery.getThreadShellById:getSession:query",
-              "ProjectionSnapshotQuery.getThreadShellById:getSession:decodeRow",
+          getThreadSessionRowByThread({ threadId }).pipe(
+            Effect.mapError(
+              toPersistenceSqlOrDecodeError(
+                "ProjectionSnapshotQuery.getThreadShellById:getSession:query",
+                "ProjectionSnapshotQuery.getThreadShellById:getSession:decodeRow",
+              ),
             ),
           ),
-        ),
-        getQueuedTurnCountByThread({ threadId }).pipe(
-          Effect.mapError(
-            toPersistenceSqlOrDecodeError(
-              "ProjectionSnapshotQuery.getThreadShellById:getQueuedTurnCount:query",
-              "ProjectionSnapshotQuery.getThreadShellById:getQueuedTurnCount:decodeRow",
+          getQueuedTurnCountByThread({ threadId }).pipe(
+            Effect.mapError(
+              toPersistenceSqlOrDecodeError(
+                "ProjectionSnapshotQuery.getThreadShellById:getQueuedTurnCount:query",
+                "ProjectionSnapshotQuery.getThreadShellById:getQueuedTurnCount:decodeRow",
+              ),
             ),
           ),
-        ),
-      ]);
+          getBackgroundTaskCountByThread({ threadId }).pipe(
+            Effect.mapError(
+              toPersistenceSqlOrDecodeError(
+                "ProjectionSnapshotQuery.getThreadShellById:getBackgroundTaskCount:query",
+                "ProjectionSnapshotQuery.getThreadShellById:getBackgroundTaskCount:decodeRow",
+              ),
+            ),
+          ),
+        ]);
 
       if (Option.isNone(threadRow)) {
         return Option.none<OrchestrationThreadShell>();
@@ -2050,6 +2261,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       return Option.some({
         id: threadRow.value.threadId,
         projectId: threadRow.value.projectId,
+        sidebarGroupId: threadRow.value.sidebarGroupId,
         title: threadRow.value.title,
         modelSelection: threadRow.value.modelSelection,
         runtimeMode: threadRow.value.runtimeMode,
@@ -2070,6 +2282,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         hasPendingUserInput: threadRow.value.pendingUserInputCount > 0,
         hasActionableProposedPlan: threadRow.value.hasActionableProposedPlan > 0,
         queuedTurnCount: queuedTurnCountRow.count,
+        runningBackgroundTaskCount: backgroundTaskCountRow.count,
       } satisfies OrchestrationThreadShell);
     });
 
@@ -2158,6 +2371,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       const thread = {
         id: threadRow.value.threadId,
         projectId: threadRow.value.projectId,
+        sidebarGroupId: threadRow.value.sidebarGroupId,
         title: threadRow.value.title,
         modelSelection: threadRow.value.modelSelection,
         runtimeMode: threadRow.value.runtimeMode,
@@ -2264,6 +2478,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     getCounts,
     getActiveProjectByWorkspaceRoot,
     getProjectShellById,
+    getSidebarFolderShellById,
     getFirstActiveThreadIdByProjectId,
     getThreadCheckpointContext,
     getFullThreadDiffContext,

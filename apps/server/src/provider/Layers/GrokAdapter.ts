@@ -1378,19 +1378,20 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         }
         const notificationFiber = ctx.notificationFiber;
         const scope = ctx.scope;
-        // Invalidate in-flight notification finalizers before clearing the fiber
-        // so a late ensuring cannot stomp a recycled consumer.
         ctx.notificationGeneration += 1;
         ctx.notificationFiber = undefined;
         ctx.acpDisposed = true;
         if (notificationFiber) {
-          // Never block teardown on a stuck notification consumer. Scope
-          // finalizers can be uninterruptible, so fork rather than timeout.
           yield* Fiber.interrupt(notificationFiber).pipe(Effect.ignore, Effect.forkChild);
         }
-        // Fire-and-forget process teardown. Waiting on Scope.close can hang
-        // forever when the ACP child is wedged (uninterruptible finalizers).
-        yield* Effect.ignore(Scope.close(scope, Exit.void)).pipe(Effect.forkChild);
+        // Scope close can hang on uninterruptible child-process finalizers
+        // (e.g. a wedged ACP agent that never exits). Fork the close with a
+        // 5s timeout so we never block teardown. If the timeout wins the child
+        // is left orphaned, but the next sendTurn will recycle via a fresh
+        // spawn anyway.
+        yield* Effect.ignore(Scope.close(scope, Exit.void).pipe(Effect.timeout(5000))).pipe(
+          Effect.forkChild,
+        );
       });
 
     const stopSessionInternal = (ctx: GrokSessionContext) =>
@@ -1909,11 +1910,8 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           }),
         ),
         // Fork into the session scope, not the caller's fiber. `forkChild`
-        // made this consumer a child of the fiber running startSession (or
-        // recycle), so it was interrupted the moment that fiber completed and
-        // every later session/update was lost. Same bug Cursor/Codex fixed:
-        // in-process tests hide it because their fiber stays alive; a real RPC
-        // handler fiber finishes and the turn goes silent mid-stream.
+        // (the Cursor/Codex bug pattern) interrupted the consumer as soon as
+        // startSession returned, killing every later session/update frame.
         Effect.forkIn(ctx.scope),
       );
     };
@@ -2623,20 +2621,24 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 isSteering: steeringTurnId !== undefined,
               };
             }).pipe(
-              Effect.tapCause((cause) =>
+              Effect.tapCause(() =>
                 Effect.gen(function* () {
                   const liveCtx = sessions.get(input.threadId);
                   if (!liveCtx) {
                     return;
                   }
-                  // Only settle when prep bound a turn id (ready path / after turnId set).
                   const failedTurnId = liveCtx.activeTurnId ?? liveCtx.session.activeTurnId;
                   if (!failedTurnId) {
                     return;
                   }
-                  void cause;
-                  // turn.started already fired above — always emit terminal
-                  // completion so Working cannot stick after prep failure.
+                  yield* offerRuntimeEvent({
+                    type: "turn.aborted",
+                    ...(yield* makeEventStamp()),
+                    provider: PROVIDER,
+                    threadId: input.threadId,
+                    turnId: failedTurnId,
+                    payload: { reason: "Grok prompt preparation failed." },
+                  });
                   yield* settlePromptInFlight(input.threadId, failedTurnId, liveCtx.acpSessionId, {
                     errorMessage: "Grok prompt preparation failed.",
                     emitTurnCompletion: true,
@@ -2866,10 +2868,14 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 });
               }
               if (prepared.usesContextRehydration) {
-                // Keep the replay armed until the ACP prompt actually returns.
-                // Preparation can fail or be interrupted before the blank
-                // replacement session receives any Studio history.
-                ctx.needsContextRehydration = false;
+                // Keep the replay armed until the ACP prompt actually returns
+                // with a non-cancelled result. Preparation can fail or be
+                // interrupted before the blank replacement session receives
+                // any Studio history, and a Stop-cancelled prompt never
+                // delivered the rehydration prefix.
+                if (result.stopReason !== "cancelled") {
+                  ctx.needsContextRehydration = false;
+                }
               }
               // Keep prompt settlement atomic with respect to Stop and steering.
               // interruptTurn marks its target before waiting for this lock, so
@@ -3229,6 +3235,20 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         if (observed._tag === "Ignore") {
           return;
         }
+        const { interruptedTurnId } = observed;
+
+        // Abort xAI pending completions BEFORE taking the lock. Grok's
+        // turn_completed xAI notification can arrive asynchronously and
+        // resolve a pending Deferred after settlePromptInFlight emits
+        // turn.completed(cancelled) but before ctx.acp.cancel →
+        // abortPendingPromptCompletions runs. That race delivers the
+        // Grok result even though the user already stopped the turn.
+        // Resolving the Deferreds now closes that window before we
+        // touch the lock or settle anything.
+        const ctx = sessions.get(threadId);
+        if (ctx) {
+          yield* ctx.acp.cancel.pipe(Effect.timeout("1 second"), Effect.ignore);
+        }
 
         const cancelTarget = yield* withThreadLock(
           threadId,
@@ -3290,7 +3310,10 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             Effect.mapError((error) =>
               mapAcpToAdapterError(PROVIDER, threadId, "session/cancel", error),
             ),
-            Effect.timeout("2 seconds"),
+            // Match the cancel grace window (1.5s) + process disposal (5s)
+            // so the user-facing stop resolves promptly even when the child
+            // is wedged and the notification has to time out.
+            Effect.timeout("5 seconds"),
             Effect.ignore,
           );
           // Always recycle after Stop. Cooperative cancel is not trustworthy:

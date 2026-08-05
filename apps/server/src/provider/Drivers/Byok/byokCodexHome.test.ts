@@ -24,7 +24,9 @@ const decodeCatalogJson = Schema.decodeSync(
 );
 
 const catalogEntry = (preset: ByokPreset, slug: string) => {
-  const entry = buildCodexModelCatalog(preset).models.find((model) => model["slug"] === slug);
+  const entry = buildCodexModelCatalog(preset.models).models.find(
+    (model) => model["slug"] === slug,
+  );
   if (!entry) throw new Error(`missing catalog entry for ${slug}`);
   return entry;
 };
@@ -42,6 +44,7 @@ describe("toTomlString", () => {
 describe("buildCodexConfigToml", () => {
   const toml = buildCodexConfigToml({
     preset: deepseek,
+    models: deepseek.models,
     modelSlug: "deepseek-v4-flash",
     catalogPath: "C:\\state\\byok\\deepseek\\models.json",
   });
@@ -100,7 +103,7 @@ describe("buildCodexModelCatalog", () => {
     // v4-pro is intentionally absent until DeepSeek ships it on the Responses
     // API; an unrecognized model name is downgraded to Flash rather than
     // rejected, so offering it would quietly mislead.
-    expect(buildCodexModelCatalog(deepseek).models.map((model) => model["slug"])).toEqual([
+    expect(buildCodexModelCatalog(deepseek.models).models.map((model) => model["slug"])).toEqual([
       "deepseek-v4-flash",
     ]);
   });
@@ -141,6 +144,7 @@ it.layer(NodeServices.layer)("materializeByokCodexHome", (it) => {
       const result = yield* materializeByokCodexHome({
         homePath,
         preset: deepseek,
+        models: deepseek.models,
         modelSlug: "deepseek-v4-flash",
       });
 
@@ -166,11 +170,13 @@ it.layer(NodeServices.layer)("materializeByokCodexHome", (it) => {
       yield* materializeByokCodexHome({
         homePath: root,
         preset: deepseek,
+        models: deepseek.models,
         modelSlug: "deepseek-v4-flash",
       });
       const result = yield* materializeByokCodexHome({
         homePath: root,
         preset: deepseek,
+        models: deepseek.models,
         modelSlug: "deepseek-v4-pro",
       });
 

@@ -57,7 +57,12 @@ function findTaskTitleInActivities(
   }
   for (let index = activities.length - 1; index >= 0; index -= 1) {
     const activity = activities[index];
-    if (!activity || (activity.kind !== "task.started" && activity.kind !== "task.progress")) {
+    if (
+      !activity ||
+      (activity.kind !== "task.started" &&
+        activity.kind !== "task.progress" &&
+        activity.kind !== "task.updated")
+    ) {
       continue;
     }
     const payload =
@@ -644,6 +649,7 @@ export function runtimeEventToActivities(
             ...(event.payload.description
               ? { detail: truncateDetail(event.payload.description) }
               : {}),
+            ...(event.payload.skipTranscript ? { skipTranscript: true } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -671,6 +677,41 @@ export function runtimeEventToActivities(
             ...(event.payload.summary ? { summary: truncateDetail(event.payload.summary) } : {}),
             ...(event.payload.lastToolName ? { lastToolName: event.payload.lastToolName } : {}),
             ...(event.payload.usage !== undefined ? { usage: event.payload.usage } : {}),
+          },
+          turnId: toTurnId(event.turnId) ?? null,
+          ...maybeSequence,
+        },
+      ];
+    }
+
+    case "task.updated": {
+      const status = event.payload.status;
+      const title = event.payload.description ?? taskTitle;
+      return [
+        {
+          id: event.eventId,
+          createdAt: event.createdAt,
+          tone: status === "failed" ? "error" : "info",
+          kind: "task.updated",
+          summary: event.payload.backgrounded
+            ? title
+              ? `Running in background: ${truncateDetail(title, 120)}`
+              : "Running in background"
+            : title
+              ? `Task updated: ${truncateDetail(title, 120)}`
+              : "Task updated",
+          payload: {
+            taskId: event.payload.taskId,
+            ...(status ? { status } : {}),
+            ...(event.payload.backgrounded !== undefined
+              ? { backgrounded: event.payload.backgrounded }
+              : {}),
+            ...(title ? { title: truncateDetail(title, 120) } : {}),
+            ...(event.payload.taskType ? { taskType: event.payload.taskType } : {}),
+            ...(event.payload.command
+              ? { command: truncateDetail(event.payload.command, 120) }
+              : {}),
+            ...(event.payload.error ? { detail: truncateDetail(event.payload.error) } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -2274,14 +2315,20 @@ const make = Effect.gen(function* () {
         }
       }
 
-      if (event.type === "task.started" || event.type === "task.progress") {
+      if (
+        event.type === "task.started" ||
+        event.type === "task.progress" ||
+        event.type === "task.updated"
+      ) {
         const description = event.payload.description?.trim();
         if (description) {
           yield* rememberTaskDescription(thread.id, event.payload.taskId, description);
         }
       }
       let taskTitle: string | undefined;
-      if (event.type === "task.completed") {
+      // Both terminal and background-patch rows label themselves from the
+      // description first seen on task.started, which the patch omits.
+      if (event.type === "task.completed" || event.type === "task.updated") {
         taskTitle = yield* lookupTaskDescription(thread.id, event.payload.taskId);
         if (!taskTitle) {
           const threadDetail = yield* getLoadedThreadDetail();

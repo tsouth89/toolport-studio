@@ -8,6 +8,7 @@ import {
   OrchestrationMessage,
   OrchestrationSession,
   OrchestrationThread,
+  SidebarFolderId,
 } from "@toolport-studio/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -19,6 +20,9 @@ import {
   ProjectCreatedPayload,
   ProjectDeletedPayload,
   ProjectMetaUpdatedPayload,
+  SidebarFolderCreatedPayload,
+  SidebarFolderDeletedPayload,
+  SidebarFolderMetaUpdatedPayload,
   ThreadActivityAppendedPayload,
   ThreadArchivedPayload,
   ThreadCreatedPayload,
@@ -194,6 +198,7 @@ export function createEmptyReadModel(nowIso: string): OrchestrationReadModel {
   return {
     snapshotSequence: 0,
     projects: [],
+    sidebarFolders: [],
     threads: [],
     updatedAt: nowIso,
   };
@@ -275,6 +280,68 @@ export function projectEvent(
         })),
       );
 
+    case "sidebar-folder.created":
+      return decodeForEvent(SidebarFolderCreatedPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => {
+          const nextFolder = {
+            id: payload.sidebarFolderId,
+            title: payload.title,
+            createdAt: payload.createdAt,
+            updatedAt: payload.updatedAt,
+            deletedAt: null,
+          };
+          const existing = nextBase.sidebarFolders.find(
+            (entry) => entry.id === payload.sidebarFolderId,
+          );
+
+          return {
+            ...nextBase,
+            sidebarFolders: existing
+              ? nextBase.sidebarFolders.map((entry) =>
+                  entry.id === payload.sidebarFolderId ? nextFolder : entry,
+                )
+              : [...nextBase.sidebarFolders, nextFolder],
+          };
+        }),
+      );
+
+    case "sidebar-folder.meta-updated":
+      return decodeForEvent(
+        SidebarFolderMetaUpdatedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          sidebarFolders: nextBase.sidebarFolders.map((folder) =>
+            folder.id === payload.sidebarFolderId
+              ? {
+                  ...folder,
+                  ...(payload.title !== undefined ? { title: payload.title } : {}),
+                  updatedAt: payload.updatedAt,
+                }
+              : folder,
+          ),
+        })),
+      );
+
+    case "sidebar-folder.deleted":
+      return decodeForEvent(SidebarFolderDeletedPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          sidebarFolders: nextBase.sidebarFolders.map((folder) =>
+            folder.id === payload.sidebarFolderId
+              ? {
+                  ...folder,
+                  deletedAt: payload.deletedAt,
+                  updatedAt: payload.deletedAt,
+                }
+              : folder,
+          ),
+        })),
+      );
+
     case "thread.created":
       return Effect.gen(function* () {
         const payload = yield* decodeForEvent(
@@ -288,6 +355,14 @@ export function projectEvent(
           {
             id: payload.threadId,
             projectId: payload.projectId,
+            // Historical events omit the field → keep legacy shelf = workspace.
+            // New creates always set it (null = ungrouped).
+            sidebarGroupId:
+              payload.sidebarGroupId !== undefined
+                ? payload.sidebarGroupId
+                : payload.projectId === null
+                  ? null
+                  : SidebarFolderId.make(payload.projectId),
             title: payload.title,
             modelSelection: payload.modelSelection,
             runtimeMode: payload.runtimeMode,
@@ -408,6 +483,9 @@ export function projectEvent(
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
             ...(payload.projectId !== undefined ? { projectId: payload.projectId } : {}),
+            ...(payload.sidebarGroupId !== undefined
+              ? { sidebarGroupId: payload.sidebarGroupId }
+              : {}),
             ...(payload.title !== undefined ? { title: payload.title } : {}),
             ...(payload.modelSelection !== undefined
               ? { modelSelection: payload.modelSelection }
