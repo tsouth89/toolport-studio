@@ -25,6 +25,7 @@
 
 import * as Brand from "effect/Brand";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -50,6 +51,7 @@ import {
 import { waitForHttpReady as waitForHttpReadyShared } from "@toolport-studio/shared/httpReadiness";
 
 import * as DesktopObservability from "../app/DesktopObservability.ts";
+import { DesktopBackendProcessLedger } from "./DesktopBackendProcessLedger.ts";
 
 const INITIAL_RESTART_DELAY = Duration.millis(500);
 const MAX_RESTART_DELAY = Duration.seconds(10);
@@ -394,10 +396,12 @@ export const makeBackendInstance = Effect.fn("makeBackendInstance")(function* (
   | ChildProcessSpawner.ChildProcessSpawner
   | HttpClient.HttpClient
   | DesktopObservability.DesktopBackendOutputLogFactory
+  | DesktopBackendProcessLedger
   | Scope.Scope
 > {
   const parentScope = yield* Scope.Scope;
   const fileSystem = yield* FileSystem.FileSystem;
+  const processLedger = yield* DesktopBackendProcessLedger;
   const backendOutputLogFactory = yield* DesktopObservability.DesktopBackendOutputLogFactory;
   const backendOutputLog = yield* backendOutputLogFactory.forInstance(spec.id);
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -613,6 +617,11 @@ export const makeBackendInstance = Effect.fn("makeBackendInstance")(function* (
 
               if (isCurrentRun) {
                 if (Option.isSome(pid)) {
+                  // This run reached its own teardown, so the spawner has taken
+                  // the backend and its subtree down with it. Drop the ledger
+                  // entry: leaving it would make the next launch sweep a pid
+                  // that is already gone, or worse, a recycled one.
+                  yield* processLedger.forget(pid.value);
                   yield* backendOutputLog.writeSessionBoundary({
                     phase: "END",
                     details: `pid=${pid.value} ${reason}`,
@@ -635,6 +644,15 @@ export const makeBackendInstance = Effect.fn("makeBackendInstance")(function* (
               ...run,
               pid: Option.some(pid),
             }));
+            // Recorded before the backend is used, so a main process that dies
+            // without finalizers still leaves the next launch enough to find
+            // and terminate this tree.
+            yield* processLedger.record({
+              pid,
+              instanceId: spec.id,
+              commandLineTokens: config.value.args,
+              startedAtMs: yield* Clock.currentTimeMillis,
+            });
             yield* backendOutputLog.writeSessionBoundary({
               phase: "START",
               details: `pid=${pid} port=${config.value.bootstrap.port} cwd=${config.value.cwd}`,

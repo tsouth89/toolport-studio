@@ -7,6 +7,7 @@ import {
   countRunningBackgroundTasks,
   formatRunningBackgroundTaskLabel,
 } from "../../backgroundTasks";
+import { useRightPanelStore } from "../../rightPanelStore";
 import { useThreadShells } from "../../state/entities";
 import { buildThreadRouteParams } from "../../threadRoutes";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -17,7 +18,8 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
  * Reads the shell projection rather than thread activities so background work
  * in threads the client has never opened still counts — that is the whole point
  * of a global indicator. Clicking jumps to the thread with the most in-flight
- * tasks, where the Agents panel holds the detail.
+ * tasks and opens the Agents panel there, so the work the chip is counting is
+ * visible on arrival rather than leaving you on a thread that looks idle.
  */
 export function SidebarBackgroundTasksPill() {
   const navigate = useNavigate();
@@ -43,10 +45,15 @@ export function SidebarBackgroundTasksPill() {
 
   const handleClick = useCallback(() => {
     if (!busiestThread) return;
+    const threadRef = scopeThreadRef(busiestThread.environmentId, busiestThread.id);
     void navigate({
       to: "/$environmentId/$threadId",
-      params: buildThreadRouteParams(scopeThreadRef(busiestThread.environmentId, busiestThread.id)),
+      params: buildThreadRouteParams(threadRef),
     });
+    // Navigating alone drops you on a thread whose turn has usually settled, so
+    // it reads as idle and the chip looks like it lied. Open the roster the chip
+    // is counting from, so the running work is on screen when you land.
+    useRightPanelStore.getState().openAgents(threadRef);
   }, [busiestThread, navigate]);
 
   if (runningCount === 0) return null;

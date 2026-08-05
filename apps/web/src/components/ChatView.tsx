@@ -155,7 +155,7 @@ import { ActivityPanel } from "./ActivityPanel";
 import { AgentsPanel } from "./AgentsPanel";
 import { agentRunsForTurn, deriveAgentRuns, latestMessageTurnId } from "../agentRuns";
 import { deriveBackgroundTasks } from "../backgroundTasks";
-import { shouldShowThisTurnCard, ThisTurnCard } from "./ThisTurnCard";
+import { isThisTurnCardVisible, ThisTurnCard } from "./ThisTurnCard";
 import ThreadTerminalDrawer from "./ThreadTerminalDrawer";
 import { deriveThreadActivityViewModel } from "../threadActivityViewModel";
 import { openToolportApp } from "../lib/openToolport";
@@ -3403,11 +3403,14 @@ function ChatViewContent(props: ChatViewProps) {
     setThisTurnCardForcedOpen(false);
   }, [thisTurnCardKey]);
   const dockedActivityOpen = rightPanelOpen && activeRightPanelKind === "activity";
-  const thisTurnCardVisible =
-    !dockedActivityOpen &&
-    thisTurnCardDismissedKey !== thisTurnCardKey &&
-    (thisTurnCardForcedOpen ||
-      shouldShowThisTurnCard(activityViewModel, thisTurnAgentRuns, backgroundTasks));
+  const thisTurnCardVisible = isThisTurnCardVisible({
+    model: activityViewModel,
+    agentRuns: thisTurnAgentRuns,
+    backgroundTasks,
+    dockedActivityOpen,
+    dismissed: thisTurnCardDismissedKey === thisTurnCardKey,
+    forcedOpen: thisTurnCardForcedOpen,
+  });
   const openThisTurnCard = useCallback(() => {
     setThisTurnCardDismissedKey(null);
     setThisTurnCardForcedOpen(true);
