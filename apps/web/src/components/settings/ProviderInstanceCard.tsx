@@ -149,15 +149,24 @@ export function deriveProviderModelsForDisplay(input: {
     ),
   );
   const serverModels = input.liveModels?.filter((model) => !model.isCustom) ?? [];
-  const customModels = input.customModels.map(
-    (slug) =>
-      liveCustomModelsBySlug.get(slug) ?? {
-        slug,
-        name: slug,
-        isCustom: true,
-        capabilities: null,
-      },
-  );
+  // A slug can be in both lists at once, and on a catalog-backed provider it
+  // always ends up there: adding it to `customModels` is what makes the server
+  // resolve it into the generated catalog, after which the next snapshot
+  // reports it as an ordinary built-in model. Rendering both copies duplicated
+  // the row and gave two children the same React key. The server's copy wins —
+  // it carries real capabilities where the settings copy carries none.
+  const serverModelSlugs = new Set(serverModels.map((model) => model.slug));
+  const customModels = input.customModels
+    .filter((slug) => !serverModelSlugs.has(slug))
+    .map(
+      (slug) =>
+        liveCustomModelsBySlug.get(slug) ?? {
+          slug,
+          name: slug,
+          isCustom: true,
+          capabilities: null,
+        },
+    );
   return [...serverModels, ...customModels];
 }
 
@@ -830,6 +839,10 @@ export function ProviderInstanceCard({
                 driverKind={driverKind}
                 models={modelsForDisplay}
                 customModels={customModels}
+                // Only preset-backed instances have a catalog to browse. A
+                // driver with a fixed lineup would get a search box over the
+                // handful of slugs already listed above it.
+                supportsCatalogBrowse={byokPresetId !== undefined}
                 hiddenModels={hiddenModels}
                 favoriteModels={favoriteModels}
                 modelOrder={modelOrder}

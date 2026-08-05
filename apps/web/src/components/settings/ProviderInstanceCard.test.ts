@@ -83,3 +83,29 @@ describe("resolveProviderInstanceDisplayName", () => {
     ).toBe("API Key Provider");
   });
 });
+
+describe("deriveProviderModelsForDisplay + catalog-backed providers", () => {
+  it("does not render a slug twice once the server adopts it", () => {
+    // On a provider that resolves its catalog, adding a slug to customModels
+    // is exactly what makes the server report it as a built-in on the next
+    // start. Both lists then contain it, which duplicated the row and gave
+    // two children the same React key.
+    const models = deriveProviderModelsForDisplay({
+      liveModels: [{ slug: "z-ai/glm-4.6", name: "GLM 4.6", isCustom: false, capabilities: null }],
+      customModels: ["z-ai/glm-4.6"],
+    });
+
+    expect(models.map((model) => model.slug)).toEqual(["z-ai/glm-4.6"]);
+    // The server's copy is the one worth keeping: it carries real metadata.
+    expect(models[0]?.isCustom).toBe(false);
+  });
+
+  it("still shows a custom slug the server has not adopted", () => {
+    const models = deriveProviderModelsForDisplay({
+      liveModels: [{ slug: "built-in", name: "Built In", isCustom: false, capabilities: null }],
+      customModels: ["not-yet-resolved"],
+    });
+
+    expect(models.map((model) => model.slug)).toEqual(["built-in", "not-yet-resolved"]);
+  });
+});

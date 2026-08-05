@@ -21,6 +21,7 @@ import { normalizeCustomModelSlug } from "@toolport-studio/shared/model";
 import { cn } from "../../lib/utils";
 import { sortModelsForProviderInstance } from "../../modelOrdering";
 import { MAX_CUSTOM_MODEL_LENGTH } from "../../modelSelection";
+import { ByokCatalogBrowser } from "./ByokCatalogBrowser";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -56,6 +57,12 @@ interface ProviderModelsSectionProps {
    * removed) via `onChange`.
    */
   readonly customModels: ReadonlyArray<string>;
+  /**
+   * Set when this instance's provider publishes a catalog worth browsing.
+   * Absent for drivers whose model list is fixed, where a search box over
+   * three known slugs would be noise.
+   */
+  readonly supportsCatalogBrowse?: boolean;
   /** Server-returned model slugs hidden from the model picker. */
   readonly hiddenModels: ReadonlyArray<string>;
   /** Model slugs favorited for this provider instance. */
@@ -89,6 +96,7 @@ export function ProviderModelsSection({
   driverKind,
   models,
   customModels,
+  supportsCatalogBrowse = false,
   hiddenModels,
   favoriteModels,
   modelOrder,
@@ -109,6 +117,28 @@ export function ProviderModelsSection({
       modelOrder,
     });
   }, [favoriteModelSet, modelOrder, models]);
+
+  /**
+   * Everything already on this instance, by slug — both saved custom entries
+   * and whatever the probe reported. The browser reads this to show a model
+   * as added rather than offering a duplicate the validation would reject.
+   */
+  const selectedModelSlugs = useMemo(
+    () => new Set<string>([...customModels, ...models.map((model) => model.slug)]),
+    [customModels, models],
+  );
+
+  /**
+   * Add a slug that came from the catalog rather than the text field. It is
+   * known to exist and to be spelled correctly, so the only check worth
+   * keeping is the duplicate one.
+   */
+  const handleAddSlug = (slug: string) => {
+    const normalized = normalizeCustomModelSlug(slug);
+    if (!normalized || selectedModelSlugs.has(normalized)) return;
+    onChange([...customModels, normalized]);
+    setError(null);
+  };
 
   const handleAdd = () => {
     const normalized = normalizeCustomModelSlug(input);
@@ -404,6 +434,14 @@ export function ProviderModelsSection({
           Add
         </Button>
       </div>
+
+      {supportsCatalogBrowse ? (
+        <ByokCatalogBrowser
+          instanceId={instanceId}
+          selectedSlugs={selectedModelSlugs}
+          onAdd={handleAddSlug}
+        />
+      ) : null}
 
       {error ? <p className="mt-2 text-xs text-destructive">{error}</p> : null}
     </div>

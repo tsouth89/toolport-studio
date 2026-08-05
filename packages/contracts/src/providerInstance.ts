@@ -35,7 +35,7 @@
  */
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import { TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 
 const PROVIDER_SLUG_MAX_CHARS = 64;
 /**
@@ -147,3 +147,38 @@ export type ProviderInstanceConfigMap = typeof ProviderInstanceConfigMap.Type;
  */
 export const defaultInstanceIdForDriver = (driver: ProviderDriverKind): ProviderInstanceId =>
   ProviderInstanceId.make(driver);
+
+/**
+ * One row of a browsable provider catalog.
+ *
+ * Deliberately thinner than the server's preset model: the browser needs
+ * enough to choose between models, not enough to configure a harness. The
+ * capability fields the harness cares about (apply_patch, parallel tool calls)
+ * are decided server-side and would only be noise here.
+ */
+export const ByokCatalogModel = Schema.Struct({
+  slug: TrimmedNonEmptyString,
+  displayName: TrimmedNonEmptyString,
+  description: Schema.String,
+  contextWindow: NonNegativeInt,
+  supportsVision: Schema.Boolean,
+  /** Ascending. Empty means the model exposes no reasoning control. */
+  reasoningEfforts: Schema.Array(TrimmedNonEmptyString),
+});
+export type ByokCatalogModel = typeof ByokCatalogModel.Type;
+
+export const ByokCatalogListInput = Schema.Struct({
+  instanceId: ProviderInstanceId,
+});
+export type ByokCatalogListInput = typeof ByokCatalogListInput.Type;
+
+export const ByokCatalogListResult = Schema.Struct({
+  models: Schema.Array(ByokCatalogModel),
+  /**
+   * Where the list came from. `seeds` means neither the cache nor the network
+   * answered, so the client should say the list is partial rather than
+   * implying the provider only serves this much.
+   */
+  source: Schema.Literals(["live", "cache", "seeds"]),
+});
+export type ByokCatalogListResult = typeof ByokCatalogListResult.Type;

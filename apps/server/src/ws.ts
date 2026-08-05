@@ -52,6 +52,8 @@ import {
   AssetWorkspaceContextNotFoundError,
   AssetWorkspaceContextResolutionError,
   EnvironmentAuthorizationError,
+  type ByokCatalogListResult,
+  type ProviderInstanceId,
   type SidebarFolderId,
   ThreadId,
   type TerminalAttachStreamEvent,
@@ -66,6 +68,12 @@ import { HttpRouter, HttpServerRequest, HttpServerRespondable } from "effect/uns
 import { RpcSerialization, RpcServer } from "effect/unstable/rpc";
 
 import * as CheckpointDiffQuery from "./checkpointing/CheckpointDiffQuery.ts";
+import {
+  browseByokCatalog,
+  BYOK_CATALOG_CACHE_FILE_NAME,
+} from "./provider/Drivers/Byok/byokModelCatalog.ts";
+import { findByokPreset } from "./provider/Drivers/Byok/byokPresets.ts";
+import * as Path from "effect/Path";
 import * as ServerConfig from "./config.ts";
 import { readToolportMcpStatusSnapshot } from "./mcp/ToolportRegistry.ts";
 import * as Keybindings from "./keybindings.ts";
@@ -295,6 +303,7 @@ const RPC_REQUIRED_SCOPE = new Map<string, AuthEnvironmentScope>([
   [WS_METHODS.serverGetProcessDiagnostics, AuthOrchestrationReadScope],
   [WS_METHODS.serverGetProcessResourceHistory, AuthOrchestrationReadScope],
   [WS_METHODS.serverSignalProcess, AuthOrchestrationOperateScope],
+  [WS_METHODS.serverListByokCatalog, AuthOrchestrationReadScope],
   [WS_METHODS.cloudGetRelayClientStatus, AuthRelayWriteScope],
   [WS_METHODS.cloudInstallRelayClient, AuthRelayWriteScope],
   [WS_METHODS.sourceControlLookupRepository, AuthOrchestrationReadScope],
@@ -1101,6 +1110,53 @@ const makeWsRpcLayer = (
           );
       };
 
+      /**
+       * Models an API-key instance could be pointed at, for the settings
+       * browser.
+       *
+       * Reads the instance's own generated home rather than any global list,
+       * because the catalog is per instance: two OpenRouter instances on
+       * different accounts can legitimately see different models. An instance
+       * that is not preset-backed, or names a preset this build does not know,
+       * answers with an empty list instead of an error — the browser is an
+       * affordance, not a thing worth failing a settings screen over.
+       */
+      const EMPTY_BYOK_CATALOG: ByokCatalogListResult = { models: [], source: "seeds" };
+      const listByokCatalogForInstance = (instanceId: ProviderInstanceId) =>
+        Effect.gen(function* () {
+          const settings = yield* serverSettings.getSettings;
+          const instance = settings.providerInstances?.[instanceId];
+          const presetId =
+            instance && typeof instance.config === "object" && instance.config !== null
+              ? (instance.config as { readonly preset?: unknown }).preset
+              : undefined;
+          const preset = typeof presetId === "string" ? findByokPreset(presetId) : undefined;
+          if (!preset) return EMPTY_BYOK_CATALOG;
+
+          const path = yield* Path.Path;
+          const result = yield* browseByokCatalog({
+            preset,
+            cachePath: path.join(config.stateDir, "byok", instanceId, BYOK_CATALOG_CACHE_FILE_NAME),
+          });
+          const listed: ByokCatalogListResult = {
+            models: result.models.map((model) => ({
+              slug: model.slug,
+              displayName: model.displayName,
+              description: model.description,
+              contextWindow: model.contextWindow,
+              supportsVision: model.supportsVision,
+              reasoningEfforts: model.reasoningEfforts,
+            })),
+            source: result.source,
+          };
+          return listed;
+        }).pipe(
+          // A settings-read failure should degrade to an empty browser rather
+          // than failing the RPC: the list is an affordance on a settings
+          // screen, and the slug field still works without it.
+          Effect.orElseSucceed(() => EMPTY_BYOK_CATALOG),
+        );
+
       const loadServerConfig = Effect.gen(function* () {
         const keybindingsConfig = yield* keybindings.loadConfigState;
         const providers = yield* providerRegistry.getProviders;
@@ -1598,6 +1654,12 @@ const makeWsRpcLayer = (
             {
               "rpc.aggregate": "server",
             },
+          ),
+        [WS_METHODS.serverListByokCatalog]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverListByokCatalog,
+            listByokCatalogForInstance(input.instanceId),
+            { "rpc.aggregate": "server" },
           ),
         [WS_METHODS.serverGetProcessDiagnostics]: (_input) =>
           observeRpcEffect(WS_METHODS.serverGetProcessDiagnostics, processDiagnostics.read, {

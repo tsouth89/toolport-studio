@@ -58,7 +58,11 @@ import {
   OrchestrationReplayEventsInput,
   OrchestrationRpcSchemas,
 } from "./orchestration.ts";
-import { ProviderInstanceId } from "./providerInstance.ts";
+import {
+  ByokCatalogListInput,
+  ByokCatalogListResult,
+  ProviderInstanceId,
+} from "./providerInstance.ts";
 import {
   RelayClientInstallFailedError,
   RelayClientInstallProgressEventSchema,
@@ -218,6 +222,7 @@ export const WS_METHODS = {
   serverGetProcessDiagnostics: "server.getProcessDiagnostics",
   serverGetProcessResourceHistory: "server.getProcessResourceHistory",
   serverSignalProcess: "server.signalProcess",
+  serverListByokCatalog: "server.listByokCatalog",
 
   // Cloud environment methods
   cloudGetRelayClientStatus: "cloud.getRelayClientStatus",
@@ -327,6 +332,12 @@ export const WsServerGetProcessResourceHistoryRpc = Rpc.make(
     error: EnvironmentAuthorizationError,
   },
 );
+
+export const WsServerListByokCatalogRpc = Rpc.make(WS_METHODS.serverListByokCatalog, {
+  payload: ByokCatalogListInput,
+  success: ByokCatalogListResult,
+  error: EnvironmentAuthorizationError,
+});
 
 export const WsServerSignalProcessRpc = Rpc.make(WS_METHODS.serverSignalProcess, {
   payload: ServerSignalProcessInput,
@@ -713,6 +724,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerGetProcessDiagnosticsRpc,
   WsServerGetProcessResourceHistoryRpc,
   WsServerSignalProcessRpc,
+  WsServerListByokCatalogRpc,
   WsCloudGetRelayClientStatusRpc,
   WsCloudInstallRelayClientRpc,
   WsSourceControlLookupRepositoryRpc,

@@ -200,6 +200,23 @@ export function selectCatalogModels(input: {
   return resolved;
 }
 
+/**
+ * Everything the provider serves that could actually run a session.
+ *
+ * The resolver deliberately narrows to the slugs an instance asked for,
+ * because `models.json` is a list the harness loads and the picker is a list a
+ * human reads. Browsing is the opposite problem: the user wants to see what
+ * exists before choosing. Same filter, no slug narrowing.
+ */
+export function listCatalogModels(
+  listing: ReadonlyArray<OpenRouterModel>,
+): ReadonlyArray<ByokPresetModel> {
+  return listing
+    .filter(isAgentCapableModel)
+    .map((model) => toByokPresetModel(model, undefined))
+    .sort((left, right) => left.slug.localeCompare(right.slug));
+}
+
 const fetchListing = Effect.fn("fetchByokCatalogListing")(function* (
   catalogUrl: string,
   apiKey: string,
@@ -210,7 +227,11 @@ const fetchListing = Effect.fn("fetchByokCatalogListing")(function* (
     // The listing is public on OpenRouter, but sending the key makes the
     // response reflect the account: models gated behind a BYOK integration or
     // a provider preference show up as they will actually resolve at turn time.
-    HttpClientRequest.setHeader("authorization", `Bearer ${apiKey}`),
+    // Callers with no key (the browse path) omit it rather than sending an
+    // empty bearer, which some proxies treat as a malformed credential.
+    apiKey.length > 0
+      ? HttpClientRequest.setHeader("authorization", `Bearer ${apiKey}`)
+      : (identity) => identity,
   );
 
   return yield* client.execute(request).pipe(
@@ -310,4 +331,41 @@ export const resolveByokCatalogModels = Effect.fn("resolveByokCatalogModels")(fu
   }
 
   return preset.models;
+});
+
+export interface ByokCatalogBrowseResult {
+  readonly models: ReadonlyArray<ByokPresetModel>;
+  /** Where the list came from, so the client can say when it is stale. */
+  readonly source: "live" | "cache" | "seeds";
+}
+
+/**
+ * The full browsable catalog for an instance, read from its cache.
+ *
+ * Deliberately does not reach the network. The cache is rewritten on every
+ * instance start, so it is rarely far behind, and staying local keeps three
+ * promises: browsing is instant, opening a model list cannot leak a key
+ * (it never touches the secret store), and the websocket layer does not have
+ * to grow an HTTP dependency to serve a settings screen.
+ *
+ * An instance whose cache does not exist yet — one configured but never
+ * started — falls back to the preset's seeds and says so, rather than showing
+ * an empty list that reads as "this provider serves nothing".
+ */
+export const browseByokCatalog = Effect.fn("browseByokCatalog")(function* (input: {
+  readonly preset: ByokPreset;
+  readonly cachePath: string;
+}): Effect.fn.Return<ByokCatalogBrowseResult, never, FileSystem.FileSystem> {
+  if (!input.preset.catalog) return { models: input.preset.models, source: "seeds" };
+
+  const cached = yield* readCache(input.cachePath);
+  const decodedCache = Option.isSome(cached)
+    ? decodeOpenRouterModelList(cached.value)
+    : Option.none();
+  if (Option.isSome(decodedCache)) {
+    const models = listCatalogModels(decodedCache.value.data);
+    if (models.length > 0) return { models, source: "cache" };
+  }
+
+  return { models: input.preset.models, source: "seeds" };
 });
