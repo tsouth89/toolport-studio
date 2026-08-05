@@ -14,6 +14,7 @@ import * as ElectronDialog from "../electron/ElectronDialog.ts";
 import * as DesktopWindow from "../window/DesktopWindow.ts";
 import * as DesktopBackendConfiguration from "./DesktopBackendConfiguration.ts";
 import * as DesktopBackendPool from "./DesktopBackendPool.ts";
+import * as DesktopBackendProcessLedger from "./DesktopBackendProcessLedger.ts";
 import type { DesktopBackendSnapshot, DesktopBackendStartConfig } from "./DesktopBackendManager.ts";
 
 function makeStubInstance(
@@ -60,6 +61,7 @@ function makePoolLayer(
               writeOutputChunk: () => Effect.void,
             } satisfies DesktopObservability.DesktopBackendOutputLogShape),
         } satisfies DesktopObservability.DesktopBackendOutputLogFactory["Service"]),
+        DesktopBackendProcessLedger.makeTestLedger().layer,
         Layer.succeed(DesktopBackendConfiguration.DesktopBackendConfiguration, {
           resolvePrimary: Effect.die("unexpected primary config resolve"),
           resolvePrimaryLabel: Ref.get(labelRef),

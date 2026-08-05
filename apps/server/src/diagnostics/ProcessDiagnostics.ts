@@ -5,6 +5,7 @@ import type {
   ServerSignalProcessResult,
 } from "@toolport-studio/contracts";
 import { HostProcessPlatform } from "@toolport-studio/shared/hostProcess";
+import { killProcessTree } from "@toolport-studio/shared/processTree";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
@@ -342,6 +343,7 @@ const runProcess = Effect.fn("runProcess")(function* (input: {
   readonly args: ReadonlyArray<string>;
 }) {
   const cwd = process.cwd();
+  const timeoutMillis = PROCESS_QUERY_TIMEOUT_MS;
   return yield* Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     // `ps` and `powershell.exe` are real executables; spawning through cmd.exe
@@ -381,7 +383,7 @@ const runProcess = Effect.fn("runProcess")(function* (input: {
     } satisfies ProcessOutput;
   }).pipe(
     Effect.scoped,
-    Effect.timeoutOption(Duration.millis(PROCESS_QUERY_TIMEOUT_MS)),
+    Effect.timeoutOption(Duration.millis(timeoutMillis)),
     Effect.flatMap((result) =>
       Option.match(result, {
         onNone: () =>
@@ -390,7 +392,7 @@ const runProcess = Effect.fn("runProcess")(function* (input: {
               command: input.command,
               argCount: input.args.length,
               cwd,
-              timeoutMillis: PROCESS_QUERY_TIMEOUT_MS,
+              timeoutMillis,
             }),
           ),
         onSome: Effect.succeed,
@@ -486,9 +488,15 @@ export function aggregateProcessDiagnostics(input: {
   return makeResult(input);
 }
 
-function assertDescendantPid(
+/**
+ * Resolves the descendant row for `pid`, refusing anything that is not a live
+ * descendant of this server. The row (not just the pid) is returned because
+ * signalling needs its `pgid` to decide whether the target leads a process
+ * group worth killing wholesale — see {@link signalProcessTree}.
+ */
+function resolveDescendantRow(
   pid: number,
-): Effect.Effect<void, ProcessDiagnosticsError, ChildProcessSpawner.ChildProcessSpawner> {
+): Effect.Effect<ProcessRow, ProcessDiagnosticsError, ChildProcessSpawner.ChildProcessSpawner> {
   if (pid === process.pid) {
     return Effect.fail(
       new ProcessDiagnosticsServerProcessSignalError({
@@ -503,8 +511,9 @@ function assertDescendantPid(
       const descendant = buildDescendantEntries(filteredRows, process.pid).some(
         (entry) => entry.pid === pid,
       );
-      return descendant
-        ? Effect.void
+      const row = filteredRows.find((candidate) => candidate.pid === pid);
+      return descendant && row !== undefined
+        ? Effect.succeed(row)
         : Effect.fail(
             new ProcessDiagnosticsNotDescendantError({
               pid,
@@ -514,6 +523,44 @@ function assertDescendantPid(
     }),
   );
 }
+
+/**
+ * Whether `row` leads its own process group, and so can be signalled as a group
+ * without reaching unrelated siblings. Session roots do, because the spawner
+ * starts children detached on POSIX; Windows rows carry no pgid at all.
+ */
+export function leadsProcessGroup(row: ProcessRow): boolean {
+  return row.pgid === row.pid;
+}
+
+/**
+ * Terminates the target *and everything below it*.
+ *
+ * Signalling a lone pid strands its subtree. A provider session here is the
+ * root of a deep chain — an agent CLI spawns an MCP gateway, which spawns one
+ * shim-and-server pair per configured MCP server — so killing just the pid the
+ * user clicked leaves dozens of processes alive with no parent that will ever
+ * reap them, which is precisely the accumulation this panel exists to fix.
+ */
+const signalProcessTree = Effect.fn("ProcessDiagnostics.signalProcessTree")(function* (input: {
+  readonly row: ProcessRow;
+  readonly signal: ServerProcessSignal;
+}): Effect.fn.Return<void, ProcessDiagnosticsError, ChildProcessSpawner.ChildProcessSpawner> {
+  yield* killProcessTree({
+    pid: input.row.pid,
+    signal: input.signal,
+    leadsProcessGroup: leadsProcessGroup(input.row),
+  }).pipe(
+    Effect.mapError(
+      (cause) =>
+        new ProcessDiagnosticsSignalFailedError({
+          pid: input.row.pid,
+          signal: input.signal,
+          cause: cause.detail,
+        }),
+    ),
+  );
+});
 
 export const make = Effect.gen(function* () {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -536,27 +583,15 @@ export const make = Effect.gen(function* () {
 
   const signal: ProcessDiagnostics["Service"]["signal"] = Effect.fn("ProcessDiagnostics.signal")(
     function* (input) {
-      return yield* assertDescendantPid(input.pid).pipe(
+      return yield* resolveDescendantRow(input.pid).pipe(
+        Effect.flatMap((row) => signalProcessTree({ row, signal: input.signal })),
+        Effect.as({
+          pid: input.pid,
+          signal: input.signal,
+          signaled: true,
+          message: Option.none(),
+        }),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-        Effect.flatMap(() =>
-          Effect.try({
-            try: () => {
-              process.kill(input.pid, input.signal);
-              return {
-                pid: input.pid,
-                signal: input.signal,
-                signaled: true,
-                message: Option.none(),
-              };
-            },
-            catch: (cause) =>
-              new ProcessDiagnosticsSignalFailedError({
-                pid: input.pid,
-                signal: input.signal,
-                cause,
-              }),
-          }),
-        ),
         Effect.catch((error: ProcessDiagnosticsError) =>
           Effect.succeed({
             pid: input.pid,

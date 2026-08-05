@@ -20,6 +20,7 @@ import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstab
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import * as DesktopBackendManager from "./DesktopBackendManager.ts";
+import * as DesktopBackendProcessLedger from "./DesktopBackendProcessLedger.ts";
 import * as DesktopObservability from "../app/DesktopObservability.ts";
 
 const decodeDesktopBackendBootstrap = Schema.decodeEffect(
@@ -113,6 +114,7 @@ interface MakeInstanceInput {
   ) => Effect.Effect<boolean>;
   readonly config?: DesktopBackendManager.DesktopBackendStartConfig;
   readonly configResolve?: Effect.Effect<DesktopBackendManager.DesktopBackendStartConfig>;
+  readonly processLedger?: ReturnType<typeof DesktopBackendProcessLedger.makeTestLedger>;
 }
 
 // Helper that constructs a primary backend instance using the factory
@@ -135,6 +137,7 @@ function makeTestInstance(input: MakeInstanceInput) {
     Layer.succeed(DesktopObservability.DesktopBackendOutputLogFactory, {
       forInstance: () => Effect.succeed(stubLog),
     } satisfies DesktopObservability.DesktopBackendOutputLogFactory["Service"]),
+    (input.processLedger ?? DesktopBackendProcessLedger.makeTestLedger()).layer,
   );
 
   const instance = DesktopBackendManager.makeBackendInstance({
