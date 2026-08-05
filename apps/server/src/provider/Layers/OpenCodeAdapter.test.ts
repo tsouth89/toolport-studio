@@ -81,6 +81,7 @@ const runtimeMock = {
     mcpAddCalls: [] as Array<{ name: string; config: unknown }>,
     mcpDisconnectCalls: [] as string[],
     permissionReplies: [] as Array<{ requestID: string; reply: unknown }>,
+    questionRejects: [] as string[],
   },
   reset() {
     this.state.startCalls.length = 0;
@@ -104,6 +105,7 @@ const runtimeMock = {
     this.state.mcpAddCalls.length = 0;
     this.state.mcpDisconnectCalls.length = 0;
     this.state.permissionReplies.length = 0;
+    this.state.questionRejects.length = 0;
   },
 };
 
@@ -227,6 +229,12 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
       permission: {
         reply: async ({ requestID, reply }: { requestID: string; reply: unknown }) => {
           runtimeMock.state.permissionReplies.push({ requestID, reply });
+          return { data: true };
+        },
+      },
+      question: {
+        reject: async ({ requestID }: { requestID: string }) => {
+          runtimeMock.state.questionRejects.push(requestID);
           return { data: true };
         },
       },
@@ -1799,6 +1807,15 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive more", (it) => {
       NodeAssert.ok(
         events.some((event) => event.type === "user-input.resolved"),
         "expected the stranded question to resolve on its own",
+      );
+
+      // The half the first version of this fix missed: OpenCode blocks on the answer exactly as
+      // it does for a permission, so resolving only Studio's side clears the composer and leaves
+      // the agent waiting forever.
+      NodeAssert.deepEqual(
+        runtimeMock.state.questionRejects,
+        ["question-stranded"],
+        "expected the timeout to reject the question upstream",
       );
     }),
   );

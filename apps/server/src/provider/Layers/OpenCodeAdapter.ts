@@ -914,6 +914,9 @@ export function makeOpenCodeAdapter(
           }
 
           context.pendingQuestions.delete(requestId);
+          yield* runOpenCodeSdk("question.reject", () =>
+            context.client.question.reject({ requestID: requestId }),
+          ).pipe(Effect.ignore);
           yield* emit({
             ...(yield* buildEventBase({
               threadId: context.session.threadId,
