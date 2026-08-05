@@ -886,14 +886,43 @@ export function hasActionableProposedPlan(
   return proposedPlan !== null && proposedPlan.implementedAt === null;
 }
 
+/**
+ * Later rows belonging to a task whose announcement asked to stay out of the
+ * transcript. The roster still shows it — this only suppresses the inline
+ * narration of housekeeping work.
+ */
+function isSkippedTranscriptTaskActivity(
+  activity: OrchestrationThreadActivity,
+  skipTranscriptTaskIds: ReadonlySet<string>,
+): boolean {
+  if (skipTranscriptTaskIds.size === 0) return false;
+  if (!activity.kind.startsWith("task.")) return false;
+  const taskId = asTrimmedString(asRecord(activity.payload)?.["taskId"]);
+  return taskId !== null && skipTranscriptTaskIds.has(taskId);
+}
+
 export function deriveWorkLogEntries(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
 ): WorkLogEntry[] {
   const ordered = [...activities].toSorted(compareActivitiesByOrder);
+  // Ambient tasks announce themselves once with `skipTranscript`, but it is
+  // their later progress and completion rows that would clutter the
+  // transcript — `task.started` is dropped for every task anyway. Collecting
+  // the ids up front is what lets those rows be recognized, since only the
+  // announcement carries the flag.
+  const skipTranscriptTaskIds = new Set<string>();
+  for (const activity of ordered) {
+    if (activity.kind !== "task.started") continue;
+    const payload = asRecord(activity.payload);
+    if (payload?.["skipTranscript"] !== true) continue;
+    const taskId = asTrimmedString(payload["taskId"]);
+    if (taskId) skipTranscriptTaskIds.add(taskId);
+  }
   const entries: DerivedWorkLogEntry[] = [];
   for (const activity of ordered) {
     if (activity.kind === "tool.started") continue;
     if (activity.kind === "task.started") continue;
+    if (isSkippedTranscriptTaskActivity(activity, skipTranscriptTaskIds)) continue;
     if (activity.kind === "context-window.updated") continue;
     if (activity.summary === "Checkpoint captured") continue;
     if (isPlanBoundaryToolActivity(activity)) continue;

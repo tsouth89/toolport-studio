@@ -269,6 +269,59 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         sequence += 1;
       }
 
+      // Only backgrounded + still-working rows raise runningBackgroundTaskCount.
+      for (const [taskId, status, backgrounded] of [
+        ["task-running-bg", "running", 1],
+        ["task-paused-bg", "paused", 1],
+        // Foreground work: covered by the running turn, not the roster count.
+        ["task-running-fg", "running", 0],
+        // Settled work: listed in the panel, not counted as busy.
+        ["task-done-bg", "completed", 1],
+        ["task-failed-bg", "failed", 1],
+      ] as const) {
+        yield* sql`
+          INSERT INTO projection_thread_background_tasks (
+            thread_id,
+            task_id,
+            task_type,
+            description,
+            command,
+            status,
+            backgrounded,
+            created_at,
+            updated_at
+          )
+          VALUES (
+            'thread-1',
+            ${taskId},
+            'shell',
+            'Watch CI',
+            'gh run watch',
+            ${status},
+            ${backgrounded},
+            '2026-02-24T00:00:05.000Z',
+            '2026-02-24T00:00:05.000Z'
+          )
+        `;
+      }
+
+      const shellWithBackgroundTasks = yield* snapshotQuery.getThreadShellById(
+        ThreadId.make("thread-1"),
+      );
+      assert.equal(shellWithBackgroundTasks._tag, "Some");
+      if (shellWithBackgroundTasks._tag === "Some") {
+        assert.equal(shellWithBackgroundTasks.value.runningBackgroundTaskCount, 2);
+      }
+
+      const snapshotWithBackgroundTasks = yield* snapshotQuery.getShellSnapshot();
+      assert.equal(
+        snapshotWithBackgroundTasks.threads.find((thread) => thread.id === "thread-1")
+          ?.runningBackgroundTaskCount,
+        2,
+      );
+
+      yield* sql`DELETE FROM projection_thread_background_tasks WHERE thread_id = 'thread-1'`;
+
       yield* sql`
         UPDATE projection_thread_queued_turns
         SET queued_turn_json = 'not-valid-json'
@@ -490,6 +543,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           hasPendingUserInput: false,
           hasActionableProposedPlan: false,
           queuedTurnCount: 1,
+          runningBackgroundTaskCount: 0,
         },
       ]);
 

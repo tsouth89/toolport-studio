@@ -127,6 +127,13 @@ const ProjectionQueuedTurnCountDbRowSchema = Schema.Struct({
 const ProjectionQueuedTurnCountForThreadDbRowSchema = Schema.Struct({
   count: NonNegativeInt,
 });
+const ProjectionBackgroundTaskCountDbRowSchema = Schema.Struct({
+  threadId: ThreadId,
+  count: NonNegativeInt,
+});
+const ProjectionBackgroundTaskCountForThreadDbRowSchema = Schema.Struct({
+  count: NonNegativeInt,
+});
 const WorkspaceRootLookupInput = Schema.Struct({
   workspaceRoot: Schema.String,
 });
@@ -565,6 +572,33 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         SELECT COUNT(*) AS count
         FROM projection_thread_queued_turns
         WHERE thread_id = ${threadId}
+      `,
+  });
+
+  // Only backgrounded, still-working tasks count: a foreground shell is already
+  // covered by the thread's running turn, and a settled task is not work.
+  const listBackgroundTaskCountRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: ProjectionBackgroundTaskCountDbRowSchema,
+    execute: () =>
+      sql`
+        SELECT thread_id AS "threadId", COUNT(*) AS count
+        FROM projection_thread_background_tasks
+        WHERE backgrounded = 1 AND status IN ('pending', 'running', 'paused')
+        GROUP BY thread_id
+      `,
+  });
+
+  const getBackgroundTaskCountByThread = SqlSchema.findOne({
+    Request: ThreadIdLookupInput,
+    Result: ProjectionBackgroundTaskCountForThreadDbRowSchema,
+    execute: ({ threadId }) =>
+      sql`
+        SELECT COUNT(*) AS count
+        FROM projection_thread_background_tasks
+        WHERE thread_id = ${threadId}
+          AND backgrounded = 1
+          AND status IN ('pending', 'running', 'paused')
       `,
   });
 
@@ -1670,6 +1704,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             ),
           ),
           listQueuedTurnCountRows(undefined),
+          listBackgroundTaskCountRows(undefined),
           listActiveThreadSessionRows(undefined).pipe(
             Effect.mapError(
               toPersistenceSqlOrDecodeError(
@@ -1703,6 +1738,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             sidebarFolderRows,
             threadRows,
             queuedTurnCountRows,
+            backgroundTaskCountRows,
             sessionRows,
             latestTurnRows,
             stateRows,
@@ -1745,6 +1781,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               const queuedTurnCountByThread = new Map(
                 queuedTurnCountRows.map((row) => [row.threadId, row.count] as const),
               );
+              const backgroundTaskCountByThread = new Map(
+                backgroundTaskCountRows.map((row) => [row.threadId, row.count] as const),
+              );
 
               const snapshot = {
                 snapshotSequence: computeSnapshotSequence(stateRows),
@@ -1786,6 +1825,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                         hasPendingUserInput: row.pendingUserInputCount > 0,
                         hasActionableProposedPlan: row.hasActionableProposedPlan > 0,
                         queuedTurnCount: queuedTurnCountByThread.get(row.threadId) ?? 0,
+                        runningBackgroundTaskCount:
+                          backgroundTaskCountByThread.get(row.threadId) ?? 0,
                       } satisfies OrchestrationThreadShell)
                     : Result.failVoid,
                 ),
@@ -1838,6 +1879,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             ),
           ),
           listQueuedTurnCountRows(undefined),
+          listBackgroundTaskCountRows(undefined),
           listArchivedThreadSessionRows(undefined).pipe(
             Effect.mapError(
               toPersistenceSqlOrDecodeError(
@@ -1871,6 +1913,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             sidebarFolderRows,
             threadRows,
             queuedTurnCountRows,
+            backgroundTaskCountRows,
             sessionRows,
             latestTurnRows,
             stateRows,
@@ -1919,6 +1962,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               const queuedTurnCountByThread = new Map(
                 queuedTurnCountRows.map((row) => [row.threadId, row.count] as const),
               );
+              const backgroundTaskCountByThread = new Map(
+                backgroundTaskCountRows.map((row) => [row.threadId, row.count] as const),
+              );
 
               const snapshot = {
                 snapshotSequence: computeSnapshotSequence(stateRows),
@@ -1959,6 +2005,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                     hasPendingUserInput: row.pendingUserInputCount > 0,
                     hasActionableProposedPlan: row.hasActionableProposedPlan > 0,
                     queuedTurnCount: queuedTurnCountByThread.get(row.threadId) ?? 0,
+                    runningBackgroundTaskCount: backgroundTaskCountByThread.get(row.threadId) ?? 0,
                   }),
                 ),
                 updatedAt: updatedAt ?? "1970-01-01T00:00:00.000Z",
@@ -2163,40 +2210,49 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
 
   const getThreadShellById: ProjectionSnapshotQueryShape["getThreadShellById"] = (threadId) =>
     Effect.gen(function* () {
-      const [threadRow, latestTurnRow, sessionRow, queuedTurnCountRow] = yield* Effect.all([
-        getActiveThreadRowById({ threadId }).pipe(
-          Effect.mapError(
-            toPersistenceSqlOrDecodeError(
-              "ProjectionSnapshotQuery.getThreadShellById:getThread:query",
-              "ProjectionSnapshotQuery.getThreadShellById:getThread:decodeRow",
+      const [threadRow, latestTurnRow, sessionRow, queuedTurnCountRow, backgroundTaskCountRow] =
+        yield* Effect.all([
+          getActiveThreadRowById({ threadId }).pipe(
+            Effect.mapError(
+              toPersistenceSqlOrDecodeError(
+                "ProjectionSnapshotQuery.getThreadShellById:getThread:query",
+                "ProjectionSnapshotQuery.getThreadShellById:getThread:decodeRow",
+              ),
             ),
           ),
-        ),
-        getLatestTurnRowByThread({ threadId }).pipe(
-          Effect.mapError(
-            toPersistenceSqlOrDecodeError(
-              "ProjectionSnapshotQuery.getThreadShellById:getLatestTurn:query",
-              "ProjectionSnapshotQuery.getThreadShellById:getLatestTurn:decodeRow",
+          getLatestTurnRowByThread({ threadId }).pipe(
+            Effect.mapError(
+              toPersistenceSqlOrDecodeError(
+                "ProjectionSnapshotQuery.getThreadShellById:getLatestTurn:query",
+                "ProjectionSnapshotQuery.getThreadShellById:getLatestTurn:decodeRow",
+              ),
             ),
           ),
-        ),
-        getThreadSessionRowByThread({ threadId }).pipe(
-          Effect.mapError(
-            toPersistenceSqlOrDecodeError(
-              "ProjectionSnapshotQuery.getThreadShellById:getSession:query",
-              "ProjectionSnapshotQuery.getThreadShellById:getSession:decodeRow",
+          getThreadSessionRowByThread({ threadId }).pipe(
+            Effect.mapError(
+              toPersistenceSqlOrDecodeError(
+                "ProjectionSnapshotQuery.getThreadShellById:getSession:query",
+                "ProjectionSnapshotQuery.getThreadShellById:getSession:decodeRow",
+              ),
             ),
           ),
-        ),
-        getQueuedTurnCountByThread({ threadId }).pipe(
-          Effect.mapError(
-            toPersistenceSqlOrDecodeError(
-              "ProjectionSnapshotQuery.getThreadShellById:getQueuedTurnCount:query",
-              "ProjectionSnapshotQuery.getThreadShellById:getQueuedTurnCount:decodeRow",
+          getQueuedTurnCountByThread({ threadId }).pipe(
+            Effect.mapError(
+              toPersistenceSqlOrDecodeError(
+                "ProjectionSnapshotQuery.getThreadShellById:getQueuedTurnCount:query",
+                "ProjectionSnapshotQuery.getThreadShellById:getQueuedTurnCount:decodeRow",
+              ),
             ),
           ),
-        ),
-      ]);
+          getBackgroundTaskCountByThread({ threadId }).pipe(
+            Effect.mapError(
+              toPersistenceSqlOrDecodeError(
+                "ProjectionSnapshotQuery.getThreadShellById:getBackgroundTaskCount:query",
+                "ProjectionSnapshotQuery.getThreadShellById:getBackgroundTaskCount:decodeRow",
+              ),
+            ),
+          ),
+        ]);
 
       if (Option.isNone(threadRow)) {
         return Option.none<OrchestrationThreadShell>();
@@ -2226,6 +2282,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         hasPendingUserInput: threadRow.value.pendingUserInputCount > 0,
         hasActionableProposedPlan: threadRow.value.hasActionableProposedPlan > 0,
         queuedTurnCount: queuedTurnCountRow.count,
+        runningBackgroundTaskCount: backgroundTaskCountRow.count,
       } satisfies OrchestrationThreadShell);
     });
 

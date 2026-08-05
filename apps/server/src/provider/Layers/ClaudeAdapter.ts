@@ -43,6 +43,7 @@ import {
   RuntimeItemId,
   RuntimeRequestId,
   RuntimeTaskId,
+  type RuntimeTaskStatus,
   ThreadId,
   TurnId,
   type UserInputQuestion,
@@ -214,6 +215,92 @@ interface ClaudeTaskState {
   readonly blockedBy: Set<string>;
 }
 
+/**
+ * Last background-task state we emitted, keyed by Claude task id. The SDK
+ * repeats every in-flight task on every `background_tasks_changed` snapshot, so
+ * this collapses the roster down to real transitions — without it a long-lived
+ * watcher would append a `task.updated` activity on each unrelated change.
+ */
+interface ClaudeBackgroundTaskState {
+  status: RuntimeTaskStatus | undefined;
+  backgrounded: boolean | undefined;
+  description: string | undefined;
+  taskType: string | undefined;
+  command: string | undefined;
+}
+
+/** Claude's task vocabulary → the provider-neutral RuntimeTaskStatus. */
+function toRuntimeTaskStatus(value: unknown): RuntimeTaskStatus | undefined {
+  switch (value) {
+    case "pending":
+      return "pending";
+    case "running":
+      return "running";
+    case "paused":
+      return "paused";
+    case "completed":
+      return "completed";
+    case "failed":
+      return "failed";
+    // Claude reports user//system termination as `killed`; Studio's neutral
+    // vocabulary calls that `stopped` (matching TaskCompletedPayload).
+    case "killed":
+    case "stopped":
+      return "stopped";
+    default:
+      return undefined;
+  }
+}
+
+function trimmedOrUndefined(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+/**
+ * Merge a patch into the tracked state and report whether anything a client
+ * would render actually moved. Undefined patch fields mean "unchanged", which
+ * is why this cannot be a plain object comparison.
+ */
+function applyBackgroundTaskPatch(
+  tracked: Map<string, ClaudeBackgroundTaskState>,
+  taskId: string,
+  patch: Partial<ClaudeBackgroundTaskState>,
+): { readonly changed: boolean; readonly state: ClaudeBackgroundTaskState } {
+  const previous = tracked.get(taskId);
+  const next: ClaudeBackgroundTaskState = {
+    status: patch.status ?? previous?.status,
+    backgrounded: patch.backgrounded ?? previous?.backgrounded,
+    description: patch.description ?? previous?.description,
+    taskType: patch.taskType ?? previous?.taskType,
+    command: patch.command ?? previous?.command,
+  };
+  const changed =
+    previous === undefined ||
+    previous.status !== next.status ||
+    previous.backgrounded !== next.backgrounded ||
+    previous.description !== next.description ||
+    previous.taskType !== next.taskType ||
+    previous.command !== next.command;
+  tracked.set(taskId, next);
+  return { changed, state: next };
+}
+
+/** Roster entries the SDK sends as `BackgroundTaskSummary`. */
+function readBackgroundTaskRoster(message: unknown): ReadonlyArray<Record<string, unknown>> {
+  const tasks = (message as { tasks?: unknown } | undefined)?.tasks;
+  if (!Array.isArray(tasks)) {
+    return [];
+  }
+  return tasks.filter(
+    (task): task is Record<string, unknown> =>
+      task !== null && typeof task === "object" && !Array.isArray(task),
+  );
+}
+
 interface ClaudeSessionContext {
   session: ProviderSession;
   /** Replaced when Toolport MCP injection is rebound mid-session. */
@@ -233,6 +320,8 @@ interface ClaudeSessionContext {
   }>;
   readonly inFlightTools: Map<number, ToolInFlight>;
   readonly claudeTasks: Map<string, ClaudeTaskState>;
+  /** Background-task roster dedupe; see ClaudeBackgroundTaskState. */
+  readonly backgroundTasks: Map<string, ClaudeBackgroundTaskState>;
   turnState: ClaudeTurnState | undefined;
   lastKnownContextWindow: number | undefined;
   lastKnownTokenUsage: ThreadTokenUsageSnapshot | undefined;
@@ -3062,14 +3151,55 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       },
     };
 
-    // Undeclared-but-real subtypes (absent from the SDK's union, so they can't
-    // be switch cases): consumed intentionally without emitting, otherwise
-    // they fall through to the unknown-subtype warning and surface as spurious
-    // error rows in client work logs. `background_tasks_changed` is a roster
-    // snapshot ({tasks: [...]}) — the task_* lifecycle events carry the
-    // authoritative per-agent data and the typed background_tasks control
-    // request is the reconciliation source.
+    // Undeclared-but-real subtype (absent from the SDK's union, so it cannot be
+    // a switch case). `background_tasks_changed` is a roster snapshot
+    // ({tasks: BackgroundTaskSummary[]}) covering every in-flight task,
+    // including ones started before this session attached (resume). It is the
+    // reconciliation source: task_started/task_updated carry the incremental
+    // lifecycle, this fills the gaps. Emits one task.updated per entry whose
+    // rendered state actually moved, so repeat snapshots stay silent.
     if ((message.subtype as string) === "background_tasks_changed") {
+      for (const task of readBackgroundTaskRoster(message)) {
+        // The SDK's BackgroundTaskSummary declares `id`/`type`, but this
+        // subtype is wire-only and has also been observed carrying the
+        // task_started spelling. Accept either rather than dropping the entry.
+        const taskId = trimmedOrUndefined(task.id) ?? trimmedOrUndefined(task.task_id);
+        if (!taskId) {
+          continue;
+        }
+        const taskType = trimmedOrUndefined(task.type) ?? trimmedOrUndefined(task.task_type);
+        const { changed, state } = applyBackgroundTaskPatch(context.backgroundTasks, taskId, {
+          ...(toRuntimeTaskStatus(task.status) ? { status: toRuntimeTaskStatus(task.status) } : {}),
+          ...(trimmedOrUndefined(task.description)
+            ? { description: trimmedOrUndefined(task.description) }
+            : {}),
+          ...(taskType ? { taskType } : {}),
+          ...(trimmedOrUndefined(task.command)
+            ? { command: trimmedOrUndefined(task.command) }
+            : {}),
+          // Presence in the roster is what makes a task background work; the
+          // summary has no separate flag.
+          backgrounded: true,
+        });
+        if (!changed) {
+          continue;
+        }
+        const stamp = yield* makeEventStamp();
+        yield* offerRuntimeEvent({
+          ...base,
+          eventId: stamp.eventId,
+          createdAt: stamp.createdAt,
+          type: "task.updated",
+          payload: {
+            taskId: RuntimeTaskId.make(taskId),
+            backgrounded: true,
+            ...(state.status ? { status: state.status } : {}),
+            ...(state.description ? { description: state.description } : {}),
+            ...(state.taskType ? { taskType: state.taskType } : {}),
+            ...(state.command ? { command: state.command } : {}),
+          },
+        });
+      }
       return;
     }
 
@@ -3154,6 +3284,17 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         });
         return;
       case "task_started":
+        // Seed the roster so a later task_updated patch (which only carries
+        // changed fields) still has a description and type to render.
+        applyBackgroundTaskPatch(context.backgroundTasks, message.task_id, {
+          status: "running",
+          ...(trimmedOrUndefined(message.description)
+            ? { description: trimmedOrUndefined(message.description) }
+            : {}),
+          ...(trimmedOrUndefined(message.task_type)
+            ? { taskType: trimmedOrUndefined(message.task_type) }
+            : {}),
+        });
         yield* offerRuntimeEvent({
           ...base,
           type: "task.started",
@@ -3161,6 +3302,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             taskId: RuntimeTaskId.make(message.task_id),
             description: message.description,
             ...(message.task_type ? { taskType: message.task_type } : {}),
+            ...(message.skip_transcript === true ? { skipTranscript: true } : {}),
           },
         });
         return;
@@ -3185,12 +3327,49 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           },
         });
         return;
-      // Task state patch (status/backgrounded/end_time). No runtime mapping
-      // yet — the terminal task_notification reports the outcome — but it
-      // must not surface as an unknown-subtype warning row.
-      case "task_updated":
+      // Task state patch (status / is_backgrounded / end_time). This is the
+      // only event that reports a task detaching into the background, so it
+      // drives the roster between task_started and task_notification.
+      case "task_updated": {
+        const { changed, state } = applyBackgroundTaskPatch(
+          context.backgroundTasks,
+          message.task_id,
+          {
+            ...(toRuntimeTaskStatus(message.patch.status)
+              ? { status: toRuntimeTaskStatus(message.patch.status) }
+              : {}),
+            ...(trimmedOrUndefined(message.patch.description)
+              ? { description: trimmedOrUndefined(message.patch.description) }
+              : {}),
+            ...(typeof message.patch.is_backgrounded === "boolean"
+              ? { backgrounded: message.patch.is_backgrounded }
+              : {}),
+          },
+        );
+        if (!changed) {
+          return;
+        }
+        yield* offerRuntimeEvent({
+          ...base,
+          type: "task.updated",
+          payload: {
+            taskId: RuntimeTaskId.make(message.task_id),
+            ...(state.status ? { status: state.status } : {}),
+            ...(state.description ? { description: state.description } : {}),
+            ...(state.taskType ? { taskType: state.taskType } : {}),
+            ...(state.command ? { command: state.command } : {}),
+            ...(state.backgrounded !== undefined ? { backgrounded: state.backgrounded } : {}),
+            ...(trimmedOrUndefined(message.patch.error)
+              ? { error: trimmedOrUndefined(message.patch.error) }
+              : {}),
+          },
+        });
         return;
+      }
       case "task_notification":
+        // Terminal for this task: drop it from the roster so a later snapshot
+        // that still lists it re-emits rather than being deduped into silence.
+        context.backgroundTasks.delete(message.task_id);
         yield* emitThreadTokenUsage(
           context,
           normalizeClaudeTaskProgressTokenUsage(message.usage, context),
@@ -3667,6 +3846,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       const pendingUserInputs = new Map<ApprovalRequestId, PendingUserInput>();
       const inFlightTools = new Map<number, ToolInFlight>();
       const claudeTasks = new Map<string, ClaudeTaskState>();
+      const backgroundTasks = new Map<string, ClaudeBackgroundTaskState>();
 
       const contextRef = yield* Ref.make<ClaudeSessionContext | undefined>(undefined);
 
@@ -4200,6 +4380,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         turns: [],
         inFlightTools,
         claudeTasks,
+        backgroundTasks,
         turnState: undefined,
         lastKnownContextWindow: initialContextWindow,
         lastKnownTokenUsage: undefined,

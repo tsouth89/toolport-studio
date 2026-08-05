@@ -737,6 +737,45 @@ describe("deriveWorkLogEntries", () => {
     expect(workEntryIndicatesToolFailure(entries[0]!)).toBe(false);
   });
 
+  it("keeps an ambient task's later rows out of the transcript", () => {
+    // Only the announcement carries `skipTranscript`, and every task.started
+    // is dropped regardless — so the flag is only worth anything if the
+    // progress and completion rows that follow are recognized by task id.
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "ambient-start",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        summary: "Housekeeping",
+        kind: "task.started",
+        payload: { taskId: "ambient-1", skipTranscript: true },
+      }),
+      makeActivity({
+        id: "ambient-progress",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        summary: "Housekeeping",
+        kind: "task.progress",
+        payload: { taskId: "ambient-1", summary: "Still going" },
+      }),
+      makeActivity({
+        id: "ambient-done",
+        createdAt: "2026-02-23T00:00:03.000Z",
+        summary: "Housekeeping",
+        kind: "task.completed",
+        payload: { taskId: "ambient-1", status: "completed" },
+      }),
+      makeActivity({
+        id: "ordinary-done",
+        createdAt: "2026-02-23T00:00:04.000Z",
+        summary: "Watch CI",
+        kind: "task.completed",
+        payload: { taskId: "ordinary-1", status: "completed" },
+      }),
+    ];
+
+    const entries = deriveWorkLogEntries(activities);
+    expect(entries.map((entry) => entry.id)).toEqual(["ordinary-done"]);
+  });
+
   it("omits tool started entries and keeps completed entries", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({
