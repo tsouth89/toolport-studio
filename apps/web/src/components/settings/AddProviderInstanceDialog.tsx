@@ -200,7 +200,16 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
   const previewLabel = label.trim() || `${driverOption.label} Workspace`;
   const wizardStepSummaries = [driverOption.label, previewLabel, null] as const;
 
-  const configDraft = configByDriver[choiceKey] ?? EMPTY_CONFIG_DRAFT;
+  // Seed the draft from the tile, not just the submitted config. The preset
+  // field carries a schema default, so an untouched form renders that default
+  // rather than the provider the user just picked — which read as "DeepSeek"
+  // on the config step of every OpenRouter instance. Harmless to submit (the
+  // tile still won) but it contradicted the choice on screen.
+  const presetSeededDraft = useMemo(
+    () => (choice.presetId ? { preset: choice.presetId } : EMPTY_CONFIG_DRAFT),
+    [choice.presetId],
+  );
+  const configDraft = configByDriver[choiceKey] ?? presetSeededDraft;
   const setConfigDraft = (config: Record<string, unknown> | undefined) => {
     setConfigByDriver((existing) => {
       const next = { ...existing };
