@@ -2,6 +2,7 @@ import * as React from "react";
 import type { ContextMenuItem } from "@toolport-studio/contracts";
 import { resolveThreadSidebarPlacementProjectId } from "@toolport-studio/contracts";
 import type {
+  SidebarGroupingAxis,
   SidebarProjectSortOrder,
   SidebarThreadSortOrder,
 } from "@toolport-studio/contracts/settings";
@@ -842,7 +843,7 @@ export function isThreadAlreadyOnSidebarShelf(input: {
  * shelf silently cleared its folder, because only `sidebarGroupId` is ever
  * written. One gesture, one meaning is the whole point of the split.
  */
-export type SidebarGroupingMode = "folders" | "projects";
+export type SidebarGroupingMode = SidebarGroupingAxis;
 
 /**
  * Bucket active threads onto sidebar shelves: free-form folders first, then
