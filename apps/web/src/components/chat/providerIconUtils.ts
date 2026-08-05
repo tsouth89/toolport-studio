@@ -9,6 +9,7 @@ import {
   OpenAI,
   OpenCodeIcon,
   OpenRouterIcon,
+  VercelIcon,
 } from "../Icons";
 import { PROVIDER_OPTIONS } from "../../session-logic";
 
@@ -29,6 +30,7 @@ export const PROVIDER_ICON_BY_PROVIDER: Partial<Record<ProviderDriverKind, Icon>
 export const PROVIDER_ICON_BY_BYOK_PRESET: Readonly<Record<string, Icon>> = {
   deepseek: DeepSeekIcon,
   openrouter: OpenRouterIcon,
+  vercel: VercelIcon,
 };
 
 /**

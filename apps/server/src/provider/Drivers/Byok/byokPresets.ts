@@ -80,7 +80,13 @@ export interface ByokPresetModel {
  * presets move to user-editable JSON later without smuggling code into it.
  */
 export interface ByokPresetCatalog {
-  readonly kind: "openrouter";
+  /**
+   * Which listing dialect the endpoint speaks. Every gateway publishes the
+   * same facts under different names — OpenRouter's `context_length` is
+   * Vercel's `context_window`, its `architecture.input_modalities` is
+   * `modalities.input` — so the shape has to be named, not sniffed.
+   */
+  readonly kind: "openrouter" | "vercel";
   /** Absolute URL of the provider's model listing endpoint. */
   readonly url: string;
 }
@@ -179,14 +185,104 @@ const DEEPSEEK: ByokPreset = {
  */
 const OPENROUTER_SEED_MODELS: ReadonlyArray<ByokPresetModel> = [
   {
-    slug: "anthropic/claude-sonnet-5",
-    displayName: "Claude Sonnet 5",
-    description: "Anthropic's balanced agentic coding model.",
+    // OpenRouter's own meta-model: it classifies each prompt and picks a
+    // model per request. This is the thing OpenRouter is named for, so it
+    // belongs in the lineup — but it is a different bargain from the rest.
+    //
+    // It publishes no reasoning efforts, so the effort control disappears for
+    // this model rather than silently doing nothing, and its pricing is "-1"
+    // (whatever the chosen model costs). The routing is per request, so a
+    // long session can change models underneath itself; some models handle a
+    // multi-turn tool loop poorly, and this cannot promise you avoid them.
+    // Good for exploration, not for a run you need to be reproducible.
+    slug: "openrouter/auto",
+    displayName: "Auto Router",
+    description: "OpenRouter picks a model per prompt. No effort control; cost varies by pick.",
+    contextWindow: 2_000_000,
+    reasoningEfforts: [],
+    defaultReasoningEffort: undefined,
+    supportsVision: true,
+    supportsParallelToolCalls: false,
+    supportsApplyPatch: false,
+    supportsWebSearch: false,
+  },
+  {
+    // Same idea as Auto Router, different selection rule: it classifies the
+    // task and picks whatever the market spends most on for that task.
+    slug: "openrouter/auto-beta",
+    displayName: "Auto Router (Beta)",
+    description: "Task-aware routing by aggregate spend. No effort control; cost varies by pick.",
+    contextWindow: 2_000_000,
+    reasoningEfforts: [],
+    defaultReasoningEffort: undefined,
+    supportsVision: true,
+    supportsParallelToolCalls: false,
+    supportsApplyPatch: false,
+    supportsWebSearch: false,
+  },
+  {
+    // Free inference without pinning a specific donated backend: it picks a
+    // free model at random per request. That spreads the risk one bad backend
+    // creates, but it also means a session can land on a model that cannot
+    // survive a multi-turn tool loop — the failure we already hit on
+    // `openai/gpt-oss-20b:free`. The named free seed below is the predictable
+    // one; this is the convenient one. Both share the same daily free cap.
+    slug: "openrouter/free",
+    displayName: "Free Models Router",
+    description: "Routes to a random free model. Rate limited; picks vary per request.",
+    contextWindow: 200_000,
+    reasoningEfforts: [],
+    defaultReasoningEffort: undefined,
+    supportsVision: true,
+    supportsParallelToolCalls: false,
+    supportsApplyPatch: false,
+    supportsWebSearch: false,
+  },
+  {
+    slug: "anthropic/claude-opus-5",
+    displayName: "Claude Opus 5",
+    description: "Anthropic flagship. Strongest at long multi-step work.",
     contextWindow: 1_000_000,
     reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
     defaultReasoningEffort: "high",
     supportsVision: true,
-    supportsParallelToolCalls: true,
+    supportsParallelToolCalls: false,
+    supportsApplyPatch: false,
+    supportsWebSearch: false,
+  },
+  {
+    slug: "anthropic/claude-sonnet-5",
+    displayName: "Claude Sonnet 5",
+    description: "Balanced Anthropic model for everyday agentic coding.",
+    contextWindow: 1_000_000,
+    reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
+    defaultReasoningEffort: "high",
+    supportsVision: true,
+    supportsParallelToolCalls: false,
+    supportsApplyPatch: false,
+    supportsWebSearch: false,
+  },
+  {
+    slug: "openai/gpt-5.6-sol",
+    displayName: "GPT-5.6 Sol",
+    description: "OpenAI flagship. Strong at command-line and multi-step coding.",
+    contextWindow: 1_050_000,
+    reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"],
+    defaultReasoningEffort: "medium",
+    supportsVision: true,
+    supportsParallelToolCalls: false,
+    supportsApplyPatch: false,
+    supportsWebSearch: false,
+  },
+  {
+    slug: "openai/gpt-5.6-terra",
+    displayName: "GPT-5.6 Terra",
+    description: "Balanced OpenAI model for everyday coding and reasoning.",
+    contextWindow: 1_050_000,
+    reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"],
+    defaultReasoningEffort: "medium",
+    supportsVision: true,
+    supportsParallelToolCalls: false,
     supportsApplyPatch: false,
     supportsWebSearch: false,
   },
@@ -198,14 +294,50 @@ const OPENROUTER_SEED_MODELS: ReadonlyArray<ByokPresetModel> = [
     reasoningEfforts: ["minimal", "low", "medium", "high"],
     defaultReasoningEffort: "medium",
     supportsVision: true,
-    supportsParallelToolCalls: true,
+    supportsParallelToolCalls: false,
     supportsApplyPatch: false,
     supportsWebSearch: false,
   },
   {
     slug: "deepseek/deepseek-v4-flash",
-    displayName: "DeepSeek-V4-Flash",
+    displayName: "DeepSeek V4 Flash 0423",
     description: "Fast frontier agentic coding model.",
+    contextWindow: 1_048_576,
+    reasoningEfforts: ["high", "xhigh"],
+    defaultReasoningEffort: "high",
+    supportsVision: false,
+    supportsParallelToolCalls: false,
+    supportsApplyPatch: false,
+    supportsWebSearch: false,
+  },
+  {
+    slug: "x-ai/grok-4.5",
+    displayName: "Grok 4.5",
+    description: "xAI agentic model with vision.",
+    contextWindow: 500_000,
+    reasoningEfforts: ["low", "medium", "high"],
+    defaultReasoningEffort: "high",
+    supportsVision: true,
+    supportsParallelToolCalls: false,
+    supportsApplyPatch: false,
+    supportsWebSearch: false,
+  },
+  {
+    slug: "qwen/qwen3.8-max",
+    displayName: "Qwen3.8 Max",
+    description: "Alibaba flagship with a long context window.",
+    contextWindow: 1_000_000,
+    reasoningEfforts: ["minimal", "low", "medium", "high", "xhigh"],
+    defaultReasoningEffort: "xhigh",
+    supportsVision: true,
+    supportsParallelToolCalls: false,
+    supportsApplyPatch: false,
+    supportsWebSearch: false,
+  },
+  {
+    slug: "z-ai/glm-5.2",
+    displayName: "GLM 5.2",
+    description: "Z.ai coding model with a long context window.",
     contextWindow: 1_048_576,
     reasoningEfforts: ["high", "xhigh"],
     defaultReasoningEffort: "high",
@@ -215,24 +347,28 @@ const OPENROUTER_SEED_MODELS: ReadonlyArray<ByokPresetModel> = [
     supportsWebSearch: false,
   },
   {
+    slug: "moonshotai/kimi-k3",
+    displayName: "Kimi K3",
+    description: "Moonshot frontier model with vision.",
+    contextWindow: 1_048_576,
+    reasoningEfforts: ["low", "high", "max"],
+    defaultReasoningEffort: "max",
+    supportsVision: true,
+    supportsParallelToolCalls: false,
+    supportsApplyPatch: false,
+    supportsWebSearch: false,
+  },
+  {
     // The only seed that works on an account with no credits. OpenRouter
     // sizes every request against the remaining balance and Codex does not
-    // ask for a small budget, so on a zero-balance key every paid model above
-    // fails with a 402 that reads like a rejected key. Listing one free model
-    // means a new instance can complete a turn before the user has paid
-    // anything. It is rate limited and weak at long agentic work — a starting
-    // point, not a recommendation.
+    // ask for a small budget, so on a zero-balance key every paid model
+    // above fails with a 402 that reads like a rejected key.
     //
     // Chosen over `openai/gpt-oss-20b:free`, which looks like the obvious
     // pick and is not: it answers a single request fine but fails the second
-    // turn of a real Codex loop every time, dropping the stream after five
-    // reconnects once the tool output is in the history.
-    //
-    // Every `:free` slug is pinned to one donated backend with no failover,
-    // so its reliability is that one machine's rather than the model's — the
-    // paid `openai/gpt-oss-20b` has 12 backends and is a different
-    // proposition entirely. This one's single backend is Nvidia's own, which
-    // is why it survives a full loop where the other does not.
+    // turn of a real Codex loop every time. Every `:free` slug is pinned to
+    // one donated backend with no failover, so its reliability is that one
+    // machine's rather than the model's; this one's backend is Nvidia's own.
     slug: "nvidia/nemotron-3-super-120b-a12b:free",
     displayName: "Nemotron 3 Super (free)",
     description: "Free open-weight model. Rate limited; good for trying the setup.",
@@ -240,19 +376,7 @@ const OPENROUTER_SEED_MODELS: ReadonlyArray<ByokPresetModel> = [
     reasoningEfforts: ["low", "medium"],
     defaultReasoningEffort: "medium",
     supportsVision: false,
-    supportsParallelToolCalls: true,
-    supportsApplyPatch: false,
-    supportsWebSearch: false,
-  },
-  {
-    slug: "x-ai/grok-4.5",
-    displayName: "Grok 4.5",
-    description: "xAI's agentic model with vision.",
-    contextWindow: 500_000,
-    reasoningEfforts: ["low", "medium", "high"],
-    defaultReasoningEffort: "high",
-    supportsVision: true,
-    supportsParallelToolCalls: true,
+    supportsParallelToolCalls: false,
     supportsApplyPatch: false,
     supportsWebSearch: false,
   },
@@ -286,7 +410,142 @@ const OPENROUTER: ByokPreset = {
   catalog: { kind: "openrouter", url: "https://openrouter.ai/api/v1/models" },
 };
 
-export const BYOK_PRESETS: ReadonlyArray<ByokPreset> = [DEEPSEEK, OPENROUTER];
+/**
+ * Seed lineup for Vercel AI Gateway. Generated from its live catalog, same as
+ * OpenRouter's — note the vendor prefixes differ between the two gateways
+ * ("xai/" and "zai/" here, "x-ai/" and "z-ai/" there), so slugs are not
+ * portable between them.
+ */
+const VERCEL_SEED_MODELS: ReadonlyArray<ByokPresetModel> = [
+  {
+    slug: "anthropic/claude-opus-5",
+    displayName: "Claude Opus 5",
+    description: "Anthropic flagship. Strongest at long multi-step work.",
+    contextWindow: 1_000_000,
+    reasoningEfforts: [],
+    defaultReasoningEffort: undefined,
+    supportsVision: true,
+    supportsParallelToolCalls: false,
+    supportsApplyPatch: false,
+    supportsWebSearch: false,
+  },
+  {
+    slug: "anthropic/claude-sonnet-5",
+    displayName: "Claude Sonnet 5",
+    description: "Balanced Anthropic model for everyday agentic coding.",
+    contextWindow: 1_000_000,
+    reasoningEfforts: ["low", "medium", "high", "xhigh"],
+    defaultReasoningEffort: "medium",
+    supportsVision: true,
+    supportsParallelToolCalls: false,
+    supportsApplyPatch: false,
+    supportsWebSearch: false,
+  },
+  {
+    slug: "openai/gpt-5.6-sol",
+    displayName: "GPT 5.6 Sol",
+    description: "OpenAI flagship. Strong at command-line and multi-step coding.",
+    contextWindow: 1_050_000,
+    reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"],
+    defaultReasoningEffort: "medium",
+    supportsVision: true,
+    supportsParallelToolCalls: false,
+    supportsApplyPatch: false,
+    supportsWebSearch: false,
+  },
+  {
+    slug: "google/gemini-3.6-flash",
+    displayName: "Gemini 3.6 Flash",
+    description: "Fast long-context model with vision.",
+    contextWindow: 1_000_000,
+    reasoningEfforts: [],
+    defaultReasoningEffort: undefined,
+    supportsVision: true,
+    supportsParallelToolCalls: false,
+    supportsApplyPatch: false,
+    supportsWebSearch: false,
+  },
+  {
+    slug: "deepseek/deepseek-v4-flash",
+    displayName: "DeepSeek V4 Flash",
+    description: "Fast frontier agentic coding model.",
+    contextWindow: 1_000_000,
+    reasoningEfforts: ["high", "xhigh"],
+    defaultReasoningEffort: "high",
+    supportsVision: false,
+    supportsParallelToolCalls: false,
+    supportsApplyPatch: false,
+    supportsWebSearch: false,
+  },
+  {
+    slug: "xai/grok-4.5",
+    displayName: "Grok 4.5",
+    description: "xAI agentic model with vision.",
+    contextWindow: 500_000,
+    reasoningEfforts: ["low", "medium", "high"],
+    defaultReasoningEffort: "medium",
+    supportsVision: true,
+    supportsParallelToolCalls: false,
+    supportsApplyPatch: false,
+    supportsWebSearch: false,
+  },
+  {
+    slug: "zai/glm-5.2",
+    displayName: "GLM 5.2",
+    description: "Z.ai coding model with a long context window.",
+    contextWindow: 1_000_000,
+    reasoningEfforts: ["high", "xhigh"],
+    defaultReasoningEffort: "high",
+    supportsVision: false,
+    supportsParallelToolCalls: false,
+    supportsApplyPatch: false,
+    supportsWebSearch: false,
+  },
+  {
+    slug: "moonshotai/kimi-k3",
+    displayName: "Kimi K3",
+    description: "Moonshot frontier model with vision.",
+    contextWindow: 1_000_000,
+    reasoningEfforts: [],
+    defaultReasoningEffort: undefined,
+    supportsVision: true,
+    supportsParallelToolCalls: false,
+    supportsApplyPatch: false,
+    supportsWebSearch: false,
+  },
+];
+
+/**
+ * Vercel AI Gateway — one key, many vendors, with BYOK and spend controls on
+ * Vercel's side.
+ *
+ * Its published API reference documents only Chat Completions, but the
+ * Responses route is real: it answers 400 to a malformed body exactly as the
+ * documented endpoints do, where an unrouted path answers 404. That matters
+ * because Codex dropped the older "chat" wire format, so an
+ * undocumented-but-present Responses endpoint is the difference between this
+ * provider working and not existing here at all. Being undocumented, it is
+ * also the thing most likely to change under us.
+ *
+ * Reasoning is the one place this gateway is genuinely poorer than OpenRouter:
+ * most models expose reasoning as an on/off toggle rather than named levels,
+ * and only the minority publishing an "effort" option get a level picker. The
+ * rest correctly show no effort control at all.
+ */
+const VERCEL: ByokPreset = {
+  id: "vercel",
+  label: "Vercel AI Gateway",
+  wireFormat: "responses",
+  baseUrl: "https://ai-gateway.vercel.sh/v1/",
+  envKey: "AI_GATEWAY_API_KEY",
+  apiKeysUrl: "https://vercel.com/dashboard/ai-gateway/api-keys",
+  // /v1/models is public here too, so it cannot tell a good key from a typo.
+  probePath: "credits",
+  models: VERCEL_SEED_MODELS,
+  catalog: { kind: "vercel", url: "https://ai-gateway.vercel.sh/v1/models" },
+};
+
+export const BYOK_PRESETS: ReadonlyArray<ByokPreset> = [DEEPSEEK, OPENROUTER, VERCEL];
 
 /**
  * Ids offered by the settings picker. Contracts owns the (id, label) pairs so

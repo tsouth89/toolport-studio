@@ -42,11 +42,12 @@ instance start Toolport Studio fetches your account's catalog from OpenRouter
 and reads each model's real context window, reasoning levels, and vision
 support from it. Nothing here goes stale between releases.
 
-A fresh instance starts with a small seed lineup, including one free model so
-you can complete a turn before adding credits. Treat that one as a way to
-confirm the setup works, not as a daily driver: every `:free` slug is pinned to
-a single donated backend with no failover, and free models share a 50-request
-daily cap per account that an agent burns through fast.
+A fresh instance starts with a seed lineup covering the major vendors, the
+routers described below, and one free model so you can complete a turn before
+adding credits. Treat the free ones as a way to confirm the setup works, not as
+a daily driver: every `:free` slug is pinned to a single donated backend with no
+failover, and free models share a 50-request daily cap per account that an agent
+burns through fast.
 
 To use anything else, add its slug under **Models** on the instance card,
 exactly as OpenRouter writes it:
@@ -61,9 +62,35 @@ Browse slugs at [openrouter.ai/models](https://openrouter.ai/models). A slug you
 add is resolved against the catalog like any seed, so it arrives with correct
 metadata rather than as an unknown model.
 
+Toolport Studio also supports [Vercel AI Gateway](vercel-ai-gateway.md), which
+covers similar ground. Slugs are not portable between the two: OpenRouter writes
+`x-ai/grok-4.5` where Vercel writes `xai/grok-4.5`.
+
 Aside from the free seed, everything here is paid, including DeepSeek. If
 DeepSeek is the only model you want, the [direct DeepSeek
 provider](deepseek.md) reaches it without going through a router.
+
+### Routers
+
+OpenRouter also publishes meta-models that pick a model for you per request.
+Three are seeded, because they are the thing OpenRouter is named for:
+
+| Slug                   | What it does                                                           |
+| ---------------------- | ---------------------------------------------------------------------- |
+| `openrouter/auto`      | Classifies the prompt and routes to one of dozens of models            |
+| `openrouter/auto-beta` | Task-aware; routes to whatever the market spends most on for that task |
+| `openrouter/free`      | Picks a free model at random                                           |
+
+They come with a real trade-off in a coding agent. None publishes reasoning
+levels, so the effort control disappears for them rather than silently doing
+nothing. Cost is whatever the chosen model costs. And because the pick happens
+per request, a long session can change models underneath itself — including
+onto a model that handles a multi-turn tool loop badly. Good for exploring,
+poor for a run you need to reproduce.
+
+`openrouter/pareto-code` looks like the one you want and is not: it is a
+coding-tier router, but it does not support tool calling, so it cannot run a
+session here and is filtered out. Same for `openrouter/fusion`.
 
 Two things are filtered out on purpose:
 
