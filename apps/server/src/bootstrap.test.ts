@@ -58,6 +58,15 @@ vi.mock("node:fs", async (importOriginal) => {
 const TestEnvelopeSchema = Schema.Struct({ mode: Schema.String });
 const encodeTestEnvelopeSchema = Schema.encodeEffect(Schema.fromJsonString(TestEnvelopeSchema));
 
+// Kept for the cases where the reader never takes ownership of the descriptor: it either fails
+// before building a stream, or runs on a host where it duplicates through an fd path and closes
+// only the duplicate.
+const openScopedFd = (path: string) =>
+  Effect.acquireRelease(
+    Effect.sync(() => NodeFS.openSync(path, "r")),
+    (fd) => Effect.sync(() => NodeFS.closeSync(fd)),
+  );
+
 it.layer(NodeServices.layer)("readBootstrapEnvelope", (it) => {
   it.effect("reads a bootstrap envelope from a provided fd", () =>
     Effect.gen(function* () {
@@ -69,10 +78,11 @@ it.layer(NodeServices.layer)("readBootstrapEnvelope", (it) => {
         `${yield* encodeTestEnvelopeSchema({ mode: "desktop" })}\n`,
       );
 
-      const fd = yield* Effect.acquireRelease(
-        Effect.sync(() => NodeFS.openSync(filePath, "r")),
-        (fd) => Effect.sync(() => NodeFS.closeSync(fd)),
-      );
+      // Open without acquireRelease, for the same reason as the fallback case below: on any host
+      // without an fd path to duplicate through, the reader consumes this descriptor directly and
+      // its stream closes it asynchronously. Closing it again in a finalizer races that and
+      // produces an uncaught EBADF.
+      const fd = NodeFS.openSync(filePath, "r");
 
       const payload = yield* readBootstrapEnvelope(TestEnvelopeSchema, fd, { timeoutMs: 100 });
       assertSome(payload, {
@@ -115,10 +125,7 @@ it.layer(NodeServices.layer)("readBootstrapEnvelope", (it) => {
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const filePath = yield* fs.makeTempFileScoped({ prefix: "t3-bootstrap-", suffix: ".ndjson" });
-      const fd = yield* Effect.acquireRelease(
-        Effect.sync(() => NodeFS.openSync(filePath, "r")),
-        (fd) => Effect.sync(() => NodeFS.closeSync(fd)),
-      );
+      const fd = yield* openScopedFd(filePath);
       const fdPath = `/proc/self/fd/${fd}`;
 
       openSyncInterceptor.failPath = fdPath;
@@ -158,10 +165,7 @@ it.layer(NodeServices.layer)("readBootstrapEnvelope", (it) => {
   it.effect("preserves fd and cause when stat fails for a non-availability reason", () =>
     Effect.gen(function* () {
       if (yield* isHostWindows) return;
-      const fd = yield* Effect.acquireRelease(
-        Effect.sync(() => NodeFS.openSync("/dev/null", "r")),
-        (fd) => Effect.sync(() => NodeFS.closeSync(fd)),
-      );
+      const fd = yield* openScopedFd("/dev/null");
 
       fstatSyncInterceptor.failFd = fd;
       try {
@@ -185,10 +189,9 @@ it.layer(NodeServices.layer)("readBootstrapEnvelope", (it) => {
       const filePath = yield* fs.makeTempFileScoped({ prefix: "t3-bootstrap-", suffix: ".ndjson" });
       yield* fs.writeFileString(filePath, '{"mode":42}\n');
 
-      const fd = yield* Effect.acquireRelease(
-        Effect.sync(() => NodeFS.openSync(filePath, "r")),
-        (fd) => Effect.sync(() => NodeFS.closeSync(fd)),
-      );
+      // Open without acquireRelease: the reader still builds and destroys a stream over this
+      // descriptor before the decode fails, so it owns the close. See the fallback case above.
+      const fd = NodeFS.openSync(filePath, "r");
       const error = yield* readBootstrapEnvelope(TestEnvelopeSchema, fd, {
         timeoutMs: 100,
       }).pipe(Effect.flip);
@@ -224,10 +227,7 @@ it.layer(NodeServices.layer)("readBootstrapEnvelope", (it) => {
           }),
       );
 
-      const fd = yield* Effect.acquireRelease(
-        Effect.sync(() => NodeFS.openSync(fifoPath, "r")),
-        (fd) => Effect.sync(() => NodeFS.closeSync(fd)),
-      );
+      const fd = yield* openScopedFd(fifoPath);
 
       const fiber = yield* readBootstrapEnvelope(TestEnvelopeSchema, fd, {
         timeoutMs: 100,
