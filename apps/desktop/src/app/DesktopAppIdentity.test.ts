@@ -4,6 +4,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 
 import type * as Electron from "electron";
@@ -85,6 +86,11 @@ const makeEnvironmentLayer = (overrides: TestEnvironmentInput = {}) => {
     Layer.provide(
       Layer.mergeAll(
         NodeServices.layer,
+        // These cases describe a macOS install, so paths must be built with
+        // POSIX rules regardless of the host running the suite. Without this
+        // the same assertions compute backslashes on Windows and the suite
+        // only passes on the CI platform.
+        Path.layer,
         DesktopConfig.layerTest({
           ...env,
         }),
