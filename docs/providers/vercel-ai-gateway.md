@@ -103,6 +103,24 @@ refused. Create a new one in the dashboard.
 back to its seeds. Usually a network or proxy problem; models you added return
 on the next start that reaches the gateway.
 
+**"tool messages need a tool/name or a preceding assistant tool call."** The
+model answered once, called a tool, and then rejected the follow-up carrying
+the result. This is the gateway's translation, not your setup: a Responses-API
+tool exchange has to be rewritten into the upstream vendor's chat format, and
+when the assistant's tool call is lost in that rewrite the tool result arrives
+with nothing to attach to.
+
+It is per model, not per gateway — other models on the same key and the same
+generated config run the identical loop fine. Confirmed on
+`moonshotai/kimi-k3`, which is why that slug is not seeded. Switch models, and
+if you need that specific one, try it through
+[OpenRouter](openrouter.md), which translates separately.
+
+Worth knowing generally: nothing in a gateway catalog predicts this. A model
+that fails here still advertises `tools` and is tagged `tool-use` exactly like
+the ones that work. Answering one request is not the same as surviving a
+multi-turn tool loop, and only running it tells you which you have.
+
 ## Where the configuration lives
 
 Toolport Studio generates a private Codex home per instance, under the server
