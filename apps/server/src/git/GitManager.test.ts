@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeFS from "node:fs";
+import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import * as NodeChildProcess from "node:child_process";
 
@@ -179,12 +180,17 @@ function runGitSyncForFakeGh(cwd: string, args: readonly string[]): void {
   );
 }
 
+// Resolved to its long form on purpose. Windows returns an 8.3 short path
+// (`C:\Users\RUNNER~1\...`) when the temp directory has a component longer than eight characters,
+// which is the case on CI where the runner profile is `runneradmin`. Git reports the long form, so
+// a fixture left short makes worktree and branch assertions compare two spellings of one path.
 function makeTempDir(
   prefix: string,
 ): Effect.Effect<string, PlatformError.PlatformError, FileSystem.FileSystem | Scope.Scope> {
   return Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
-    return yield* fileSystem.makeTempDirectoryScoped({ prefix });
+    const directory = yield* fileSystem.makeTempDirectoryScoped({ prefix });
+    return yield* Effect.promise(() => NodeFSP.realpath(directory));
   });
 }
 

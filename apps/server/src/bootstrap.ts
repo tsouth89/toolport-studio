@@ -204,6 +204,16 @@ const makeBootstrapInputStream = (fd: number) =>
     });
   });
 
+// Note that this branch consumes the caller's own descriptor rather than a duplicate, so the
+// stream's lifetime decides the descriptor's. The duplicating branch above opens a second
+// descriptor through `/proc/self/fd/N` and closes only that one, which leaves the caller's
+// untouched wherever such a path exists.
+//
+// Where one does not — Windows included — `destroy()` closes what the caller passed in. Switching
+// this to `autoClose: false` does not change that on Windows (measured on Node v24.18), though it
+// does keep the descriptor open on Linux, so the flag is not a portable way to retain ownership.
+// The rule for callers is therefore the simple one: on a host with no fd path, do not close the
+// descriptor yourself afterwards.
 const makeDirectBootstrapStream = (fd: number): NodeStream.Readable => {
   try {
     return NodeFS.createReadStream("", {

@@ -1,3 +1,5 @@
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodeFSP from "node:fs/promises";
 import * as NodeProcess from "node:process";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it, describe, expect } from "@effect/vitest";
@@ -32,11 +34,19 @@ const TestLayer = Layer.empty.pipe(
   Layer.provideMerge(NodeServices.layer),
 );
 
+// Windows hands back an 8.3 short path (`C:\Users\RUNNER~1\...`) whenever the temp directory has a
+// component longer than eight characters, which is the case on CI where the runner profile is
+// `runneradmin`. That matters here because the two realpath implementations in play disagree about
+// short names: `node:fs/promises.realpath`, which this service uses, expands them, while
+// `fs.realpathSync` and Effect's `FileSystem.realPath` leave them alone. A fixture left in short
+// form therefore makes every resolved-path assertion compare two different spellings of the same
+// file. Normalising once, here, keeps both spellings out of the tests entirely.
 const makeTempDir = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
-  return yield* fileSystem.makeTempDirectoryScoped({
+  const directory = yield* fileSystem.makeTempDirectoryScoped({
     prefix: "t3code-workspace-files-",
   });
+  return yield* Effect.promise(() => NodeFSP.realpath(directory));
 });
 
 const writeTextFile = Effect.fn("writeTextFile")(function* (

@@ -1,3 +1,6 @@
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodeFSP from "node:fs/promises";
+
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import * as Duration from "effect/Duration";
@@ -12,6 +15,19 @@ import * as RepositoryIdentityResolver from "./RepositoryIdentityResolver.ts";
 
 const normalizePathSeparators = (value: string) => value.replaceAll("\\", "/");
 const normalizeResolvedPath = (value: string) => normalizePathSeparators(value);
+
+// Resolved to its long form on purpose. Windows returns an 8.3 short path
+// (`C:\Users\RUNNER~1\...`) when the temp directory has a component longer than eight characters,
+// which is the case on CI where the runner profile is `runneradmin`. Git reports the long form for
+// its repository root, and Effect's `FileSystem.realPath` does not expand short names the way
+// `node:fs/promises.realpath` does, so realpathing both sides is not enough on its own — the
+// fixture itself has to start out long.
+const makeTempDir = (options: { readonly prefix: string }) =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const directory = yield* fileSystem.makeTempDirectoryScoped(options);
+    return yield* Effect.promise(() => NodeFSP.realpath(directory));
+  });
 
 const git = (cwd: string, args: ReadonlyArray<string>) =>
   Effect.gen(function* () {
@@ -38,7 +54,7 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
   it.effect("normalizes equivalent GitHub remotes into a stable repository identity", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
-      const cwd = yield* fileSystem.makeTempDirectoryScoped({
+      const cwd = yield* makeTempDir({
         prefix: "t3-repository-identity-test-",
       });
 
@@ -65,7 +81,7 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const repoRoot = yield* fileSystem.makeTempDirectoryScoped({
+      const repoRoot = yield* makeTempDir({
         prefix: "t3-repository-identity-nested-root-test-",
       });
       const nestedWorkspace = path.join(repoRoot, "packages", "web");
@@ -90,11 +106,10 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
 
   it.effect("returns null for non-git folders and repos without remotes", () =>
     Effect.gen(function* () {
-      const fileSystem = yield* FileSystem.FileSystem;
-      const nonGitDir = yield* fileSystem.makeTempDirectoryScoped({
+      const nonGitDir = yield* makeTempDir({
         prefix: "t3-repository-identity-non-git-",
       });
-      const gitDir = yield* fileSystem.makeTempDirectoryScoped({
+      const gitDir = yield* makeTempDir({
         prefix: "t3-repository-identity-no-remote-",
       });
 
@@ -111,8 +126,7 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
 
   it.effect("prefers upstream over origin when both remotes are configured", () =>
     Effect.gen(function* () {
-      const fileSystem = yield* FileSystem.FileSystem;
-      const cwd = yield* fileSystem.makeTempDirectoryScoped({
+      const cwd = yield* makeTempDir({
         prefix: "t3-repository-identity-upstream-test-",
       });
 
@@ -132,8 +146,7 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
 
   it.effect("uses the last remote path segment as the repository name for nested groups", () =>
     Effect.gen(function* () {
-      const fileSystem = yield* FileSystem.FileSystem;
-      const cwd = yield* fileSystem.makeTempDirectoryScoped({
+      const cwd = yield* makeTempDir({
         prefix: "t3-repository-identity-nested-group-test-",
       });
 
@@ -155,8 +168,7 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
     "keeps null identities cached across repeated resolves until the negative TTL expires",
     () =>
       Effect.gen(function* () {
-        const fileSystem = yield* FileSystem.FileSystem;
-        const cwd = yield* fileSystem.makeTempDirectoryScoped({
+        const cwd = yield* makeTempDir({
           prefix: "t3-repository-identity-late-remote-test-",
         });
 
@@ -194,8 +206,7 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
 
   it.effect("refreshes cached identities after the positive TTL when a remote changes", () =>
     Effect.gen(function* () {
-      const fileSystem = yield* FileSystem.FileSystem;
-      const cwd = yield* fileSystem.makeTempDirectoryScoped({
+      const cwd = yield* makeTempDir({
         prefix: "t3-repository-identity-remote-change-test-",
       });
 
