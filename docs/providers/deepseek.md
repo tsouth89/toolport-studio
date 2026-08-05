@@ -90,8 +90,9 @@ not survive. Change the instance in Settings instead.
 ## Other providers
 
 The driver is built around presets, so adding a provider is a data change
-rather than new code. [OpenRouter](openrouter.md) is the other one supported
-today, and reaches most of these vendors through a single key.
+rather than new code. [OpenRouter](openrouter.md) and [Vercel AI
+Gateway](vercel-ai-gateway.md) are the others supported today, and each reaches
+most of these vendors through a single key.
 
 Providers that publish an Anthropic-compatible endpoint (Z.ai, Moonshot,
 MiniMax, Qwen) need the Claude harness instead of the Codex one, which is not

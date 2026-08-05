@@ -1,6 +1,8 @@
 import { describe, expect, it } from "@effect/vitest";
+import * as Option from "effect/Option";
 
 import {
+  decodeCatalogModels,
   isAgentCapableModel,
   selectCatalogModels,
   toByokPresetModel,
@@ -122,34 +124,41 @@ describe("toByokPresetModel", () => {
 });
 
 describe("selectCatalogModels", () => {
-  const listing = [
-    listedModel({ id: "a/one" }),
-    listedModel({ id: "a/two" }),
-    listedModel({ id: "a/text-only", supported_parameters: ["temperature"] }),
-  ];
+  // Selection runs on the normalized catalog, so the tool-capability filter
+  // has already been applied by the decoder — `a/text-only` never reaches it.
+  const catalog = Option.getOrThrow(
+    decodeCatalogModels("openrouter", {
+      data: [
+        listedModel({ id: "a/one" }),
+        listedModel({ id: "a/two" }),
+        listedModel({ id: "a/text-only", supported_parameters: ["temperature"] }),
+      ],
+    }),
+  );
 
   it("returns the requested slugs in the order they were asked for", () => {
-    expect(
-      selectCatalogModels({ listing, slugs: ["a/two", "a/one"], seeds: [] }).map((m) => m.slug),
-    ).toEqual(["a/two", "a/one"]);
+    expect(selectCatalogModels({ catalog, slugs: ["a/two", "a/one"] }).map((m) => m.slug)).toEqual([
+      "a/two",
+      "a/one",
+    ]);
   });
 
   it("skips slugs the provider does not serve instead of failing", () => {
     // Almost always a typo. Refusing to start the whole instance over one bad
     // row in a list of ten is a far worse trade than quietly omitting it.
-    expect(
-      selectCatalogModels({ listing, slugs: ["a/one", "a/typo"], seeds: [] }).map((m) => m.slug),
-    ).toEqual(["a/one"]);
+    expect(selectCatalogModels({ catalog, slugs: ["a/one", "a/typo"] }).map((m) => m.slug)).toEqual(
+      ["a/one"],
+    );
   });
 
   it("skips models that cannot call tools", () => {
-    expect(selectCatalogModels({ listing, slugs: ["a/text-only"], seeds: [] })).toEqual([]);
+    expect(selectCatalogModels({ catalog, slugs: ["a/text-only"] })).toEqual([]);
   });
 
   it("deduplicates a slug the user added that is already a seed", () => {
-    expect(
-      selectCatalogModels({ listing, slugs: ["a/one", "a/one"], seeds: [] }).map((m) => m.slug),
-    ).toEqual(["a/one"]);
+    expect(selectCatalogModels({ catalog, slugs: ["a/one", "a/one"] }).map((m) => m.slug)).toEqual([
+      "a/one",
+    ]);
   });
 });
 
@@ -175,6 +184,78 @@ describe("the OpenRouter preset", () => {
     expect(openrouter.models.length).toBeGreaterThan(0);
     for (const model of openrouter.models) {
       expect(model.slug).toContain("/");
+    }
+  });
+});
+
+const vercelModel = (overrides: Record<string, unknown> = {}) =>
+  ({
+    id: "anthropic/claude-sonnet-5",
+    name: "Claude Sonnet 5",
+    description: "A model.",
+    context_window: 1_000_000,
+    modalities: { input: ["text", "image"] },
+    supported_parameters: ["tools"],
+    reasoning_options: [{ type: "toggle" }, { type: "effort", values: ["low", "medium", "high"] }],
+    ...overrides,
+  }) as never;
+
+describe("the Vercel dialect", () => {
+  const decode = (rows: ReadonlyArray<unknown>) =>
+    Option.getOrThrow(decodeCatalogModels("vercel", { data: rows }));
+
+  it("reads the fields Vercel names differently", () => {
+    // context_window, not context_length; modalities.input, not
+    // architecture.input_modalities. Sniffing for one shape would have
+    // silently produced a 128K text-only model here.
+    expect(decode([vercelModel()])[0]).toMatchObject({
+      slug: "anthropic/claude-sonnet-5",
+      displayName: "Claude Sonnet 5",
+      contextWindow: 1_000_000,
+      supportsVision: true,
+    });
+  });
+
+  it("maps the effort option onto reasoning levels", () => {
+    expect(decode([vercelModel()])[0]?.reasoningEfforts).toEqual(["low", "medium", "high"]);
+  });
+
+  it("gives a toggle-only model no effort levels rather than inventing two", () => {
+    const model = decode([vercelModel({ reasoning_options: [{ type: "toggle" }] })])[0];
+    expect(model?.reasoningEfforts).toEqual([]);
+    expect(model?.defaultReasoningEffort).toBeUndefined();
+  });
+
+  it("defaults to the middle level, not the most expensive one", () => {
+    // Vercel publishes no default, so an unasked-for choice should not be the
+    // priciest level the model offers.
+    expect(decode([vercelModel()])[0]?.defaultReasoningEffort).toBe("medium");
+  });
+
+  it("still drops models that cannot call tools", () => {
+    expect(decode([vercelModel({ supported_parameters: ["temperature"] })])).toEqual([]);
+  });
+});
+
+describe("the Vercel preset", () => {
+  const vercel = findByokPreset("vercel")!;
+
+  it("speaks the vercel catalog dialect", () => {
+    expect(vercel.catalog?.kind).toBe("vercel");
+  });
+
+  it("probes an endpoint that requires the key", () => {
+    // /v1/models is public here too, so it cannot tell a good key from a typo.
+    expect(vercel.probePath).toBe("credits");
+  });
+
+  it("keeps every seed's default effort inside its supported set", () => {
+    for (const model of vercel.models) {
+      if (model.reasoningEfforts.length === 0) {
+        expect(model.defaultReasoningEffort).toBeUndefined();
+        continue;
+      }
+      expect(model.reasoningEfforts).toContain(model.defaultReasoningEffort);
     }
   });
 });

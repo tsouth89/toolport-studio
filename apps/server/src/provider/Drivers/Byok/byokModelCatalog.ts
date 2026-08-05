@@ -36,7 +36,12 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import { HttpClient, HttpClientRequest } from "effect/unstable/http";
 
-import type { ByokPreset, ByokPresetModel, ByokReasoningEffort } from "./byokPresets.ts";
+import type {
+  ByokPreset,
+  ByokPresetCatalog,
+  ByokPresetModel,
+  ByokReasoningEffort,
+} from "./byokPresets.ts";
 
 /** Cached listing, so a cold start without network still has real metadata. */
 export const BYOK_CATALOG_CACHE_FILE_NAME = "catalog-cache.json";
@@ -107,7 +112,6 @@ type OpenRouterModel = typeof OpenRouterModel.Type;
 
 const CachedCatalog = Schema.fromJsonString(Schema.Struct({ data: Schema.Array(Schema.Unknown) }));
 const decodeCachedCatalog = Schema.decodeUnknownOption(CachedCatalog);
-const encodeCachedCatalog = Schema.encodeSync(CachedCatalog);
 
 /**
  * Can this model drive a coding agent at all?
@@ -117,7 +121,9 @@ const encodeCachedCatalog = Schema.encodeSync(CachedCatalog);
  * the first command — a worse outcome than the model simply not being
  * offered.
  */
-export function isAgentCapableModel(model: OpenRouterModel): boolean {
+export function isAgentCapableModel(model: {
+  readonly supported_parameters?: ReadonlyArray<string> | undefined;
+}): boolean {
   return (model.supported_parameters ?? []).includes("tools");
 }
 
@@ -170,6 +176,87 @@ export function toByokPresetModel(
 }
 
 /**
+ * Vercel AI Gateway's listing.
+ *
+ * Same facts as OpenRouter's, different names throughout, which is why the
+ * preset names its dialect rather than this module sniffing for one.
+ */
+const VercelModel = Schema.Struct({
+  id: Schema.String,
+  name: Schema.optional(Schema.String),
+  description: Schema.optional(Schema.String),
+  context_window: Schema.optional(Schema.Number),
+  modalities: Schema.optional(
+    Schema.Struct({ input: Schema.optional(Schema.Array(Schema.String)) }),
+  ),
+  supported_parameters: Schema.optional(Schema.Array(Schema.String)),
+  /**
+   * A list of the reasoning controls a model offers, e.g.
+   * `[{ type: "toggle" }, { type: "effort", values: ["low","medium","high"] }]`.
+   * Only the `effort` entry maps onto a level picker; a toggle-only model has
+   * no levels to show, and saying so is better than inventing two.
+   */
+  reasoning_options: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        type: Schema.optional(Schema.String),
+        values: Schema.optional(Schema.Array(Schema.String)),
+      }),
+    ),
+  ),
+});
+type VercelModel = typeof VercelModel.Type;
+
+const VercelModelList = Schema.Struct({ data: Schema.Array(VercelModel) });
+const decodeVercelModelList = Schema.decodeUnknownOption(VercelModelList);
+
+export function toVercelPresetModel(model: VercelModel): ByokPresetModel {
+  const effortOption = (model.reasoning_options ?? []).find((option) => option.type === "effort");
+  const efforts = toReasoningEfforts(effortOption?.values);
+  return {
+    slug: model.id,
+    displayName: model.name ?? model.id,
+    description: (model.description ?? "").slice(0, 280),
+    contextWindow: model.context_window ?? 128_000,
+    reasoningEfforts: efforts,
+    // Vercel publishes no default, so take the middle of what is offered
+    // rather than the strongest: an unasked-for default should not be the
+    // most expensive one the model has.
+    defaultReasoningEffort:
+      efforts.length === 0 ? undefined : efforts[Math.floor((efforts.length - 1) / 2)],
+    supportsVision: (model.modalities?.input ?? []).includes("image"),
+    supportsParallelToolCalls: (model.supported_parameters ?? []).includes("parallel_tool_calls"),
+    supportsApplyPatch: false,
+    supportsWebSearch: false,
+  };
+}
+
+/**
+ * Turn a raw listing into preset models, in whichever dialect the preset
+ * speaks, keeping only what could actually run a session.
+ *
+ * Normalizing here is what lets everything downstream — selection, browsing,
+ * the generated catalog — stay unaware that there is more than one gateway.
+ */
+export function decodeCatalogModels(
+  kind: ByokPresetCatalog["kind"],
+  value: unknown,
+  seeds: ReadonlyArray<ByokPresetModel> = [],
+): Option.Option<ReadonlyArray<ByokPresetModel>> {
+  const seedBySlug = new Map(seeds.map((seed) => [seed.slug, seed]));
+  if (kind === "vercel") {
+    return Option.map(decodeVercelModelList(value), (listing) =>
+      listing.data.filter(isAgentCapableModel).map(toVercelPresetModel),
+    );
+  }
+  return Option.map(decodeOpenRouterModelList(value), (listing) =>
+    listing.data
+      .filter(isAgentCapableModel)
+      .map((model) => toByokPresetModel(model, seedBySlug.get(model.id))),
+  );
+}
+
+/**
  * Pick the requested slugs out of a listing, in the order they were asked
  * for, dropping anything unusable.
  *
@@ -179,22 +266,20 @@ export function toByokPresetModel(
  * worse trade.
  */
 export function selectCatalogModels(input: {
-  readonly listing: ReadonlyArray<OpenRouterModel>;
+  readonly catalog: ReadonlyArray<ByokPresetModel>;
   readonly slugs: ReadonlyArray<string>;
-  readonly seeds: ReadonlyArray<ByokPresetModel>;
 }): ReadonlyArray<ByokPresetModel> {
-  const byId = new Map(input.listing.map((model) => [model.id, model]));
-  const seedBySlug = new Map(input.seeds.map((seed) => [seed.slug, seed]));
+  const bySlug = new Map(input.catalog.map((model) => [model.slug, model]));
   const resolved: ByokPresetModel[] = [];
   const seen = new Set<string>();
 
   for (const slug of input.slugs) {
     const normalized = slug.trim();
     if (normalized.length === 0 || seen.has(normalized)) continue;
-    const listed = byId.get(normalized);
-    if (!listed || !isAgentCapableModel(listed)) continue;
+    const listed = bySlug.get(normalized);
+    if (!listed) continue;
     seen.add(normalized);
-    resolved.push(toByokPresetModel(listed, seedBySlug.get(normalized)));
+    resolved.push(listed);
   }
 
   return resolved;
@@ -209,12 +294,9 @@ export function selectCatalogModels(input: {
  * exists before choosing. Same filter, no slug narrowing.
  */
 export function listCatalogModels(
-  listing: ReadonlyArray<OpenRouterModel>,
+  catalog: ReadonlyArray<ByokPresetModel>,
 ): ReadonlyArray<ByokPresetModel> {
-  return listing
-    .filter(isAgentCapableModel)
-    .map((model) => toByokPresetModel(model, undefined))
-    .sort((left, right) => left.slug.localeCompare(right.slug));
+  return [...catalog].sort((left, right) => left.slug.localeCompare(right.slug));
 }
 
 const fetchListing = Effect.fn("fetchByokCatalogListing")(function* (
@@ -291,14 +373,13 @@ export const resolveByokCatalogModels = Effect.fn("resolveByokCatalogModels")(fu
       ? Option.none<unknown>()
       : yield* fetchListing(catalog.url, apiKey).pipe(Effect.orElseSucceed(() => Option.none()));
 
-  const decodedLive = Option.isSome(live) ? decodeOpenRouterModelList(live.value) : Option.none();
+  const liveRaw = Option.isSome(live) ? live.value : undefined;
+  const decodedLive = Option.isSome(live)
+    ? decodeCatalogModels(catalog.kind, live.value, preset.models)
+    : Option.none();
 
   if (Option.isSome(decodedLive)) {
-    const resolved = selectCatalogModels({
-      listing: decodedLive.value.data,
-      slugs,
-      seeds: preset.models,
-    });
+    const resolved = selectCatalogModels({ catalog: decodedLive.value, slugs });
     if (resolved.length > 0) {
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -308,7 +389,10 @@ export const resolveByokCatalogModels = Effect.fn("resolveByokCatalogModels")(fu
         Effect.andThen(() =>
           fileSystem.writeFileString(
             cachePath,
-            encodeCachedCatalog({ data: decodedLive.value.data }),
+            // Persist the provider's own payload, not our normalized view:
+            // the cache is re-decoded in the preset's dialect on read, so
+            // storing the raw rows keeps it valid across mapper changes.
+            JSON.stringify(liveRaw),
           ),
         ),
         Effect.ignore,
@@ -319,14 +403,10 @@ export const resolveByokCatalogModels = Effect.fn("resolveByokCatalogModels")(fu
 
   const cached = yield* readCache(cachePath);
   const decodedCache = Option.isSome(cached)
-    ? decodeOpenRouterModelList(cached.value)
+    ? decodeCatalogModels(catalog.kind, cached.value, preset.models)
     : Option.none();
   if (Option.isSome(decodedCache)) {
-    const resolved = selectCatalogModels({
-      listing: decodedCache.value.data,
-      slugs,
-      seeds: preset.models,
-    });
+    const resolved = selectCatalogModels({ catalog: decodedCache.value, slugs });
     if (resolved.length > 0) return resolved;
   }
 
@@ -360,10 +440,10 @@ export const browseByokCatalog = Effect.fn("browseByokCatalog")(function* (input
 
   const cached = yield* readCache(input.cachePath);
   const decodedCache = Option.isSome(cached)
-    ? decodeOpenRouterModelList(cached.value)
+    ? decodeCatalogModels(input.preset.catalog.kind, cached.value, input.preset.models)
     : Option.none();
   if (Option.isSome(decodedCache)) {
-    const models = listCatalogModels(decodedCache.value.data);
+    const models = listCatalogModels(decodedCache.value);
     if (models.length > 0) return { models, source: "cache" };
   }
 

@@ -80,7 +80,13 @@ export interface ByokPresetModel {
  * presets move to user-editable JSON later without smuggling code into it.
  */
 export interface ByokPresetCatalog {
-  readonly kind: "openrouter";
+  /**
+   * Which listing dialect the endpoint speaks. Every gateway publishes the
+   * same facts under different names — OpenRouter's `context_length` is
+   * Vercel's `context_window`, its `architecture.input_modalities` is
+   * `modalities.input` — so the shape has to be named, not sniffed.
+   */
+  readonly kind: "openrouter" | "vercel";
   /** Absolute URL of the provider's model listing endpoint. */
   readonly url: string;
 }
@@ -404,7 +410,142 @@ const OPENROUTER: ByokPreset = {
   catalog: { kind: "openrouter", url: "https://openrouter.ai/api/v1/models" },
 };
 
-export const BYOK_PRESETS: ReadonlyArray<ByokPreset> = [DEEPSEEK, OPENROUTER];
+/**
+ * Seed lineup for Vercel AI Gateway. Generated from its live catalog, same as
+ * OpenRouter's — note the vendor prefixes differ between the two gateways
+ * ("xai/" and "zai/" here, "x-ai/" and "z-ai/" there), so slugs are not
+ * portable between them.
+ */
+const VERCEL_SEED_MODELS: ReadonlyArray<ByokPresetModel> = [
+  {
+    slug: "anthropic/claude-opus-5",
+    displayName: "Claude Opus 5",
+    description: "Anthropic flagship. Strongest at long multi-step work.",
+    contextWindow: 1_000_000,
+    reasoningEfforts: [],
+    defaultReasoningEffort: undefined,
+    supportsVision: true,
+    supportsParallelToolCalls: false,
+    supportsApplyPatch: false,
+    supportsWebSearch: false,
+  },
+  {
+    slug: "anthropic/claude-sonnet-5",
+    displayName: "Claude Sonnet 5",
+    description: "Balanced Anthropic model for everyday agentic coding.",
+    contextWindow: 1_000_000,
+    reasoningEfforts: ["low", "medium", "high", "xhigh"],
+    defaultReasoningEffort: "medium",
+    supportsVision: true,
+    supportsParallelToolCalls: false,
+    supportsApplyPatch: false,
+    supportsWebSearch: false,
+  },
+  {
+    slug: "openai/gpt-5.6-sol",
+    displayName: "GPT 5.6 Sol",
+    description: "OpenAI flagship. Strong at command-line and multi-step coding.",
+    contextWindow: 1_050_000,
+    reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"],
+    defaultReasoningEffort: "medium",
+    supportsVision: true,
+    supportsParallelToolCalls: false,
+    supportsApplyPatch: false,
+    supportsWebSearch: false,
+  },
+  {
+    slug: "google/gemini-3.6-flash",
+    displayName: "Gemini 3.6 Flash",
+    description: "Fast long-context model with vision.",
+    contextWindow: 1_000_000,
+    reasoningEfforts: [],
+    defaultReasoningEffort: undefined,
+    supportsVision: true,
+    supportsParallelToolCalls: false,
+    supportsApplyPatch: false,
+    supportsWebSearch: false,
+  },
+  {
+    slug: "deepseek/deepseek-v4-flash",
+    displayName: "DeepSeek V4 Flash",
+    description: "Fast frontier agentic coding model.",
+    contextWindow: 1_000_000,
+    reasoningEfforts: ["high", "xhigh"],
+    defaultReasoningEffort: "high",
+    supportsVision: false,
+    supportsParallelToolCalls: false,
+    supportsApplyPatch: false,
+    supportsWebSearch: false,
+  },
+  {
+    slug: "xai/grok-4.5",
+    displayName: "Grok 4.5",
+    description: "xAI agentic model with vision.",
+    contextWindow: 500_000,
+    reasoningEfforts: ["low", "medium", "high"],
+    defaultReasoningEffort: "medium",
+    supportsVision: true,
+    supportsParallelToolCalls: false,
+    supportsApplyPatch: false,
+    supportsWebSearch: false,
+  },
+  {
+    slug: "zai/glm-5.2",
+    displayName: "GLM 5.2",
+    description: "Z.ai coding model with a long context window.",
+    contextWindow: 1_000_000,
+    reasoningEfforts: ["high", "xhigh"],
+    defaultReasoningEffort: "high",
+    supportsVision: false,
+    supportsParallelToolCalls: false,
+    supportsApplyPatch: false,
+    supportsWebSearch: false,
+  },
+  {
+    slug: "moonshotai/kimi-k3",
+    displayName: "Kimi K3",
+    description: "Moonshot frontier model with vision.",
+    contextWindow: 1_000_000,
+    reasoningEfforts: [],
+    defaultReasoningEffort: undefined,
+    supportsVision: true,
+    supportsParallelToolCalls: false,
+    supportsApplyPatch: false,
+    supportsWebSearch: false,
+  },
+];
+
+/**
+ * Vercel AI Gateway — one key, many vendors, with BYOK and spend controls on
+ * Vercel's side.
+ *
+ * Its published API reference documents only Chat Completions, but the
+ * Responses route is real: it answers 400 to a malformed body exactly as the
+ * documented endpoints do, where an unrouted path answers 404. That matters
+ * because Codex dropped the older "chat" wire format, so an
+ * undocumented-but-present Responses endpoint is the difference between this
+ * provider working and not existing here at all. Being undocumented, it is
+ * also the thing most likely to change under us.
+ *
+ * Reasoning is the one place this gateway is genuinely poorer than OpenRouter:
+ * most models expose reasoning as an on/off toggle rather than named levels,
+ * and only the minority publishing an "effort" option get a level picker. The
+ * rest correctly show no effort control at all.
+ */
+const VERCEL: ByokPreset = {
+  id: "vercel",
+  label: "Vercel AI Gateway",
+  wireFormat: "responses",
+  baseUrl: "https://ai-gateway.vercel.sh/v1/",
+  envKey: "AI_GATEWAY_API_KEY",
+  apiKeysUrl: "https://vercel.com/dashboard/ai-gateway/api-keys",
+  // /v1/models is public here too, so it cannot tell a good key from a typo.
+  probePath: "credits",
+  models: VERCEL_SEED_MODELS,
+  catalog: { kind: "vercel", url: "https://ai-gateway.vercel.sh/v1/models" },
+};
+
+export const BYOK_PRESETS: ReadonlyArray<ByokPreset> = [DEEPSEEK, OPENROUTER, VERCEL];
 
 /**
  * Ids offered by the settings picker. Contracts owns the (id, label) pairs so

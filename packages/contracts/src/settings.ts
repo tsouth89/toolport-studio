@@ -153,6 +153,7 @@ export interface ByokPresetChoice extends ProviderSettingsFormChoice {
 export const BYOK_PRESET_CHOICES: ReadonlyArray<ByokPresetChoice> = [
   { value: "deepseek", label: "DeepSeek", envKey: "DEEPSEEK_API_KEY" },
   { value: "openrouter", label: "OpenRouter", envKey: "OPENROUTER_API_KEY" },
+  { value: "vercel", label: "Vercel AI Gateway", envKey: "AI_GATEWAY_API_KEY" },
 ];
 
 export interface ProviderSettingsFormAnnotation {

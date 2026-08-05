@@ -751,6 +751,21 @@ export const OpenRouterIcon: Icon = ({ className, ...props }) => (
   </svg>
 );
 
+/**
+ * Vercel's triangle, for the AI Gateway preset. Uses `currentColor` so it
+ * inherits the icon set's light/dark treatment rather than pinning black.
+ */
+export const VercelIcon: Icon = ({ className, ...props }) => (
+  <svg
+    {...props}
+    viewBox="0 0 24 24"
+    fill="currentColor"
+    className={cn("text-black dark:text-white", className)}
+  >
+    <path d="M12 3 22.5 21h-21L12 3Z" />
+  </svg>
+);
+
 export const PiAgentIcon: Icon = ({ className, ...props }) => (
   <svg {...props} viewBox="0 0 800 800" className={cn("fill-none", className)}>
     <rect width="800" height="800" rx="160" fill="#000" />

@@ -62,6 +62,10 @@ Browse slugs at [openrouter.ai/models](https://openrouter.ai/models). A slug you
 add is resolved against the catalog like any seed, so it arrives with correct
 metadata rather than as an unknown model.
 
+Toolport Studio also supports [Vercel AI Gateway](vercel-ai-gateway.md), which
+covers similar ground. Slugs are not portable between the two: OpenRouter writes
+`x-ai/grok-4.5` where Vercel writes `xai/grok-4.5`.
+
 Aside from the free seed, everything here is paid, including DeepSeek. If
 DeepSeek is the only model you want, the [direct DeepSeek
 provider](deepseek.md) reaches it without going through a router.
