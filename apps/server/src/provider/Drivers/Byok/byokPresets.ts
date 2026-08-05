@@ -501,18 +501,14 @@ const VERCEL_SEED_MODELS: ReadonlyArray<ByokPresetModel> = [
     supportsApplyPatch: false,
     supportsWebSearch: false,
   },
-  {
-    slug: "moonshotai/kimi-k3",
-    displayName: "Kimi K3",
-    description: "Moonshot frontier model with vision.",
-    contextWindow: 1_000_000,
-    reasoningEfforts: [],
-    defaultReasoningEffort: undefined,
-    supportsVision: true,
-    supportsParallelToolCalls: false,
-    supportsApplyPatch: false,
-    supportsWebSearch: false,
-  },
+  // moonshotai/kimi-k3 is deliberately absent. It answers the first request
+  // and then fails the follow-up carrying the tool output with "tool messages
+  // need a tool/name or a preceding assistant tool call" — the gateway's
+  // translation into Moonshot's chat format loses the assistant tool_call, so
+  // the tool result arrives orphaned. Nothing in the catalog predicts this:
+  // it advertises `tools` and is tagged `tool-use` exactly like the models
+  // that work, and the same generated config drives them all. Restore it when
+  // Vercel fixes the translation; it stays reachable by slug meanwhile.
 ];
 
 /**
