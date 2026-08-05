@@ -95,6 +95,7 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 
 import * as DesktopBackendConfiguration from "./DesktopBackendConfiguration.ts";
 import * as DesktopBackendManager from "./DesktopBackendManager.ts";
+import { DesktopBackendProcessLedger } from "./DesktopBackendProcessLedger.ts";
 import * as DesktopObservability from "../app/DesktopObservability.ts";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopWindow from "../window/DesktopWindow.ts";
@@ -176,7 +177,8 @@ export type BackendInstanceFactoryRequirements =
   | FileSystem.FileSystem
   | ChildProcessSpawner.ChildProcessSpawner
   | HttpClient.HttpClient
-  | DesktopObservability.DesktopBackendOutputLogFactory;
+  | DesktopObservability.DesktopBackendOutputLogFactory
+  | DesktopBackendProcessLedger;
 
 interface ActiveRegisteredInstance {
   readonly _tag: "Active";

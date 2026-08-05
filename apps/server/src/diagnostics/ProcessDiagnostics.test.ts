@@ -260,6 +260,112 @@ describe("ProcessDiagnostics", () => {
     }),
   );
 
+  it.effect("kills the whole subtree on Windows instead of only the requested pid", () =>
+    Effect.gen(function* () {
+      const commands: Array<{ readonly command: string; readonly args: ReadonlyArray<string> }> =
+        [];
+      const spawnerLayer = Layer.succeed(
+        ChildProcessSpawner.ChildProcessSpawner,
+        ChildProcessSpawner.make((command) => {
+          const childProcess = command as unknown as {
+            readonly command: string;
+            readonly args: ReadonlyArray<string>;
+          };
+          commands.push({ command: childProcess.command, args: childProcess.args });
+          return Effect.succeed(
+            childProcess.command === "taskkill"
+              ? mockHandle({})
+              : mockHandle({
+                  stdout: JSON.stringify([
+                    { ProcessId: NodeProcess.pid, ParentProcessId: 1, CommandLine: "t3 server" },
+                    {
+                      ProcessId: 4242,
+                      ParentProcessId: NodeProcess.pid,
+                      CommandLine: "claude.exe --stream",
+                    },
+                  ]),
+                }),
+          );
+        }),
+      );
+      const layer = ProcessDiagnostics.layer.pipe(Layer.provide(spawnerLayer));
+
+      const result = yield* Effect.service(ProcessDiagnostics.ProcessDiagnostics).pipe(
+        Effect.flatMap((pd) => pd.signal({ pid: 4242, signal: "SIGKILL" })),
+        Effect.provide(layer),
+        Effect.provideService(HostProcessPlatform, "win32"),
+      );
+
+      expect(result).toEqual({
+        pid: 4242,
+        signal: "SIGKILL",
+        signaled: true,
+        message: Option.none(),
+      });
+      expect(commands.at(-1)).toEqual({
+        command: "taskkill",
+        args: ["/PID", "4242", "/T", "/F"],
+      });
+    }),
+  );
+
+  it.effect("reports a failed Windows tree kill rather than claiming success", () =>
+    Effect.gen(function* () {
+      const spawnerLayer = Layer.succeed(
+        ChildProcessSpawner.ChildProcessSpawner,
+        ChildProcessSpawner.make((command) => {
+          const childProcess = command as unknown as { readonly command: string };
+          return Effect.succeed(
+            childProcess.command === "taskkill"
+              ? mockHandle({ code: 128, stderr: 'ERROR: The process  "4242" not found.' })
+              : mockHandle({
+                  stdout: JSON.stringify([
+                    { ProcessId: NodeProcess.pid, ParentProcessId: 1, CommandLine: "t3 server" },
+                    {
+                      ProcessId: 4242,
+                      ParentProcessId: NodeProcess.pid,
+                      CommandLine: "claude.exe --stream",
+                    },
+                  ]),
+                }),
+          );
+        }),
+      );
+      const layer = ProcessDiagnostics.layer.pipe(Layer.provide(spawnerLayer));
+
+      const result = yield* Effect.service(ProcessDiagnostics.ProcessDiagnostics).pipe(
+        Effect.flatMap((pd) => pd.signal({ pid: 4242, signal: "SIGKILL" })),
+        Effect.provide(layer),
+        Effect.provideService(HostProcessPlatform, "win32"),
+      );
+
+      expect(result.signaled).toBe(false);
+      expect(Option.getOrNull(result.message)).toBe("Failed to signal process 4242 with SIGKILL.");
+    }),
+  );
+
+  it.effect("treats only a group-leading row as safe to signal as a group", () =>
+    Effect.sync(() => {
+      const row = {
+        pid: 4242,
+        ppid: 100,
+        status: "S",
+        cpuPercent: 0,
+        rssBytes: 100,
+        elapsed: "00:10",
+        command: "agent",
+      };
+
+      // A session root spawned detached leads its own group, so the MCP gateway
+      // and its servers go down with it.
+      expect(ProcessDiagnostics.leadsProcessGroup({ ...row, pgid: 4242 })).toBe(true);
+      // A process that merely belongs to someone else's group must be signalled
+      // alone, so unrelated siblings in that group survive.
+      expect(ProcessDiagnostics.leadsProcessGroup({ ...row, pgid: 100 })).toBe(false);
+      expect(ProcessDiagnostics.leadsProcessGroup({ ...row, pgid: null })).toBe(false);
+    }),
+  );
+
   it.effect("does not allow signaling the diagnostics query process", () =>
     Effect.gen(function* () {
       const spawnerLayer = Layer.succeed(

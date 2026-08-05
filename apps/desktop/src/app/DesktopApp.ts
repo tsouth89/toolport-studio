@@ -15,6 +15,7 @@ import * as DesktopClerk from "./DesktopClerk.ts";
 import * as DesktopApplicationMenu from "../window/DesktopApplicationMenu.ts";
 import * as DesktopWindow from "../window/DesktopWindow.ts";
 import * as DesktopBackendPool from "../backend/DesktopBackendPool.ts";
+import * as DesktopBackendProcessLedger from "../backend/DesktopBackendProcessLedger.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 import * as DesktopLifecycle from "./DesktopLifecycle.ts";
 import * as DesktopObservability from "./DesktopObservability.ts";
@@ -151,10 +152,22 @@ const bootstrap = Effect.gen(function* () {
   const serverExposure = yield* DesktopServerExposure.DesktopServerExposure;
   const wslBackend = yield* DesktopWslBackend.DesktopWslBackend;
   const desktopWindow = yield* DesktopWindow.DesktopWindow;
+  const processLedger = yield* DesktopBackendProcessLedger.DesktopBackendProcessLedger;
   const bootstrapStartMs = markColdStart(ColdStartMark.bootstrapStart);
   yield* logBootstrapInfo("bootstrap start", {
     coldStartMs: bootstrapStartMs,
   });
+
+  // Before anything else claims a port: a previous run that was killed without
+  // finalizers leaves its backend alive, still holding every provider session
+  // and MCP server beneath it. Sweeping first both reclaims those processes and
+  // frees the port they were squatting, so the scan below can reuse it.
+  const sweep = yield* processLedger.sweepOrphans;
+  if (sweep.terminated.length > 0) {
+    yield* logBootstrapInfo("bootstrap terminated orphaned backends from a previous run", {
+      pids: sweep.terminated,
+    });
+  }
 
   if (environment.isDevelopment && Option.isNone(environment.configuredBackendPort)) {
     return yield* new DesktopDevelopmentBackendPortRequiredError();

@@ -59,7 +59,37 @@ function compactToolLabel(label: string): string {
   return `${trimmed.slice(0, 27).trimEnd()}…`;
 }
 
-function statusTitle(model: ThreadActivityViewModel, liveElapsed: string | null): string {
+/**
+ * The oldest in-flight background task's start time, or null when nothing is
+ * running. Anchoring the elapsed clock to the oldest task means the header
+ * answers "how long has this been watching", not "how long since the most
+ * recent status patch".
+ */
+export function liveBackgroundWorkStartedAt(tasks: ReadonlyArray<BackgroundTask>): string | null {
+  let oldest: string | null = null;
+  for (const task of tasks) {
+    if (!isBackgroundTaskInFlight(task)) continue;
+    if (oldest === null || task.startedAt.localeCompare(oldest) < 0) {
+      oldest = task.startedAt;
+    }
+  }
+  return oldest;
+}
+
+function statusTitle(
+  model: ThreadActivityViewModel,
+  liveElapsed: string | null,
+  backgroundWork: { readonly count: number; readonly elapsed: string | null } | null,
+): string {
+  // A settled turn that left something running must not say "Done". The turn is
+  // done; the work is not, and reading "Done" next to a live watcher is exactly
+  // what makes people think nothing is watching.
+  if (!model.isWorking && backgroundWork !== null) {
+    const suffix = backgroundWork.elapsed ? ` · ${backgroundWork.elapsed}` : "";
+    return backgroundWork.count === 1
+      ? `Watching${suffix}`
+      : `Watching ${backgroundWork.count} tasks${suffix}`;
+  }
   if (model.isWorking) {
     const current = model.current?.label?.trim();
     const toolBit =
@@ -147,7 +177,20 @@ export function ThisTurnCard({
   const [expanded, setExpanded] = useState(true);
   const [userPinnedExpanded, setUserPinnedExpanded] = useState(false);
   const liveElapsed = useElapsedLabel(model.elapsedStartedAt, model.isWorking);
-  const title = statusTitle(model, liveElapsed);
+  const backgroundWorkStartedAt = liveBackgroundWorkStartedAt(backgroundTasks);
+  const backgroundElapsed = useElapsedLabel(
+    backgroundWorkStartedAt,
+    backgroundWorkStartedAt !== null,
+  );
+  const liveBackgroundCount = backgroundTasks.filter(isBackgroundTaskInFlight).length;
+  // A green check beside "Watching" reads as finished. The spinner is what makes
+  // the card legible at a glance as "still going".
+  const showsLiveSpinner = model.isWorking || liveBackgroundCount > 0;
+  const title = statusTitle(
+    model,
+    liveElapsed,
+    liveBackgroundCount > 0 ? { count: liveBackgroundCount, elapsed: backgroundElapsed } : null,
+  );
   const current = model.current;
   const agentSummary = summarizeAgentRuns(agentRuns);
   const preferredRun = preferredAgentRun(agentRuns);
@@ -261,7 +304,7 @@ export function ThisTurnCard({
             }}
             aria-expanded={false}
           >
-            {model.isWorking ? (
+            {showsLiveSpinner ? (
               <Loader2 className="size-3.5 shrink-0 animate-spin text-primary" aria-hidden />
             ) : (
               <CheckCircle2 className="size-3.5 shrink-0 text-success" aria-hidden />
@@ -331,7 +374,7 @@ export function ThisTurnCard({
           aria-expanded
           aria-label="Collapse this turn card"
         >
-          {model.isWorking ? (
+          {showsLiveSpinner ? (
             <Loader2 className="size-3.5 shrink-0 animate-spin text-primary" aria-hidden />
           ) : (
             <CheckCircle2 className="size-3.5 shrink-0 text-success" aria-hidden />
@@ -516,4 +559,30 @@ export function shouldShowThisTurnCard(
   // A settled turn that left something watching still has status worth showing.
   if (backgroundTasks.some(isBackgroundTaskInFlight)) return true;
   return false;
+}
+
+/**
+ * Full visibility rule, including the user's dismiss.
+ *
+ * Dismissal is keyed to a turn, but background work outlives the turn that
+ * started it. Dismissing during a turn therefore used to keep the card hidden
+ * after that turn settled, so a live watcher had no in-session presence at all
+ * while the sidebar chip went on counting it — you were left trusting a claim
+ * the UI could not corroborate. Live background work overrides the dismiss: a
+ * turn retrospective can be waved away, something still running cannot.
+ */
+export function isThisTurnCardVisible(input: {
+  readonly model: ThreadActivityViewModel;
+  readonly agentRuns?: ReadonlyArray<AgentRun>;
+  readonly backgroundTasks?: ReadonlyArray<BackgroundTask>;
+  /** The docked Activity surface already shows all of this. */
+  readonly dockedActivityOpen: boolean;
+  readonly dismissed: boolean;
+  readonly forcedOpen: boolean;
+}): boolean {
+  if (input.dockedActivityOpen) return false;
+  const backgroundTasks = input.backgroundTasks ?? [];
+  if (input.dismissed && !backgroundTasks.some(isBackgroundTaskInFlight)) return false;
+  if (input.forcedOpen) return true;
+  return shouldShowThisTurnCard(input.model, input.agentRuns ?? [], backgroundTasks);
 }
