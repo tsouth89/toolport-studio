@@ -31,9 +31,16 @@ const defaultModelSelection = {
   model: "gpt-5-codex",
 } as const;
 
+/**
+ * Sleep between polls rather than `Effect.yieldNow`: yielding only defers to
+ * the microtask queue, so the loop spins as fast as the event loop allows and
+ * competes with the work it is waiting for. Harmless alone, costly when vitest
+ * runs suites in parallel. The timeout bounds the failure case, so it is set
+ * high enough to survive a loaded machine.
+ */
 async function waitFor(
   predicate: () => boolean | Promise<boolean>,
-  timeoutMs = 2_000,
+  timeoutMs = 10_000,
 ): Promise<void> {
   const deadline = (await Effect.runPromise(Clock.currentTimeMillis)) + timeoutMs;
   const poll = async (): Promise<void> => {
@@ -43,7 +50,7 @@ async function waitFor(
     if ((await Effect.runPromise(Clock.currentTimeMillis)) >= deadline) {
       throw new Error("Timed out waiting for expectation.");
     }
-    await Effect.runPromise(Effect.yieldNow);
+    await Effect.runPromise(Effect.sleep(5));
     return poll();
   };
 

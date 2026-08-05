@@ -171,10 +171,26 @@ type ProviderRuntimeTestProposedPlan = ProviderRuntimeTestThread["proposedPlans"
 type ProviderRuntimeTestActivity = ProviderRuntimeTestThread["activities"][number];
 type ProviderRuntimeTestCheckpoint = ProviderRuntimeTestThread["checkpoints"][number];
 
+/**
+ * Poll the read model until `predicate` holds.
+ *
+ * The interval is a real sleep rather than `Effect.yieldNow`. Yielding only
+ * defers to the microtask queue, so the loop re-ran an expensive read-model
+ * snapshot as fast as the event loop allowed — starving the very pipeline it
+ * was waiting on. That is invisible on an idle machine and the dominant cost
+ * when vitest runs suites in parallel, which is why these tests passed alone
+ * and failed in a full run.
+ *
+ * The timeout is a ceiling for the failure case, not an expected wait, so it
+ * is generous enough to survive a loaded CI box.
+ */
+const WAIT_FOR_THREAD_TIMEOUT_MS = 10_000;
+const WAIT_FOR_THREAD_POLL_INTERVAL_MS = 5;
+
 async function waitForThread(
   readModel: () => Promise<ProviderRuntimeTestReadModel>,
   predicate: (thread: ProviderRuntimeTestThread) => boolean,
-  timeoutMs = 2000,
+  timeoutMs = WAIT_FOR_THREAD_TIMEOUT_MS,
   threadId: ThreadId = asThreadId("thread-1"),
 ) {
   const deadline = (await Effect.runPromise(Clock.currentTimeMillis)) + timeoutMs;
@@ -187,7 +203,7 @@ async function waitForThread(
     if ((await Effect.runPromise(Clock.currentTimeMillis)) >= deadline) {
       throw new Error("Timed out waiting for thread state");
     }
-    await Effect.runPromise(Effect.yieldNow);
+    await Effect.runPromise(Effect.sleep(WAIT_FOR_THREAD_POLL_INTERVAL_MS));
     return poll();
   };
   return poll();
