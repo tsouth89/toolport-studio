@@ -1,4 +1,4 @@
-import process from "node:process";
+import * as NodeProcess from "node:process";
 import { KeybindingCommand, KeybindingRule, KeybindingsConfig } from "@toolport-studio/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
@@ -13,6 +13,7 @@ import * as Schema from "effect/Schema";
 import * as ServerConfig from "./config.ts";
 import * as Keybindings from "./keybindings.ts";
 import { KeybindingsConfigError } from "@toolport-studio/contracts";
+import { isHostWindows } from "@toolport-studio/shared/hostProcess";
 
 const KeybindingsConfigJson = Schema.fromJsonString(KeybindingsConfig);
 const encodeKeybindingsConfigJson = Schema.encodeEffect(KeybindingsConfigJson);
@@ -27,7 +28,7 @@ const makeKeybindingsLayer = () => {
   return Keybindings.layer.pipe(
     Layer.provideMerge(
       Layer.fresh(
-        ServerConfig.layerTest(process.cwd(), {
+        ServerConfig.layerTest(NodeProcess.cwd(), {
           prefix: "t3code-keybindings-test-",
         }),
       ),
@@ -506,7 +507,7 @@ it.layer(NodeServices.layer)("keybindings", (it) => {
 
   it.effect("fails when config directory is not writable", () =>
     Effect.gen(function* () {
-      if (process.platform === "win32") return;
+      if (yield* isHostWindows) return;
       const fs = yield* FileSystem.FileSystem;
       const { keybindingsConfigPath } = yield* ServerConfig.ServerConfig;
       const { dirname } = yield* Path.Path;

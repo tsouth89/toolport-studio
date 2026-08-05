@@ -1,6 +1,5 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
-import process from "node:process";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -14,6 +13,7 @@ import {
   grokAuthAfterSuccessfulAcpDiscovery,
   resolveGrokReasoningEffort,
 } from "./GrokProvider.ts";
+import { isHostWindows } from "@toolport-studio/shared/hostProcess";
 
 const decodeGrokSettings = Schema.decodeSync(GrokSettings);
 
@@ -107,7 +107,7 @@ it.layer(NodeServices.layer)("checkGrokProviderStatus", (it) => {
 
   it.effect("reports an installed CLI as unhealthy when --version exits non-zero", () =>
     Effect.gen(function* () {
-      if (process.platform === "win32") return;
+      if (yield* isHostWindows) return;
       const secretStderr = "broken grok install: secret-token-value";
       const snapshot = yield* Effect.scoped(
         Effect.gen(function* () {
@@ -137,7 +137,7 @@ it.layer(NodeServices.layer)("checkGrokProviderStatus", (it) => {
 
   it.effect("reports an error when ACP model discovery is unavailable", () =>
     Effect.gen(function* () {
-      if (process.platform === "win32") return;
+      if (yield* isHostWindows) return;
       const snapshot = yield* Effect.scoped(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
@@ -166,7 +166,7 @@ it.layer(NodeServices.layer)("checkGrokProviderStatus", (it) => {
 
   it.effect("rejects a Grok CLI that is below the minimum required version", () =>
     Effect.gen(function* () {
-      if (process.platform === "win32") return;
+      if (yield* isHostWindows) return;
       const snapshot = yield* Effect.scoped(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;

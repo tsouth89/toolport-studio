@@ -1,5 +1,5 @@
 import * as NodeOS from "node:os";
-import process from "node:process";
+import * as NodeProcess from "node:process";
 
 import { assert, expect, it } from "@effect/vitest";
 import * as ConfigProvider from "effect/ConfigProvider";
@@ -18,6 +18,7 @@ import * as NetService from "@toolport-studio/shared/Net";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { deriveServerPaths } from "../config.ts";
 import { resolveServerConfig } from "./config.ts";
+import { isHostWindows } from "@toolport-studio/shared/hostProcess";
 
 const deriveExplicitServerPaths = (baseDir: string, devUrl: URL | undefined) =>
   deriveServerPaths(baseDir, devUrl, { baseDirIsExplicit: true });
@@ -112,7 +113,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
         ...defaultObservabilityConfig,
         mode: "desktop",
         port: 4001,
-        cwd: process.cwd(),
+        cwd: NodeProcess.cwd(),
         baseDir,
         ...derivedPaths,
         host: "0.0.0.0",
@@ -182,7 +183,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
         ...defaultObservabilityConfig,
         mode: "web",
         port: 8788,
-        cwd: process.cwd(),
+        cwd: NodeProcess.cwd(),
         baseDir,
         ...derivedPaths,
         host: "127.0.0.1",
@@ -202,7 +203,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
 
   it.effect("preserves explicit false CLI boolean flags over env and bootstrap values", () =>
     Effect.gen(function* () {
-      if (process.platform === "win32") return;
+      if (yield* isHostWindows) return;
       const { join } = yield* Path.Path;
       const baseDir = join(NodeOS.tmpdir(), "t3-cli-config-false-flags");
       const fd = yield* openBootstrapFd(
@@ -256,7 +257,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
         ...defaultObservabilityConfig,
         mode: "web",
         port: 8788,
-        cwd: process.cwd(),
+        cwd: NodeProcess.cwd(),
         baseDir,
         ...derivedPaths,
         host: "127.0.0.1",
@@ -275,7 +276,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
 
   it.effect("uses bootstrap envelope values as fallbacks when flags and env are absent", () =>
     Effect.gen(function* () {
-      if (process.platform === "win32") return;
+      if (yield* isHostWindows) return;
       const { join } = yield* Path.Path;
       const baseDir = "/tmp/t3-bootstrap-home";
       const fd = yield* openBootstrapFd(
@@ -331,7 +332,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
         otlpMetricsUrl: "http://localhost:4318/v1/metrics",
         mode: "desktop",
         port: 4888,
-        cwd: process.cwd(),
+        cwd: NodeProcess.cwd(),
         baseDir,
         ...derivedPaths,
         host: "127.0.0.2",
@@ -400,7 +401,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
 
   it.effect("applies flag then env precedence over bootstrap envelope values", () =>
     Effect.gen(function* () {
-      if (process.platform === "win32") return;
+      if (yield* isHostWindows) return;
       const { join } = yield* Path.Path;
       const baseDir = join(NodeOS.tmpdir(), "t3-cli-config-env-wins");
       const fd = yield* openBootstrapFd(
@@ -460,7 +461,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
         ...defaultObservabilityConfig,
         mode: "web",
         port: 8788,
-        cwd: process.cwd(),
+        cwd: NodeProcess.cwd(),
         baseDir,
         ...derivedPaths,
         host: "127.0.0.1",
@@ -529,7 +530,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
         otlpMetricsUrl: "http://localhost:4318/v1/metrics",
         mode: "desktop",
         port: 4888,
-        cwd: process.cwd(),
+        cwd: NodeProcess.cwd(),
         baseDir,
         ...derivedPaths,
         host: "127.0.0.1",
@@ -592,7 +593,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
         ...defaultObservabilityConfig,
         mode: "web",
         port: 3773,
-        cwd: process.cwd(),
+        cwd: NodeProcess.cwd(),
         baseDir,
         ...derivedPaths,
         host: undefined,

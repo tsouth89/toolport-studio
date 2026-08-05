@@ -1,5 +1,5 @@
 import * as NodeAssert from "node:assert/strict";
-import process from "node:process";
+import * as NodeProcess from "node:process";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
 import * as Context from "effect/Context";
@@ -41,6 +41,7 @@ import {
   mergeOpenCodeAssistantText,
   trackOpenCodeOpenTool,
 } from "./OpenCodeAdapter.ts";
+import { isHostWindows } from "@toolport-studio/shared/hostProcess";
 
 // Test-local service tag so the rest of the file can keep using `yield* OpenCodeAdapter`.
 class OpenCodeAdapter extends Context.Service<OpenCodeAdapter, OpenCodeAdapterShape>()(
@@ -279,7 +280,7 @@ const OpenCodeAdapterTestLayer = Layer.effect(
   makeOpenCodeAdapter(openCodeAdapterTestSettings),
 ).pipe(
   Layer.provideMerge(Layer.succeed(OpenCodeRuntime, OpenCodeRuntimeTestDouble)),
-  Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+  Layer.provideMerge(ServerConfig.layerTest(NodeProcess.cwd(), NodeProcess.cwd())),
   Layer.provideMerge(
     ServerSettingsService.layerTest({
       providers: {
@@ -421,7 +422,7 @@ it.effect("rebinds Toolport MCP on local OpenCode when the settings toggle flips
     makeOpenCodeAdapter(openCodeAdapterLocalSpawnSettings, { environment }),
   ).pipe(
     Layer.provideMerge(Layer.succeed(OpenCodeRuntime, OpenCodeRuntimeTestDouble)),
-    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+    Layer.provideMerge(ServerConfig.layerTest(NodeProcess.cwd(), NodeProcess.cwd())),
     Layer.provideMerge(ServerSettingsService.layerTest()),
     Layer.provideMerge(providerSessionDirectoryTestLayer),
     Layer.provideMerge(NodeServices.layer),
@@ -435,7 +436,7 @@ it.effect("rebinds Toolport MCP on local OpenCode when the settings toggle flips
       provider: ProviderDriverKind.make("opencode"),
       threadId,
       runtimeMode: "full-access",
-      cwd: process.cwd(),
+      cwd: NodeProcess.cwd(),
     });
 
     NodeAssert.equal(
@@ -624,7 +625,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive more", (it) => {
       const threadId = asThreadId("thread-opencode-samedir");
       // Same working tree, different spelling (trailing slash) — must reuse,
       // not fork.
-      runtimeMock.state.sessionDirectoryById.set("ses_samedir", `${process.cwd()}/`);
+      runtimeMock.state.sessionDirectoryById.set("ses_samedir", `${NodeProcess.cwd()}/`);
 
       const session = yield* adapter.startSession({
         provider: ProviderDriverKind.make("opencode"),
@@ -764,7 +765,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive more", (it) => {
           makeOpenCodeAdapter(openCodeAdapterTestSettings),
         ).pipe(
           Layer.provideMerge(Layer.succeed(OpenCodeRuntime, OpenCodeRuntimeTestDouble)),
-          Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+          Layer.provideMerge(ServerConfig.layerTest(NodeProcess.cwd(), NodeProcess.cwd())),
           Layer.provideMerge(ServerSettingsService.layerTest()),
           Layer.provideMerge(providerSessionDirectoryTestLayer),
           Layer.provideMerge(NodeServices.layer),
@@ -910,7 +911,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive more", (it) => {
       makeOpenCodeAdapter(openCodeAdapterTestSettings, { instanceId }),
     ).pipe(
       Layer.provideMerge(Layer.succeed(OpenCodeRuntime, OpenCodeRuntimeTestDouble)),
-      Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+      Layer.provideMerge(ServerConfig.layerTest(NodeProcess.cwd(), NodeProcess.cwd())),
       Layer.provideMerge(ServerSettingsService.layerTest()),
       Layer.provideMerge(providerSessionDirectoryTestLayer),
       Layer.provideMerge(NodeServices.layer),
@@ -957,7 +958,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive more", (it) => {
       makeOpenCodeAdapter(openCodeAdapterTestSettings, { instanceId }),
     ).pipe(
       Layer.provideMerge(Layer.succeed(OpenCodeRuntime, OpenCodeRuntimeTestDouble)),
-      Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+      Layer.provideMerge(ServerConfig.layerTest(NodeProcess.cwd(), NodeProcess.cwd())),
       Layer.provideMerge(ServerSettingsService.layerTest()),
       Layer.provideMerge(providerSessionDirectoryTestLayer),
       Layer.provideMerge(NodeServices.layer),
@@ -999,7 +1000,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive more", (it) => {
       makeOpenCodeAdapter(openCodeAdapterTestSettings, { instanceId }),
     ).pipe(
       Layer.provideMerge(Layer.succeed(OpenCodeRuntime, OpenCodeRuntimeTestDouble)),
-      Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+      Layer.provideMerge(ServerConfig.layerTest(NodeProcess.cwd(), NodeProcess.cwd())),
       Layer.provideMerge(ServerSettingsService.layerTest()),
       Layer.provideMerge(providerSessionDirectoryTestLayer),
       Layer.provideMerge(NodeServices.layer),
@@ -1125,7 +1126,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive more", (it) => {
 
   it.effect("treats lexically or physically identical directories as the same", () =>
     Effect.gen(function* () {
-      if (process.platform === "win32") return;
+      if (yield* isHostWindows) return;
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const sameDirectory = (left: string, right: string) =>
@@ -1490,7 +1491,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive more", (it) => {
         }),
       ).pipe(
         Layer.provideMerge(Layer.succeed(OpenCodeRuntime, OpenCodeRuntimeTestDouble)),
-        Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+        Layer.provideMerge(ServerConfig.layerTest(NodeProcess.cwd(), NodeProcess.cwd())),
         Layer.provideMerge(
           ServerSettingsService.layerTest({
             providers: {
@@ -1572,7 +1573,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive more", (it) => {
         }),
       ).pipe(
         Layer.provideMerge(Layer.succeed(OpenCodeRuntime, OpenCodeRuntimeTestDouble)),
-        Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+        Layer.provideMerge(ServerConfig.layerTest(NodeProcess.cwd(), NodeProcess.cwd())),
         Layer.provideMerge(
           ServerSettingsService.layerTest({
             providers: {

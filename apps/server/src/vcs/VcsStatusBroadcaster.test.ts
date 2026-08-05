@@ -1,4 +1,3 @@
-import process from "node:process";
 import { assert, it, describe } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Cause from "effect/Cause";
@@ -21,6 +20,7 @@ import type {
   VcsStatusStreamEvent,
 } from "@toolport-studio/contracts";
 import { GitManagerError } from "@toolport-studio/contracts";
+import { isHostWindows } from "@toolport-studio/shared/hostProcess";
 
 import * as VcsStatusBroadcaster from "./VcsStatusBroadcaster.ts";
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
@@ -280,7 +280,6 @@ describe("VcsStatusBroadcaster", () => {
   });
 
   it.effect("normalizes symlinked CWDs before cache lookup and workflow calls", () => {
-    if (process.platform === "win32") return Effect.void;
     const seenCwds: string[] = [];
     const state = {
       currentLocalStatus: baseLocalStatus,
@@ -319,6 +318,8 @@ describe("VcsStatusBroadcaster", () => {
     );
 
     return Effect.gen(function* () {
+      // Symlink creation needs privileges Windows CI does not grant.
+      if (yield* isHostWindows) return;
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const realDir = yield* fileSystem.makeTempDirectoryScoped({
