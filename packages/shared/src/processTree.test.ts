@@ -61,18 +61,15 @@ function spawnerLayer(
 describe("processTree", () => {
   it.effect("parses a Windows identity from ConvertTo-Json output", () =>
     Effect.sync(() => {
+      // Verbatim wire payload rather than a serialized object: the escaping in
+      // a Windows CommandLine is exactly what this parser has to survive.
       const identity = parseWindowsProcessIdentity(
-        JSON.stringify({
-          ProcessId: 4242,
-          CreationDate: "2026-05-05T10:00:00.000Z",
-          CommandLine: '"C:\\electron.exe" "C:\\server\\bin.mjs" --bootstrap-fd 3',
-          Name: "electron.exe",
-        }),
+        String.raw`{"ProcessId":4242,"CreationDate":"2026-05-05T10:00:00.000Z","CommandLine":"\"C:\\electron.exe\" \"C:\\server\\bin.mjs\" --bootstrap-fd 3","Name":"electron.exe"}`,
       );
 
       expect(Option.getOrNull(identity)).toEqual({
         pid: 4242,
-        commandLine: '"C:\\electron.exe" "C:\\server\\bin.mjs" --bootstrap-fd 3',
+        commandLine: String.raw`"C:\electron.exe" "C:\server\bin.mjs" --bootstrap-fd 3`,
         startedAtMs: Date.parse("2026-05-05T10:00:00.000Z"),
       });
     }),
@@ -81,11 +78,7 @@ describe("processTree", () => {
   it.effect("parses the /Date(...)/ creation form Windows PowerShell emits", () =>
     Effect.sync(() => {
       const identity = parseWindowsProcessIdentity(
-        JSON.stringify({
-          ProcessId: 7,
-          CreationDate: "/Date(1777982400000)/",
-          CommandLine: "node server.js",
-        }),
+        String.raw`{"ProcessId":7,"CreationDate":"/Date(1777982400000)/","CommandLine":"node server.js"}`,
       );
 
       expect(Option.getOrNull(identity)?.startedAtMs).toBe(1_777_982_400_000);
@@ -112,6 +105,31 @@ describe("processTree", () => {
         commandLine: "node /server/bin.mjs --bootstrap-fd 3",
         startedAtMs: Date.parse("Tue May  5 10:00:00 2026"),
       });
+    }),
+  );
+
+  it.effect("preserves internal spacing in the command it slices out", () =>
+    Effect.sync(() => {
+      const identity = parsePosixProcessIdentity(
+        7,
+        "Tue May  5 10:00:00 2026 node /server/bin.mjs --flag  a  b\n",
+      );
+
+      // The command is sliced, not captured, so runs of spaces inside the
+      // argument vector survive intact.
+      expect(Option.getOrNull(identity)?.commandLine).toBe("node /server/bin.mjs --flag  a  b");
+    }),
+  );
+
+  it.effect("matches a heavily space-padded row without backtracking", () =>
+    Effect.sync(() => {
+      // Guards the ReDoS fix: the old `\s+(.+)$` tail let `\s` and `.` both
+      // match a space, so a row padded like this took polynomial time. No timing
+      // assertion is needed — a regression does not return late, it fails to
+      // return, and the suite timeout is what catches it.
+      const padded = `Tue May  5 10:00:00 2026${" ".repeat(6000)}node app.js`;
+      const identity = parsePosixProcessIdentity(7, padded);
+      expect(Option.getOrNull(identity)?.commandLine).toBe("node app.js");
     }),
   );
 

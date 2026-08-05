@@ -4,6 +4,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
+import * as Schema from "effect/Schema";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import { ChildProcessSpawner } from "effect/unstable/process";
@@ -14,6 +15,16 @@ import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 
 const encoder = new TextEncoder();
 const STATE_DIR = "/tmp/t3-state";
+
+const encodeLedgerFile = Schema.encodeSync(
+  Schema.fromJsonString(DesktopBackendProcessLedger.DesktopBackendProcessLedgerFile),
+);
+const decodeLedgerFile = Schema.decodeUnknownSync(
+  Schema.fromJsonString(DesktopBackendProcessLedger.DesktopBackendProcessLedgerFile),
+);
+
+/** Fixed clock reading; the ledger compares against it, so it must be stable. */
+const NOW_MS = Date.parse("2026-05-05T10:00:00.000Z");
 
 function mockHandle(result: { readonly stdout?: string; readonly code?: number }) {
   return ChildProcessSpawner.makeHandle({
@@ -144,7 +155,7 @@ describe("DesktopBackendProcessLedger", () => {
         Effect.provideService(HostProcessPlatform, "linux"),
       );
 
-      expect(JSON.parse(files.get(ledgerPath)!).entries).toHaveLength(1);
+      expect(decodeLedgerFile(files.get(ledgerPath)!).entries).toHaveLength(1);
 
       yield* Effect.service(DesktopBackendProcessLedger.DesktopBackendProcessLedger).pipe(
         Effect.flatMap((ledger) => ledger.forget(4242)),
@@ -152,7 +163,7 @@ describe("DesktopBackendProcessLedger", () => {
         Effect.provideService(HostProcessPlatform, "linux"),
       );
 
-      expect(JSON.parse(files.get(ledgerPath)!).entries).toEqual([]);
+      expect(decodeLedgerFile(files.get(ledgerPath)!).entries).toEqual([]);
     }),
   );
 
@@ -177,13 +188,13 @@ describe("DesktopBackendProcessLedger", () => {
       const files = new Map([
         [
           ledgerPath,
-          JSON.stringify({
+          encodeLedgerFile({
             entries: [
               {
                 pid: 4242,
                 instanceId: "primary",
                 commandLineTokens: ["/server/bin.mjs"],
-                startedAtMs: Date.now(),
+                startedAtMs: NOW_MS,
               },
             ],
           }),
@@ -202,7 +213,7 @@ describe("DesktopBackendProcessLedger", () => {
       expect(report.alreadyExited).toEqual([4242]);
       expect(report.terminated).toEqual([]);
       // Examined entries are dropped so the ledger cannot grow without bound.
-      expect(JSON.parse(files.get(ledgerPath)!).entries).toEqual([]);
+      expect(decodeLedgerFile(files.get(ledgerPath)!).entries).toEqual([]);
     }),
   );
 
@@ -212,7 +223,7 @@ describe("DesktopBackendProcessLedger", () => {
       const files = new Map([
         [
           ledgerPath,
-          JSON.stringify({
+          encodeLedgerFile({
             entries: [
               {
                 pid: 4242,
@@ -229,11 +240,9 @@ describe("DesktopBackendProcessLedger", () => {
         liveProcesses: new Map([
           [
             4242,
-            JSON.stringify({
-              ProcessId: 4242,
-              CreationDate: "2026-05-05T10:00:00.000Z",
-              CommandLine: '"C:\\electron.exe" "C:\\server\\bin.mjs" --bootstrap-fd 3',
-            }),
+            // Verbatim Get-CimInstance payload — the escaping is what the
+            // identity parser has to survive.
+            String.raw`{"ProcessId":4242,"CreationDate":"2026-05-05T10:00:00.000Z","CommandLine":"\"C:\\electron.exe\" \"C:\\server\\bin.mjs\" --bootstrap-fd 3"}`,
           ],
         ]),
       });
@@ -249,7 +258,7 @@ describe("DesktopBackendProcessLedger", () => {
       expect(report.terminated).toEqual([4242]);
       // /T is what reaches the provider sessions and MCP servers beneath it.
       expect(killed).toEqual([4242]);
-      expect(JSON.parse(files.get(ledgerPath)!).entries).toEqual([]);
+      expect(decodeLedgerFile(files.get(ledgerPath)!).entries).toEqual([]);
     }),
   );
 
@@ -259,7 +268,7 @@ describe("DesktopBackendProcessLedger", () => {
       const files = new Map([
         [
           ledgerPath,
-          JSON.stringify({
+          encodeLedgerFile({
             entries: [
               {
                 pid: 4242,

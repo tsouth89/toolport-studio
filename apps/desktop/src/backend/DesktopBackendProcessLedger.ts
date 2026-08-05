@@ -13,6 +13,7 @@
 // forgotten when it exits cleanly, so anything still listed at the next startup
 // is by definition an orphan from a run that never got to clean up.
 
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -43,7 +44,7 @@ export const DesktopBackendProcessRecord = Schema.Struct({
 });
 export type DesktopBackendProcessRecord = typeof DesktopBackendProcessRecord.Type;
 
-const DesktopBackendProcessLedgerFile = Schema.Struct({
+export const DesktopBackendProcessLedgerFile = Schema.Struct({
   entries: Schema.Array(DesktopBackendProcessRecord),
 });
 
@@ -188,10 +189,11 @@ export const make = Effect.gen(function* () {
           );
           if (killed) {
             terminated.push(entry.pid);
+            const nowMs = yield* Clock.currentTimeMillis;
             yield* logLedgerInfo("terminated an orphaned backend process tree", {
               pid: entry.pid,
               instanceId: entry.instanceId,
-              orphanedForMs: Date.now() - entry.startedAtMs,
+              orphanedForMs: nowMs - entry.startedAtMs,
             });
           }
         }

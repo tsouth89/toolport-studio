@@ -25,6 +25,7 @@
 
 import * as Brand from "effect/Brand";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -650,7 +651,7 @@ export const makeBackendInstance = Effect.fn("makeBackendInstance")(function* (
               pid,
               instanceId: spec.id,
               commandLineTokens: config.value.args,
-              startedAtMs: Date.now(),
+              startedAtMs: yield* Clock.currentTimeMillis,
             });
             yield* backendOutputLog.writeSessionBoundary({
               phase: "START",

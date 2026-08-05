@@ -70,6 +70,8 @@ export class ProcessTreeKillError extends Schema.TaggedErrorClass<ProcessTreeKil
   }
 }
 
+const isProcessTreeQueryError = Schema.is(ProcessTreeQueryError);
+
 interface CommandOutput {
   readonly exitCode: number;
   readonly stdout: string;
@@ -130,7 +132,7 @@ const runCommand = Effect.fn("processTree.runCommand")(function* (input: {
       }),
     ),
     Effect.mapError((cause) =>
-      cause instanceof ProcessTreeQueryError
+      isProcessTreeQueryError(cause)
         ? cause
         : new ProcessTreeQueryError({
             command: input.command,
@@ -193,6 +195,19 @@ function parseWindowsCreationDate(value: unknown): number | null {
 }
 
 /**
+ * Matches only the leading `ctime` timestamp of a `ps` row, up to and including
+ * the run of spaces that separates it from the argument vector.
+ *
+ * Every pair of adjacent quantified atoms here spans disjoint character sets
+ * (`\S` against a literal space, `\d` against `:` or a space), so no input can
+ * make the engine backtrack between them. The argument vector is deliberately
+ * *not* captured: a trailing ` +(.+)$` would let `\s` and `.` both match a
+ * space, which is the overlap that turns a row padded with repeated spaces into
+ * polynomial-time matching.
+ */
+const POSIX_PS_LSTART_PREFIX = /^[ \t]*(\S+ +\S+ +\d+ +\d+:\d+:\d+ +\d{4}) +/;
+
+/**
  * Parses `ps -p <pid> -o lstart=,args=` output: a fixed-width `ctime` timestamp
  * ("Wed May  6 10:00:00 2026") followed by the full argument vector.
  */
@@ -203,15 +218,19 @@ export function parsePosixProcessIdentity(
   const line = output.split(/\r?\n/).find((candidate) => candidate.trim().length > 0);
   if (line === undefined) return Option.none();
 
-  const match = /^\s*(\S+\s+\S+\s+\d+\s+\d+:\d+:\d+\s+\d{4})\s+(.+)$/.exec(line);
-  const lstart = match?.[1];
-  const command = match?.[2];
-  if (lstart === undefined || command === undefined) return Option.none();
+  const match = POSIX_PS_LSTART_PREFIX.exec(line);
+  if (match === null) return Option.none();
+  const lstart = match[1];
+  if (lstart === undefined) return Option.none();
+
+  // Sliced rather than captured, so the command keeps its internal spacing.
+  const command = line.slice(match[0].length).trim();
+  if (command.length === 0) return Option.none();
 
   const startedAtMs = Date.parse(lstart);
   if (Number.isNaN(startedAtMs)) return Option.none();
 
-  return Option.some({ pid, commandLine: command.trim(), startedAtMs });
+  return Option.some({ pid, commandLine: command, startedAtMs });
 }
 
 /**
