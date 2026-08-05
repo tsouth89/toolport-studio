@@ -93,12 +93,19 @@ export const createOxlintRuleHarness = (
     const configPath = path.join(fixtureDir, ".oxlintrc.json");
     const sourcePath = path.join(fixtureDir, options.filename ?? "fixture.ts");
     const repoRoot = path.join(import.meta.dirname, "..", "..");
-    const oxlintBin = path.join(
+    // The package entry, not the `.bin` shim. pnpm writes the shim as an
+    // extensionless shell script plus a separate `oxlint.CMD`, and Node cannot
+    // exec either on Windows without going through a shell — which would then
+    // need every temp path quoted. The entry is a two-line ESM file, so running
+    // it under the current Node executable works identically on every platform
+    // and keeps the spawn shell-free.
+    const oxlintEntry = path.join(
       repoRoot,
       "node_modules",
       ".pnpm",
       "node_modules",
-      ".bin",
+      "oxlint",
+      "bin",
       "oxlint",
     );
     const pluginPath = path.join(repoRoot, "oxlint-plugin-t3code", "index.ts");
@@ -113,7 +120,9 @@ export const createOxlintRuleHarness = (
     yield* fs.writeFileString(sourcePath, source);
 
     const output = yield* spawnAndCollectOutput(
-      ChildProcess.make(oxlintBin, ["--config", configPath, sourcePath], { cwd: repoRoot }),
+      ChildProcess.make(process.execPath, [oxlintEntry, "--config", configPath, sourcePath], {
+        cwd: repoRoot,
+      }),
     );
 
     if (output.exitCode !== 0) {
