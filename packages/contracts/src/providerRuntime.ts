@@ -491,8 +491,12 @@ const TaskStartedPayload = Schema.Struct({
   description: Schema.optional(TrimmedNonEmptyStringSchema),
   taskType: Schema.optional(TrimmedNonEmptyStringSchema),
   /**
-   * Ambient/housekeeping task. Clients hide these from the inline transcript;
-   * they still belong in a tasks roster.
+   * Ambient/housekeeping task. Clients suppress this task's progress and
+   * completion rows from the inline transcript; it still belongs in a tasks
+   * roster, and still counts toward "work in flight".
+   *
+   * Only the announcement carries the flag, so a client that wants to honor
+   * it has to remember the task id — the later rows look ordinary.
    */
   skipTranscript: Schema.optional(Schema.Boolean),
 });

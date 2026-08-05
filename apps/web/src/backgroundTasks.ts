@@ -143,7 +143,10 @@ export function summarizeBackgroundTasks(
   tasks: ReadonlyArray<BackgroundTask>,
 ): BackgroundTaskSummary {
   const runningCount = tasks.filter(isBackgroundTaskInFlight).length;
-  const failedCount = tasks.filter((task) => task.status === "failed").length;
+  // Must filter on `backgrounded` the same way the running count does. The
+  // roster holds foreground tasks too, so counting every failure here would
+  // report a failed inline task in a chip that says "background".
+  const failedCount = tasks.filter((task) => task.backgrounded && task.status === "failed").length;
 
   const label =
     runningCount > 0

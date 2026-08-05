@@ -151,6 +151,23 @@ describe("summarizeBackgroundTasks", () => {
     ]);
     assert.equal(summarizeBackgroundTasks(tasks).label, "1 failed task");
   });
+
+  it("ignores foreground failures in a chip that says background", () => {
+    // The roster holds foreground tasks too. Counting their failures here
+    // would surface an inline task's failure as background work.
+    const tasks = deriveBackgroundTasks([
+      activity("task.started", { taskId: "t1", detail: "Inline work" }),
+      activity("task.updated", { taskId: "t1", backgrounded: false, status: "running" }),
+      activity(
+        "task.completed",
+        { taskId: "t1", status: "failed", title: "Inline work" },
+        { tone: "error" },
+      ),
+    ]);
+    const summary = summarizeBackgroundTasks(tasks);
+    assert.equal(summary.failedCount, 0);
+    assert.equal(summary.label, "");
+  });
 });
 
 describe("countRunningBackgroundTasks", () => {
