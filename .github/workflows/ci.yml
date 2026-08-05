@@ -66,6 +66,37 @@ jobs:
       - name: Test
         run: vp run test
 
+  test_windows:
+    name: Test (Windows)
+    runs-on: windows-latest
+    # Advisory, not gating. Three Windows-only failures shipped to main before
+    # this job existed (path separators, a busy-poll starving its own pipeline,
+    # and git spawn cost) precisely because nothing ran the suite on Windows.
+    # It reports rather than blocks for now because AcpJsonRpcConnection still
+    # times out intermittently under load here; flip this to a required check
+    # once that is fixed, or the job trains people to ignore a red X.
+    continue-on-error: true
+    # Process spawning costs roughly an order of magnitude more than on Linux,
+    # and this suite shells out to real git constantly, so it needs materially
+    # longer than the 10 minutes the Linux job gets.
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: true
+
+      - name: Ensure Electron runtime is installed
+        run: vp run --filter @toolport-studio/desktop ensure:electron
+
+      - name: Test
+        run: vp run test
+
   release_smoke:
     name: Release Smoke
     runs-on: ubuntu-latest
