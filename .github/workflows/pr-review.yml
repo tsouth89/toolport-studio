@@ -1,0 +1,46 @@
+# CodeRev shadow review.
+#
+# Runs alongside CodeRabbit rather than replacing it. The benchmark that led
+# here (four runs over ten recorded PRs, logs in the coderev repo) proved cost
+# (~$0.05/PR) and latency (~3 min) but not precision: the only way to judge
+# whether the findings are worth reading is a few weeks of real PRs judged by
+# the people who wrote them. That comparison is this workflow's entire job.
+# Do not cancel CodeRabbit on the strength of this file existing.
+#
+# Advisory (continue-on-error), for the same reason Test (Windows) is in
+# ci.yml: a red X on a model's opinion trains people to ignore the check.
+name: PR review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+# A second push reviews the new head, not race the old one.
+concurrency:
+  group: pr-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    name: CodeRev (advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 20
+    # Fork pull requests do not get repository secrets, so the model call
+    # would fail with a confusing auth error rather than an obvious skip.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      # Tracks main during the shadow phase so reviewer fixes land without a
+      # release step. Pin to a tag once the shadow comparison earns it.
+      - name: Review
+        uses: tsouth89/coderev@main
+        with:
+          api-key: ${{ secrets.REVIEW_API_KEY }}
+          conventions: AGENTS.md
