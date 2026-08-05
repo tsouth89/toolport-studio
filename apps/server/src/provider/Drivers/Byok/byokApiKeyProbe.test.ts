@@ -1,6 +1,26 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import { classifyApiKeyResponseStatus, joinProviderUrl } from "./byokApiKeyProbe.ts";
+import {
+  classifyApiKeyResponseStatus,
+  DEFAULT_PROBE_PATH,
+  joinProviderUrl,
+} from "./byokApiKeyProbe.ts";
+import { BYOK_PRESETS } from "./byokPresets.ts";
+
+describe("preset probe endpoints", () => {
+  it("probes an endpoint that requires the key", () => {
+    // The failure mode here is silent. OpenRouter serves its model listing
+    // publicly and answers 200 to a key that does not exist, so a preset that
+    // probed the default `models` path would mark every mistyped key
+    // authenticated and only fail on the user's first turn.
+    const publicListings = new Set(["https://openrouter.ai/api/v1/"]);
+    for (const preset of BYOK_PRESETS) {
+      if (!publicListings.has(preset.baseUrl)) continue;
+      expect(preset.probePath, `${preset.id} probes a public endpoint`).toBeDefined();
+      expect(preset.probePath).not.toBe(DEFAULT_PROBE_PATH);
+    }
+  });
+});
 
 describe("joinProviderUrl", () => {
   it("does not double or drop the separator", () => {

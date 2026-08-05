@@ -66,6 +66,25 @@ export interface ByokPresetModel {
   readonly supportsWebSearch: boolean;
 }
 
+/**
+ * How a preset's model list is obtained.
+ *
+ * Most providers ship a lineup small enough to write down, and {@link
+ * ByokPreset.models} is the whole story. A router is not a provider though:
+ * OpenRouter fronts hundreds of models from dozens of vendors and changes the
+ * set weekly, so a literal array would be stale before the release ships.
+ *
+ * This stays a tagged *descriptor* rather than a function so this module
+ * keeps its promise to hold values only — the fetching and mapping live in
+ * `byokModelCatalog.ts`, which switches on `kind`. That is also what lets
+ * presets move to user-editable JSON later without smuggling code into it.
+ */
+export interface ByokPresetCatalog {
+  readonly kind: "openrouter";
+  /** Absolute URL of the provider's model listing endpoint. */
+  readonly url: string;
+}
+
 export interface ByokPreset {
   /** Stable id persisted in instance config. Never rename in place. */
   readonly id: string;
@@ -84,7 +103,30 @@ export interface ByokPreset {
   readonly envKey: string;
   /** Where a user goes to create a key. Surfaced in setup errors. */
   readonly apiKeysUrl: string;
+  /**
+   * Path under {@link baseUrl} that the key probe authenticates against.
+   *
+   * Defaults to `models` because the OpenAI-compatible listing requires a
+   * bearer token almost everywhere. OpenRouter is the exception that forces
+   * this to be configurable: its `/models` is public and answers 200 to a
+   * garbage key, which would report every mistyped key as authenticated.
+   */
+  readonly probePath?: string;
+  /**
+   * Models this preset offers without any network call.
+   *
+   * For a static provider this is the complete lineup. For one with a {@link
+   * catalog} it is the seed shown on a fresh instance, and doubles as the
+   * offline fallback when the catalog cannot be reached.
+   */
   readonly models: ReadonlyArray<ByokPresetModel>;
+  /**
+   * Present when the real lineup is fetched at runtime. Seeds and any models
+   * the user added on the instance are resolved through it so their metadata
+   * (context window, effort levels, vision) comes from the provider rather
+   * than from a guess baked into this file.
+   */
+  readonly catalog?: ByokPresetCatalog;
 }
 
 const DEEPSEEK: ByokPreset = {
@@ -120,7 +162,131 @@ const DEEPSEEK: ByokPreset = {
   ],
 };
 
-export const BYOK_PRESETS: ReadonlyArray<ByokPreset> = [DEEPSEEK];
+/**
+ * Seed lineup for OpenRouter.
+ *
+ * Every field here is a fallback, not a fact: the catalog resolver overwrites
+ * all of it from `/api/v1/models` on instance start. The values are kept
+ * truthful anyway so an instance that starts offline offers something usable
+ * rather than lying about context windows.
+ *
+ * `supportsApplyPatch` and `supportsWebSearch` are deliberately false for
+ * every OpenRouter model, including ones whose upstream vendor supports them.
+ * Both are OpenAI-shaped tool types, and OpenRouter routes a single slug to
+ * whichever backend has capacity — so a tool that works on one request can
+ * fail on the next. Codex falls back to its shell-based patch path, which
+ * works everywhere. Revisit per model once the Responses beta stabilizes.
+ */
+const OPENROUTER_SEED_MODELS: ReadonlyArray<ByokPresetModel> = [
+  {
+    slug: "anthropic/claude-sonnet-5",
+    displayName: "Claude Sonnet 5",
+    description: "Anthropic's balanced agentic coding model.",
+    contextWindow: 1_000_000,
+    reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
+    defaultReasoningEffort: "high",
+    supportsVision: true,
+    supportsParallelToolCalls: true,
+    supportsApplyPatch: false,
+    supportsWebSearch: false,
+  },
+  {
+    slug: "google/gemini-3.6-flash",
+    displayName: "Gemini 3.6 Flash",
+    description: "Fast long-context model with vision.",
+    contextWindow: 1_048_576,
+    reasoningEfforts: ["minimal", "low", "medium", "high"],
+    defaultReasoningEffort: "medium",
+    supportsVision: true,
+    supportsParallelToolCalls: true,
+    supportsApplyPatch: false,
+    supportsWebSearch: false,
+  },
+  {
+    slug: "deepseek/deepseek-v4-flash",
+    displayName: "DeepSeek-V4-Flash",
+    description: "Fast frontier agentic coding model.",
+    contextWindow: 1_048_576,
+    reasoningEfforts: ["high", "xhigh"],
+    defaultReasoningEffort: "high",
+    supportsVision: false,
+    supportsParallelToolCalls: true,
+    supportsApplyPatch: false,
+    supportsWebSearch: false,
+  },
+  {
+    // The only seed that works on an account with no credits. OpenRouter
+    // sizes every request against the remaining balance and Codex does not
+    // ask for a small budget, so on a zero-balance key every paid model above
+    // fails with a 402 that reads like a rejected key. Listing one free model
+    // means a new instance can complete a turn before the user has paid
+    // anything. It is rate limited and weak at long agentic work — a starting
+    // point, not a recommendation.
+    //
+    // Chosen over `openai/gpt-oss-20b:free`, which looks like the obvious
+    // pick and is not: it answers a single request fine but fails the second
+    // turn of a real Codex loop every time, dropping the stream after five
+    // reconnects once the tool output is in the history.
+    //
+    // Every `:free` slug is pinned to one donated backend with no failover,
+    // so its reliability is that one machine's rather than the model's — the
+    // paid `openai/gpt-oss-20b` has 12 backends and is a different
+    // proposition entirely. This one's single backend is Nvidia's own, which
+    // is why it survives a full loop where the other does not.
+    slug: "nvidia/nemotron-3-super-120b-a12b:free",
+    displayName: "Nemotron 3 Super (free)",
+    description: "Free open-weight model. Rate limited; good for trying the setup.",
+    contextWindow: 262_144,
+    reasoningEfforts: ["low", "medium"],
+    defaultReasoningEffort: "medium",
+    supportsVision: false,
+    supportsParallelToolCalls: true,
+    supportsApplyPatch: false,
+    supportsWebSearch: false,
+  },
+  {
+    slug: "x-ai/grok-4.5",
+    displayName: "Grok 4.5",
+    description: "xAI's agentic model with vision.",
+    contextWindow: 500_000,
+    reasoningEfforts: ["low", "medium", "high"],
+    defaultReasoningEffort: "high",
+    supportsVision: true,
+    supportsParallelToolCalls: true,
+    supportsApplyPatch: false,
+    supportsWebSearch: false,
+  },
+];
+
+/**
+ * OpenRouter — one key, many vendors, resolved live.
+ *
+ * Note the base URL is `/api/v1`, not `/api`. The latter is OpenRouter's
+ * Anthropic-compatible surface, which belongs to the Claude harness and is
+ * documented separately; pointing Codex at it fails in a way that reads like
+ * a key problem.
+ *
+ * OpenRouter's Responses API is explicitly a stateless beta: it rejects
+ * `store: true` and any non-null `previous_response_id` with a 400. The
+ * generated config's `forced_login_method = "api"` is what keeps Codex on the
+ * store-false, full-history path, so that line is load-bearing here rather
+ * than merely tidy.
+ */
+const OPENROUTER: ByokPreset = {
+  id: "openrouter",
+  label: "OpenRouter",
+  wireFormat: "responses",
+  baseUrl: "https://openrouter.ai/api/v1/",
+  envKey: "OPENROUTER_API_KEY",
+  apiKeysUrl: "https://openrouter.ai/keys",
+  // `/models` is public here and answers 200 to any key, valid or not.
+  // `/key` is the cheapest endpoint that actually authenticates.
+  probePath: "key",
+  models: OPENROUTER_SEED_MODELS,
+  catalog: { kind: "openrouter", url: "https://openrouter.ai/api/v1/models" },
+};
+
+export const BYOK_PRESETS: ReadonlyArray<ByokPreset> = [DEEPSEEK, OPENROUTER];
 
 /**
  * Ids offered by the settings picker. Contracts owns the (id, label) pairs so
