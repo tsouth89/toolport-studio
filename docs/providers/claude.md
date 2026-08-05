@@ -89,8 +89,18 @@ trying to share part of the state.
 
 ## I Want To Use OpenRouter
 
-Use this when you want Claude Code to talk to OpenRouter directly, without running a local router.
-This is the simplest external-provider setup.
+There are two ways, and this page covers the second one.
+
+If you just want OpenRouter models in Toolport Studio, add an **API Key Provider** instance instead
+and set its Provider to OpenRouter. You get a model picker, per-model reasoning effort, and no
+environment variables to maintain. See [OpenRouter](openrouter.md).
+
+Use the setup below only when you specifically want the **Claude harness** talking to OpenRouter, for
+example to keep Claude Code's subagents and skills while routing the model elsewhere.
+
+Note the base URLs differ between the two routes: the Claude harness uses `https://openrouter.ai/api`
+and the API Key Provider uses `https://openrouter.ai/api/v1`. Swapping them fails in a way that reads
+like a rejected key.
 
 OpenRouter provides a Claude Code integration through Claude's Anthropic-compatible environment
 variables.

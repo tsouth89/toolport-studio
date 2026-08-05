@@ -867,13 +867,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     [providerInstanceEntries, selectedInstanceId],
   );
   const noProviderAvailable = selectedProviderEntry === undefined;
-  /**
-   * Whether the selected provider can read image attachments. Absent on the
-   * snapshot means yes, so providers that never declare it are unaffected.
-   */
-  const providerReadsImages = selectedProviderEntry?.snapshot.supportsImageInput !== false;
-  const providerReadsImagesRef = useRef(providerReadsImages);
-  providerReadsImagesRef.current = providerReadsImages;
   // The driver kind follows the instance that will actually run the turn,
   // which can differ from the persisted selection when that selection is
   // disabled.
@@ -889,6 +882,25 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     projectModelSelection: activeProjectDefaultModelSelection,
     settings,
   });
+  /**
+   * Whether the selected provider can read image attachments. Absent on the
+   * snapshot means yes, so providers that never declare it are unaffected.
+   *
+   * `visionModelSlugs` narrows this to the chosen model, and only appears
+   * when an instance's models disagree. A router reaches vision and text-only
+   * models under one key, so the instance-wide flag alone would have to
+   * either block attachments that would have worked or allow ones that get
+   * dropped before the model ever sees them.
+   */
+  const providerReadsImages = useMemo(() => {
+    const snapshot = selectedProviderEntry?.snapshot;
+    if (snapshot?.supportsImageInput === false) return false;
+    const visionModelSlugs = snapshot?.visionModelSlugs;
+    if (!visionModelSlugs || !selectedModel) return true;
+    return visionModelSlugs.includes(selectedModel);
+  }, [selectedProviderEntry, selectedModel]);
+  const providerReadsImagesRef = useRef(providerReadsImages);
+  providerReadsImagesRef.current = providerReadsImages;
   const selectedProviderStatus = useMemo(
     () => selectedProviderEntry?.snapshot ?? null,
     [selectedProviderEntry],
@@ -1973,10 +1985,19 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     // forwarding an attachment produces a confident answer about an image the
     // model never received.
     if (!providerReadsImages) {
+      // On a router the limit belongs to the chosen model rather than the
+      // instance, and blaming "OpenRouter" would send the user looking for a
+      // different provider when switching model is the actual fix.
+      const modelIsTheLimit = selectedProviderEntry?.snapshot.visionModelSlugs !== undefined;
+      const subject = modelIsTheLimit
+        ? selectedModel
+        : (selectedProviderEntry?.displayName ?? "This provider");
       toastManager.add({
         type: "error",
-        title: `${selectedProviderEntry.displayName} cannot read images.`,
-        description: "Describe what matters, or switch to a provider with vision.",
+        title: `${subject} cannot read images.`,
+        description: modelIsTheLimit
+          ? "Describe what matters, or switch to a model with vision."
+          : "Describe what matters, or switch to a provider with vision.",
       });
       return;
     }

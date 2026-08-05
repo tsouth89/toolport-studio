@@ -1,0 +1,313 @@
+/**
+ * ByokModelCatalog — resolves a preset's models against the provider's own
+ * listing endpoint.
+ *
+ * A static preset says what its models can do. A router cannot: OpenRouter
+ * fronts hundreds of models whose context windows, reasoning levels, and
+ * vision support belong to whichever vendor is behind the slug, and the set
+ * changes faster than our release cadence. Writing that table by hand means
+ * shipping a build every time someone wants a model we did not guess, and
+ * being wrong in the meantime.
+ *
+ * So the preset carries a {@link ByokPresetCatalog} descriptor and this
+ * module does the fetching. The resolved models feed the same generated
+ * `models.json` a static preset produces, which is what keeps the rest of the
+ * driver — and every consumer of the snapshot — unaware that anything is
+ * dynamic.
+ *
+ * Three properties matter more than completeness:
+ *
+ *   1. **Never fail the instance.** A provider that will not start because a
+ *      metadata endpoint was slow is worse than one with slightly stale
+ *      metadata. Every failure path falls back to the cache, then the seed.
+ *   2. **Filter to what can actually run a turn.** A model without tool
+ *      support cannot drive a coding agent; offering it produces a session
+ *      that fails on the first command. Those are dropped, not degraded.
+ *   3. **Resolve only what is asked for.** The picker is a list a human
+ *      reads. Seeds plus the slugs the user added is the right size; all 300
+ *      is not.
+ *
+ * @module provider/Drivers/Byok/byokModelCatalog
+ */
+import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
+import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
+import { HttpClient, HttpClientRequest } from "effect/unstable/http";
+
+import type { ByokPreset, ByokPresetModel, ByokReasoningEffort } from "./byokPresets.ts";
+
+/** Cached listing, so a cold start without network still has real metadata. */
+export const BYOK_CATALOG_CACHE_FILE_NAME = "catalog-cache.json";
+
+const CATALOG_TIMEOUT_MS = 10_000;
+
+/**
+ * Effort names OpenRouter publishes happen to be exactly the ones a preset
+ * may declare. Anything outside the set is dropped rather than coerced: a
+ * guessed mapping would show the user an effort level the provider ignores.
+ */
+const REASONING_EFFORTS = new Set<string>([
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+]);
+
+/**
+ * Ascending order for effort lists. OpenRouter returns them descending and
+ * the catalog contract is ascending, so this is a sort key rather than a
+ * reverse — their ordering is not guaranteed and should not be trusted.
+ */
+const EFFORT_RANK: Record<ByokReasoningEffort, number> = {
+  none: 0,
+  minimal: 1,
+  low: 2,
+  medium: 3,
+  high: 4,
+  xhigh: 5,
+  max: 6,
+};
+
+/**
+ * The subset of OpenRouter's model listing we read.
+ *
+ * Deliberately permissive: every field a model might omit is optional, and
+ * unknown fields are ignored. The schema of record belongs to OpenRouter and
+ * tracks their releases — a strict shape here would turn any field they add
+ * or a single malformed row into a provider that will not start.
+ */
+const OpenRouterModel = Schema.Struct({
+  id: Schema.String,
+  name: Schema.optional(Schema.String),
+  description: Schema.optional(Schema.String),
+  context_length: Schema.optional(Schema.Number),
+  architecture: Schema.optional(
+    Schema.Struct({
+      input_modalities: Schema.optional(Schema.Array(Schema.String)),
+    }),
+  ),
+  supported_parameters: Schema.optional(Schema.Array(Schema.String)),
+  reasoning: Schema.optional(
+    Schema.Struct({
+      supported_efforts: Schema.optional(Schema.Array(Schema.String)),
+      default_effort: Schema.optional(Schema.NullOr(Schema.String)),
+    }),
+  ),
+});
+
+const OpenRouterModelList = Schema.Struct({ data: Schema.Array(OpenRouterModel) });
+const decodeOpenRouterModelList = Schema.decodeUnknownOption(OpenRouterModelList);
+
+type OpenRouterModel = typeof OpenRouterModel.Type;
+
+const CachedCatalog = Schema.fromJsonString(Schema.Struct({ data: Schema.Array(Schema.Unknown) }));
+const decodeCachedCatalog = Schema.decodeUnknownOption(CachedCatalog);
+const encodeCachedCatalog = Schema.encodeSync(CachedCatalog);
+
+/**
+ * Can this model drive a coding agent at all?
+ *
+ * Tool calling is the floor. Codex's entire loop is function calls, so a
+ * text-only model produces a session that greets the user and then fails on
+ * the first command — a worse outcome than the model simply not being
+ * offered.
+ */
+export function isAgentCapableModel(model: OpenRouterModel): boolean {
+  return (model.supported_parameters ?? []).includes("tools");
+}
+
+export function toReasoningEfforts(
+  supported: ReadonlyArray<string> | undefined,
+): ReadonlyArray<ByokReasoningEffort> {
+  const efforts = (supported ?? []).filter((effort): effort is ByokReasoningEffort =>
+    REASONING_EFFORTS.has(effort),
+  );
+  return [...new Set(efforts)].sort((left, right) => EFFORT_RANK[left] - EFFORT_RANK[right]);
+}
+
+/**
+ * Map one listing row onto a preset model.
+ *
+ * `supportsApplyPatch` and `supportsWebSearch` stay false regardless of what
+ * the upstream vendor supports — see the note on the OpenRouter preset: a
+ * single slug can land on different backends between requests, so a tool that
+ * works once is not a tool that works.
+ */
+export function toByokPresetModel(
+  model: OpenRouterModel,
+  fallback: ByokPresetModel | undefined,
+): ByokPresetModel {
+  const efforts = toReasoningEfforts(model.reasoning?.supported_efforts);
+  const declaredDefault = model.reasoning?.default_effort ?? undefined;
+  const defaultEffort =
+    declaredDefault && efforts.includes(declaredDefault as ByokReasoningEffort)
+      ? (declaredDefault as ByokReasoningEffort)
+      : // Providers do publish a default outside their own supported set.
+        // Prefer the strongest level they admit to over echoing a value the
+        // catalog would then reject as inconsistent.
+        efforts.at(-1);
+
+  return {
+    slug: model.id,
+    displayName: model.name ?? fallback?.displayName ?? model.id,
+    description: (model.description ?? fallback?.description ?? "").slice(0, 280),
+    contextWindow: model.context_length ?? fallback?.contextWindow ?? 128_000,
+    reasoningEfforts: efforts,
+    defaultReasoningEffort: efforts.length === 0 ? undefined : defaultEffort,
+    supportsVision: (model.architecture?.input_modalities ?? []).includes("image"),
+    // OpenRouter accepts `parallel_tool_calls` per model, but a slug that
+    // omits it still runs tools serially rather than erroring, so treating
+    // the absence as "not parallel" costs nothing and never overpromises.
+    supportsParallelToolCalls: (model.supported_parameters ?? []).includes("parallel_tool_calls"),
+    supportsApplyPatch: false,
+    supportsWebSearch: false,
+  };
+}
+
+/**
+ * Pick the requested slugs out of a listing, in the order they were asked
+ * for, dropping anything unusable.
+ *
+ * A slug the user typed that OpenRouter does not serve is silently absent
+ * rather than an error. It is almost always a typo, and the alternative — a
+ * provider that refuses to start over one bad row in a list of ten — is a far
+ * worse trade.
+ */
+export function selectCatalogModels(input: {
+  readonly listing: ReadonlyArray<OpenRouterModel>;
+  readonly slugs: ReadonlyArray<string>;
+  readonly seeds: ReadonlyArray<ByokPresetModel>;
+}): ReadonlyArray<ByokPresetModel> {
+  const byId = new Map(input.listing.map((model) => [model.id, model]));
+  const seedBySlug = new Map(input.seeds.map((seed) => [seed.slug, seed]));
+  const resolved: ByokPresetModel[] = [];
+  const seen = new Set<string>();
+
+  for (const slug of input.slugs) {
+    const normalized = slug.trim();
+    if (normalized.length === 0 || seen.has(normalized)) continue;
+    const listed = byId.get(normalized);
+    if (!listed || !isAgentCapableModel(listed)) continue;
+    seen.add(normalized);
+    resolved.push(toByokPresetModel(listed, seedBySlug.get(normalized)));
+  }
+
+  return resolved;
+}
+
+const fetchListing = Effect.fn("fetchByokCatalogListing")(function* (
+  catalogUrl: string,
+  apiKey: string,
+): Effect.fn.Return<Option.Option<unknown>, never, HttpClient.HttpClient> {
+  const client = yield* HttpClient.HttpClient;
+  const request = HttpClientRequest.get(catalogUrl).pipe(
+    HttpClientRequest.setHeader("accept", "application/json"),
+    // The listing is public on OpenRouter, but sending the key makes the
+    // response reflect the account: models gated behind a BYOK integration or
+    // a provider preference show up as they will actually resolve at turn time.
+    HttpClientRequest.setHeader("authorization", `Bearer ${apiKey}`),
+  );
+
+  return yield* client.execute(request).pipe(
+    Effect.flatMap((response) => response.json),
+    Effect.timeoutOption(CATALOG_TIMEOUT_MS),
+    Effect.orElseSucceed(() => Option.none()),
+  );
+});
+
+const readCache = Effect.fn("readByokCatalogCache")(function* (
+  cachePath: string,
+): Effect.fn.Return<Option.Option<unknown>, never, FileSystem.FileSystem> {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const contents = yield* fileSystem.readFileString(cachePath).pipe(
+    Effect.option,
+    Effect.orElseSucceed(() => Option.none<string>()),
+  );
+  if (Option.isNone(contents)) return Option.none();
+  return decodeCachedCatalog(contents.value) as Option.Option<unknown>;
+});
+
+export interface ResolveByokCatalogInput {
+  readonly preset: ByokPreset;
+  readonly apiKey: string;
+  /**
+   * Extra slugs the user added on this instance. Resolved alongside the
+   * seeds, which is what upgrades a typed slug from an opaque "custom model"
+   * with guessed capabilities into a real catalog entry.
+   */
+  readonly requestedSlugs: ReadonlyArray<string>;
+  /** Where the last good listing is kept, inside the instance's own home. */
+  readonly cachePath: string;
+}
+
+/**
+ * Resolve the models this instance should offer.
+ *
+ * Order of preference is live listing, then the cached one, then the preset's
+ * seeds untouched. The seed fallback is what guarantees a usable instance on
+ * a machine that has never reached OpenRouter.
+ */
+export const resolveByokCatalogModels = Effect.fn("resolveByokCatalogModels")(function* (
+  input: ResolveByokCatalogInput,
+): Effect.fn.Return<
+  ReadonlyArray<ByokPresetModel>,
+  never,
+  FileSystem.FileSystem | HttpClient.HttpClient | Path.Path
+> {
+  const { preset, apiKey, requestedSlugs, cachePath } = input;
+  const catalog = preset.catalog;
+  if (!catalog) return preset.models;
+
+  const slugs = [...preset.models.map((model) => model.slug), ...requestedSlugs];
+
+  const live =
+    apiKey.length === 0
+      ? Option.none<unknown>()
+      : yield* fetchListing(catalog.url, apiKey).pipe(Effect.orElseSucceed(() => Option.none()));
+
+  const decodedLive = Option.isSome(live) ? decodeOpenRouterModelList(live.value) : Option.none();
+
+  if (Option.isSome(decodedLive)) {
+    const resolved = selectCatalogModels({
+      listing: decodedLive.value.data,
+      slugs,
+      seeds: preset.models,
+    });
+    if (resolved.length > 0) {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      // Best effort. A cache we could not write is a slower next start, not a
+      // failure, and must never take the instance down with it.
+      yield* fileSystem.makeDirectory(path.dirname(cachePath), { recursive: true }).pipe(
+        Effect.andThen(() =>
+          fileSystem.writeFileString(
+            cachePath,
+            encodeCachedCatalog({ data: decodedLive.value.data }),
+          ),
+        ),
+        Effect.ignore,
+      );
+      return resolved;
+    }
+  }
+
+  const cached = yield* readCache(cachePath);
+  const decodedCache = Option.isSome(cached)
+    ? decodeOpenRouterModelList(cached.value)
+    : Option.none();
+  if (Option.isSome(decodedCache)) {
+    const resolved = selectCatalogModels({
+      listing: decodedCache.value.data,
+      slugs,
+      seeds: preset.models,
+    });
+    if (resolved.length > 0) return resolved;
+  }
+
+  return preset.models;
+});

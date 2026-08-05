@@ -56,6 +56,7 @@ import {
 } from "../../providerUpdateSettings.ts";
 import { type ByokApiKeyStatus, probeByokApiKey } from "./byokApiKeyProbe.ts";
 import { materializeByokCodexHome } from "./byokCodexHome.ts";
+import { BYOK_CATALOG_CACHE_FILE_NAME, resolveByokCatalogModels } from "./byokModelCatalog.ts";
 import { findByokPreset, type ByokPreset } from "./byokPresets.ts";
 
 const decodeByokSettings = Schema.decodeSync(ByokSettings);
@@ -146,6 +147,8 @@ const withInstanceIdentity =
     readonly continuationGroupKey: string;
     readonly presetId: string;
     readonly supportsImageInput: boolean;
+    /** Only set when the instance's models disagree about vision. */
+    readonly visionModelSlugs: ReadonlyArray<string> | undefined;
   }) =>
   (snapshot: ServerProviderDraft): ServerProvider => ({
     ...snapshot,
@@ -155,6 +158,7 @@ const withInstanceIdentity =
     // has to say which one this is for the client to brand it.
     presetId: input.presetId,
     supportsImageInput: input.supportsImageInput,
+    ...(input.visionModelSlugs ? { visionModelSlugs: input.visionModelSlugs } : {}),
     ...(input.displayName ? { displayName: input.displayName } : {}),
     ...(input.accentColor ? { accentColor: input.accentColor } : {}),
     continuation: { groupKey: input.continuationGroupKey },
@@ -191,10 +195,24 @@ export const ByokDriver: ProviderDriver<ByokSettings, ByokDriverEnv> = {
 
       const processEnv = mergeProviderInstanceEnvironment(environment);
       const apiKey = (processEnv[preset.envKey] ?? "").trim();
-      const defaultModel = preset.models[0]?.slug ?? "";
 
       const homePath = path.join(serverConfig.stateDir, BYOK_HOME_DIRECTORY, instanceId);
-      yield* materializeByokCodexHome({ homePath, preset, modelSlug: defaultModel }).pipe(
+      // Resolved once per instance start. Codex reads `models.json` at
+      // startup only, so refreshing more often than this would write a file
+      // nothing re-reads; picking up a newly released model is a restart.
+      const models = yield* resolveByokCatalogModels({
+        preset,
+        apiKey,
+        // Slugs the user added on this instance are resolved alongside the
+        // seeds, which is what turns a typed slug into a real catalog entry
+        // with the provider's own context window and effort levels instead of
+        // an opaque custom entry carrying guessed capabilities.
+        requestedSlugs: config.customModels,
+        cachePath: path.join(homePath, BYOK_CATALOG_CACHE_FILE_NAME),
+      });
+      const defaultModel = models[0]?.slug ?? "";
+
+      yield* materializeByokCodexHome({ homePath, preset, models, modelSlug: defaultModel }).pipe(
         Effect.mapError(
           (cause) =>
             new ProviderDriverError({
@@ -226,9 +244,17 @@ export const ByokDriver: ProviderDriver<ByokSettings, ByokDriverEnv> = {
         accentColor,
         continuationGroupKey: continuationIdentity.continuationKey,
         presetId: preset.id,
-        // Provider-level for now: no shipped preset mixes vision-capable and
-        // text-only models. A preset that does will need this per model.
-        supportsImageInput: preset.models.some((model) => model.supportsVision),
+        // True when *any* model can see, which is what gates the attachment
+        // affordance for the instance as a whole. OpenRouter mixes vision and
+        // text-only models under one key, so the per-model flag stamped onto
+        // the snapshot below is what actually decides a given turn.
+        supportsImageInput: models.some((model) => model.supportsVision),
+        // Only worth sending when the models actually disagree. A uniform
+        // preset like DeepSeek keeps the plain instance-wide answer it had
+        // before this existed.
+        visionModelSlugs: models.every((model) => model.supportsVision)
+          ? undefined
+          : models.filter((model) => model.supportsVision).map((model) => model.slug),
       });
       // Re-run per refresh so a key added, fixed, or revoked after startup is
       // reflected without restarting the instance.
