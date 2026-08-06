@@ -128,10 +128,44 @@ async function hydrateClientSettings(): Promise<void> {
   return clientSettingsHydrationPromise;
 }
 
-function persistClientSettings(settings: ClientSettings): void {
-  replaceClientSettingsSnapshot(settings);
-  void ensureLocalApi()
-    .persistence.setClientSettings(settings)
+/**
+ * Apply a change to client settings, in memory now and on disk once hydration allows it.
+ *
+ * Takes a function rather than a finished value because a write has to survive hydration in both
+ * directions. Callers derive their next value from the current snapshot, and until hydration
+ * resolves that snapshot is still `DEFAULT_CLIENT_SETTINGS` — so persisting it directly would
+ * write defaults over every key the user had set in an earlier session. Waiting for hydration and
+ * re-applying the change on top of what it loaded is what keeps the rest of the settings intact.
+ *
+ * The snapshot is still updated synchronously first, so the UI reflects the change immediately
+ * rather than waiting on disk.
+ *
+ * That wait is bounded. Hydration swallows its own errors, so it resolves even when the read
+ * fails, but an unresponsive persistence layer could leave it pending forever — and a write that
+ * waits forever is a change the user watched apply and then lost on restart. On timeout the merge
+ * proceeds against whatever the snapshot holds, which risks writing defaults over keys hydration
+ * never delivered. That is the better of two bad outcomes, and it only arises when local
+ * persistence has already stopped answering.
+ */
+const HYDRATION_WAIT_BEFORE_PERSIST_MS = 5_000;
+
+function persistClientSettings(apply: (current: ClientSettings) => ClientSettings): void {
+  replaceClientSettingsSnapshot(apply(getClientSettingsSnapshot()));
+  void Promise.race([
+    Promise.resolve(hydrateClientSettings()),
+    new Promise<void>((resolve) => {
+      setTimeout(resolve, HYDRATION_WAIT_BEFORE_PERSIST_MS);
+    }),
+  ])
+    .then(() => {
+      const merged = apply(getClientSettingsSnapshot());
+      // Retire any hydration that started before this change. It read state older than the write,
+      // so allowing it to resolve afterwards would silently discard what the user just did. This
+      // is what the generation counter was built for; nothing outside tests had been bumping it.
+      clientSettingsHydrationGeneration += 1;
+      replaceClientSettingsSnapshot(merged);
+      return ensureLocalApi().persistence.setClientSettings(merged);
+    })
     .catch((error) => {
       console.error(`${CLIENT_SETTINGS_PERSISTENCE_ERROR_SCOPE} persist failed`, {
         operation: "persist",
@@ -259,10 +293,7 @@ function useUpdateSettingsTarget(environmentId: EnvironmentId | null) {
       }
 
       if (Object.keys(clientPatch).length > 0) {
-        persistClientSettings({
-          ...getClientSettingsSnapshot(),
-          ...clientPatch,
-        });
+        persistClientSettings((current) => ({ ...current, ...clientPatch }));
       }
     },
     [environmentId, persistServerSettings],
@@ -281,10 +312,7 @@ export function useUpdatePrimarySettings() {
 
 export function useUpdateClientSettings() {
   return useCallback((patch: ClientSettingsPatch) => {
-    persistClientSettings({
-      ...getClientSettingsSnapshot(),
-      ...patch,
-    });
+    persistClientSettings((current) => ({ ...current, ...patch }));
   }, []);
 }
 
