@@ -918,7 +918,7 @@ export function makeOpenCodeAdapter(
                 requestID: requestId,
                 reply: toOpenCodePermissionReply("cancel"),
               }),
-            ).pipe(Effect.ignore);
+            ).pipe(Effect.ignore({ log: true }));
             yield* emit({
               ...(yield* buildEventBase({
                 threadId: context.session.threadId,
@@ -948,7 +948,7 @@ export function makeOpenCodeAdapter(
 
           yield* runOpenCodeSdk("question.reject", () =>
             context.client.question.reject({ requestID: requestId }),
-          ).pipe(Effect.ignore);
+          ).pipe(Effect.ignore({ log: true }));
           yield* emit({
             ...(yield* buildEventBase({
               threadId: context.session.threadId,
