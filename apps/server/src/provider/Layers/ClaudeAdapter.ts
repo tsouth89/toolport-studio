@@ -1735,11 +1735,17 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       }
     }
 
-    const freshSessionId = yield* randomUUIDv4;
+    // Minted only on the path that needs it. Generating it unconditionally burned a UUID on every
+    // successful native resume, which advances the Crypto service for anything downstream that
+    // depends on its sequence.
+    let freshSessionId: string | undefined;
     if (nextQuery === undefined) {
+      freshSessionId = yield* randomUUIDv4;
       nextQuery = yield* startRebindQuery({ ...baseQueryOptions, sessionId: freshSessionId });
     }
-    const nextSessionId = resumedNatively ? resumeSessionId! : freshSessionId;
+    // `resumedNatively` is only true when the resume attempt above set `nextQuery`, so the
+    // fresh id exists on exactly the branch that reads it.
+    const nextSessionId = resumedNatively ? resumeSessionId! : freshSessionId!;
 
     context.query = nextQuery;
     context.resumeSessionId = nextSessionId;
