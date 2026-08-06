@@ -206,7 +206,10 @@ const awaitCachedProvider = (filePath: string, predicate: (provider: ServerProvi
       // the atomic rename completes and the next read observes it.
       yield* sleepOffTestClock(5);
     }
-    return lastCachedProvider;
+    // One more read after the final yield so a write that landed in that last
+    // quantum is still observed (atomic temp+rename, so this is not a torn read).
+    const finalCachedProvider = yield* readProviderStatusCache(filePath);
+    return finalCachedProvider ?? lastCachedProvider;
   });
 
 function mockSpawnerLayer(
