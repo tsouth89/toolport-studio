@@ -8,10 +8,17 @@ import type { ClaudeSettings } from "@toolport-studio/contracts";
 import { checkClaudeProviderStatus } from "./ClaudeProvider.ts";
 import { writeFakeProviderCli } from "../../testing/fakeProviderCli.ts";
 
+/** `claude auth status` wire output, as literal text. */
+const LOGGED_OUT_STATUS = '{"loggedIn":false}';
+
 /**
  * A `claude` stand-in answering the two commands the status check runs: `--version`, so the probe
  * gets past "installed", and `auth status`, the fallback under test. `authStatusStdout: null`
  * makes that fallback exit non-zero, which is the inconclusive case.
+ *
+ * The payload is embedded as literal source text rather than serialised, because the repo bans
+ * `JSON.stringify` and these are wire fixtures anyway — what the real CLI prints, verbatim. It is
+ * wrapped in single quotes, so a fixture must not contain one.
  */
 const makeFakeClaudeCli = (input: { readonly authStatusStdout: string | null }) =>
   Effect.gen(function* () {
@@ -32,7 +39,7 @@ ${
   input.authStatusStdout === null
     ? `  process.stderr.write("not available\\n");
   process.exit(1);`
-    : `  process.stdout.write(${JSON.stringify(input.authStatusStdout)});
+    : `  process.stdout.write('${input.authStatusStdout}');
   process.exit(0);`
 }
 }
@@ -69,7 +76,7 @@ describe("checkClaudeProviderStatus auth reporting", () => {
     () =>
       Effect.gen(function* () {
         const { binaryPath, cwd } = yield* makeFakeClaudeCli({
-          authStatusStdout: JSON.stringify({ loggedIn: false }),
+          authStatusStdout: LOGGED_OUT_STATUS,
         });
         const provider = yield* checkClaudeProviderStatus(
           settingsFor(binaryPath),
@@ -115,7 +122,7 @@ describe("checkClaudeProviderStatus auth reporting", () => {
     () =>
       Effect.gen(function* () {
         const { binaryPath, cwd } = yield* makeFakeClaudeCli({
-          authStatusStdout: JSON.stringify({ loggedIn: false }),
+          authStatusStdout: LOGGED_OUT_STATUS,
         });
         const provider = yield* checkClaudeProviderStatus(
           settingsFor(binaryPath),
