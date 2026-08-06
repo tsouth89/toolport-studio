@@ -194,15 +194,19 @@ const sleepOffTestClock = (millis: number) =>
  */
 const awaitCachedProvider = (filePath: string, predicate: (provider: ServerProvider) => boolean) =>
   Effect.gen(function* () {
+    let lastCachedProvider: ServerProvider | undefined;
     for (let attempt = 0; attempt < 200; attempt += 1) {
-      const cachedProvider = yield* readProviderStatusCache(filePath);
-      if (cachedProvider !== undefined && predicate(cachedProvider)) {
-        return cachedProvider;
+      lastCachedProvider = yield* readProviderStatusCache(filePath);
+      if (lastCachedProvider !== undefined && predicate(lastCachedProvider)) {
+        return lastCachedProvider;
       }
       yield* TestClock.adjust("10 millis");
+      // Yield the real event loop so the forked persist fiber can run. Duration
+      // is a scheduling quantum, not a write-time budget — once the fiber runs,
+      // the atomic rename completes and the next read observes it.
       yield* sleepOffTestClock(5);
     }
-    return yield* readProviderStatusCache(filePath);
+    return lastCachedProvider;
   });
 
 function mockSpawnerLayer(
