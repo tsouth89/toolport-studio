@@ -877,6 +877,11 @@ export function makeOpenCodeAdapter(
         const { context, requestId, turnId, kind } = input;
         const timeoutMs =
           kind === "approval" ? pendingApprovalTimeoutMs : pendingUserInputTimeoutMs;
+        // A repeated `asked` event for the same id would otherwise overwrite the map entry and
+        // leave the previous fiber running against a request it no longer owns, where it could
+        // win the claim and time the freshly armed request out early. The orphan dies with the
+        // session scope either way, but not before doing that.
+        yield* cancelRequestTimer(context, requestId);
         const timer = yield* Effect.gen(function* () {
           yield* Effect.sleep(`${timeoutMs} millis`);
 
