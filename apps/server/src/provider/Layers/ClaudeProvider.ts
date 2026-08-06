@@ -81,9 +81,13 @@ const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
         buildSelectOptionDescriptor({
           id: "contextWindow",
           label: "Context Window",
+          // Default to 200k like Claude Code itself: the 1M variant disables
+          // practical auto-compact and bills >200k prompts at the long-context
+          // premium, silently draining subscription usage (see
+          // claude-usage-drain-diagnosis). 1M stays selectable per thread.
           options: [
-            { value: "200k", label: "200k" },
-            { value: "1m", label: "1M", isDefault: true },
+            { value: "200k", label: "200k", isDefault: true },
+            { value: "1m", label: "1M" },
           ],
         }),
       ],
@@ -117,10 +121,11 @@ const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
         buildSelectOptionDescriptor({
           id: "contextWindow",
           label: "Context Window",
-          // Claude Code selects the 1M variant explicitly (`claude-opus-5[1m]`).
+          // Claude Code selects the 1M variant explicitly (`claude-opus-5[1m]`);
+          // match its 200k default (see claude-fable-5 note).
           options: [
-            { value: "200k", label: "200k" },
-            { value: "1m", label: "1M", isDefault: true },
+            { value: "200k", label: "200k", isDefault: true },
+            { value: "1m", label: "1M" },
           ],
         }),
       ],
@@ -207,9 +212,10 @@ const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
         buildSelectOptionDescriptor({
           id: "contextWindow",
           label: "Context Window",
+          // 200k default matches Claude Code (see claude-fable-5 note).
           options: [
-            { value: "200k", label: "200k" },
-            { value: "1m", label: "1M", isDefault: true },
+            { value: "200k", label: "200k", isDefault: true },
+            { value: "1m", label: "1M" },
           ],
         }),
       ],

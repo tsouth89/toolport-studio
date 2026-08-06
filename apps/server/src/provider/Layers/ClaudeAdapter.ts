@@ -1621,8 +1621,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
   /**
    * Claude Code keeps mcpServers from createQuery for the life of that query.
-   * Resume also preserves the original tool catalog. When Toolport injection or
-   * preview MCP arming changes, restart the query without resume and rehydrate.
+   * When Toolport injection or preview MCP arming changes, restart the query.
+   * The SDK passes `--mcp-config` alongside `--resume`, so a native resume
+   * serves the new catalog while keeping the conversation and its prompt-cache
+   * prefix; a fresh session + Studio rehydration is only the resume-miss
+   * fallback (re-sending history as text forces a full context re-cache).
    */
   const rebindClaudeToolportMcpIfNeeded = Effect.fn("rebindClaudeToolportMcpIfNeeded")(function* (
     context: ClaudeSessionContext,
@@ -1675,10 +1678,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     const injectsToolport = mcpBindings.some(
       (binding) => binding.name === McpProviderSession.TOOLPORT_MCP_SERVER_NAME,
     );
-    const freshSessionId = yield* randomUUIDv4;
     const apiModelId = context.currentApiModelId;
     const permissionMode = context.basePermissionMode;
-    const queryOptions: ClaudeQueryOptions = {
+    const baseQueryOptions: ClaudeQueryOptions = {
       ...(context.session.cwd ? { cwd: context.session.cwd } : {}),
       ...(apiModelId ? { model: apiModelId } : {}),
       pathToClaudeCodeExecutable: claudeSdkExecutablePath,
@@ -1686,8 +1688,6 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       settingSources: [...CLAUDE_SETTING_SOURCES],
       ...(permissionMode ? { permissionMode } : {}),
       ...(permissionMode === "bypassPermissions" ? { allowDangerouslySkipPermissions: true } : {}),
-      // Fresh session: resume keeps the pre-toggle MCP catalog.
-      sessionId: freshSessionId,
       includePartialMessages: true,
       canUseTool: context.canUseTool,
       env: claudeEnvironment,
@@ -1695,31 +1695,75 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       ...(mcpBindings.length > 0 ? { mcpServers: claudeMcpServers(mcpBindings) } : {}),
     };
 
-    context.query = yield* Effect.try({
-      try: () =>
-        createQuery({
-          prompt,
-          options: queryOptions,
-        }),
-      catch: (cause) =>
-        new ProviderAdapterProcessError({
-          provider: PROVIDER,
-          threadId: context.session.threadId,
-          detail: "Failed to restart Claude runtime after Toolport MCP setting change.",
-          cause,
-        }),
-    });
-    context.resumeSessionId = freshSessionId;
-    context.needsContextRehydration = true;
+    const startRebindQuery = (queryOptions: ClaudeQueryOptions) =>
+      Effect.try({
+        try: () =>
+          createQuery({
+            prompt,
+            options: queryOptions,
+          }),
+        catch: (cause) =>
+          new ProviderAdapterProcessError({
+            provider: PROVIDER,
+            threadId: context.session.threadId,
+            detail: "Failed to restart Claude runtime after Toolport MCP setting change.",
+            cause,
+          }),
+      });
+
+    const resumeSessionId = context.resumeSessionId;
+    let nextQuery: ClaudeQueryRuntime | undefined;
+    let resumedNatively = false;
+    if (resumeSessionId !== undefined) {
+      const resumeAttempt = yield* Effect.result(
+        startRebindQuery({ ...baseQueryOptions, resume: resumeSessionId }),
+      );
+      if (resumeAttempt._tag === "Success") {
+        nextQuery = resumeAttempt.success;
+        resumedNatively = true;
+      } else if (!isClaudeResumeMissError(resumeAttempt.failure)) {
+        return yield* resumeAttempt.failure;
+      } else {
+        yield* Effect.logWarning(
+          "Claude native resume failed during MCP rebind; starting fresh session with Studio rehydration armed",
+          {
+            threadId: context.session.threadId,
+            resumeSessionId,
+            cause: resumeAttempt.failure,
+          },
+        );
+      }
+    }
+
+    // Minted only on the path that needs it. Generating it unconditionally burned a UUID on every
+    // successful native resume, which advances the Crypto service for anything downstream that
+    // depends on its sequence.
+    let freshSessionId: string | undefined;
+    if (nextQuery === undefined) {
+      freshSessionId = yield* randomUUIDv4;
+      nextQuery = yield* startRebindQuery({ ...baseQueryOptions, sessionId: freshSessionId });
+    }
+    // `resumedNatively` is only true when the resume attempt above set `nextQuery`, so the
+    // fresh id exists on exactly the branch that reads it.
+    const nextSessionId = resumedNatively ? resumeSessionId! : freshSessionId!;
+
+    context.query = nextQuery;
+    context.resumeSessionId = nextSessionId;
+    context.needsContextRehydration = !resumedNatively;
     context.injectsToolportMcp = injectsToolport;
     context.mcpBindingCatalog = desiredCatalog;
-    context.lastAssistantUuid = undefined;
+    if (!resumedNatively) {
+      context.lastAssistantUuid = undefined;
+    }
     context.session = {
       ...context.session,
       resumeCursor: {
         threadId: context.session.threadId,
-        resume: freshSessionId,
-        turnCount: 0,
+        resume: nextSessionId,
+        ...(resumedNatively && context.lastAssistantUuid
+          ? { resumeSessionAt: context.lastAssistantUuid }
+          : {}),
+        turnCount: resumedNatively ? context.turns.length : 0,
       },
       updatedAt: yield* nowIso,
     };
