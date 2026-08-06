@@ -968,19 +968,37 @@ export function makeOpenCodeAdapter(
             payload: { answers: {} },
           });
         }).pipe(
-          // The self-heal is the last line of defence for a wedged request, so it must not fail
-          // silently. Nothing downstream can act on the failure, but it belongs in the log.
+          // The self-heal is the last line of defence for a wedged request, so a genuine failure
+          // must not vanish. Interruption is not a failure though: cancelling this timer is the
+          // normal outcome, fired on every answered request and every turn settle, so logging it
+          // as a failure would put a warning on the common path.
           Effect.catchCause((cause) =>
-            Effect.logWarning("OpenCode request self-heal failed", {
-              threadId: context.session.threadId,
-              requestId,
-              cause: Cause.pretty(cause),
-            }),
+            Cause.hasInterruptsOnly(cause)
+              ? Effect.void
+              : Effect.logWarning("OpenCode request self-heal failed", {
+                  threadId: context.session.threadId,
+                  requestId,
+                  cause: Cause.pretty(cause),
+                }),
           ),
           Effect.forkIn(context.sessionScope),
         );
         context.pendingRequestTimers.set(requestId, timer);
-      });
+      }).pipe(
+        // Arming runs inside the event pump, so a failure here would take the pump down with it
+        // and strand the session mid-stream. The realistic cause is a request arriving as the
+        // session scope closes, where there is nothing left to heal anyway — so record it and
+        // let the pump carry on.
+        Effect.catchCause((cause) =>
+          Cause.hasInterruptsOnly(cause)
+            ? Effect.void
+            : Effect.logDebug("OpenCode could not arm a request self-heal timer", {
+                threadId: input.context.session.threadId,
+                requestId: input.requestId,
+                cause: Cause.pretty(cause),
+              }),
+        ),
+      );
 
     const emitAgentLifecycle = Effect.fn("emitOpenCodeAgentLifecycle")(function* (
       context: OpenCodeSessionContext,
