@@ -19,6 +19,7 @@ import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
@@ -79,6 +80,20 @@ const PROVIDER = ProviderDriverKind.make("opencode");
  * rather than misread (mirrors GROK_RESUME_VERSION / CURSOR_RESUME_VERSION).
  */
 const OPENCODE_RESUME_VERSION = 1 as const;
+
+/**
+ * Self-heal windows for requests the user never answers, matching the values the other four
+ * adapters already use (Claude, Codex, Cursor, Grok). Without these a `permission.asked` or
+ * `question.asked` that nobody answers leaves the turn pending forever, because OpenCode waits on
+ * the reply and Studio has nothing else to end the turn.
+ *
+ * The shape differs from the other adapters: they block a fiber on a `Deferred` and race it
+ * against a sleep, whereas OpenCode is event-driven — the request arrives as a server event and
+ * the answer goes back through a separate SDK call. So the timer here is a fiber per outstanding
+ * request, armed when the request opens and interrupted when it is answered.
+ */
+const OPENCODE_PENDING_APPROVAL_TIMEOUT_MS = 3 * 60_000;
+const OPENCODE_PENDING_USER_INPUT_TIMEOUT_MS = 5 * 60_000;
 
 /**
  * Decode a persisted resume cursor into the upstream `ses_…` id. Anything
@@ -270,6 +285,11 @@ interface OpenCodeSessionContext {
   readonly openCodeSessionId: string;
   readonly pendingPermissions: Map<string, PermissionRequest>;
   readonly pendingQuestions: Map<string, QuestionRequest>;
+  /**
+   * Self-heal timers for outstanding permission/question requests, keyed by request id. Armed
+   * when a request opens, interrupted when it is answered or the turn settles.
+   */
+  readonly pendingRequestTimers: Map<string, Fiber.Fiber<void>>;
   readonly messageRoleById: Map<string, "user" | "assistant">;
   readonly partById: Map<string, Part>;
   readonly emittedTextByPartId: Map<string, string>;
@@ -340,6 +360,9 @@ export interface OpenCodeAdapterLiveOptions {
   readonly environment?: NodeJS.ProcessEnv;
   readonly nativeEventLogPath?: string;
   readonly nativeEventLogger?: EventNdjsonLogger;
+  /** Overridable so tests can drive the self-heal without waiting minutes. */
+  readonly pendingApprovalTimeoutMs?: number;
+  readonly pendingUserInputTimeoutMs?: number;
 }
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
@@ -704,6 +727,10 @@ export function makeOpenCodeAdapter(
 ) {
   return Effect.gen(function* () {
     const boundInstanceId = options?.instanceId ?? ProviderInstanceId.make("opencode");
+    const pendingApprovalTimeoutMs =
+      options?.pendingApprovalTimeoutMs ?? OPENCODE_PENDING_APPROVAL_TIMEOUT_MS;
+    const pendingUserInputTimeoutMs =
+      options?.pendingUserInputTimeoutMs ?? OPENCODE_PENDING_USER_INPUT_TIMEOUT_MS;
     const serverConfig = yield* ServerConfig;
     const openCodeRuntime = yield* OpenCodeRuntime;
     const crypto = yield* Crypto.Crypto;
@@ -789,6 +816,189 @@ export function makeOpenCodeAdapter(
 
     const emit = (event: ProviderRuntimeEvent) =>
       Queue.offer(runtimeEvents, event).pipe(Effect.asVoid);
+
+    /**
+     * Take ownership of resolving a request, exactly once.
+     *
+     * The self-heal timer and the reply handlers both want to resolve the same request, and after
+     * a timeout rejects upstream OpenCode echoes the reply back — so without a claim the client
+     * sees two resolution events for one request. Membership of the pending map is the mutex, and
+     * this check-and-delete is synchronous, so no fiber can interleave between the two halves.
+     * Whoever removes the entry owns the emit; the loser stays silent.
+     */
+    const claimRequest = (
+      context: OpenCodeSessionContext,
+      requestId: string,
+      kind: "approval" | "user-input",
+    ): boolean => {
+      const pending = kind === "approval" ? context.pendingPermissions : context.pendingQuestions;
+      if (!pending.has(requestId)) return false;
+      pending.delete(requestId);
+      return true;
+    };
+
+    /** Disarm the self-heal timer for a request that has been answered by any route. */
+    const cancelRequestTimer = Effect.fn("openCode.cancelRequestTimer")(function* (
+      context: OpenCodeSessionContext,
+      requestId: string,
+    ) {
+      const timer = context.pendingRequestTimers.get(requestId);
+      if (timer === undefined) return;
+      context.pendingRequestTimers.delete(requestId);
+      yield* Fiber.interrupt(timer).pipe(Effect.ignore);
+    });
+
+    /** Disarm every outstanding timer, for turn settle and session teardown. */
+    const cancelAllRequestTimers = Effect.fn("openCode.cancelAllRequestTimers")(function* (
+      context: OpenCodeSessionContext,
+    ) {
+      const timers = [...context.pendingRequestTimers.values()];
+      context.pendingRequestTimers.clear();
+      yield* Effect.forEach(timers, (timer) => Fiber.interrupt(timer).pipe(Effect.ignore), {
+        discard: true,
+      });
+    });
+
+    /**
+     * Arm a self-heal timer for one outstanding request.
+     *
+     * On expiry this answers OpenCode itself before telling Studio, because OpenCode is a real
+     * server blocked on the reply: resolving only our side would settle the turn in the UI and
+     * leave the agent waiting. A failure to reach OpenCode is logged and still resolved locally —
+     * a wedged request is worse than a mismatched one, and the session is already unhealthy.
+     */
+    const armRequestTimer = (input: {
+      readonly context: OpenCodeSessionContext;
+      readonly requestId: string;
+      readonly turnId: TurnId | undefined;
+      readonly kind: "approval" | "user-input";
+    }) =>
+      Effect.gen(function* () {
+        const { context, requestId, turnId, kind } = input;
+        const timeoutMs =
+          kind === "approval" ? pendingApprovalTimeoutMs : pendingUserInputTimeoutMs;
+        // A repeated `asked` event for the same id would otherwise overwrite the map entry and
+        // leave the previous fiber running against a request it no longer owns, where it could
+        // win the claim and time the freshly armed request out early. The orphan dies with the
+        // session scope either way, but not before doing that.
+        yield* cancelRequestTimer(context, requestId);
+        const timer = yield* Effect.gen(function* () {
+          yield* Effect.sleep(`${timeoutMs} millis`);
+
+          // Claim and read in one synchronous step, before anything can yield. Losing the claim
+          // means the user answered, or the turn settled and cleared the maps — either way there
+          // is nothing left to heal and nothing to say.
+          const claimed = yield* Effect.sync(() => {
+            // Only the approval branch reads this, and it lives in the permissions map. Reading it
+            // unconditionally would silently hand a `user-input` timeout an undefined it looks
+            // entitled to.
+            const request =
+              kind === "approval" ? context.pendingPermissions.get(requestId) : undefined;
+            const won = claimRequest(context, requestId, kind);
+            context.pendingRequestTimers.delete(requestId);
+            return won ? { request } : undefined;
+          });
+          if (claimed === undefined) return;
+
+          const seconds = Math.round(timeoutMs / 1000);
+          const message =
+            kind === "approval"
+              ? `Permission request timed out after ${seconds}s with no decision. Request was cancelled automatically.`
+              : `User input timed out after ${seconds}s with no answer. Request was cancelled automatically.`;
+          yield* Effect.logWarning(`OpenCode ${kind} request timed out; auto-cancelled`, {
+            threadId: context.session.threadId,
+            requestId,
+            timeoutMs,
+          });
+
+          if (kind === "approval") {
+            const request = claimed.request;
+            yield* runOpenCodeSdk("permission.reply", () =>
+              context.client.permission.reply({
+                requestID: requestId,
+                reply: toOpenCodePermissionReply("cancel"),
+              }),
+            ).pipe(Effect.ignore({ log: true }));
+            yield* emit({
+              ...(yield* buildEventBase({
+                threadId: context.session.threadId,
+                turnId,
+                requestId,
+              })),
+              type: "runtime.warning",
+              payload: { message },
+            });
+            yield* emit({
+              ...(yield* buildEventBase({
+                threadId: context.session.threadId,
+                turnId,
+                requestId,
+              })),
+              type: "request.resolved",
+              payload: {
+                requestType:
+                  request === undefined
+                    ? "unknown"
+                    : mapPermissionToRequestType(request.permission),
+                decision: "cancel",
+              },
+            });
+            return;
+          }
+
+          yield* runOpenCodeSdk("question.reject", () =>
+            context.client.question.reject({ requestID: requestId }),
+          ).pipe(Effect.ignore({ log: true }));
+          yield* emit({
+            ...(yield* buildEventBase({
+              threadId: context.session.threadId,
+              turnId,
+              requestId,
+            })),
+            type: "runtime.warning",
+            payload: { message },
+          });
+          yield* emit({
+            ...(yield* buildEventBase({
+              threadId: context.session.threadId,
+              turnId,
+              requestId,
+            })),
+            type: "user-input.resolved",
+            payload: { answers: {} },
+          });
+        }).pipe(
+          // The self-heal is the last line of defence for a wedged request, so a genuine failure
+          // must not vanish. Interruption is not a failure though: cancelling this timer is the
+          // normal outcome, fired on every answered request and every turn settle, so logging it
+          // as a failure would put a warning on the common path.
+          Effect.catchCause((cause) =>
+            Cause.hasInterruptsOnly(cause)
+              ? Effect.void
+              : Effect.logWarning("OpenCode request self-heal failed", {
+                  threadId: context.session.threadId,
+                  requestId,
+                  cause: Cause.pretty(cause),
+                }),
+          ),
+          Effect.forkIn(context.sessionScope),
+        );
+        context.pendingRequestTimers.set(requestId, timer);
+      }).pipe(
+        // Arming runs inside the event pump, so a failure here would take the pump down with it
+        // and strand the session mid-stream. The realistic cause is a request arriving as the
+        // session scope closes, where there is nothing left to heal anyway — so record it and
+        // let the pump carry on.
+        Effect.catchCause((cause) =>
+          Cause.hasInterruptsOnly(cause)
+            ? Effect.void
+            : Effect.logDebug("OpenCode could not arm a request self-heal timer", {
+                threadId: input.context.session.threadId,
+                requestId: input.requestId,
+                cause: Cause.pretty(cause),
+              }),
+        ),
+      );
 
     const emitAgentLifecycle = Effect.fn("emitOpenCodeAgentLifecycle")(function* (
       context: OpenCodeSessionContext,
@@ -1390,11 +1600,21 @@ export function makeOpenCodeAdapter(
               args: event.properties.metadata,
             },
           });
+          yield* armRequestTimer({
+            context,
+            requestId: event.properties.id,
+            turnId,
+            kind: "approval",
+          });
           break;
         }
 
         case "permission.replied": {
-          context.pendingPermissions.delete(event.properties.requestID);
+          // A timeout that already resolved this request rejected it upstream, and OpenCode
+          // echoes that back here. Without the claim the client sees two resolutions.
+          const owned = claimRequest(context, event.properties.requestID, "approval");
+          yield* cancelRequestTimer(context, event.properties.requestID);
+          if (!owned) break;
           yield* emit({
             ...(yield* buildEventBase({
               threadId: context.session.threadId,
@@ -1425,12 +1645,20 @@ export function makeOpenCodeAdapter(
               questions: normalizeQuestionRequest(event.properties),
             },
           });
+          yield* armRequestTimer({
+            context,
+            requestId: event.properties.id,
+            turnId,
+            kind: "user-input",
+          });
           break;
         }
 
         case "question.replied": {
           const request = context.pendingQuestions.get(event.properties.requestID);
-          context.pendingQuestions.delete(event.properties.requestID);
+          const owned = claimRequest(context, event.properties.requestID, "user-input");
+          yield* cancelRequestTimer(context, event.properties.requestID);
+          if (!owned) break;
           const answers = Object.fromEntries(
             (request?.questions ?? []).map((question, index) => [
               openCodeQuestionId(index, question),
@@ -1451,7 +1679,9 @@ export function makeOpenCodeAdapter(
         }
 
         case "question.rejected": {
-          context.pendingQuestions.delete(event.properties.requestID);
+          const owned = claimRequest(context, event.properties.requestID, "user-input");
+          yield* cancelRequestTimer(context, event.properties.requestID);
+          if (!owned) break;
           yield* emit({
             ...(yield* buildEventBase({
               threadId: context.session.threadId,
@@ -1867,6 +2097,7 @@ export function makeOpenCodeAdapter(
           openCodeSessionId: started.openCodeSession.id,
           pendingPermissions: new Map(),
           pendingQuestions: new Map(),
+          pendingRequestTimers: new Map(),
           partById: new Map(),
           emittedTextByPartId: new Map(),
           messageRoleById: new Map(),
@@ -2115,6 +2346,9 @@ export function makeOpenCodeAdapter(
         // stuck on an approval/question while the turn settles (Cursor/Grok).
         context.pendingPermissions.clear();
         context.pendingQuestions.clear();
+        // Their self-heal timers have nothing left to heal, and a surviving one would fire a
+        // timeout warning into a turn that already settled.
+        yield* cancelAllRequestTimers(context);
 
         // Never block Stop on a wedged OpenCode server.
         yield* runOpenCodeSdk("session.abort", () =>

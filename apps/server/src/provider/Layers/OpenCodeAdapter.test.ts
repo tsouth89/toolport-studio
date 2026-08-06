@@ -80,6 +80,8 @@ const runtimeMock = {
     forkCalls: [] as Array<{ sessionID: string; directory?: string }>,
     mcpAddCalls: [] as Array<{ name: string; config: unknown }>,
     mcpDisconnectCalls: [] as string[],
+    permissionReplies: [] as Array<{ requestID: string; reply: unknown }>,
+    questionRejects: [] as string[],
   },
   reset() {
     this.state.startCalls.length = 0;
@@ -102,6 +104,8 @@ const runtimeMock = {
     this.state.forkCalls.length = 0;
     this.state.mcpAddCalls.length = 0;
     this.state.mcpDisconnectCalls.length = 0;
+    this.state.permissionReplies.length = 0;
+    this.state.questionRejects.length = 0;
   },
 };
 
@@ -219,6 +223,20 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
             }
           })(),
         }),
+      },
+      // Needed by the request self-heal: OpenCode blocks on the reply, so a timeout has to answer
+      // upstream and not merely resolve Studio's side of the request.
+      permission: {
+        reply: async ({ requestID, reply }: { requestID: string; reply: unknown }) => {
+          runtimeMock.state.permissionReplies.push({ requestID, reply });
+          return { data: true };
+        },
+      },
+      question: {
+        reject: async ({ requestID }: { requestID: string }) => {
+          runtimeMock.state.questionRejects.push(requestID);
+          return { data: true };
+        },
       },
       mcp: {
         add: async ({ name, config }: { name: string; config: unknown }) => {
@@ -1612,6 +1630,274 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive more", (it) => {
       NodeAssert.equal(sessions.length, 1);
       NodeAssert.equal(sessions[0]?.threadId, "thread-native-log-failure");
       NodeAssert.deepEqual(closeCallsDuringRun, []);
+    }),
+  );
+
+  // SOU-497. The other four adapters self-heal a request nobody answers; OpenCode had neither
+  // timer, so a stranded approval or question held the turn open indefinitely. Timeouts are
+  // driven down to milliseconds here rather than the shipped 3/5 minutes.
+  it.effect("cancels a permission request that nobody answers", () =>
+    Effect.gen(function* () {
+      const threadId = asThreadId("thread-opencode-approval-timeout");
+      const adapterLayer = Layer.effect(
+        OpenCodeAdapter,
+        makeOpenCodeAdapter(openCodeAdapterTestSettings, { pendingApprovalTimeoutMs: 20 }),
+      ).pipe(
+        Layer.provideMerge(Layer.succeed(OpenCodeRuntime, OpenCodeRuntimeTestDouble)),
+        Layer.provideMerge(ServerConfig.layerTest(NodeProcess.cwd(), NodeProcess.cwd())),
+        Layer.provideMerge(
+          ServerSettingsService.layerTest({
+            providers: {
+              opencode: {
+                binaryPath: "fake-opencode",
+                serverUrl: "http://127.0.0.1:9999",
+                serverPassword: "secret-password",
+              },
+            },
+          }),
+        ),
+        Layer.provideMerge(providerSessionDirectoryTestLayer),
+        Layer.provideMerge(NodeServices.layer),
+      );
+
+      const events = yield* Effect.gen(function* () {
+        const adapter = yield* OpenCodeAdapter;
+        runtimeMock.state.subscribedEvents = [
+          {
+            type: "permission.asked",
+            properties: {
+              id: "perm-stranded",
+              sessionID: "http://127.0.0.1:9999/session",
+              permission: "bash",
+              patterns: ["rm -rf /"],
+              metadata: {},
+            },
+          },
+        ];
+
+        const eventsFiber = yield* adapter.streamEvents.pipe(
+          Stream.filter(
+            (event) =>
+              event.threadId === threadId &&
+              (event.type === "request.opened" ||
+                event.type === "runtime.warning" ||
+                event.type === "request.resolved"),
+          ),
+          Stream.take(3),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+
+        yield* adapter.startSession({
+          provider: ProviderDriverKind.make("opencode"),
+          threadId,
+          runtimeMode: "approval-required",
+        });
+
+        // Stepped rather than one jump: the first steps let the event pump deliver the request
+        // and arm the timer, the later ones carry virtual time past the 20ms timeout.
+        yield* Effect.forEach([1, 2, 3, 4, 5], () => advanceTestClock(20), { discard: true });
+
+        return Array.from(yield* Fiber.join(eventsFiber).pipe(Effect.timeout("5 seconds")));
+      }).pipe(Effect.provide(adapterLayer));
+
+      NodeAssert.equal(events[0]?.type, "request.opened");
+
+      const warning = events.find((event) => event.type === "runtime.warning");
+      NodeAssert.ok(warning, "expected a runtime.warning naming the timeout");
+      if (warning.type === "runtime.warning") {
+        NodeAssert.ok(
+          warning.payload.message.includes("timed out"),
+          `unexpected warning: ${warning.payload.message}`,
+        );
+      }
+
+      const resolved = events.find((event) => event.type === "request.resolved");
+      NodeAssert.ok(resolved, "expected the stranded request to resolve on its own");
+      if (resolved.type === "request.resolved") {
+        NodeAssert.equal(resolved.payload.decision, "cancel");
+      }
+
+      // OpenCode itself is blocked on the reply, so the self-heal has to answer upstream too,
+      // not just settle Studio's side.
+      NodeAssert.ok(
+        runtimeMock.state.permissionReplies.some((reply) => reply.requestID === "perm-stranded"),
+        "expected the timeout to reject the permission upstream",
+      );
+    }),
+  );
+
+  it.effect("cancels a user-input request that nobody answers", () =>
+    Effect.gen(function* () {
+      const threadId = asThreadId("thread-opencode-question-timeout");
+      const adapterLayer = Layer.effect(
+        OpenCodeAdapter,
+        makeOpenCodeAdapter(openCodeAdapterTestSettings, { pendingUserInputTimeoutMs: 20 }),
+      ).pipe(
+        Layer.provideMerge(Layer.succeed(OpenCodeRuntime, OpenCodeRuntimeTestDouble)),
+        Layer.provideMerge(ServerConfig.layerTest(NodeProcess.cwd(), NodeProcess.cwd())),
+        Layer.provideMerge(
+          ServerSettingsService.layerTest({
+            providers: {
+              opencode: {
+                binaryPath: "fake-opencode",
+                serverUrl: "http://127.0.0.1:9999",
+                serverPassword: "secret-password",
+              },
+            },
+          }),
+        ),
+        Layer.provideMerge(providerSessionDirectoryTestLayer),
+        Layer.provideMerge(NodeServices.layer),
+      );
+
+      const events = yield* Effect.gen(function* () {
+        const adapter = yield* OpenCodeAdapter;
+        runtimeMock.state.subscribedEvents = [
+          {
+            type: "question.asked",
+            properties: {
+              id: "question-stranded",
+              sessionID: "http://127.0.0.1:9999/session",
+              questions: [
+                {
+                  header: "Database",
+                  question: "Which database?",
+                  options: [
+                    { label: "sqlite", description: "file-backed" },
+                    { label: "postgres", description: "server" },
+                  ],
+                },
+              ],
+            },
+          },
+        ];
+
+        const eventsFiber = yield* adapter.streamEvents.pipe(
+          Stream.filter(
+            (event) =>
+              event.threadId === threadId &&
+              (event.type === "user-input.requested" ||
+                event.type === "runtime.warning" ||
+                event.type === "user-input.resolved"),
+          ),
+          Stream.take(3),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+
+        yield* adapter.startSession({
+          provider: ProviderDriverKind.make("opencode"),
+          threadId,
+          runtimeMode: "approval-required",
+        });
+
+        // Stepped rather than one jump: the first steps let the event pump deliver the request
+        // and arm the timer, the later ones carry virtual time past the 20ms timeout.
+        yield* Effect.forEach([1, 2, 3, 4, 5], () => advanceTestClock(20), { discard: true });
+
+        return Array.from(yield* Fiber.join(eventsFiber).pipe(Effect.timeout("5 seconds")));
+      }).pipe(Effect.provide(adapterLayer));
+
+      NodeAssert.equal(events[0]?.type, "user-input.requested");
+      NodeAssert.ok(
+        events.some((event) => event.type === "runtime.warning"),
+        "expected a runtime.warning naming the timeout",
+      );
+      NodeAssert.ok(
+        events.some((event) => event.type === "user-input.resolved"),
+        "expected the stranded question to resolve on its own",
+      );
+
+      // The half the first version of this fix missed: OpenCode blocks on the answer exactly as
+      // it does for a permission, so resolving only Studio's side clears the composer and leaves
+      // the agent waiting forever.
+      NodeAssert.deepEqual(
+        runtimeMock.state.questionRejects,
+        ["question-stranded"],
+        "expected the timeout to reject the question upstream",
+      );
+    }),
+  );
+
+  // Two routes resolve a request — the reply handler and the self-heal timer — and both used to
+  // emit unconditionally, so one request could produce two resolution events.
+  //
+  // Scope note: the mock drains every scripted event before the clock advances, so this exercises
+  // the reply-wins order only, with the timer's claim failing afterwards. The reverse order (the
+  // timeout rejects upstream and OpenCode echoes `permission.replied` back) is the same claim on
+  // the same map and is covered by construction rather than by this test. Reproducing it would
+  // need the mock to interleave events with virtual time, which it cannot do today.
+  it.effect("resolves a permission exactly once when a reply and a timer both apply", () =>
+    Effect.gen(function* () {
+      const threadId = asThreadId("thread-opencode-approval-echo");
+      const adapterLayer = Layer.effect(
+        OpenCodeAdapter,
+        makeOpenCodeAdapter(openCodeAdapterTestSettings, { pendingApprovalTimeoutMs: 20 }),
+      ).pipe(
+        Layer.provideMerge(Layer.succeed(OpenCodeRuntime, OpenCodeRuntimeTestDouble)),
+        Layer.provideMerge(ServerConfig.layerTest(NodeProcess.cwd(), NodeProcess.cwd())),
+        Layer.provideMerge(
+          ServerSettingsService.layerTest({
+            providers: {
+              opencode: {
+                binaryPath: "fake-opencode",
+                serverUrl: "http://127.0.0.1:9999",
+                serverPassword: "secret-password",
+              },
+            },
+          }),
+        ),
+        Layer.provideMerge(providerSessionDirectoryTestLayer),
+        Layer.provideMerge(NodeServices.layer),
+      );
+
+      const events = yield* Effect.gen(function* () {
+        const adapter = yield* OpenCodeAdapter;
+        runtimeMock.state.subscribedEvents = [
+          {
+            type: "permission.asked",
+            properties: {
+              id: "perm-echo",
+              sessionID: "http://127.0.0.1:9999/session",
+              permission: "bash",
+              patterns: ["ls"],
+              metadata: {},
+            },
+          },
+          {
+            type: "permission.replied",
+            properties: {
+              requestID: "perm-echo",
+              sessionID: "http://127.0.0.1:9999/session",
+              reply: "reject",
+            },
+          },
+        ];
+
+        const collected: Array<string> = [];
+        const eventsFiber = yield* adapter.streamEvents.pipe(
+          Stream.filter((event) => event.threadId === threadId),
+          Stream.tap((event) => Effect.sync(() => collected.push(event.type))),
+          Stream.runDrain,
+          Effect.forkChild,
+        );
+
+        yield* adapter.startSession({
+          provider: ProviderDriverKind.make("opencode"),
+          threadId,
+          runtimeMode: "approval-required",
+        });
+        yield* Effect.forEach([1, 2, 3, 4, 5], () => advanceTestClock(20), { discard: true });
+        yield* Fiber.interrupt(eventsFiber).pipe(Effect.ignore);
+        return collected;
+      }).pipe(Effect.provide(adapterLayer));
+
+      NodeAssert.equal(
+        events.filter((type) => type === "request.resolved").length,
+        1,
+        `expected exactly one request.resolved, saw: ${events.join(", ")}`,
+      );
     }),
   );
 });
