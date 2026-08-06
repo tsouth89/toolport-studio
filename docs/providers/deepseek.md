@@ -95,5 +95,14 @@ Gateway](vercel-ai-gateway.md) are the others supported today, and each reaches
 most of these vendors through a single key.
 
 Providers that publish an Anthropic-compatible endpoint (Z.ai, Moonshot,
-MiniMax, Qwen) need the Claude harness instead of the Codex one, which is not
-wired up yet.
+MiniMax, Qwen) need the Claude harness rather than the Codex one, so they do not
+work as an API Key Provider preset. They do work today, through a different
+route: add a **Claude** provider instance and, in its Environment variables, set
+`ANTHROPIC_BASE_URL` to the endpoint, `ANTHROPIC_AUTH_TOKEN` to your key (marked
+sensitive), and `ANTHROPIC_API_KEY` to an empty string so Claude Code does not
+fall back to an Anthropic login. See [Claude](claude.md), which walks through
+that setup using OpenRouter as the example.
+
+What is not wired up yet is an `anthropic` wire family for the preset-based API
+Key Provider driver, which would let these vendors be added as data the way
+DeepSeek was.
