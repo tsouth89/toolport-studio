@@ -817,6 +817,26 @@ export function makeOpenCodeAdapter(
     const emit = (event: ProviderRuntimeEvent) =>
       Queue.offer(runtimeEvents, event).pipe(Effect.asVoid);
 
+    /**
+     * Take ownership of resolving a request, exactly once.
+     *
+     * The self-heal timer and the reply handlers both want to resolve the same request, and after
+     * a timeout rejects upstream OpenCode echoes the reply back — so without a claim the client
+     * sees two resolution events for one request. Membership of the pending map is the mutex, and
+     * this check-and-delete is synchronous, so no fiber can interleave between the two halves.
+     * Whoever removes the entry owns the emit; the loser stays silent.
+     */
+    const claimRequest = (
+      context: OpenCodeSessionContext,
+      requestId: string,
+      kind: "approval" | "user-input",
+    ): boolean => {
+      const pending = kind === "approval" ? context.pendingPermissions : context.pendingQuestions;
+      if (!pending.has(requestId)) return false;
+      pending.delete(requestId);
+      return true;
+    };
+
     /** Disarm the self-heal timer for a request that has been answered by any route. */
     const cancelRequestTimer = Effect.fn("openCode.cancelRequestTimer")(function* (
       context: OpenCodeSessionContext,
@@ -859,12 +879,17 @@ export function makeOpenCodeAdapter(
           kind === "approval" ? pendingApprovalTimeoutMs : pendingUserInputTimeoutMs;
         const timer = yield* Effect.gen(function* () {
           yield* Effect.sleep(`${timeoutMs} millis`);
-          const stillPending =
-            kind === "approval"
-              ? context.pendingPermissions.has(requestId)
-              : context.pendingQuestions.has(requestId);
-          if (!stillPending) return;
-          context.pendingRequestTimers.delete(requestId);
+
+          // Claim and read in one synchronous step, before anything can yield. Losing the claim
+          // means the user answered, or the turn settled and cleared the maps — either way there
+          // is nothing left to heal and nothing to say.
+          const claimed = yield* Effect.sync(() => {
+            const request = context.pendingPermissions.get(requestId);
+            const won = claimRequest(context, requestId, kind);
+            context.pendingRequestTimers.delete(requestId);
+            return won ? { request } : undefined;
+          });
+          if (claimed === undefined) return;
 
           const seconds = Math.round(timeoutMs / 1000);
           const message =
@@ -878,8 +903,7 @@ export function makeOpenCodeAdapter(
           });
 
           if (kind === "approval") {
-            const request = context.pendingPermissions.get(requestId);
-            context.pendingPermissions.delete(requestId);
+            const request = claimed.request;
             yield* runOpenCodeSdk("permission.reply", () =>
               context.client.permission.reply({
                 requestID: requestId,
@@ -913,7 +937,6 @@ export function makeOpenCodeAdapter(
             return;
           }
 
-          context.pendingQuestions.delete(requestId);
           yield* runOpenCodeSdk("question.reject", () =>
             context.client.question.reject({ requestID: requestId }),
           ).pipe(Effect.ignore);
@@ -1560,8 +1583,11 @@ export function makeOpenCodeAdapter(
         }
 
         case "permission.replied": {
-          context.pendingPermissions.delete(event.properties.requestID);
+          // A timeout that already resolved this request rejected it upstream, and OpenCode
+          // echoes that back here. Without the claim the client sees two resolutions.
+          const owned = claimRequest(context, event.properties.requestID, "approval");
           yield* cancelRequestTimer(context, event.properties.requestID);
+          if (!owned) break;
           yield* emit({
             ...(yield* buildEventBase({
               threadId: context.session.threadId,
@@ -1603,8 +1629,9 @@ export function makeOpenCodeAdapter(
 
         case "question.replied": {
           const request = context.pendingQuestions.get(event.properties.requestID);
-          context.pendingQuestions.delete(event.properties.requestID);
+          const owned = claimRequest(context, event.properties.requestID, "user-input");
           yield* cancelRequestTimer(context, event.properties.requestID);
+          if (!owned) break;
           const answers = Object.fromEntries(
             (request?.questions ?? []).map((question, index) => [
               openCodeQuestionId(index, question),
@@ -1625,8 +1652,9 @@ export function makeOpenCodeAdapter(
         }
 
         case "question.rejected": {
-          context.pendingQuestions.delete(event.properties.requestID);
+          const owned = claimRequest(context, event.properties.requestID, "user-input");
           yield* cancelRequestTimer(context, event.properties.requestID);
+          if (!owned) break;
           yield* emit({
             ...(yield* buildEventBase({
               threadId: context.session.threadId,

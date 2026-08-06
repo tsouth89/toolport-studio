@@ -1819,6 +1819,87 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive more", (it) => {
       );
     }),
   );
+
+  // Two routes resolve a request — the reply handler and the self-heal timer — and both used to
+  // emit unconditionally, so one request could produce two resolution events.
+  //
+  // Scope note: the mock drains every scripted event before the clock advances, so this exercises
+  // the reply-wins order only, with the timer's claim failing afterwards. The reverse order (the
+  // timeout rejects upstream and OpenCode echoes `permission.replied` back) is the same claim on
+  // the same map and is covered by construction rather than by this test. Reproducing it would
+  // need the mock to interleave events with virtual time, which it cannot do today.
+  it.effect("resolves a permission exactly once when a reply and a timer both apply", () =>
+    Effect.gen(function* () {
+      const threadId = asThreadId("thread-opencode-approval-echo");
+      const adapterLayer = Layer.effect(
+        OpenCodeAdapter,
+        makeOpenCodeAdapter(openCodeAdapterTestSettings, { pendingApprovalTimeoutMs: 20 }),
+      ).pipe(
+        Layer.provideMerge(Layer.succeed(OpenCodeRuntime, OpenCodeRuntimeTestDouble)),
+        Layer.provideMerge(ServerConfig.layerTest(NodeProcess.cwd(), NodeProcess.cwd())),
+        Layer.provideMerge(
+          ServerSettingsService.layerTest({
+            providers: {
+              opencode: {
+                binaryPath: "fake-opencode",
+                serverUrl: "http://127.0.0.1:9999",
+                serverPassword: "secret-password",
+              },
+            },
+          }),
+        ),
+        Layer.provideMerge(providerSessionDirectoryTestLayer),
+        Layer.provideMerge(NodeServices.layer),
+      );
+
+      const events = yield* Effect.gen(function* () {
+        const adapter = yield* OpenCodeAdapter;
+        runtimeMock.state.subscribedEvents = [
+          {
+            type: "permission.asked",
+            properties: {
+              id: "perm-echo",
+              sessionID: "http://127.0.0.1:9999/session",
+              permission: "bash",
+              patterns: ["ls"],
+              metadata: {},
+            },
+          },
+          {
+            type: "permission.replied",
+            properties: {
+              requestID: "perm-echo",
+              sessionID: "http://127.0.0.1:9999/session",
+              reply: "reject",
+            },
+          },
+        ];
+
+        const collected: Array<string> = [];
+        const eventsFiber = yield* adapter.streamEvents.pipe(
+          Stream.filter((event) => event.threadId === threadId),
+          Stream.tap((event) => Effect.sync(() => collected.push(event.type))),
+          Stream.runDrain,
+          Effect.forkChild,
+        );
+
+        yield* adapter.startSession({
+          provider: ProviderDriverKind.make("opencode"),
+          threadId,
+          runtimeMode: "approval-required",
+        });
+        yield* Effect.forEach([1, 2, 3, 4, 5], () => advanceTestClock(20), { discard: true });
+        yield* Fiber.interrupt(eventsFiber).pipe(Effect.ignore);
+        return collected;
+      }).pipe(Effect.provide(adapterLayer));
+
+      NodeAssert.equal(
+        events.filter((type) => type === "request.resolved").length,
+        1,
+        `expected exactly one request.resolved, saw: ${events.join(", ")}`,
+      );
+    }),
+  );
 });
 
 describe("trackOpenCodeOpenTool", () => {
