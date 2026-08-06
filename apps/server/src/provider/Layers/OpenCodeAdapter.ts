@@ -889,7 +889,11 @@ export function makeOpenCodeAdapter(
           // means the user answered, or the turn settled and cleared the maps — either way there
           // is nothing left to heal and nothing to say.
           const claimed = yield* Effect.sync(() => {
-            const request = context.pendingPermissions.get(requestId);
+            // Only the approval branch reads this, and it lives in the permissions map. Reading it
+            // unconditionally would silently hand a `user-input` timeout an undefined it looks
+            // entitled to.
+            const request =
+              kind === "approval" ? context.pendingPermissions.get(requestId) : undefined;
             const won = claimRequest(context, requestId, kind);
             context.pendingRequestTimers.delete(requestId);
             return won ? { request } : undefined;
