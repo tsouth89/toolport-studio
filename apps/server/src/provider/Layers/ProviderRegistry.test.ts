@@ -183,6 +183,28 @@ const sleepOffTestClock = (millis: number) =>
       }),
   );
 
+/**
+ * Poll a provider status cache file until `predicate` matches, or give up.
+ *
+ * Live-update persistence is driven by a forked stream fiber writing real
+ * filesystem I/O. Advancing TestClock alone does not hand the event loop back
+ * for those writes, so under Windows CI load a loop of `TestClock` +
+ * `Effect.yieldNow` can time out with `cachedProvider === undefined` even
+ * though the in-memory registry already settled (SOU-555).
+ */
+const awaitCachedProvider = (filePath: string, predicate: (provider: ServerProvider) => boolean) =>
+  Effect.gen(function* () {
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      const cachedProvider = yield* readProviderStatusCache(filePath);
+      if (cachedProvider !== undefined && predicate(cachedProvider)) {
+        return cachedProvider;
+      }
+      yield* TestClock.adjust("10 millis");
+      yield* sleepOffTestClock(5);
+    }
+    return yield* readProviderStatusCache(filePath);
+  });
+
 function mockSpawnerLayer(
   handler: (args: ReadonlyArray<string>) => {
     stdout: string;
@@ -1226,16 +1248,10 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             ]);
             yield* PubSub.publish(changes, refreshedProvider);
 
-            let cachedProvider = yield* readProviderStatusCache(filePath);
-            for (
-              let attempt = 0;
-              attempt < 50 && cachedProvider?.checkedAt !== refreshedProvider.checkedAt;
-              attempt += 1
-            ) {
-              yield* TestClock.adjust("10 millis");
-              yield* Effect.yieldNow;
-              cachedProvider = yield* readProviderStatusCache(filePath);
-            }
+            const cachedProvider = yield* awaitCachedProvider(
+              filePath,
+              (provider) => provider.checkedAt === refreshedProvider.checkedAt,
+            );
 
             assert.deepStrictEqual(cachedProvider, {
               ...refreshedProvider,
@@ -1351,29 +1367,18 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
 
               yield* PubSub.publish(changes, authoritativeProvider);
 
-              let cachedProvider = yield* readProviderStatusCache(filePath);
-              for (
-                let attempt = 0;
-                attempt < 50 && cachedProvider?.checkedAt !== authoritativeProvider.checkedAt;
-                attempt += 1
-              ) {
-                yield* TestClock.adjust("10 millis");
-                yield* Effect.yieldNow;
-                cachedProvider = yield* readProviderStatusCache(filePath);
-              }
+              let cachedProvider = yield* awaitCachedProvider(
+                filePath,
+                (provider) => provider.checkedAt === authoritativeProvider.checkedAt,
+              );
 
               assert.deepStrictEqual(cachedProvider?.models, [authoritativeProvider.models[0]!]);
 
               yield* PubSub.publish(changes, failedProvider);
-              for (
-                let attempt = 0;
-                attempt < 50 && cachedProvider?.checkedAt !== failedProvider.checkedAt;
-                attempt += 1
-              ) {
-                yield* TestClock.adjust("10 millis");
-                yield* Effect.yieldNow;
-                cachedProvider = yield* readProviderStatusCache(filePath);
-              }
+              cachedProvider = yield* awaitCachedProvider(
+                filePath,
+                (provider) => provider.checkedAt === failedProvider.checkedAt,
+              );
 
               assert.deepStrictEqual(cachedProvider?.models, [authoritativeProvider.models[0]!]);
               assert.deepStrictEqual((yield* registry.getProviders)[0]?.models, [
