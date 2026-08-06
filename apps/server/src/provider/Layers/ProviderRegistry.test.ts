@@ -2544,8 +2544,12 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
           // against the platform's own resolution rather than the raw literal:
           // the point of the test is that `homePath` reaches the probe as
           // `CLAUDE_CONFIG_DIR`, not that the string passes through untouched.
+          // Deduplicated rather than compared element-wise: an account-less capabilities probe
+          // now falls through to `claude auth status`, so the number of spawns is an
+          // implementation detail. What this asserts is that every one of them carries the
+          // configured home.
           assert.deepStrictEqual(
-            recorded.commands.map((command) => command.env?.CLAUDE_CONFIG_DIR),
+            [...new Set(recorded.commands.map((command) => command.env?.CLAUDE_CONFIG_DIR))],
             [path.resolve(claudeConfigDir)],
           );
         }).pipe(Effect.provide(recorded.layer));
