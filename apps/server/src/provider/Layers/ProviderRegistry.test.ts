@@ -194,11 +194,10 @@ const sleepOffTestClock = (millis: number) =>
  */
 const awaitCachedProvider = (filePath: string, predicate: (provider: ServerProvider) => boolean) =>
   Effect.gen(function* () {
-    let lastCachedProvider: ServerProvider | undefined;
     for (let attempt = 0; attempt < 200; attempt += 1) {
-      lastCachedProvider = yield* readProviderStatusCache(filePath);
-      if (lastCachedProvider !== undefined && predicate(lastCachedProvider)) {
-        return lastCachedProvider;
+      const cachedProvider = yield* readProviderStatusCache(filePath);
+      if (cachedProvider !== undefined && predicate(cachedProvider)) {
+        return cachedProvider;
       }
       yield* TestClock.adjust("10 millis");
       // Yield the real event loop so the forked persist fiber can run. Duration
@@ -206,10 +205,14 @@ const awaitCachedProvider = (filePath: string, predicate: (provider: ServerProvi
       // the atomic rename completes and the next read observes it.
       yield* sleepOffTestClock(5);
     }
-    // One more read after the final yield so a write that landed in that last
-    // quantum is still observed (atomic temp+rename, so this is not a torn read).
+    // Final read after the last yield so a write that landed in that quantum is
+    // observed (atomic temp+rename). Return undefined when the predicate never
+    // matched — returning a stale non-matching snapshot would let callers that
+    // only assert on models pass through a persistence timeout.
     const finalCachedProvider = yield* readProviderStatusCache(filePath);
-    return finalCachedProvider ?? lastCachedProvider;
+    return finalCachedProvider !== undefined && predicate(finalCachedProvider)
+      ? finalCachedProvider
+      : undefined;
   });
 
 function mockSpawnerLayer(
@@ -1379,6 +1382,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
                 (provider) => provider.checkedAt === authoritativeProvider.checkedAt,
               );
 
+              assert.strictEqual(cachedProvider?.checkedAt, authoritativeProvider.checkedAt);
               assert.deepStrictEqual(cachedProvider?.models, [authoritativeProvider.models[0]!]);
 
               yield* PubSub.publish(changes, failedProvider);
@@ -1387,6 +1391,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
                 (provider) => provider.checkedAt === failedProvider.checkedAt,
               );
 
+              assert.strictEqual(cachedProvider?.checkedAt, failedProvider.checkedAt);
               assert.deepStrictEqual(cachedProvider?.models, [authoritativeProvider.models[0]!]);
               assert.deepStrictEqual((yield* registry.getProviders)[0]?.models, [
                 authoritativeProvider.models[0]!,
