@@ -631,6 +631,24 @@ type ClaudeAuthStatusProbe = Omit<ClaudeCapabilitiesProbe, "slashCommands"> & {
   readonly loggedIn: boolean;
 };
 
+/**
+ * Whether a capabilities probe actually saw an account, rather than merely completing.
+ *
+ * The probe starts the Agent SDK and reads its initialization result without sending a request.
+ * That succeeds against an empty config directory too, returning a well-formed object with every
+ * account field undefined — so "the probe returned something" is not evidence of authentication,
+ * and treating it as such reported a credential-less instance as Authenticated with no account
+ * line beneath it. Any one of these fields means a real account answered.
+ */
+function hasClaudeAccountEvidence(
+  probe: Pick<
+    ClaudeCapabilitiesProbe,
+    "email" | "subscriptionType" | "tokenSource" | "apiProvider"
+  >,
+): boolean {
+  return Boolean(probe.email ?? probe.subscriptionType ?? probe.tokenSource ?? probe.apiProvider);
+}
+
 function parseClaudeAuthStatus(raw: string): ClaudeAuthStatusProbe | undefined {
   try {
     const parsed = JSON.parse(raw) as unknown;
@@ -949,7 +967,11 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
   const capabilities = resolveCapabilities
     ? yield* resolveCapabilities(claudeSettings).pipe(Effect.orElseSucceed(() => undefined))
     : undefined;
-  const authStatus = capabilities
+  // An account-less probe is not an auth signal, so fall through to `claude auth status` for a
+  // second opinion rather than skipping it.
+  const capabilitiesCarryAccount =
+    capabilities !== undefined && hasClaudeAccountEvidence(capabilities);
+  const authStatus = capabilitiesCarryAccount
     ? undefined
     : yield* runClaudeCommand(claudeSettings, ["auth", "status"], resolvedEnvironment).pipe(
         Effect.timeoutOption(DEFAULT_TIMEOUT_MS),
@@ -965,7 +987,10 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
   const slashCommands = capabilities?.slashCommands ?? [];
   const dedupedSlashCommands = dedupeSlashCommands(slashCommands);
 
-  if (!capabilities && !authStatus) {
+  // Absence of evidence only ever lands here, never on "unauthenticated". A probe that completed
+  // without an account and a fallback that could not answer means we do not know, and saying so
+  // is better than accusing a working instance of being logged out.
+  if (!capabilitiesCarryAccount && !authStatus) {
     return buildServerProvider({
       presentation: CLAUDE_PRESENTATION,
       enabled: claudeSettings.enabled,
@@ -1001,7 +1026,9 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
     });
   }
 
-  const account = capabilities ?? authStatus!;
+  // Prefer whichever source actually saw the account. Reaching here without account-carrying
+  // capabilities means `claude auth status` reported a logged-in session, so it is the authority.
+  const account = capabilitiesCarryAccount ? capabilities! : (authStatus ?? capabilities!);
   const authMetadata =
     claudeAuthMetadata({
       subscriptionType: account.subscriptionType,
