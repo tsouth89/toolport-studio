@@ -5,7 +5,7 @@
 <h1 align="center">Toolport Studio</h1>
 
 <p align="center">
-  <strong>One desktop home for Claude, Codex, Cursor, Grok, and the tools around them.</strong>
+  <strong>One desktop home for Claude, Codex, Cursor, Grok, OpenCode, and the tools around them.</strong>
 </p>
 
 Toolport Studio turns subscription-backed AI coding CLIs into a cohesive desktop
