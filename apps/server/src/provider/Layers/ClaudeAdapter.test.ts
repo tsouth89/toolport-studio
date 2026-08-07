@@ -2714,6 +2714,65 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("keeps the selected 200k window when the SDK usage map reports 1M", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 7).pipe(
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          "claude-opus-4-6",
+          [{ id: "contextWindow", value: "200k" }],
+        ),
+      });
+      yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "hello",
+        attachments: [],
+      });
+
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        duration_ms: 10,
+        duration_api_ms: 10,
+        num_turns: 1,
+        result: "done",
+        stop_reason: "end_turn",
+        session_id: "sdk-session-selected-window",
+        usage: { input_tokens: 10, output_tokens: 5 },
+        // The usage map is keyed by model and reports each model's own ceiling.
+        // Taking its maximum flipped a 200k session to 1M from the first
+        // completed turn onward, overstating remaining room five-fold.
+        modelUsage: {
+          "claude-opus-4-6": { contextWindow: 200000, maxOutputTokens: 64000 },
+          "claude-opus-5": { contextWindow: 1000000, maxOutputTokens: 64000 },
+        },
+      } as unknown as SDKMessage);
+      harness.query.finish();
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const usageEvent = runtimeEvents.find((event) => event.type === "thread.token-usage.updated");
+      assert.equal(
+        usageEvent?.type === "thread.token-usage.updated" && usageEvent.payload.usage.maxTokens,
+        200000,
+      );
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("clamps oversized Claude usage to the reported context window", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

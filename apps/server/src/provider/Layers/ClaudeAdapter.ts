@@ -324,6 +324,14 @@ interface ClaudeSessionContext {
   readonly backgroundTasks: Map<string, ClaudeBackgroundTaskState>;
   turnState: ClaudeTurnState | undefined;
   lastKnownContextWindow: number | undefined;
+  /**
+   * The window the user actually selected, when they selected one.
+   *
+   * Authoritative over anything derived from the SDK's usage map: that map is
+   * keyed by model and reports each one's own ceiling, so its maximum is not
+   * this session's budget (SOU-574).
+   */
+  selectedContextWindow: number | undefined;
   lastKnownTokenUsage: ThreadTokenUsageSnapshot | undefined;
   lastKnownTotalProcessedTokens: number | undefined;
   lastAssistantUuid: string | undefined;
@@ -2331,7 +2339,14 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     errorMessage?: string,
     result?: SDKResultMessage,
   ) {
-    const resultContextWindow = maxClaudeContextWindowFromModelUsage(result?.modelUsage);
+    // `maxClaudeContextWindowFromModelUsage` takes the maximum across every
+    // model in the SDK's usage map, not the ceiling for the one in use. When
+    // the user has chosen a window explicitly, that choice is the budget and
+    // this must not overwrite it — doing so made a 200k session report 1M from
+    // its first completed turn onward, overstating the remaining room five-fold
+    // and making the usage burn impossible to attribute (SOU-574).
+    const resultContextWindow =
+      context.selectedContextWindow ?? maxClaudeContextWindowFromModelUsage(result?.modelUsage);
     if (resultContextWindow !== undefined) {
       context.lastKnownContextWindow = resultContextWindow;
     }
@@ -4461,6 +4476,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         backgroundTasks,
         turnState: undefined,
         lastKnownContextWindow: initialContextWindow,
+        selectedContextWindow: initialContextWindow,
         lastKnownTokenUsage: undefined,
         lastKnownTotalProcessedTokens: undefined,
         lastAssistantUuid: effectiveResumeSessionAt,
