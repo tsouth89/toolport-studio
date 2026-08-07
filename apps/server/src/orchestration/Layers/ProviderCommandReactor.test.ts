@@ -2103,6 +2103,10 @@ describe("ProviderCommandReactor", () => {
       await waitFor(() => harness.interruptTurn.mock.calls.length === 1);
       // The turn is still in flight - that is the entire point of the test.
       expect(harness.sendTurn.mock.calls.length).toBe(1);
+      // Stop must reach the provider *while* the prompt is unresolved. If the
+      // gate had settled first this would be indistinguishable from the old
+      // behaviour, where the interrupt only ran once the turn finished.
+      expect(await Effect.runPromise(Deferred.isDone(turnGate))).toBe(false);
     } finally {
       await Effect.runPromise(Deferred.succeed(turnGate, undefined));
     }

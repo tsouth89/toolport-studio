@@ -2833,7 +2833,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   <span
                     data-chat-provider-substitution="true"
                     title={`${providerSubstitutionNotice.requested} is ${providerSubstitutionNotice.reason}. This message will run on ${providerSubstitutionNotice.running}.`}
-                    className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-amber-500/10 px-2 py-1 text-[11px] font-medium text-amber-700 dark:text-amber-400"
+                    className="inline-flex min-w-0 max-w-[18rem] shrink items-center gap-1.5 rounded-md bg-amber-500/10 px-2 py-1 text-[11px] font-medium text-amber-700 dark:text-amber-400"
                   >
                     <CircleAlertIcon className="size-3.5 shrink-0" />
                     <span className="truncate">

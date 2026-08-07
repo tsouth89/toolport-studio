@@ -1900,10 +1900,16 @@ describe("computeStableMessagesTimelineRows", () => {
       revertTurnCountByUserMessageId: new Map(),
     });
 
-    expect(rows.find((row) => row.kind === "working")).toMatchObject({
+    const workingRow = rows.find((row) => row.kind === "working");
+    expect(workingRow).toMatchObject({
       kind: "working",
       activeToolLabel: "Running a tool",
     });
+    // detail too: the old chrome concatenated `followUpIntent · label · detail`,
+    // so a regression could leak the interjection there while the label looks
+    // correct.
+    const detail = workingRow?.kind === "working" ? workingRow.activeToolDetail : undefined;
+    expect(detail ?? "").not.toContain("save it as a draft release");
   });
 });
 
