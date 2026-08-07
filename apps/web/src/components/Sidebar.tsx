@@ -1,4 +1,4 @@
-import { autoAnimate } from "@formkit/auto-animate";
+import { autoAnimate, type AnimationController } from "@formkit/auto-animate";
 import { useAtomValue } from "@effect/atom-react";
 import type { EnvironmentThreadShell } from "@toolport-studio/client-runtime/state/models";
 import {
@@ -1998,10 +1998,38 @@ export default function Sidebar() {
     setShowJumpHints(shouldShowJumpHintsNow);
   }, [shouldShowJumpHintsNow]);
 
+  const listAutoAnimateControllerRef = useRef<AnimationController | null>(null);
   const attachListAutoAnimateRef = useCallback((node: HTMLUListElement | null) => {
-    if (!node) return;
-    autoAnimate(node, { duration: 150, easing: "ease-out" });
+    if (!node) {
+      listAutoAnimateControllerRef.current = null;
+      return;
+    }
+    listAutoAnimateControllerRef.current = autoAnimate(node, {
+      duration: 150,
+      easing: "ease-out",
+    });
   }, []);
+
+  // Auto-animate has to be off for the duration of a drag.
+  //
+  // Starting a drag changes what this list renders: empty unpinned shelves
+  // stop being hidden and every empty folder grows a "Drop session here" hint.
+  // Auto-animate reacts by FLIP-transforming the rows those insertions pushed
+  // down — and a browser cancels an in-flight HTML5 drag when its source node
+  // is transformed out from under the pointer.
+  //
+  // That is why the failure looked selective: Ungrouped renders after the
+  // folders, so its rows always shifted and never survived pickup, while a row
+  // in a folder above the insertions never moved and dragged fine.
+  useEffect(() => {
+    const controller = listAutoAnimateControllerRef.current;
+    if (!controller) return;
+    if (draggingThreadKey !== null || draggingProjectKey !== null) {
+      controller.disable();
+      return;
+    }
+    controller.enable();
+  }, [draggingProjectKey, draggingThreadKey]);
 
   const handleNewThreadClick = useCallback(() => {
     if (isMobile) setOpenMobile(false);
