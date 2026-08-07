@@ -296,9 +296,16 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     // item landing between the read and the write would be overwritten by an
     // older timestamp and still trigger a reconcile the thread did not need.
     const silentForMs = yield* Ref.modify(lastItemAppliedAt, (last) => {
-      // Wall clock moved backwards (NTP correction, manual change). Re-anchor
-      // instead of suppressing the reconcile until real time catches up.
-      if (now < last) return [null, now];
+      // `last` ahead of `now` has two causes, and they want opposite
+      // handling. Either an item was applied in the gap between reading the
+      // clock above and this modify — microseconds, and the newer stamp is
+      // the correct one to keep — or the wall clock jumped backwards, which
+      // would otherwise suppress the reconcile for the whole duration of the
+      // jump. Only the second is ever larger than a poll interval, because a
+      // concurrent apply cannot stamp further ahead than the race window.
+      if (last > now) {
+        return last - now > ACTIVE_TURN_SILENCE_POLL_MS ? [null, now] : [null, last];
+      }
       const elapsed = now - last;
       return elapsed < ACTIVE_TURN_SILENCE_RECONCILE_MS ? [null, last] : [elapsed, now];
     });
