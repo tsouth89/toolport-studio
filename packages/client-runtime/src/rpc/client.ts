@@ -148,6 +148,18 @@ export function runStream<TTag extends EnvironmentStreamCommandRpcTag>(
   );
 }
 
+// A transport fault usually resolves either immediately (the stream faulted
+// alone and the socket is fine) or not at all until the supervisor swaps the
+// session, so the first retry is fast and the ceiling stays low: the cost of
+// an extra attempt is one subscribe, and the cost of not retrying is a
+// projection that never moves again.
+const TRANSPORT_RETRY_BASE_MILLIS = 250;
+const TRANSPORT_RETRY_CAP_MILLIS = 5_000;
+
+function transportRetryBackoff(attempt: number): Duration.Input {
+  return Math.min(TRANSPORT_RETRY_BASE_MILLIS * 2 ** attempt, TRANSPORT_RETRY_CAP_MILLIS);
+}
+
 interface SubscriptionOptions<TTag extends EnvironmentSubscriptionRpcTag> {
   readonly onExpectedFailure?: (
     cause: Cause.Cause<EnvironmentRpcStreamFailure<TTag>>,
@@ -193,6 +205,10 @@ export function subscribeDynamic<TTag extends EnvironmentSubscriptionRpcTag>(
                 // grow; any delivered element proves the subscription works
                 // again and resets it.
                 let consecutiveExpectedFailures = 0;
+                // Tracked separately from expected failures: a transport fault
+                // is not the subscription's own error, so the two must not
+                // share a backoff.
+                let consecutiveTransportFailures = 0;
                 const subscribeToSession = (): Stream.Stream<
                   EnvironmentRpcStreamValue<TTag>,
                   EnvironmentRpcStreamFailure<TTag>
@@ -205,6 +221,7 @@ export function subscribeDynamic<TTag extends EnvironmentSubscriptionRpcTag>(
                             Stream.tap(() =>
                               Effect.sync(() => {
                                 consecutiveExpectedFailures = 0;
+                                consecutiveTransportFailures = 0;
                               }),
                             ),
                             Stream.catchCause((cause) => {
@@ -218,16 +235,44 @@ export function subscribeDynamic<TTag extends EnvironmentSubscriptionRpcTag>(
                                     reason._tag === "Fail" && isRpcClientError(reason.error),
                                 );
                               if (isTransportFailure) {
+                                // A transport fault ends THIS stream, which is
+                                // not the same as the socket dying: the
+                                // supervisor only publishes a new session when
+                                // the connection itself is replaced. Draining
+                                // here left the subscription waiting for a
+                                // session change that never arrived, so the
+                                // projection sat on whatever it had last
+                                // applied — a turn still shown as live long
+                                // after the server finished it — while unary
+                                // calls over the same socket kept working,
+                                // which is exactly why the client looked
+                                // connected and only a restart revealed the
+                                // real state.
+                                //
+                                // Retry against the current session instead. If
+                                // the socket really did die, the supervisor's
+                                // next session interrupts this retry through
+                                // the outer switchMap, so the dead-socket path
+                                // is unchanged.
+                                const delay = transportRetryBackoff(consecutiveTransportFailures);
+                                consecutiveTransportFailures += 1;
                                 return Stream.fromEffect(
                                   Effect.logWarning(
-                                    "Durable RPC subscription lost its transport; waiting for the next session.",
+                                    "Durable RPC subscription lost its transport; resubscribing.",
                                     {
                                       cause: Cause.pretty(cause),
                                       method: tag,
                                       environmentId: supervisor.target.environmentId,
+                                      attempt: consecutiveTransportFailures,
                                     },
                                   ),
-                                ).pipe(Stream.drain);
+                                ).pipe(
+                                  Stream.drain,
+                                  Stream.concat(
+                                    Stream.fromEffect(Effect.sleep(delay)).pipe(Stream.drain),
+                                  ),
+                                  Stream.concat(subscribeToSession()),
+                                );
                               }
                               if (
                                 hasOnlyExpectedFailures &&
