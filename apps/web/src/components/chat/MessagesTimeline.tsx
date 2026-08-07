@@ -919,11 +919,14 @@ function ProviderHandoffTimelineRow({
 }) {
   return (
     <div className="flex items-center gap-3 py-2" data-provider-handoff-row="true">
-      <span aria-hidden className="h-px flex-1 bg-border" />
-      <span className="shrink-0 text-[11px] font-semibold tracking-wide text-muted-foreground">
+      <span aria-hidden className="h-px min-w-4 flex-1 bg-border" />
+      <span
+        title={row.label}
+        className="min-w-0 truncate text-[11px] font-semibold tracking-wide text-muted-foreground"
+      >
         {row.label}
       </span>
-      <span aria-hidden className="h-px flex-1 bg-border" />
+      <span aria-hidden className="h-px min-w-4 flex-1 bg-border" />
     </div>
   );
 }
