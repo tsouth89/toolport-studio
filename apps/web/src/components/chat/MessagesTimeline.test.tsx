@@ -765,6 +765,41 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain('aria-label="Stop generation"');
   });
 
+  it("names in-flight background work on the Working row", () => {
+    // SBS-576: a turn watching CI is silent in exactly the way a stalled one
+    // is. Without this the roster in the Agents panel was the only place that
+    // told them apart, and it has to be opened to be read.
+    const lastStreamActivityAt = new Date(Date.now() - 120_000).toISOString();
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        isWorking
+        activeTurnStartedAt={new Date(Date.now() - 180_000).toISOString()}
+        lastStreamActivityAt={lastStreamActivityAt}
+        backgroundTaskLabel="2 running tasks"
+        timelineEntries={[]}
+      />,
+    );
+
+    expect(markup).toContain("Working");
+    expect(markup).toContain("2 running tasks");
+  });
+
+  it("leaves the Working row unchanged when no background work is in flight", () => {
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        isWorking
+        activeTurnStartedAt={new Date(Date.now() - 60_000).toISOString()}
+        backgroundTaskLabel={null}
+        timelineEntries={[]}
+      />,
+    );
+
+    expect(markup).toContain("Working");
+    expect(markup).not.toContain("running task");
+  });
+
   it("surfaces This turn on the Working row during a healthy turn", () => {
     const markup = renderToStaticMarkup(
       <MessagesTimeline

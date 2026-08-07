@@ -154,7 +154,7 @@ import PlanSidebar from "./PlanSidebar";
 import { ActivityPanel } from "./ActivityPanel";
 import { AgentsPanel } from "./AgentsPanel";
 import { agentRunsForTurn, deriveAgentRuns, latestMessageTurnId } from "../agentRuns";
-import { deriveBackgroundTasks } from "../backgroundTasks";
+import { deriveBackgroundTasks, summarizeBackgroundTasks } from "../backgroundTasks";
 import { isThisTurnCardVisible, ThisTurnCard } from "./ThisTurnCard";
 import ThreadTerminalDrawer from "./ThreadTerminalDrawer";
 import { deriveThreadActivityViewModel } from "../threadActivityViewModel";
@@ -1559,6 +1559,15 @@ function ChatViewContent(props: ChatViewProps) {
     () => deriveBackgroundTasks(activeThread?.activities ?? []),
     [activeThread?.activities],
   );
+  // The Agents panel already rosters these, but it has to be opened to be
+  // read. A turn waiting on backgrounded work looks exactly like a stalled
+  // one in the transcript, so the running count belongs on the Working row.
+  // Only the running count: a failed background task is not why the turn is
+  // quiet, and the roster is the right place to go read about it.
+  const backgroundTaskLabel = useMemo(() => {
+    const summary = summarizeBackgroundTasks(backgroundTasks);
+    return summary.runningCount > 0 ? summary.label : null;
+  }, [backgroundTasks]);
   const threadError = isServerThread
     ? resolveThreadError({
         local: localServerErrorsByThreadKey[routeThreadKey],
@@ -6171,6 +6180,7 @@ function ChatViewContent(props: ChatViewProps) {
                 activeTurnInProgress={isWorking || !latestTurnSettled}
                 activeTurnStartedAt={activeWorkStartedAt}
                 lastStreamActivityAt={lastStreamActivityAt}
+                backgroundTaskLabel={backgroundTaskLabel}
                 listRef={legendListRef}
                 timelineEntries={timelineEntries}
                 latestTurn={activeLatestTurn}
