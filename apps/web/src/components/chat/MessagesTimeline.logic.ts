@@ -276,6 +276,19 @@ export type MessagesTimelineRow =
       proposedPlan: ProposedPlan;
     }
   | {
+      /**
+       * A provider handoff, marked inline at the point in the transcript where
+       * it happened. The thread changes voice partway through; without this the
+       * shift is baffling on a re-read and there is nothing to point at when
+       * answer quality changes. A top-of-view banner could not carry that,
+       * because the one thing that matters is *where* (SOU-566).
+       */
+      kind: "provider-handoff";
+      id: string;
+      createdAt: string;
+      label: string;
+    }
+  | {
       kind: "working";
       id: string;
       createdAt: string | null;
@@ -706,6 +719,24 @@ export function deriveMessagesTimelineRows(input: {
       });
     }
 
+    // Before the collapse check on purpose. A handoff inside a folded turn
+    // must still show: this is a thread-level structural marker, not turn
+    // content, and hiding it behind a fold would put us back where the
+    // dismissable banner was — a record of which agent ran that the reader
+    // cannot find later.
+    if (
+      timelineEntry.kind === "work" &&
+      timelineEntry.entry.sourceActivityKind === "provider.handoff"
+    ) {
+      nextRows.push({
+        kind: "provider-handoff",
+        id: `provider-handoff:${timelineEntry.id}`,
+        createdAt: timelineEntry.createdAt,
+        label: timelineEntry.entry.label,
+      });
+      continue;
+    }
+
     if (collapsedEntryIds.has(timelineEntry.id)) {
       continue;
     }
@@ -718,6 +749,7 @@ export function deriveMessagesTimelineRows(input: {
         if (
           !nextEntry ||
           nextEntry.kind !== "work" ||
+          nextEntry.entry.sourceActivityKind === "provider.handoff" ||
           collapsedEntryIds.has(nextEntry.id) ||
           foldsByAnchorEntryId.has(nextEntry.id)
         ) {
@@ -919,6 +951,11 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
     case "turn-fold": {
       const bf = b as typeof a;
       return a.createdAt === bf.createdAt && a.label === bf.label && a.expanded === bf.expanded;
+    }
+
+    case "provider-handoff": {
+      const bh = b as typeof a;
+      return a.createdAt === bh.createdAt && a.label === bh.label;
     }
 
     case "proposed-plan":
