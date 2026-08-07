@@ -1731,6 +1731,53 @@ describe("computeStableMessagesTimelineRows", () => {
     });
   });
 
+  it("marks a provider handoff inline instead of burying it in a work group", () => {
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "w1",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:01Z",
+          entry: {
+            id: "w1",
+            createdAt: "2026-01-01T00:00:01Z",
+            label: "Reading files",
+            tone: "tool",
+          },
+        },
+        {
+          id: "w2",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:02Z",
+          entry: {
+            id: "w2",
+            createdAt: "2026-01-01T00:00:02Z",
+            label: "Switched provider from grok to cursor",
+            tone: "info",
+            sourceActivityKind: "provider.handoff",
+          },
+        },
+      ],
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    // Its own row, at the point in the transcript where the switch happened.
+    expect(rows.find((row) => row.kind === "provider-handoff")).toMatchObject({
+      kind: "provider-handoff",
+      createdAt: "2026-01-01T00:00:02Z",
+      label: "Switched provider from grok to cursor",
+    });
+    // And never folded into the preceding work group, where a collapse toggle
+    // could hide the one thing that explains the change of voice.
+    for (const row of rows) {
+      if (row.kind !== "work") continue;
+      expect(row.groupedEntries.some((entry) => entry.id === "w2")).toBe(false);
+    }
+  });
+
   it("reports live tool status on the Working row, not the user's interjection", () => {
     // A turn carrying a second user message used to flip the Working row to
     // "Following up: <that message>" for the rest of the turn, hiding what the

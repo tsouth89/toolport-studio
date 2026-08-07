@@ -896,11 +896,37 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
       {row.kind === "message" && row.message.role === "assistant" ? (
         <AssistantTimelineRow row={row} />
       ) : null}
+      {row.kind === "provider-handoff" ? <ProviderHandoffTimelineRow row={row} /> : null}
       {row.kind === "proposed-plan" ? <ProposedPlanTimelineRow row={row} /> : null}
       {row.kind === "working" ? <WorkingTimelineRow row={row} /> : null}
     </div>
   );
 });
+
+/**
+ * Provider handoff, marked where it happened in the transcript.
+ *
+ * A rule with the label centred on it: unmissable on a scroll-back because it
+ * spans the column, but quiet enough that it does not compete with the
+ * conversation. This is the "where" that a top-of-view banner could never
+ * carry, and unlike that banner it is part of the thread, so it survives a
+ * reload and is still there weeks later (SOU-566).
+ */
+function ProviderHandoffTimelineRow({
+  row,
+}: {
+  row: Extract<TimelineRow, { kind: "provider-handoff" }>;
+}) {
+  return (
+    <div className="flex items-center gap-3 py-2" data-provider-handoff-row="true">
+      <span aria-hidden className="h-px flex-1 bg-border" />
+      <span className="shrink-0 text-[11px] font-semibold tracking-wide text-muted-foreground">
+        {row.label}
+      </span>
+      <span aria-hidden className="h-px flex-1 bg-border" />
+    </div>
+  );
+}
 
 function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
