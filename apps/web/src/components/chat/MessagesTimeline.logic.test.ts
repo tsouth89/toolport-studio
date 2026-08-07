@@ -3,7 +3,6 @@ import {
   collapseConsecutiveTimelineWorkEntries,
   computeStableMessagesTimelineRows,
   computeMessageDurationStart,
-  deriveActiveWorkingFollowUpIntent,
   deriveActiveWorkingToolLabel,
   deriveActiveWorkingToolStatus,
   deriveMessagesTimelineRows,
@@ -1732,43 +1731,10 @@ describe("computeStableMessagesTimelineRows", () => {
     });
   });
 
-  it("surfaces mid-turn follow-up intent on the Working row over a ghost tool", () => {
-    expect(
-      deriveActiveWorkingFollowUpIntent({
-        timelineEntries: [
-          {
-            id: "u1",
-            kind: "message",
-            createdAt: "2026-01-01T00:00:01Z",
-            message: {
-              id: "u1" as never,
-              role: "user",
-              text: "proceed as recommended",
-              turnId: null,
-              createdAt: "2026-01-01T00:00:01Z",
-              updatedAt: "2026-01-01T00:00:01Z",
-              streaming: false,
-            },
-          },
-          {
-            id: "u2",
-            kind: "message",
-            createdAt: "2026-01-01T00:00:40Z",
-            message: {
-              id: "u2" as never,
-              role: "user",
-              text: "save it as a draft release before you publish",
-              turnId: "turn-1" as never,
-              createdAt: "2026-01-01T00:00:40Z",
-              updatedAt: "2026-01-01T00:00:40Z",
-              streaming: false,
-            },
-          },
-        ],
-        activeTurnStartedAt: "2026-01-01T00:00:00Z",
-      }),
-    ).toBe("save it as a draft release before you publish");
-
+  it("reports live tool status on the Working row, not the user's interjection", () => {
+    // A turn carrying a second user message used to flip the Working row to
+    // "Following up: <that message>" for the rest of the turn, hiding what the
+    // agent was actually doing. The interjection is already in the transcript.
     const rows = deriveMessagesTimelineRows({
       timelineEntries: [
         {
@@ -1828,8 +1794,7 @@ describe("computeStableMessagesTimelineRows", () => {
 
     expect(rows.find((row) => row.kind === "working")).toMatchObject({
       kind: "working",
-      activeToolLabel: "Following up",
-      activeToolDetail: "save it as a draft release before you publish · Running a tool",
+      activeToolLabel: "Running a tool",
     });
   });
 });
