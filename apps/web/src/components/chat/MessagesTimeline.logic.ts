@@ -719,10 +719,11 @@ export function deriveMessagesTimelineRows(input: {
       });
     }
 
-    if (collapsedEntryIds.has(timelineEntry.id)) {
-      continue;
-    }
-
+    // Before the collapse check on purpose. A handoff inside a folded turn
+    // must still show: this is a thread-level structural marker, not turn
+    // content, and hiding it behind a fold would put us back where the
+    // dismissable banner was — a record of which agent ran that the reader
+    // cannot find later.
     if (
       timelineEntry.kind === "work" &&
       timelineEntry.entry.sourceActivityKind === "provider.handoff"
@@ -733,6 +734,10 @@ export function deriveMessagesTimelineRows(input: {
         createdAt: timelineEntry.createdAt,
         label: timelineEntry.entry.label,
       });
+      continue;
+    }
+
+    if (collapsedEntryIds.has(timelineEntry.id)) {
       continue;
     }
 
