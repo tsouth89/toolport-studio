@@ -1287,12 +1287,26 @@ export default function Sidebar() {
   }, []);
 
   const clearSidebarDragState = useCallback(() => {
-    listAutoAnimateControllerRef.current?.enable();
+    // Deliberately does not re-enable here. Clearing this state removes the
+    // empty shelves and "Drop session here" hints on the next render; with
+    // auto-animate already back on, those removals get FLIP-animated and the
+    // list visibly jumps at the moment the drag finishes. The effect below
+    // re-enables after that render has been observed instead.
     setDraggingProjectKey(null);
     setDraggingThreadKey(null);
     setDragOverProjectKey(null);
     setDragOverKind(null);
   }, []);
+
+  // Re-enable once the drag-clear render has already been observed. Auto-animate
+  // sees DOM mutations through a MutationObserver, whose callback is a microtask
+  // that runs before React flushes passive effects — so by the time this runs,
+  // the hint removals have been taken in while still disabled and will not be
+  // animated.
+  useEffect(() => {
+    if (draggingThreadKey !== null || draggingProjectKey !== null) return;
+    listAutoAnimateControllerRef.current?.enable();
+  }, [draggingProjectKey, draggingThreadKey]);
 
   const handleProjectGroupDragStart = useCallback(
     (event: ReactDragEvent, projectKey: string) => {

@@ -1282,6 +1282,22 @@ const make = Effect.gen(function* () {
       return;
     }
 
+    // Re-check immediately before dispatch, not only on entry.
+    //
+    // Everything between the two checks can take real time — ensuring a
+    // session spawns a provider child, and the handoff path restarts one. A
+    // Stop pressed during that window was appended after the first check read
+    // the log, so only this second read sees it. Without it the user watches
+    // Stop do nothing while a turn they cancelled seconds ago starts up.
+    if (yield* wasStoppedAfterRequest(event.payload.threadId, event.sequence)) {
+      yield* Effect.logDebug("dropping turn start superseded by a stop during preparation", {
+        threadId: event.payload.threadId,
+        messageId: event.payload.messageId,
+        sequence: event.sequence,
+      });
+      return;
+    }
+
     // Do not reuse sessionOperationTimeout here. Grok/Cursor sendTurn blocks
     // until the prompt finishes; a 2m "start" timeout interrupts live turns.
     const sendTurnEffect = providerService.sendTurn(sendTurnRequest.value);
