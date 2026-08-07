@@ -480,9 +480,9 @@ function resultErrorsText(result: SDKResultMessage): string {
 function resultStopReason(result: SDKResultMessage): string | undefined {
   const field = (result as { readonly stop_reason?: unknown }).stop_reason;
   if (typeof field === "string" && field.length > 0) {
-    return field;
+    return field.toLowerCase();
   }
-  return /stop_reason=([a-z_]+)/i.exec(resultErrorsText(result))?.[1];
+  return /\bstop_reason=([a-z_]+)/i.exec(resultErrorsText(result))?.[1]?.toLowerCase();
 }
 
 function isInterruptedResult(result: SDKResultMessage): boolean {

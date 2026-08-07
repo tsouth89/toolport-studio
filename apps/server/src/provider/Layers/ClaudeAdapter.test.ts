@@ -1573,8 +1573,11 @@ describe("ClaudeAdapterLive", () => {
         type: "result",
         subtype: "error_during_execution",
         is_error: false,
-        errors: ["[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=tool_use"],
-        stop_reason: "tool_use",
+        // No structured stop_reason field: this exercises the prose fallback,
+        // which shipped broken once already (a literal backspace in place of
+        // the  word boundary meant it could never match) and which the
+        // structured-field test could not have caught.
+        errors: ["[ede_diagnostic] result_type=user last_content_type=n/a STOP_REASON=Tool_Use"],
         session_id: "sdk-session-tool-use-result",
         uuid: "result-tool-use",
       } as unknown as SDKMessage);
