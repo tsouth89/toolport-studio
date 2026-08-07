@@ -470,7 +470,37 @@ function resultErrorsText(result: SDKResultMessage): string {
     : "";
 }
 
+/**
+ * `stop_reason` off a result message.
+ *
+ * Absent from the SDK's `SDKResultMessage` union but present on the wire, and
+ * echoed into the parting diagnostic when it is there, so read the field first
+ * and fall back to the prose.
+ */
+function resultStopReason(result: SDKResultMessage): string | undefined {
+  const field = (result as { readonly stop_reason?: unknown }).stop_reason;
+  if (typeof field === "string" && field.length > 0) {
+    return field;
+  }
+  return /stop_reason=([a-z_]+)/i.exec(resultErrorsText(result))?.[1];
+}
+
 function isInterruptedResult(result: SDKResultMessage): boolean {
+  // A turn that ended with a tool call still outstanding was cut off, not
+  // failed. Claude says so in `stop_reason`, but the checks below can only
+  // recognise an interruption by finding "interrupt" or "aborted" in the error
+  // prose, and the diagnostic this shape carries —
+  //   [ede_diagnostic] result_type=user last_content_type=n/a stop_reason=tool_use
+  // — contains neither, so it used to fall through to "failed".
+  //
+  // That was invisible while Studio had already force-settled the turn, since
+  // handleResultMessage suppresses the error in that case. It is not invisible
+  // when the turn is still live: a user who restarts to escape a stalled turn
+  // gets this diagnostic presented as a turn failure (SOU-573).
+  if (resultStopReason(result) === "tool_use") {
+    return true;
+  }
+
   const errors = resultErrorsText(result);
   if (errors.includes("interrupt")) {
     return true;

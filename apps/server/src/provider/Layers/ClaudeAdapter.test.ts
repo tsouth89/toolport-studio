@@ -1544,6 +1544,58 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("does not report a live turn as failed when Claude stops with a tool call open", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+      const collector = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          runtimeEvents.push(event);
+        }),
+      ).pipe(Effect.forkScoped);
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "hello",
+        attachments: [],
+      });
+
+      // No interruptTurn here: the turn is still live, which is the case the
+      // existing suppression in handleResultMessage does not cover. A user who
+      // restarts to escape a stalled turn lands on exactly this path.
+      harness.query.emit({
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: false,
+        errors: ["[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=tool_use"],
+        stop_reason: "tool_use",
+        session_id: "sdk-session-tool-use-result",
+        uuid: "result-tool-use",
+      } as unknown as SDKMessage);
+
+      yield* Effect.yieldNow;
+      yield* Fiber.interrupt(collector).pipe(Effect.ignore);
+
+      // Cut off with a tool call outstanding is an abandoned turn, not a failed
+      // one. No red banner.
+      assert.equal(
+        runtimeEvents.some((event) => event.type === "runtime.error"),
+        false,
+      );
+      const completed = runtimeEvents.find((event) => event.type === "turn.completed");
+      assert.equal(completed?.type === "turn.completed" && completed.payload.state, "interrupted");
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("force-settles the turn on interrupt even when the SDK stream stays open", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
