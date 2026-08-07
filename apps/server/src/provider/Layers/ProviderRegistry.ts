@@ -213,6 +213,40 @@ export const resolveIndeterminateSnapshot = (input: {
   };
 };
 
+/** A failure count plus the observation it was counted from. */
+export interface IndeterminateStreak {
+  readonly consecutiveFailures: number;
+  readonly checkedAt: string;
+}
+
+/**
+ * The failure count to feed {@link resolveIndeterminateSnapshot} for an
+ * incoming observation.
+ *
+ * One probe result can reach the registry more than once: at boot the live
+ * source is subscribed and then read directly, and a result that lands between
+ * those two steps is delivered by both. Each delivery used to advance the
+ * streak, so a single probe timeout counted as two consecutive failures in the
+ * same millisecond, blew the whole {@link INDETERMINATE_TOLERANCE} budget, and
+ * reported a provider as broken that one blip should have carried through.
+ *
+ * `checkedAt` identifies the observation, so a repeat rewinds by one and the
+ * increment inside `resolveIndeterminateSnapshot` reproduces the count instead
+ * of advancing it. Genuine consecutive probes carry distinct `checkedAt`
+ * values and still accumulate.
+ */
+export const priorFailuresForObservation = (
+  streak: IndeterminateStreak | undefined,
+  checkedAt: string,
+): number => {
+  if (streak === undefined) {
+    return 0;
+  }
+  return streak.checkedAt === checkedAt
+    ? Math.max(0, streak.consecutiveFailures - 1)
+    : streak.consecutiveFailures;
+};
+
 export const mergeProviderSnapshots = (
   previousProviders: ReadonlyArray<ServerProvider>,
   nextProviders: ReadonlyArray<ServerProvider>,
@@ -384,9 +418,12 @@ export const ProviderRegistryLive = Layer.effect(
     // determinate result, and consulted by `resolveIndeterminateSnapshot` to
     // decide when a run of failures stops being absorbed. Deliberately not
     // persisted: a fresh process has not failed to check anything yet.
-    const indeterminateStreaksRef = yield* Ref.make<ReadonlyMap<ProviderInstanceId, number>>(
-      new Map(),
-    );
+    // Carries `checkedAt` alongside the count so the same probe result
+    // republished by more than one path is counted once. See
+    // {@link priorFailuresForObservation}.
+    const indeterminateStreaksRef = yield* Ref.make<
+      ReadonlyMap<ProviderInstanceId, IndeterminateStreak>
+    >(new Map());
 
     // Live-source registry — the dynamic counterpart to the boot-time
     // `bootSources`. Keyed by `instanceId`; the stored `ProviderInstance`
@@ -495,13 +532,16 @@ export const ProviderRegistryLive = Layer.effect(
           const outcome = resolveIndeterminateSnapshot({
             previous: previousByKey.get(key),
             next: provider,
-            consecutiveFailures: streaks.get(key) ?? 0,
+            consecutiveFailures: priorFailuresForObservation(streaks.get(key), provider.checkedAt),
             now,
           });
           if (outcome.consecutiveFailures === 0) {
             nextStreaks.delete(key);
           } else {
-            nextStreaks.set(key, outcome.consecutiveFailures);
+            nextStreaks.set(key, {
+              consecutiveFailures: outcome.consecutiveFailures,
+              checkedAt: provider.checkedAt,
+            });
           }
           if (provider.indeterminate === true) {
             notices.push({
