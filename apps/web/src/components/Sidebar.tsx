@@ -1,4 +1,4 @@
-import { autoAnimate } from "@formkit/auto-animate";
+import { autoAnimate, type AnimationController } from "@formkit/auto-animate";
 import { useAtomValue } from "@effect/atom-react";
 import type { EnvironmentThreadShell } from "@toolport-studio/client-runtime/state/models";
 import {
@@ -1261,24 +1261,55 @@ export default function Sidebar() {
     return keys;
   }, [projectOrder, threadListProjectGroups]);
 
+  const listAutoAnimateControllerRef = useRef<AnimationController | null>(null);
+
+  /**
+   * Auto-animate has to be off for the duration of a drag, and it has to be
+   * off *before* the drag-start render mutates the list.
+   *
+   * Starting a drag changes what this list renders: empty unpinned shelves
+   * stop being hidden and every empty folder grows a "Drop session here" hint.
+   * Auto-animate reacts by FLIP-transforming the rows those insertions pushed
+   * down, and a browser cancels an in-flight HTML5 drag when its source node
+   * is transformed out from under the pointer. That is why the failure looked
+   * selective: Ungrouped renders after the folders, so its rows always shifted
+   * and never survived pickup, while a row in a folder above the insertions
+   * never moved and dragged fine.
+   *
+   * Called synchronously from the drag-start handlers rather than from an
+   * effect. Auto-animate observes DOM mutations through a MutationObserver,
+   * whose callback is a microtask that runs before React flushes passive
+   * effects — disabling in `useEffect` would land after the transform was
+   * already queued and the drag would still die.
+   */
+  const suspendListAutoAnimate = useCallback(() => {
+    listAutoAnimateControllerRef.current?.disable();
+  }, []);
+
   const clearSidebarDragState = useCallback(() => {
+    listAutoAnimateControllerRef.current?.enable();
     setDraggingProjectKey(null);
     setDraggingThreadKey(null);
     setDragOverProjectKey(null);
     setDragOverKind(null);
   }, []);
 
-  const handleProjectGroupDragStart = useCallback((event: ReactDragEvent, projectKey: string) => {
-    event.dataTransfer.effectAllowed = "move";
-    event.dataTransfer.setData(SIDEBAR_DND_PROJECT_MIME, projectKey);
-    // Fallback for environments that only expose text/plain on drop.
-    event.dataTransfer.setData("text/plain", projectKey);
-    setDraggingProjectKey(projectKey);
-    setDraggingThreadKey(null);
-  }, []);
+  const handleProjectGroupDragStart = useCallback(
+    (event: ReactDragEvent, projectKey: string) => {
+      suspendListAutoAnimate();
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData(SIDEBAR_DND_PROJECT_MIME, projectKey);
+      // Fallback for environments that only expose text/plain on drop.
+      event.dataTransfer.setData("text/plain", projectKey);
+      setDraggingProjectKey(projectKey);
+      setDraggingThreadKey(null);
+    },
+    [suspendListAutoAnimate],
+  );
 
   const handleThreadRowDragStart = useCallback(
     (event: ReactDragEvent, thread: SidebarThreadSummary) => {
+      suspendListAutoAnimate();
       event.dataTransfer.effectAllowed = "move";
       const payload = encodeSidebarThreadDragPayload({
         environmentId: thread.environmentId,
@@ -1291,7 +1322,7 @@ export default function Sidebar() {
       setDraggingThreadKey(scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)));
       setDraggingProjectKey(null);
     },
-    [],
+    [suspendListAutoAnimate],
   );
 
   const handleThreadRowDragEnd = useCallback(() => {
@@ -1999,8 +2030,17 @@ export default function Sidebar() {
   }, [shouldShowJumpHintsNow]);
 
   const attachListAutoAnimateRef = useCallback((node: HTMLUListElement | null) => {
+    // Tear the previous instance down on detach. autoAnimate keeps a
+    // MutationObserver on the node it was given; dropping the reference alone
+    // leaves that observer alive on a detached node, and a remount then adds a
+    // second one alongside the orphan.
+    listAutoAnimateControllerRef.current?.destroy?.();
+    listAutoAnimateControllerRef.current = null;
     if (!node) return;
-    autoAnimate(node, { duration: 150, easing: "ease-out" });
+    listAutoAnimateControllerRef.current = autoAnimate(node, {
+      duration: 150,
+      easing: "ease-out",
+    });
   }, []);
 
   const handleNewThreadClick = useCallback(() => {
