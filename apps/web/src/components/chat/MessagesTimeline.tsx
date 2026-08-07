@@ -148,6 +148,12 @@ interface TimelineRowActivityState {
   latestTurnId: TurnId | null;
   /** Last client-observed stream/orchestration activity for the running turn. */
   lastStreamActivityAt: string | null;
+  /**
+   * In-flight backgrounded work, e.g. "1 running task". Null when there is
+   * none. A turn waiting on a background task is silent in exactly the way a
+   * stalled one is, so without this the two are indistinguishable.
+   */
+  backgroundTaskLabel: string | null;
   onInterrupt: (() => void) | null;
   /** Open the Activity right panel (Working-row deep link). */
   onOpenActivity: (() => void) | null;
@@ -172,6 +178,8 @@ interface MessagesTimelineProps {
   activeTurnStartedAt: string | null;
   /** Latest orchestration/stream activity timestamp while a turn is running. */
   lastStreamActivityAt?: string | null;
+  /** In-flight backgrounded work, surfaced on the Working row. */
+  backgroundTaskLabel?: string | null;
   listRef: React.RefObject<LegendListRef | null>;
   timelineEntries: ReturnType<typeof deriveTimelineEntries>;
   latestTurn: TimelineLatestTurn | null;
@@ -214,6 +222,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   activeTurnInProgress,
   activeTurnStartedAt,
   lastStreamActivityAt = null,
+  backgroundTaskLabel = null,
   listRef,
   timelineEntries,
   latestTurn,
@@ -476,12 +485,14 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       activeTurnInProgress,
       latestTurnId: latestTurn?.turnId ?? null,
       lastStreamActivityAt,
+      backgroundTaskLabel,
       onInterrupt: onInterrupt ?? null,
       onOpenActivity: onOpenActivity ?? null,
       onOpenAgents: onOpenAgents ?? null,
     }),
     [
       activeTurnInProgress,
+      backgroundTaskLabel,
       isRevertingCheckpoint,
       isWorking,
       lastStreamActivityAt,
@@ -1176,6 +1187,10 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
   const toolTooltip = row.activeToolTooltip?.trim() || toolDetail;
   const toolTitle = [toolLabel, toolTooltip].filter(Boolean).join(" — ") || undefined;
   const onOpenActivity = activity.onOpenActivity;
+  // Backgrounded work is the most common honest reason a live turn is silent.
+  // Naming it here is the difference between "watching CI" and "hung" — which
+  // previously read identically, and only the Agents panel could tell apart.
+  const backgroundTaskLabel = activity.backgroundTaskLabel?.trim() || null;
   // Wait notice only — Stop lives on the composer (queue/send). Silence is
   // usually model think or a long tool, not a hang recovery moment.
   // Always offer This turn while live so the Codex-style card is one click
@@ -1262,6 +1277,14 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
             </>
           ) : null}
         </span>
+        {backgroundTaskLabel ? (
+          <>
+            <span className="text-muted-foreground/50" aria-hidden="true">
+              ·
+            </span>
+            <span className="font-medium text-foreground/85">{backgroundTaskLabel}</span>
+          </>
+        ) : null}
         {quiet.isQuiet && quiet.notice ? (
           <>
             <span className="text-muted-foreground/50" aria-hidden="true">
