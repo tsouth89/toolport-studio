@@ -1282,7 +1282,9 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
             <span className="text-muted-foreground/50" aria-hidden="true">
               ·
             </span>
-            <span className="font-medium text-foreground/85">{backgroundTaskLabel}</span>
+            <span className="whitespace-nowrap font-medium text-foreground/85">
+              {backgroundTaskLabel}
+            </span>
           </>
         ) : null}
         {quiet.isQuiet && quiet.notice ? (
