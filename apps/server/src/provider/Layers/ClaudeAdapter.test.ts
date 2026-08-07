@@ -1544,6 +1544,110 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("does not report a live turn as failed when Claude stops with a tool call open", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+      const collector = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          runtimeEvents.push(event);
+        }),
+      ).pipe(Effect.forkScoped);
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "hello",
+        attachments: [],
+      });
+
+      // No interruptTurn here: the turn is still live, which is the case the
+      // existing suppression in handleResultMessage does not cover. A user who
+      // restarts to escape a stalled turn lands on exactly this path.
+      harness.query.emit({
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: false,
+        // No structured stop_reason field: this exercises the prose fallback,
+        // which shipped broken once already (a literal backspace in place of
+        // the  word boundary meant it could never match) and which the
+        // structured-field test could not have caught.
+        errors: ["[ede_diagnostic] result_type=user last_content_type=n/a STOP_REASON=Tool_Use"],
+        session_id: "sdk-session-tool-use-result",
+        uuid: "result-tool-use",
+      } as unknown as SDKMessage);
+
+      yield* Effect.yieldNow;
+      yield* Fiber.interrupt(collector).pipe(Effect.ignore);
+
+      // Cut off with a tool call outstanding is an abandoned turn, not a failed
+      // one. No red banner.
+      assert.equal(
+        runtimeEvents.some((event) => event.type === "runtime.error"),
+        false,
+      );
+      const completed = runtimeEvents.find((event) => event.type === "turn.completed");
+      assert.equal(completed?.type === "turn.completed" && completed.payload.state, "interrupted");
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("still reports a genuine failure that happened while a tool was in flight", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+      const collector = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          runtimeEvents.push(event);
+        }),
+      ).pipe(Effect.forkScoped);
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "hello",
+        attachments: [],
+      });
+
+      // Same stop_reason as an abandoned turn, but is_error marks it a real
+      // failure. Reclassifying this as an interruption would swallow the error.
+      harness.query.emit({
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+        errors: ["tool execution blew up stop_reason=tool_use"],
+        stop_reason: "tool_use",
+        session_id: "sdk-session-tool-use-failure",
+        uuid: "result-tool-use-failure",
+      } as unknown as SDKMessage);
+
+      yield* Effect.yieldNow;
+      yield* Fiber.interrupt(collector).pipe(Effect.ignore);
+
+      assert.equal(
+        runtimeEvents.some((event) => event.type === "runtime.error"),
+        true,
+      );
+      const completed = runtimeEvents.find((event) => event.type === "turn.completed");
+      assert.equal(completed?.type === "turn.completed" && completed.payload.state, "failed");
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("force-settles the turn on interrupt even when the SDK stream stays open", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
