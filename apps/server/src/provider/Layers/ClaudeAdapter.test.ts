@@ -1599,6 +1599,55 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("still reports a genuine failure that happened while a tool was in flight", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+      const collector = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          runtimeEvents.push(event);
+        }),
+      ).pipe(Effect.forkScoped);
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "hello",
+        attachments: [],
+      });
+
+      // Same stop_reason as an abandoned turn, but is_error marks it a real
+      // failure. Reclassifying this as an interruption would swallow the error.
+      harness.query.emit({
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+        errors: ["tool execution blew up stop_reason=tool_use"],
+        stop_reason: "tool_use",
+        session_id: "sdk-session-tool-use-failure",
+        uuid: "result-tool-use-failure",
+      } as unknown as SDKMessage);
+
+      yield* Effect.yieldNow;
+      yield* Fiber.interrupt(collector).pipe(Effect.ignore);
+
+      assert.equal(
+        runtimeEvents.some((event) => event.type === "runtime.error"),
+        true,
+      );
+      const completed = runtimeEvents.find((event) => event.type === "turn.completed");
+      assert.equal(completed?.type === "turn.completed" && completed.payload.state, "failed");
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("force-settles the turn on interrupt even when the SDK stream stays open", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

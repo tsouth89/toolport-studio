@@ -497,7 +497,11 @@ function isInterruptedResult(result: SDKResultMessage): boolean {
   // handleResultMessage suppresses the error in that case. It is not invisible
   // when the turn is still live: a user who restarts to escape a stalled turn
   // gets this diagnostic presented as a turn failure (SOU-573).
-  if (resultStopReason(result) === "tool_use") {
+  // `is_error === false` matters: a result that genuinely failed while a tool
+  // was in flight also carries `stop_reason=tool_use`, and calling that an
+  // interruption would swallow a real error. Same guard the abort branch below
+  // already uses.
+  if (result.is_error === false && resultStopReason(result) === "tool_use") {
     return true;
   }
 
