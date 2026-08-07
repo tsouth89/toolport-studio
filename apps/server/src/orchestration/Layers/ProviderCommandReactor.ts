@@ -1290,6 +1290,28 @@ const make = Effect.gen(function* () {
       modelSelectionInstanceId: thread.modelSelection.instanceId,
       sessionProvider: thread.session?.providerName ?? undefined,
     });
+    // Forked, so the turn lane is released once the turn is *dispatched*
+    // rather than held until it settles.
+    //
+    // ACP `sendTurn` blocks for the whole prompt. Awaiting it here meant the
+    // thread's turn lane was occupied for minutes, and a mid-turn message —
+    // which arrives as another `thread.turn-start-requested` — could not be
+    // dequeued until the turn it was meant to steer had already finished.
+    // That is why steering "did nothing until the turn ended" on Cursor
+    // (SOU-561) and looked dropped entirely on Grok (SOU-562). The adapters
+    // already implement steering correctly (`promptConcurrent` /
+    // `preemptActivePrompt`); they were simply never reached in time.
+    //
+    // Everything the lane actually needs to serialize still happens above and
+    // is still awaited: session ensure, the continuity/handoff decision, and
+    // request construction. Only the long-running prompt escapes. So two turn
+    // starts can no longer both bootstrap a session (SOU-519) — by the time
+    // the second is dequeued the first has already bound one — while a second
+    // prompt reaching a live session is exactly what a steer is.
+    //
+    // The delivery is marked complete on dispatch rather than on settle. That
+    // is deliberate: a crash mid-turn now drops the turn instead of replaying
+    // it, and replaying a prompt whose tools already ran is the worse failure.
     yield* (
       turnOperationTimeout === null
         ? sendTurnEffect
@@ -1299,7 +1321,7 @@ const make = Effect.gen(function* () {
             method: "turn.start",
             operation: "Provider turn",
           })
-    ).pipe(Effect.catchCause(recoverTurnStartFailure));
+    ).pipe(Effect.catchCause(recoverTurnStartFailure), Effect.forkScoped);
   });
 
   /**

@@ -1998,6 +1998,66 @@ describe("ProviderCommandReactor", () => {
     });
   });
 
+  it("delivers a mid-turn message while the first turn is still running (SOU-561/562)", async () => {
+    // A steer arrives as another thread.turn-start-requested. While the turn
+    // lane was held for the whole prompt it could not be dequeued until the
+    // turn it was meant to steer had already finished, which is exactly what
+    // "did nothing until the turn ended" looked like. The adapters implement
+    // steering; they were never reached in time.
+    const turnGate = Effect.runSync(Deferred.make<void>());
+    const harness = await createHarness({
+      sendTurnEffect: () =>
+        Deferred.await(turnGate).pipe(
+          Effect.as({ threadId: ThreadId.make("thread-1"), turnId: asTurnId("turn-1") }),
+        ),
+    });
+
+    try {
+      await runtime!.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-turn-start-1"),
+          threadId: ThreadId.make("thread-1"),
+          message: {
+            messageId: asMessageId("user-message-1"),
+            role: "user",
+            text: "long running work",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "full-access",
+          createdAt: "2026-01-01T00:00:00.000Z",
+        }),
+      );
+      await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+
+      // The steer, sent while the first prompt is still in flight.
+      await runtime!.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-turn-start-2"),
+          threadId: ThreadId.make("thread-1"),
+          message: {
+            messageId: asMessageId("user-message-2"),
+            role: "user",
+            text: "actually focus on the tests",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "full-access",
+          createdAt: "2026-01-01T00:00:04.000Z",
+        }),
+      );
+
+      // Reaches the provider without the first turn having settled. The
+      // adapter decides steer-vs-queue from there; the reactor's job is only
+      // to stop swallowing it.
+      await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+    } finally {
+      await Effect.runPromise(Deferred.succeed(turnGate, undefined));
+    }
+  });
+
   it("dispatches Stop while the turn it targets is still in flight (SOU-569)", async () => {
     // Turn execution holds its lane for the whole provider turn. Stop rides a
     // separate control lane so it can actually interrupt; when both shared one
