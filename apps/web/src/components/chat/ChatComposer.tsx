@@ -898,9 +898,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     // A thread locked to a driver kind is *expected* to ignore a pick from a
     // different kind. That is the continuation rule, not a silent swap.
     if (lockedProvider && requestedEntry.driverKind !== lockedProvider) return null;
+    // Without a resolved entry there is no instance to name, and the composer
+    // already renders "No provider available" for that state. Naming a raw
+    // instance id here would be worse than saying nothing.
+    if (!selectedProviderEntry) return null;
     return {
       requested: requestedEntry.displayName,
-      running: selectedProviderEntry?.displayName ?? String(selectedInstanceId),
+      running: selectedProviderEntry.displayName,
       reason: requestedEntry.enabled ? ("unavailable" as const) : ("disabled" as const),
     };
   }, [

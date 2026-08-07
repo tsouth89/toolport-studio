@@ -6186,7 +6186,12 @@ function ChatViewContent(props: ChatViewProps) {
             className="mx-auto flex w-full max-w-[720px] items-center gap-2 rounded-md bg-sky-50 px-3 py-2 text-sm text-sky-700 dark:bg-sky-950 dark:text-sky-300"
           >
             <span className="shrink-0 font-medium">Provider changed</span>
-            <span className="min-w-0 flex-1 truncate text-muted-foreground">
+            <span
+              className="min-w-0 flex-1 truncate text-muted-foreground"
+              title={`${providerChangeNotice.from} → ${
+                activeThread?.session?.providerName ?? activeThread?.modelSelection.model ?? ""
+              }`}
+            >
               <span className="font-medium text-foreground">{providerChangeNotice.from}</span> →{" "}
               <span className="font-medium text-foreground">
                 {activeThread?.session?.providerName ?? activeThread?.modelSelection.model}
@@ -6195,7 +6200,12 @@ function ChatViewContent(props: ChatViewProps) {
             <button
               type="button"
               aria-label="Dismiss provider change notice"
-              onClick={dismissProviderChangeNotice}
+              onClick={(event) => {
+                // The banner sits inside the chat content area, which has its
+                // own click handlers for focus and selection.
+                event.stopPropagation();
+                dismissProviderChangeNotice();
+              }}
               className="shrink-0 rounded-sm p-0.5 text-sky-700/70 transition-colors hover:text-sky-700 focus-visible:ring-2 focus-visible:ring-ring dark:text-sky-300/70 dark:hover:text-sky-300"
             >
               <XIcon className="size-3.5" />
