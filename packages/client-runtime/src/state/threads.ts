@@ -290,25 +290,46 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     Effect.forkScoped,
   );
 
+  const checkForSilence = Effect.gen(function* () {
+    const now = yield* Clock.currentTimeMillis;
+    // Read-and-restamp atomically. Polling and applyItem race otherwise: an
+    // item landing between the read and the write would be overwritten by an
+    // older timestamp and still trigger a reconcile the thread did not need.
+    const silentForMs = yield* Ref.modify(lastItemAppliedAt, (last) => {
+      // Wall clock moved backwards (NTP correction, manual change). Re-anchor
+      // instead of suppressing the reconcile until real time catches up.
+      if (now < last) return [null, now];
+      const elapsed = now - last;
+      return elapsed < ACTIVE_TURN_SILENCE_RECONCILE_MS ? [null, last] : [elapsed, now];
+    });
+    if (silentForMs === null) return;
+    yield* Effect.logWarning(
+      "Thread has shown an active turn with no applied events; reconciling against the server.",
+      { environmentId, threadId, silentForMs },
+    );
+    yield* Queue.offer(stallReconciliations, undefined);
+  });
+
+  // Only threads that are actually mid-turn carry a timer. Polling every
+  // thread state unconditionally meant a settled thread woke every 30s to
+  // learn it had nothing to do, which scales with how many threads the user
+  // has opened rather than with how much work is running.
   yield* Effect.forkScoped(
-    Effect.gen(function* () {
-      for (;;) {
-        yield* Effect.sleep(ACTIVE_TURN_SILENCE_POLL_MS);
-        const current = yield* SubscriptionRef.get(state);
-        if (!sessionIsActive(current)) continue;
-        const now = yield* Clock.currentTimeMillis;
-        const silentForMs = now - (yield* Ref.get(lastItemAppliedAt));
-        if (silentForMs < ACTIVE_TURN_SILENCE_RECONCILE_MS) continue;
-        // Restamp before offering so a thread that stays silent reconciles
-        // once per window rather than once per poll.
-        yield* Ref.set(lastItemAppliedAt, now);
-        yield* Effect.logWarning(
-          "Thread has shown an active turn with no applied events; reconciling against the server.",
-          { environmentId, threadId, silentForMs },
-        );
-        yield* Queue.offer(stallReconciliations, undefined);
-      }
-    }),
+    SubscriptionRef.changes(state).pipe(
+      Stream.map(sessionIsActive),
+      Stream.changes,
+      Stream.switchMap((active) =>
+        active
+          ? Stream.fromEffect(
+              Effect.sleep(ACTIVE_TURN_SILENCE_POLL_MS).pipe(
+                Effect.andThen(checkForSilence),
+                Effect.forever,
+              ),
+            )
+          : Stream.empty,
+      ),
+      Stream.runDrain,
+    ),
   );
 
   const foregroundResubscriptions = Option.match(wakeups, {
