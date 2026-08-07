@@ -46,7 +46,10 @@ import {
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
-import { ORCHESTRATION_SIDE_EFFECT_CONSUMERS } from "../../persistence/Services/OrchestrationEventStore.ts";
+import {
+  ORCHESTRATION_SIDE_EFFECT_CONSUMERS,
+  OrchestrationEventStore,
+} from "../../persistence/Services/OrchestrationEventStore.ts";
 import { makeDurableSideEffectReactor } from "../DurableSideEffectReactor.ts";
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
@@ -89,6 +92,31 @@ function mapProviderSessionStatusToOrchestrationStatus(
 
 const turnStartKeyForEvent = (event: ProviderIntentEvent): string =>
   event.commandId !== null ? `command:${event.commandId}` : `event:${event.eventId}`;
+
+/**
+ * Provider intents run in two serial lanes per thread rather than one.
+ *
+ * Turn execution holds its lane for the *entire* provider turn: `sendTurn`
+ * blocks until the whole prompt settles and deliberately carries no timeout
+ * (see `DEFAULT_PROVIDER_TURN_OPERATION_TIMEOUT`). With a single lane per
+ * thread every control intent queued behind that, which meant Stop could not
+ * be dequeued until the turn it was trying to stop had already finished on
+ * its own — a Stop that only works once stopping is pointless (SOU-569,
+ * observed as an agent editing files for 2m37s after the user pressed Stop).
+ * The same lane also carried approval responses, so in approval-required mode
+ * a mid-turn approval would queue behind the turn that was blocked waiting
+ * for it.
+ *
+ * Control intents keep sharing one lane *with each other* per thread, so two
+ * Stops, or a Stop and an approval response, still apply in request order.
+ *
+ * `thread.runtime-mode-set` stays on the turn lane on purpose: it can restart
+ * the provider session, which must not race a turn that is mid-flight.
+ */
+const providerCommandLaneKey = (event: ProviderIntentEvent): string =>
+  event.type === "thread.turn-start-requested" || event.type === "thread.runtime-mode-set"
+    ? `turn:${event.payload.threadId}`
+    : `control:${event.payload.threadId}`;
 
 const HANDLED_TURN_START_KEY_MAX = 10_000;
 const HANDLED_TURN_START_KEY_TTL = Duration.minutes(30);
@@ -253,6 +281,7 @@ function buildGeneratedWorktreeBranchName(raw: string): string {
 
 const make = Effect.gen(function* () {
   const options = yield* ProviderCommandReactorConfig;
+  const eventStore = yield* OrchestrationEventStore;
   const sessionOperationTimeout =
     options.sessionOperationTimeout ?? DEFAULT_PROVIDER_SESSION_OPERATION_TIMEOUT;
   // Explicit null disables the sendTurn wall-clock. Undefined falls back to
@@ -309,6 +338,41 @@ const make = Effect.gen(function* () {
     Cache.getOption(handledTurnStartKeys, key).pipe(
       Effect.flatMap((cached) =>
         Cache.set(handledTurnStartKeys, key, true).pipe(Effect.as(Option.isSome(cached))),
+      ),
+    );
+
+  /**
+   * Whether a Stop for this thread was appended after this turn start.
+   *
+   * Turn execution and control intents run on separate lanes, so by the time a
+   * queued turn start dispatches the user may already have pressed Stop. Two
+   * shapes of that, both real:
+   *
+   *   1. The turn start waited behind an earlier turn while Stop ran.
+   *   2. The turn lane was idle, so the turn start and the Stop were dequeued
+   *      concurrently and the turn start won the race to check.
+   *
+   * Reading the event log answers both, because the Stop event is durable the
+   * moment it is appended — well before either lane processes it. An
+   * in-memory watermark could not close (2) at all, and would additionally
+   * have made correctness depend on cache TTL and capacity: `sendTurn` has no
+   * maximum duration, so a queued turn start can outlive any expiry, and a
+   * busy host can evict the entry outright. Neither is an acceptable boundary
+   * for "did the user stop this".
+   *
+   * Only Stops strictly after this turn start count. Anything the user sends
+   * *after* pressing Stop gets a higher sequence and still runs.
+   */
+  const wasStoppedAfterRequest = (threadId: ThreadId, sequence: number) =>
+    eventStore.hasLaterStreamStop({ streamId: String(threadId), afterSequence: sequence }).pipe(
+      // A read failure must not strand the user's turn. Log and dispatch:
+      // the control lane still interrupts whatever this starts.
+      Effect.catchCause((cause) =>
+        Effect.logWarning("could not check for a later stop before dispatching a turn", {
+          threadId,
+          sequence,
+          cause: Cause.pretty(cause),
+        }).pipe(Effect.as(false)),
       ),
     );
 
@@ -1106,6 +1170,20 @@ const make = Effect.gen(function* () {
       return;
     }
 
+    // A Stop can now land while this turn start is still queued behind an
+    // earlier turn on this lane. Starting it would open a new turn moments
+    // after the user asked the thread to stop, so drop it instead. Runs before
+    // session ensure and title/branch generation so a dropped turn costs
+    // nothing.
+    if (yield* wasStoppedAfterRequest(event.payload.threadId, event.sequence)) {
+      yield* Effect.logDebug("dropping turn start superseded by a later stop", {
+        threadId: event.payload.threadId,
+        messageId: event.payload.messageId,
+        sequence: event.sequence,
+      });
+      return;
+    }
+
     const isFirstUserMessageTurn =
       thread.messages.filter((entry) => entry.role === "user").length === 1;
     if (isFirstUserMessageTurn) {
@@ -1501,6 +1579,19 @@ const make = Effect.gen(function* () {
         if (!thread?.session || thread.session.status === "stopped") {
           return;
         }
+        // Stays on the turn lane because it can restart the provider session,
+        // which must not race a live turn — but that means it is no longer
+        // ordered against Stop, which now rides the control lane. Applying a
+        // mode change after the user stopped the thread can restart the very
+        // session they just killed, so honour a later Stop the same way a turn
+        // start does.
+        if (yield* wasStoppedAfterRequest(event.payload.threadId, event.sequence)) {
+          yield* Effect.logDebug("skipping runtime-mode-set superseded by a later stop", {
+            threadId: event.payload.threadId,
+            sequence: event.sequence,
+          });
+          return;
+        }
         const cachedModelSelection = threadModelSelections.get(event.payload.threadId);
         yield* withProviderOperationTimeout(
           ensureSessionForThread(
@@ -1619,7 +1710,7 @@ const make = Effect.gen(function* () {
   const durableReactor = yield* makeDurableSideEffectReactor({
     consumer: ORCHESTRATION_SIDE_EFFECT_CONSUMERS.providerCommand,
     decode: (event) => (isProviderIntentEvent(event) ? event : null),
-    key: (event) => event.payload.threadId,
+    key: providerCommandLaneKey,
     keyLabel: String,
     laneIdleTimeToLive,
     process: processDomainEvent,
