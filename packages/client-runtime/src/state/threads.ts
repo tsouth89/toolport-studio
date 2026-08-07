@@ -12,6 +12,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
+import * as Random from "effect/Random";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
@@ -328,10 +329,15 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       Stream.switchMap((active) =>
         active
           ? Stream.fromEffect(
-              Effect.sleep(ACTIVE_TURN_SILENCE_POLL_MS).pipe(
-                Effect.andThen(checkForSilence),
-                Effect.forever,
-              ),
+              // Jittered for the same reason the transport backoff is: a fault
+              // that resubscribes many threads at once starts all their timers
+              // together, and they would then reconcile in lockstep. Re-drawn
+              // each iteration because `Effect.forever` re-runs the whole
+              // chain, so the timers drift apart rather than staying aligned.
+              Random.nextBetween(
+                ACTIVE_TURN_SILENCE_POLL_MS * 0.75,
+                ACTIVE_TURN_SILENCE_POLL_MS,
+              ).pipe(Effect.flatMap(Effect.sleep), Effect.andThen(checkForSilence), Effect.forever),
             )
           : Stream.empty,
       ),
