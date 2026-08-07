@@ -1130,7 +1130,6 @@ function ProposedPlanTimelineRow({
 function isGenericWorkingToolLabel(label: string | null): boolean {
   if (!label) return true;
   const normalized = label.trim().toLowerCase();
-  // Keep "Following up" — that is the mid-turn interjection signal.
   return normalized === "thinking" || normalized === "thought" || normalized === "working";
 }
 

@@ -429,49 +429,6 @@ export function deriveActiveWorkingToolLabel(input: {
   return deriveActiveWorkingToolStatus(input)?.label ?? null;
 }
 
-/**
- * Latest mid-turn user instruction while Working. When the user interjects,
- * this is the signal the chrome must surface so they know Studio heard them
- * (instead of only "Working · Tool call" from the aborted plan).
- */
-export function deriveActiveWorkingFollowUpIntent(input: {
-  readonly timelineEntries: ReadonlyArray<TimelineEntry>;
-  readonly activeTurnStartedAt?: string | null;
-}): string | null {
-  const turnStart = input.activeTurnStartedAt ?? null;
-  let firstUserText: string | null = null;
-  let lastUserText: string | null = null;
-  let userMessagesOnTurn = 0;
-
-  for (const timelineEntry of input.timelineEntries) {
-    if (timelineEntry.kind !== "message" || timelineEntry.message.role !== "user") {
-      continue;
-    }
-    if (turnStart !== null && timelineEntry.createdAt < turnStart) {
-      continue;
-    }
-    const text = timelineEntry.message.text.trim();
-    if (text.length === 0) {
-      continue;
-    }
-    userMessagesOnTurn += 1;
-    if (firstUserText === null) {
-      firstUserText = text;
-    }
-    lastUserText = text;
-  }
-
-  // Only surface when the user has interjected (2+ user messages this turn).
-  if (userMessagesOnTurn < 2 || lastUserText === null || lastUserText === firstUserText) {
-    return null;
-  }
-  const normalized = lastUserText.replace(/\s+/g, " ").trim();
-  if (normalized.length <= 72) {
-    return normalized;
-  }
-  return `${normalized.slice(0, 71).trimEnd()}…`;
-}
-
 /** Whether a thread error should offer one-tap resend of the last user message. */
 export function shouldOfferLastUserMessageRetry(error: string | null | undefined): boolean {
   if (error == null) {
@@ -894,21 +851,21 @@ export function deriveMessagesTimelineRows(input: {
       timelineEntries: input.timelineEntries,
       unsettledTurnId,
     });
-    const followUpIntent = deriveActiveWorkingFollowUpIntent({
-      timelineEntries: input.timelineEntries,
-      activeTurnStartedAt: input.activeTurnStartedAt,
-    });
-    // Mid-turn interjection always wins the Working chrome. Opaque "Tool call"
-    // from an aborted plan must not bury the user's latest instruction.
-    // When a live tool is open after the pivot, keep it as secondary detail.
-    const label = followUpIntent ? "Following up" : (activeTool?.label ?? null);
-    const detail = followUpIntent
-      ? activeTool?.isOpenTool === true && activeTool.label
-        ? activeTool.detail
-          ? `${followUpIntent} · ${activeTool.label} · ${activeTool.detail}`
-          : `${followUpIntent} · ${activeTool.label}`
-        : followUpIntent
-      : (activeTool?.detail ?? null);
+    // The Working row reports what the agent is doing, nothing else.
+    //
+    // It used to switch to "Following up: <the user's message>" as soon as a
+    // turn carried a second user message. That condition stays true for the
+    // rest of the turn, so the status pinned a full message body in place of
+    // live tool status until the turn ended and read as stuck. The interjection
+    // is already visible in the transcript as the user's own message, which is
+    // the honest signal; restating it here was both redundant and wrong about
+    // what the agent was doing.
+    //
+    // Matches the recorded decision in `turnEngine/InterjectionPolicy.ts`
+    // ("silence beats invention") and `docs/architecture/turn-engine-handoff.md`,
+    // which the server side had not yet been carried through on.
+    const label = activeTool?.label ?? null;
+    const detail = activeTool?.detail ?? null;
     nextRows.push({
       kind: "working",
       id: "working-indicator-row",
