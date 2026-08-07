@@ -90,8 +90,35 @@ function mapProviderSessionStatusToOrchestrationStatus(
 const turnStartKeyForEvent = (event: ProviderIntentEvent): string =>
   event.commandId !== null ? `command:${event.commandId}` : `event:${event.eventId}`;
 
+/**
+ * Provider intents run in two serial lanes per thread rather than one.
+ *
+ * Turn execution holds its lane for the *entire* provider turn: `sendTurn`
+ * blocks until the whole prompt settles and deliberately carries no timeout
+ * (see `DEFAULT_PROVIDER_TURN_OPERATION_TIMEOUT`). With a single lane per
+ * thread every control intent queued behind that, which meant Stop could not
+ * be dequeued until the turn it was trying to stop had already finished on
+ * its own — a Stop that only works once stopping is pointless (SOU-569,
+ * observed as an agent editing files for 2m37s after the user pressed Stop).
+ * The same lane also carried approval responses, so in approval-required mode
+ * a mid-turn approval would queue behind the turn that was blocked waiting
+ * for it.
+ *
+ * Control intents keep sharing one lane *with each other* per thread, so two
+ * Stops, or a Stop and an approval response, still apply in request order.
+ *
+ * `thread.runtime-mode-set` stays on the turn lane on purpose: it can restart
+ * the provider session, which must not race a turn that is mid-flight.
+ */
+const providerCommandLaneKey = (event: ProviderIntentEvent): string =>
+  event.type === "thread.turn-start-requested" || event.type === "thread.runtime-mode-set"
+    ? `turn:${event.payload.threadId}`
+    : `control:${event.payload.threadId}`;
+
 const HANDLED_TURN_START_KEY_MAX = 10_000;
 const HANDLED_TURN_START_KEY_TTL = Duration.minutes(30);
+const CANCELLATION_WATERMARK_MAX = 10_000;
+const CANCELLATION_WATERMARK_TTL = Duration.minutes(30);
 const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
 const DEFAULT_THREAD_TITLE = "New thread";
 /**
@@ -310,6 +337,43 @@ const make = Effect.gen(function* () {
       Effect.flatMap((cached) =>
         Cache.set(handledTurnStartKeys, key, true).pipe(Effect.as(Option.isSome(cached))),
       ),
+    );
+
+  /**
+   * Highest event sequence of a Stop seen per thread.
+   *
+   * Control intents no longer queue behind turn execution, which introduces a
+   * case the single-lane design could not produce: a turn start appended
+   * *before* a Stop can still be waiting in the turn lane when that Stop runs.
+   * Dispatching it afterwards would open a brand new turn seconds after the
+   * user asked the thread to stop — the opposite of what Stop means. The
+   * watermark lets the turn lane drop those.
+   *
+   * Keyed on `event.sequence` rather than a timestamp: the sequence is
+   * assigned by the event store at append time, so it totally orders a Stop
+   * against a turn start with no dependence on client clocks.
+   *
+   * Only turn starts appended before the Stop are dropped. Anything the user
+   * sends *after* pressing Stop gets a higher sequence and still runs.
+   */
+  const cancellationWatermarks = yield* Cache.make<string, number>({
+    capacity: CANCELLATION_WATERMARK_MAX,
+    timeToLive: CANCELLATION_WATERMARK_TTL,
+    lookup: () => Effect.succeed(0),
+  });
+
+  const recordCancellationWatermark = (threadId: ThreadId, sequence: number) =>
+    Cache.getOption(cancellationWatermarks, String(threadId)).pipe(
+      Effect.flatMap((cached) =>
+        sequence > Option.getOrElse(cached, () => 0)
+          ? Cache.set(cancellationWatermarks, String(threadId), sequence)
+          : Effect.void,
+      ),
+    );
+
+  const wasStoppedBeforeDispatch = (threadId: ThreadId, sequence: number) =>
+    Cache.getOption(cancellationWatermarks, String(threadId)).pipe(
+      Effect.map((cached) => Option.getOrElse(cached, () => 0) > sequence),
     );
 
   const threadModelSelections = new Map<string, ModelSelection>();
@@ -1106,6 +1170,20 @@ const make = Effect.gen(function* () {
       return;
     }
 
+    // A Stop can now land while this turn start is still queued behind an
+    // earlier turn on this lane. Starting it would open a new turn moments
+    // after the user asked the thread to stop, so drop it instead. Runs before
+    // session ensure and title/branch generation so a dropped turn costs
+    // nothing.
+    if (yield* wasStoppedBeforeDispatch(event.payload.threadId, event.sequence)) {
+      yield* Effect.logDebug("dropping queued turn start superseded by stop", {
+        threadId: event.payload.threadId,
+        messageId: event.payload.messageId,
+        sequence: event.sequence,
+      });
+      return;
+    }
+
     const isFirstUserMessageTurn =
       thread.messages.filter((entry) => entry.role === "user").length === 1;
     if (isFirstUserMessageTurn) {
@@ -1262,6 +1340,11 @@ const make = Effect.gen(function* () {
   const processTurnInterruptRequested = Effect.fn("processTurnInterruptRequested")(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.turn-interrupt-requested" }>,
   ) {
+    // Record before any early return: a Stop against a thread whose session is
+    // already gone must still suppress a turn start that is queued behind an
+    // earlier turn, or that queued turn revives the thread after Stop.
+    yield* recordCancellationWatermark(event.payload.threadId, event.sequence);
+
     const thread = yield* resolveThread(event.payload.threadId);
     if (!thread) {
       return;
@@ -1430,6 +1513,10 @@ const make = Effect.gen(function* () {
   const processSessionStopRequested = Effect.fn("processSessionStopRequested")(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.session-stop-requested" }>,
   ) {
+    // Stopping the session is at least as strong an intent as interrupting the
+    // turn, so it suppresses queued turn starts the same way.
+    yield* recordCancellationWatermark(event.payload.threadId, event.sequence);
+
     const thread = yield* resolveThread(event.payload.threadId);
     if (!thread) {
       return;
@@ -1619,7 +1706,7 @@ const make = Effect.gen(function* () {
   const durableReactor = yield* makeDurableSideEffectReactor({
     consumer: ORCHESTRATION_SIDE_EFFECT_CONSUMERS.providerCommand,
     decode: (event) => (isProviderIntentEvent(event) ? event : null),
-    key: (event) => event.payload.threadId,
+    key: providerCommandLaneKey,
     keyLabel: String,
     laneIdleTimeToLive,
     process: processDomainEvent,
