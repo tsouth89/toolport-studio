@@ -4,6 +4,7 @@ import * as Context from "effect/Context";
 import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Random from "effect/Random";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
@@ -156,8 +157,14 @@ export function runStream<TTag extends EnvironmentStreamCommandRpcTag>(
 const TRANSPORT_RETRY_BASE_MILLIS = 250;
 const TRANSPORT_RETRY_CAP_MILLIS = 5_000;
 
-function transportRetryBackoff(attempt: number): Duration.Input {
-  return Math.min(TRANSPORT_RETRY_BASE_MILLIS * 2 ** attempt, TRANSPORT_RETRY_CAP_MILLIS);
+function transportRetryBackoff(attempt: number): Effect.Effect<number> {
+  const capped = Math.min(TRANSPORT_RETRY_BASE_MILLIS * 2 ** attempt, TRANSPORT_RETRY_CAP_MILLIS);
+  // Equal jitter. One client holds many durable subscriptions (shell, each
+  // open thread, terminals, vcs, preview), so a fault taking out several at
+  // once would otherwise retry them in lockstep. The ceiling stays at
+  // `capped` — the first retry still lands within 250ms — so recovery
+  // latency is unchanged and only the alignment is broken up.
+  return Random.nextBetween(capped / 2, capped);
 }
 
 interface SubscriptionOptions<TTag extends EnvironmentSubscriptionRpcTag> {
@@ -269,7 +276,9 @@ export function subscribeDynamic<TTag extends EnvironmentSubscriptionRpcTag>(
                                 ).pipe(
                                   Stream.drain,
                                   Stream.concat(
-                                    Stream.fromEffect(Effect.sleep(delay)).pipe(Stream.drain),
+                                    Stream.fromEffect(
+                                      delay.pipe(Effect.flatMap(Effect.sleep)),
+                                    ).pipe(Stream.drain),
                                   ),
                                   Stream.concat(subscribeToSession()),
                                 );
