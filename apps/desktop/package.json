@@ -1,6 +1,6 @@
 {
   "name": "@toolport-studio/desktop",
-  "version": "0.1.0-beta.13",
+  "version": "0.1.0-beta.14",
   "private": true,
   "description": "The Toolport Studio Electron desktop shell.",
   "type": "module",
