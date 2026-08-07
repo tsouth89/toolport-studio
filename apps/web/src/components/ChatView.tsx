@@ -159,7 +159,13 @@ import { isThisTurnCardVisible, ThisTurnCard } from "./ThisTurnCard";
 import ThreadTerminalDrawer from "./ThreadTerminalDrawer";
 import { deriveThreadActivityViewModel } from "../threadActivityViewModel";
 import { openToolportApp } from "../lib/openToolport";
-import { ChevronDownIcon, GitBranchIcon, TriangleAlertIcon, WifiOffIcon } from "lucide-react";
+import {
+  ChevronDownIcon,
+  GitBranchIcon,
+  TriangleAlertIcon,
+  WifiOffIcon,
+  XIcon,
+} from "lucide-react";
 import { cn, randomHex } from "~/lib/utils";
 import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "~/workspaceTitlebar";
 import { stackedThreadToast, toastManager } from "./ui/toast";
@@ -1744,11 +1750,17 @@ function ChatViewContent(props: ChatViewProps) {
     }
     prevProviderNameRef.current = currentProvider;
   }, [activeThread?.session?.providerName]);
+  // Deliberately not auto-dismissed. Which agent ran a turn is not a
+  // transient toast: Studio can substitute a provider the user never picked
+  // when theirs is momentarily unavailable, and this banner is the only place
+  // that says so. It used to clear itself after six seconds, so a user could
+  // start a long full-access turn and never learn it was not the agent they
+  // selected (SOU-570). The user dismisses it now.
+  const dismissProviderChangeNotice = useCallback(() => setProviderChangeNotice(null), []);
   useEffect(() => {
-    if (providerChangeNotice === null) return;
-    const timer = setTimeout(() => setProviderChangeNotice(null), 6000);
-    return () => clearTimeout(timer);
-  }, [providerChangeNotice]);
+    // A different thread's provider history is not this thread's news.
+    setProviderChangeNotice(null);
+  }, [activeThread?.id]);
   const activeEnvironmentShell = useEnvironmentQuery(
     activeThread ? environmentShell.stateAtom(activeThread.environmentId) : null,
   );
@@ -6169,14 +6181,35 @@ function ChatViewContent(props: ChatViewProps) {
           {...(canRetryLastUserMessage ? { onRetry: onRetryLastUserMessage } : {})}
         />
         {providerChangeNotice && (
-          <div className="mx-auto flex w-full max-w-[720px] items-center gap-2 rounded-md bg-sky-50 px-3 py-2 text-sm text-sky-700 dark:bg-sky-950 dark:text-sky-300">
+          <div
+            data-provider-change-notice="true"
+            className="mx-auto flex w-full max-w-[720px] items-center gap-2 rounded-md bg-sky-50 px-3 py-2 text-sm text-sky-700 dark:bg-sky-950 dark:text-sky-300"
+          >
             <span className="shrink-0 font-medium">Provider changed</span>
-            <span className="text-muted-foreground">
+            <span
+              className="min-w-0 flex-1 truncate text-muted-foreground"
+              title={`${providerChangeNotice.from} → ${
+                activeThread?.session?.providerName ?? activeThread?.modelSelection.model ?? ""
+              }`}
+            >
               <span className="font-medium text-foreground">{providerChangeNotice.from}</span> →{" "}
               <span className="font-medium text-foreground">
                 {activeThread?.session?.providerName ?? activeThread?.modelSelection.model}
               </span>
             </span>
+            <button
+              type="button"
+              aria-label="Dismiss provider change notice"
+              onClick={(event) => {
+                // The banner sits inside the chat content area, which has its
+                // own click handlers for focus and selection.
+                event.stopPropagation();
+                dismissProviderChangeNotice();
+              }}
+              className="shrink-0 rounded-sm p-0.5 text-sky-700/70 transition-colors hover:text-sky-700 focus-visible:ring-2 focus-visible:ring-ring dark:text-sky-300/70 dark:hover:text-sky-300"
+            >
+              <XIcon className="size-3.5" />
+            </button>
           </div>
         )}
         {/* Main content area with optional plan sidebar */}

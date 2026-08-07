@@ -867,6 +867,53 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     [providerInstanceEntries, selectedInstanceId],
   );
   const noProviderAvailable = selectedProviderEntry === undefined;
+
+  /**
+   * The composer is about to run on an instance the user did not pick.
+   *
+   * `selectedInstanceId` only accepts a candidate whose entry is
+   * `enabled && isAvailable`, so a pick that is momentarily unavailable is
+   * skipped and the turn runs on whatever sorts first instead — a different
+   * agent, with its own default model, chosen on the user's behalf without
+   * asking. A user reported a full-access agent running on Cursor while they
+   * believed they were on Grok; the only disclosure was a top-of-view banner
+   * that auto-dismissed after six seconds (SOU-570).
+   *
+   * Reported here, next to the picker the user actually looks at, and it does
+   * not disappear on its own.
+   */
+  const providerSubstitutionNotice = useMemo(() => {
+    if (!explicitSelectedInstanceId || explicitSelectedInstanceId === selectedInstanceId) {
+      return null;
+    }
+    const requestedEntry = providerInstanceEntries.find(
+      (entry) => entry.instanceId === explicitSelectedInstanceId,
+    );
+    // A pick that no longer exists was removed rather than made unavailable.
+    // Falling back is the only option and there is nothing to warn about.
+    if (!requestedEntry) return null;
+    // Availability is what this is about. An entry that is both enabled and
+    // available was not substituted for availability reasons.
+    if (requestedEntry.enabled && requestedEntry.isAvailable) return null;
+    // A thread locked to a driver kind is *expected* to ignore a pick from a
+    // different kind. That is the continuation rule, not a silent swap.
+    if (lockedProvider && requestedEntry.driverKind !== lockedProvider) return null;
+    // Without a resolved entry there is no instance to name, and the composer
+    // already renders "No provider available" for that state. Naming a raw
+    // instance id here would be worse than saying nothing.
+    if (!selectedProviderEntry) return null;
+    return {
+      requested: requestedEntry.displayName,
+      running: selectedProviderEntry.displayName,
+      reason: requestedEntry.enabled ? ("unavailable" as const) : ("disabled" as const),
+    };
+  }, [
+    explicitSelectedInstanceId,
+    lockedProvider,
+    providerInstanceEntries,
+    selectedInstanceId,
+    selectedProviderEntry,
+  ]);
   // The driver kind follows the instance that will actually run the turn,
   // which can differ from the persisted selection when that selection is
   // disabled.
@@ -2782,6 +2829,19 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
               )}
             >
               <div className="-m-1 flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto p-1 sm:gap-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                {providerSubstitutionNotice ? (
+                  <span
+                    data-chat-provider-substitution="true"
+                    title={`${providerSubstitutionNotice.requested} is ${providerSubstitutionNotice.reason}. This message will run on ${providerSubstitutionNotice.running}.`}
+                    className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-amber-500/10 px-2 py-1 text-[11px] font-medium text-amber-700 dark:text-amber-400"
+                  >
+                    <CircleAlertIcon className="size-3.5 shrink-0" />
+                    <span className="truncate">
+                      {providerSubstitutionNotice.requested} {providerSubstitutionNotice.reason} —
+                      running on {providerSubstitutionNotice.running}
+                    </span>
+                  </span>
+                ) : null}
                 {noProviderAvailable ? (
                   <Button
                     type="button"
