@@ -1484,7 +1484,12 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                     threadId: input.threadId,
                     turnId,
                     requestId: runtimeRequestId,
-                    payload: { answers: resolvedAnswers },
+                    payload: {
+                      answers: resolvedAnswers,
+                      // A user-initiated cancel is still the user; only the
+                      // watchdog branch is automatic.
+                      resolvedBy: raceResult._tag === "timeout" ? "timeout" : "user",
+                    },
                     raw: {
                       source: "acp.grok.extension",
                       method,
@@ -1579,6 +1584,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   requestId: runtimeRequestId,
                   permissionRequest,
                   decision: resolved,
+                  resolvedBy: raceResult._tag === "timeout" ? "timeout" : "user",
                 }),
               );
               const selectedOptionId =

@@ -744,7 +744,10 @@ export function makeCursorAdapter(
                 threadId: input.threadId,
                 turnId: activeTurnId(),
                 requestId: runtimeRequestId,
-                payload: { answers: resolved },
+                payload: {
+                  answers: resolved,
+                  resolvedBy: raceResult._tag === "timeout" ? "timeout" : "user",
+                },
               });
               return { answers: resolved };
             }),
@@ -882,6 +885,7 @@ export function makeCursorAdapter(
                   requestId: runtimeRequestId,
                   permissionRequest,
                   decision: resolved,
+                  resolvedBy: raceResult._tag === "timeout" ? "timeout" : "user",
                 }),
               );
               return {

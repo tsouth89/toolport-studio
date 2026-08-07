@@ -1093,6 +1093,10 @@ export const makeCodexSessionRuntime = (
               requestId: meta.requestId,
               requestKind: meta.requestKind,
               decision: "cancel" as const,
+              // Studio-side marker, not Codex wire protocol. The adapter reads
+              // it off the raw payload so the resolved event can say the
+              // watchdog cancelled rather than the user.
+              resolvedBy: "timeout" as const,
             },
           });
           return "cancel" as const satisfies ProviderApprovalDecision;
@@ -1140,6 +1144,10 @@ export const makeCodexSessionRuntime = (
             ...(meta.itemId ? { itemId: meta.itemId } : {}),
             payload: {
               answers: {},
+              // Studio-side marker, not Codex wire protocol. Without it this
+              // synthetic answer is indistinguishable from the user submitting
+              // an empty form.
+              resolvedBy: "timeout" as const,
             },
           });
           return {} as ProviderUserInputAnswers;

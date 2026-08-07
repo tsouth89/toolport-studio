@@ -3719,6 +3719,8 @@ describe("ClaudeAdapterLive", () => {
       assert.equal(resolved?.type, "request.resolved");
       if (resolved?.type === "request.resolved") {
         assert.equal(resolved.payload.decision, "cancel");
+        // `cancel` alone reads as the user pressing cancel.
+        assert.equal(resolved.payload.resolvedBy, "timeout");
       }
 
       yield* Fiber.interrupt(eventsFiber);
@@ -4599,6 +4601,7 @@ describe("ClaudeAdapterLive", () => {
       assert.deepEqual(resolvedEvent.value.payload.answers, {
         "Which framework?": "React",
       });
+      assert.equal(resolvedEvent.value.payload.resolvedBy, "user");
       assert.deepEqual(resolvedEvent.value.providerRefs, {
         providerItemId: ProviderItemId.make("tool-ask-1"),
       });
@@ -4854,6 +4857,9 @@ describe("ClaudeAdapterLive", () => {
       assert.equal(resolved?.type, "user-input.resolved");
       if (resolved?.type === "user-input.resolved") {
         assert.deepEqual(resolved.payload.answers, {});
+        // The empty answers alone are indistinguishable from the user
+        // submitting an empty form; only this says who did it.
+        assert.equal(resolved.payload.resolvedBy, "timeout");
       }
 
       yield* Fiber.interrupt(eventsFiber);

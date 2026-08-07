@@ -941,6 +941,7 @@ export function makeOpenCodeAdapter(
                     ? "unknown"
                     : mapPermissionToRequestType(request.permission),
                 decision: "cancel",
+                resolvedBy: "timeout",
               },
             });
             return;
@@ -965,7 +966,7 @@ export function makeOpenCodeAdapter(
               requestId,
             })),
             type: "user-input.resolved",
-            payload: { answers: {} },
+            payload: { answers: {}, resolvedBy: "timeout" },
           });
         }).pipe(
           // The self-heal is the last line of defence for a wedged request, so a genuine failure
@@ -1673,7 +1674,7 @@ export function makeOpenCodeAdapter(
               raw: event,
             })),
             type: "user-input.resolved",
-            payload: { answers },
+            payload: { answers, resolvedBy: "user" },
           });
           break;
         }
@@ -1690,7 +1691,9 @@ export function makeOpenCodeAdapter(
               raw: event,
             })),
             type: "user-input.resolved",
-            payload: { answers: {} },
+            // The timer's own `question.reject` echoes back here, but it lost
+            // the claim above, so reaching this point means a real rejection.
+            payload: { answers: {}, resolvedBy: "user" },
           });
           break;
         }
