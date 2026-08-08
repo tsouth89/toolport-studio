@@ -36,6 +36,7 @@ import {
   type ProviderRuntimeTurnStatus,
   type ProviderSendTurnInput,
   type ProviderSession,
+  type RequestResolutionSource,
   type ThreadTokenUsageSnapshot,
   type ProviderUserInputAnswers,
   type RuntimeContentStreamKind,
@@ -4067,6 +4068,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         );
         const answers: ProviderUserInputAnswers =
           raceResult._tag === "timeout" ? ({} as ProviderUserInputAnswers) : raceResult.value;
+        // Read `aborted` before the timeout branch sets it: an abort also
+        // succeeds the deferred with `{}`, so without this all three outcomes
+        // would record an identical empty submission.
+        const resolvedBy: RequestResolutionSource =
+          raceResult._tag === "timeout" ? "timeout" : aborted ? "aborted" : "user";
         if (raceResult._tag === "timeout") {
           aborted = true;
           yield* Deferred.succeed(answersDeferred, answers).pipe(Effect.ignore);
@@ -4106,14 +4112,14 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
               }
             : {}),
           requestId: asRuntimeRequestId(requestId),
-          payload: { answers },
+          payload: { answers, resolvedBy },
           providerRefs: nativeProviderRefs(context, {
             providerItemId: callbackOptions.toolUseID,
           }),
           raw: {
             source: "claude.sdk.permission",
             method: "canUseTool/AskUserQuestion/resolved",
-            payload: { answers },
+            payload: { answers, resolvedBy },
           },
         });
 
@@ -4229,10 +4235,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
         pendingApprovals.set(requestId, pendingApproval);
 
+        let aborted = false;
         const onAbort = () => {
           if (!pendingApprovals.has(requestId)) {
             return;
           }
+          aborted = true;
           pendingApprovals.delete(requestId);
           runFork(Deferred.succeed(decisionDeferred, "cancel"));
         };
@@ -4249,6 +4257,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         );
         const decision: ProviderApprovalDecision =
           raceResult._tag === "timeout" ? "cancel" : raceResult.value;
+        // All three outcomes can produce `decision: "cancel"`; only this
+        // distinguishes the user pressing cancel from a watchdog doing it.
+        const resolvedBy: RequestResolutionSource =
+          raceResult._tag === "timeout" ? "timeout" : aborted ? "aborted" : "user";
         if (raceResult._tag === "timeout") {
           yield* Deferred.succeed(decisionDeferred, "cancel").pipe(Effect.ignore);
           yield* Effect.logWarning("Claude approval request timed out; auto-cancelled", {
@@ -4281,6 +4293,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           payload: {
             requestType,
             decision,
+            resolvedBy,
           },
           providerRefs: nativeProviderRefs(context, {
             providerItemId: callbackOptions.toolUseID,
@@ -4290,6 +4303,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             method: "canUseTool/decision",
             payload: {
               decision,
+              resolvedBy,
             },
           },
         });

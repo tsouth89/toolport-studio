@@ -859,6 +859,59 @@ export function makeOpenCodeAdapter(
       });
     });
 
+    const settlePendingRequestsAsAborted = Effect.fn("openCode.settlePendingRequestsAsAborted")(
+      function* (context: OpenCodeSessionContext, turnId: TurnId | undefined) {
+        // Stop owns every still-pending request. Claim them before emitting so a
+        // late SDK echo cannot record the same cancellation as a user response.
+        yield* cancelAllRequestTimers(context);
+        const permissions = [...context.pendingPermissions.entries()];
+        const questions = [...context.pendingQuestions.keys()];
+        context.pendingPermissions.clear();
+        context.pendingQuestions.clear();
+
+        yield* Effect.forEach(
+          permissions,
+          ([requestId, request]) =>
+            buildEventBase({
+              threadId: context.session.threadId,
+              turnId,
+              requestId,
+            }).pipe(
+              Effect.flatMap((base) =>
+                emit({
+                  ...base,
+                  type: "request.resolved",
+                  payload: {
+                    requestType: mapPermissionToRequestType(request.permission),
+                    decision: "cancel",
+                    resolvedBy: "aborted",
+                  },
+                }),
+              ),
+            ),
+          { discard: true },
+        );
+        yield* Effect.forEach(
+          questions,
+          (requestId) =>
+            buildEventBase({
+              threadId: context.session.threadId,
+              turnId,
+              requestId,
+            }).pipe(
+              Effect.flatMap((base) =>
+                emit({
+                  ...base,
+                  type: "user-input.resolved",
+                  payload: { answers: {}, resolvedBy: "aborted" },
+                }),
+              ),
+            ),
+          { discard: true },
+        );
+      },
+    );
+
     /**
      * Arm a self-heal timer for one outstanding request.
      *
@@ -941,6 +994,7 @@ export function makeOpenCodeAdapter(
                     ? "unknown"
                     : mapPermissionToRequestType(request.permission),
                 decision: "cancel",
+                resolvedBy: "timeout",
               },
             });
             return;
@@ -965,7 +1019,7 @@ export function makeOpenCodeAdapter(
               requestId,
             })),
             type: "user-input.resolved",
-            payload: { answers: {} },
+            payload: { answers: {}, resolvedBy: "timeout" },
           });
         }).pipe(
           // The self-heal is the last line of defence for a wedged request, so a genuine failure
@@ -1673,7 +1727,7 @@ export function makeOpenCodeAdapter(
               raw: event,
             })),
             type: "user-input.resolved",
-            payload: { answers },
+            payload: { answers, resolvedBy: "user" },
           });
           break;
         }
@@ -1690,7 +1744,9 @@ export function makeOpenCodeAdapter(
               raw: event,
             })),
             type: "user-input.resolved",
-            payload: { answers: {} },
+            // The timer's own `question.reject` echoes back here, but it lost
+            // the claim above, so reaching this point means a real rejection.
+            payload: { answers: {}, resolvedBy: "user" },
           });
           break;
         }
@@ -2344,11 +2400,7 @@ export function makeOpenCodeAdapter(
 
         // Drop pending interactive waits so Stop cannot leave the composer
         // stuck on an approval/question while the turn settles (Cursor/Grok).
-        context.pendingPermissions.clear();
-        context.pendingQuestions.clear();
-        // Their self-heal timers have nothing left to heal, and a surviving one would fire a
-        // timeout warning into a turn that already settled.
-        yield* cancelAllRequestTimers(context);
+        yield* settlePendingRequestsAsAborted(context, settleTurnId);
 
         // Never block Stop on a wedged OpenCode server.
         yield* runOpenCodeSdk("session.abort", () =>

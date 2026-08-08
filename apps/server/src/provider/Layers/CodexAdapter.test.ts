@@ -1548,6 +1548,71 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
     }),
   );
 
+  it.effect("carries the auto-cancel marker through user-input translation", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+
+      // Shaped like the synthetic notification CodexSessionRuntime emits when
+      // the watchdog fires: empty answers plus the Studio-side marker, which
+      // is not part of the Codex wire protocol.
+      const event: ProviderEvent = {
+        id: asEventId("evt-user-input-timed-out"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("thread-1"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        method: "item/tool/requestUserInput/answered",
+        payload: { answers: {}, resolvedBy: "timeout" },
+      };
+
+      yield* runtime.emit(event);
+      const firstEvent = yield* Fiber.join(firstEventFiber);
+
+      NodeAssert.equal(firstEvent._tag, "Some");
+      if (firstEvent._tag !== "Some") {
+        return;
+      }
+      NodeAssert.equal(firstEvent.value.type, "user-input.resolved");
+      if (firstEvent.value.type !== "user-input.resolved") {
+        return;
+      }
+      NodeAssert.deepEqual(firstEvent.value.payload.answers, {});
+      NodeAssert.equal(firstEvent.value.payload.resolvedBy, "timeout");
+    }),
+  );
+
+  it.effect("leaves provider-sent user-input answers unlabelled", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+
+      const event: ProviderEvent = {
+        id: asEventId("evt-user-input-unmarked"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("thread-1"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        method: "item/tool/requestUserInput/answered",
+        payload: { answers: { scope: { answers: ["all"] } } },
+      };
+
+      yield* runtime.emit(event);
+      const firstEvent = yield* Fiber.join(firstEventFiber);
+
+      NodeAssert.equal(firstEvent._tag, "Some");
+      if (firstEvent._tag !== "Some") {
+        return;
+      }
+      NodeAssert.equal(firstEvent.value.type, "user-input.resolved");
+      if (firstEvent.value.type !== "user-input.resolved") {
+        return;
+      }
+      // Absent means "not reported", never "automatic".
+      NodeAssert.equal(firstEvent.value.payload.resolvedBy, undefined);
+    }),
+  );
+
   it.effect("maps windowsSandbox/setupCompleted to session state and warning on failure", () =>
     Effect.gen(function* () {
       const { adapter, runtime } = yield* startLifecycleRuntime();

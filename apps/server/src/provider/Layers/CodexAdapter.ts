@@ -17,6 +17,7 @@ import {
   ProviderInstanceId,
   type ProviderRuntimeEvent,
   type ProviderRequestKind,
+  type RequestResolutionSource,
   type RuntimeMode,
   type ThreadTokenUsageSnapshot,
   type ProviderUserInputAnswers,
@@ -448,6 +449,20 @@ function toRequestTypeFromKind(kind: ProviderRequestKind | undefined): Canonical
     default:
       return "unknown";
   }
+}
+
+/**
+ * Reads the Studio-side `resolvedBy` marker that CodexSessionRuntime stamps on
+ * the synthetic notifications it emits when a pending request auto-cancels.
+ * Absent on anything Codex itself sent, which is the intended signal: only
+ * resolutions Studio made on the user's behalf are labelled.
+ */
+function readResolutionSource(payload: unknown): RequestResolutionSource | undefined {
+  if (typeof payload !== "object" || payload === null || !("resolvedBy" in payload)) {
+    return undefined;
+  }
+  const value = (payload as { readonly resolvedBy: unknown }).resolvedBy;
+  return value === "user" || value === "timeout" || value === "aborted" ? value : undefined;
 }
 
 function toCanonicalUserInputAnswers(
@@ -1291,6 +1306,7 @@ function mapToRuntimeEvents(
       return [];
     }
     const requestType = toRequestTypeFromKind(event.requestKind);
+    const resolvedBy = readResolutionSource(event.payload);
     return [
       {
         ...runtimeEventBase(event, canonicalThreadId),
@@ -1298,6 +1314,7 @@ function mapToRuntimeEvents(
         payload: {
           requestType,
           ...(event.payload !== undefined ? { resolution: event.payload } : {}),
+          ...(resolvedBy ? { resolvedBy } : {}),
         },
       },
     ];
@@ -1308,12 +1325,14 @@ function mapToRuntimeEvents(
     if (!payload) {
       return [];
     }
+    const resolvedBy = readResolutionSource(event.payload);
     return [
       {
         ...runtimeEventBase(event, canonicalThreadId),
         type: "user-input.resolved",
         payload: {
           answers: toCanonicalUserInputAnswers(payload.answers),
+          ...(resolvedBy ? { resolvedBy } : {}),
         },
       },
     ];

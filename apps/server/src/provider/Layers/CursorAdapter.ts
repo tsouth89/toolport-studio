@@ -143,10 +143,19 @@ export interface CursorAdapterLiveOptions {
 interface PendingApproval {
   readonly decision: Deferred.Deferred<ProviderApprovalDecision>;
   readonly kind: string | "unknown";
+  /**
+   * Set by the bulk settle helpers below before they resolve the deferred. The
+   * awaiting race cannot otherwise tell their cancellation from a real one:
+   * both arrive as a settled deferred rather than a timeout, so without this
+   * an aborted request is recorded as the user having cancelled it.
+   */
+  settledByAbort?: boolean;
 }
 
 interface PendingUserInput {
   readonly answers: Deferred.Deferred<ProviderUserInputAnswers>;
+  /** See {@link PendingApproval.settledByAbort}. */
+  settledByAbort?: boolean;
 }
 
 interface CursorSessionContext {
@@ -267,7 +276,10 @@ function settlePendingApprovalsAsCancelled(
   const pendingEntries = Array.from(pendingApprovals.values());
   return Effect.forEach(
     pendingEntries,
-    (pending) => Deferred.succeed(pending.decision, "cancel").pipe(Effect.ignore),
+    (pending) =>
+      Effect.sync(() => {
+        pending.settledByAbort = true;
+      }).pipe(Effect.andThen(Deferred.succeed(pending.decision, "cancel")), Effect.ignore),
     {
       discard: true,
     },
@@ -280,7 +292,10 @@ function settlePendingUserInputsAsEmptyAnswers(
   const pendingEntries = Array.from(pendingUserInputs.values());
   return Effect.forEach(
     pendingEntries,
-    (pending) => Deferred.succeed(pending.answers, {}).pipe(Effect.ignore),
+    (pending) =>
+      Effect.sync(() => {
+        pending.settledByAbort = true;
+      }).pipe(Effect.andThen(Deferred.succeed(pending.answers, {})), Effect.ignore),
     {
       discard: true,
     },
@@ -693,7 +708,8 @@ export function makeCursorAdapter(
               const requestId = ApprovalRequestId.make(yield* randomUUIDv4);
               const runtimeRequestId = RuntimeRequestId.make(requestId);
               const answers = yield* Deferred.make<ProviderUserInputAnswers>();
-              input.pendingUserInputs.set(requestId, { answers });
+              const pendingUserInput: PendingUserInput = { answers };
+              input.pendingUserInputs.set(requestId, pendingUserInput);
               yield* offerRuntimeEvent({
                 type: "user-input.requested",
                 ...(yield* makeEventStamp()),
@@ -744,7 +760,14 @@ export function makeCursorAdapter(
                 threadId: input.threadId,
                 turnId: activeTurnId(),
                 requestId: runtimeRequestId,
-                payload: { answers: resolved },
+                payload: {
+                  answers: resolved,
+                  resolvedBy: pendingUserInput.settledByAbort
+                    ? "aborted"
+                    : raceResult._tag === "timeout"
+                      ? "timeout"
+                      : "user",
+                },
               });
               return { answers: resolved };
             }),
@@ -822,10 +845,11 @@ export function makeCursorAdapter(
               const requestId = ApprovalRequestId.make(yield* randomUUIDv4);
               const runtimeRequestId = RuntimeRequestId.make(requestId);
               const decision = yield* Deferred.make<ProviderApprovalDecision>();
-              input.pendingApprovals.set(requestId, {
+              const pendingApproval: PendingApproval = {
                 decision,
                 kind: permissionRequest.kind,
-              });
+              };
+              input.pendingApprovals.set(requestId, pendingApproval);
               yield* offerRuntimeEvent(
                 makeAcpRequestOpenedEvent({
                   stamp: yield* makeEventStamp(),
@@ -882,6 +906,11 @@ export function makeCursorAdapter(
                   requestId: runtimeRequestId,
                   permissionRequest,
                   decision: resolved,
+                  resolvedBy: pendingApproval.settledByAbort
+                    ? "aborted"
+                    : raceResult._tag === "timeout"
+                      ? "timeout"
+                      : "user",
                 }),
               );
               return {

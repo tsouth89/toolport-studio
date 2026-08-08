@@ -361,6 +361,21 @@ export function applyThreadDetailEvent(
             )
           : thread.checkpoints;
 
+      // A message that has been sent cannot still be queued. The flush emits
+      // `thread.message-sent` and `thread.turn-queue-discarded` together, so
+      // this is normally redundant — but the queue is pure event-derived state
+      // with no reconciliation, and if the discard alone fails to apply,
+      // nothing else ever clears the chip. The only healing path is the
+      // active-turn silence reconcile, which watches for a stream that goes
+      // quiet; here the freshly started turn keeps the thread busy, so it never
+      // fires and the message reads as still queued until restart.
+      const queuedTurns =
+        thread.queuedTurns === undefined || thread.queuedTurns.length === 0
+          ? thread.queuedTurns
+          : thread.queuedTurns.some((entry) => entry.message.messageId === message.id)
+            ? thread.queuedTurns.filter((entry) => entry.message.messageId !== message.id)
+            : thread.queuedTurns;
+
       return {
         kind: "updated",
         thread: {
@@ -368,6 +383,7 @@ export function applyThreadDetailEvent(
           messages,
           checkpoints,
           latestTurn,
+          ...(queuedTurns !== undefined ? { queuedTurns } : {}),
           updatedAt: event.occurredAt,
         },
       };

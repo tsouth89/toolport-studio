@@ -3605,6 +3605,76 @@ describe("ProviderRuntimeIngestion", () => {
     });
   });
 
+  it("records an auto-cancelled user input as automatic, not as an empty submission", async () => {
+    const harness = await createHarness();
+
+    harness.emit({
+      type: "user-input.resolved",
+      eventId: asEventId("evt-user-input-timed-out"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-user-input"),
+      requestId: ApprovalRequestId.make("req-user-input-2"),
+      payload: { answers: {}, resolvedBy: "timeout" },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.id === "evt-user-input-timed-out",
+      ),
+    );
+
+    const resolved = thread.activities.find(
+      (activity: ProviderRuntimeTestActivity) => activity.id === "evt-user-input-timed-out",
+    );
+    const resolvedPayload =
+      resolved?.payload && typeof resolved.payload === "object"
+        ? (resolved.payload as Record<string, unknown>)
+        : undefined;
+    expect(resolvedPayload?.resolvedBy).toBe("timeout");
+    // The empty answers are identical to a user-submitted empty form, so the
+    // row label has to carry the disclosure.
+    expect(resolved?.summary).toBe("User input auto-cancelled after timeout");
+  });
+
+  it("labels an auto-cancelled approval the same way user input is labelled", async () => {
+    const harness = await createHarness();
+
+    for (const [suffix, resolvedBy, summary] of [
+      ["timed-out", "timeout", "Approval auto-cancelled after timeout"],
+      ["aborted", "aborted", "Approval cancelled"],
+      ["answered", "user", "Approval resolved"],
+    ] as const) {
+      harness.emit({
+        type: "request.resolved",
+        eventId: asEventId(`evt-approval-${suffix}`),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-approval"),
+        requestId: ApprovalRequestId.make(`req-approval-${suffix}`),
+        payload: {
+          requestType: "command_execution_approval",
+          decision: "cancel",
+          resolvedBy,
+        },
+      });
+
+      const thread = await waitForThread(harness.readModel, (entry) =>
+        entry.activities.some(
+          (activity: ProviderRuntimeTestActivity) => activity.id === `evt-approval-${suffix}`,
+        ),
+      );
+      const resolved = thread.activities.find(
+        (activity: ProviderRuntimeTestActivity) => activity.id === `evt-approval-${suffix}`,
+      );
+      // `decision: "cancel"` is identical across all three, so the summary is
+      // the only thing separating a watchdog from a user who pressed cancel.
+      expect(resolved?.summary).toBe(summary);
+    }
+  });
+
   it("continues processing runtime events after a single event handler failure", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

@@ -504,12 +504,21 @@ export function runtimeEventToActivities(
           createdAt: event.createdAt,
           tone: "approval",
           kind: "approval.resolved",
-          summary: "Approval resolved",
+          // Mirrors the user-input summary below. Claude emits `aborted` for
+          // approvals too, and without this arm it read as a plain "Approval
+          // resolved" — the same conflation this whole field exists to remove.
+          summary:
+            event.payload.resolvedBy === "timeout"
+              ? "Approval auto-cancelled after timeout"
+              : event.payload.resolvedBy === "aborted"
+                ? "Approval cancelled"
+                : "Approval resolved",
           payload: {
             requestId: toApprovalRequestId(event.requestId),
             ...(requestKind ? { requestKind } : {}),
             requestType: event.payload.requestType,
             ...(event.payload.decision ? { decision: event.payload.decision } : {}),
+            ...(event.payload.resolvedBy ? { resolvedBy: event.payload.resolvedBy } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -613,16 +622,23 @@ export function runtimeEventToActivities(
     }
 
     case "user-input.resolved": {
+      const resolvedBy = event.payload.resolvedBy;
       return [
         {
           id: event.eventId,
           createdAt: event.createdAt,
           tone: "info",
           kind: "user-input.resolved",
-          summary: "User input submitted",
+          summary:
+            resolvedBy === "timeout"
+              ? "User input auto-cancelled after timeout"
+              : resolvedBy === "aborted"
+                ? "User input cancelled"
+                : "User input submitted",
           payload: {
             ...(event.requestId ? { requestId: event.requestId } : {}),
             answers: event.payload.answers,
+            ...(resolvedBy ? { resolvedBy } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
