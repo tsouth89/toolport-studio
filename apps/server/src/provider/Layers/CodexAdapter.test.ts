@@ -333,6 +333,7 @@ validationLayer("CodexAdapterLive validation", (it) => {
       });
 
       NodeAssert.deepStrictEqual(validationRuntimeFactory.factory.mock.calls[0]?.[0], {
+        attachmentDirectory: NodePath.join(process.cwd(), "userdata", "attachments", "thread-1"),
         binaryPath: "codex",
         cwd: process.cwd(),
         // The runtime stamps sessions and events with this, so it has to
