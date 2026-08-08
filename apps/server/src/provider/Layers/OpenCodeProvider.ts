@@ -31,9 +31,6 @@ import type { Agent, ProviderListResponse } from "@opencode-ai/sdk/v2";
 const OPENCODE_PRESENTATION = {
   displayName: "OpenCode",
   // OpenCode ships a first-class `plan` agent (`opencode agent list` reports it as primary), and
-  // the adapter already routes Plan to it — see `OpenCodeAdapter.sendTurn`, which maps
-  // `interactionMode === "plan"` onto `agent: "plan"`. Only this flag was withholding the toggle.
-  showInteractionModeToggle: true,
 } as const;
 const MINIMUM_OPENCODE_VERSION = "1.14.19";
 

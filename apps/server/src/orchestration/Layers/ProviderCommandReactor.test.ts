@@ -1164,7 +1164,7 @@ describe("ProviderCommandReactor", () => {
     });
   });
 
-  it("forwards plan interaction mode to the provider turn request", async () => {
+  it("does not forward legacy plan interaction mode to the provider turn request", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
 
@@ -1198,8 +1198,8 @@ describe("ProviderCommandReactor", () => {
     await waitFor(() => harness.sendTurn.mock.calls.length === 1);
     expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({
       threadId: ThreadId.make("thread-1"),
-      interactionMode: "plan",
     });
+    expect(harness.sendTurn.mock.calls[0]?.[0]).not.toHaveProperty("interactionMode");
   });
 
   it("preserves the active session model when in-session model switching is unsupported", async () => {

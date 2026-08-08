@@ -725,7 +725,6 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     yield* Effect.annotateCurrentSpan({
       "provider.operation": "send-turn",
       "provider.thread_id": input.threadId,
-      "provider.interaction_mode": input.interactionMode,
       "provider.attachment_count": input.attachments.length,
     });
     let metricProvider = "unknown";
@@ -770,7 +769,6 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       yield* analytics.record("provider.turn.sent", {
         provider: routed.adapter.provider,
         model: input.modelSelection?.model,
-        interactionMode: input.interactionMode,
         attachmentCount: input.attachments.length,
         hasInput: typeof input.input === "string" && input.input.trim().length > 0,
       });

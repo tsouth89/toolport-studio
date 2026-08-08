@@ -743,7 +743,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             title: event.payload.title,
             modelSelection: event.payload.modelSelection,
             runtimeMode: event.payload.runtimeMode,
-            interactionMode: event.payload.interactionMode,
+            interactionMode: "default",
             branch: event.payload.branch,
             worktreePath: event.payload.worktreePath,
             latestTurnId: null,
@@ -908,7 +908,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           }
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
-            interactionMode: event.payload.interactionMode,
+            interactionMode: "default",
             updatedAt: event.payload.updatedAt,
           });
           return;

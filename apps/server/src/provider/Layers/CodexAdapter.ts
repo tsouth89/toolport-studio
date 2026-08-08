@@ -2226,7 +2226,6 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
             }
           : {}),
         ...(serviceTier ? { serviceTier } : {}),
-        ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
         ...(codexAttachments.length > 0 ? { attachments: codexAttachments } : {}),
         ...(input.conversationHistory !== undefined && input.conversationHistory.length > 0
           ? { conversationHistory: input.conversationHistory }

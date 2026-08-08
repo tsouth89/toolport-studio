@@ -657,7 +657,7 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
     }),
   );
 
-  it.effect("maps app plan mode onto the ACP plan session mode", () =>
+  it.effect("does not select the ACP plan session mode", () =>
     Effect.gen(function* () {
       const adapter = yield* CursorAdapter;
       const serverSettings = yield* ServerSettingsService;
@@ -685,7 +685,6 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
         threadId,
         input: "plan this change",
         attachments: [],
-        interactionMode: "plan",
       });
       yield* adapter.stopSession(threadId);
 
@@ -703,7 +702,7 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
         (modeRequest?.params as Record<string, unknown> | undefined)?.sessionId,
         "mock-session-1",
       );
-      assert.include(
+      assert.notInclude(
         ["architect", "plan"],
         String(
           (modeRequest?.params as Record<string, unknown> | undefined)?.modeId ??
@@ -769,7 +768,6 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
           input: "hello mock",
           attachments: [],
           modelSelection,
-          interactionMode: "default",
         });
         yield* adapter.stopSession(threadId);
 
