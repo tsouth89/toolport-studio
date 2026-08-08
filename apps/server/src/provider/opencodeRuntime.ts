@@ -329,12 +329,25 @@ export function toOpenCodeFileParts(input: {
   return parts;
 }
 
-export function buildOpenCodePermissionRules(runtimeMode: RuntimeMode): PermissionRuleset {
+export function buildOpenCodePermissionRules(
+  runtimeMode: RuntimeMode,
+  attachmentDirectory?: string,
+): PermissionRuleset {
   if (runtimeMode === "full-access") {
     return [{ permission: "*", pattern: "*", action: "allow" }];
   }
 
   return [
+    ...(attachmentDirectory
+      ? ([
+          { permission: "external_directory", pattern: attachmentDirectory, action: "allow" },
+          {
+            permission: "external_directory",
+            pattern: `${attachmentDirectory}/**`,
+            action: "allow",
+          },
+        ] satisfies PermissionRuleset)
+      : []),
     { permission: "*", pattern: "*", action: "ask" },
     { permission: "bash", pattern: "*", action: "ask" },
     { permission: "edit", pattern: "*", action: "ask" },

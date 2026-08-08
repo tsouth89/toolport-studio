@@ -20,6 +20,8 @@ import {
   ProviderSendTurnInput,
   ProviderSessionStartInput,
   ProviderStopSessionInput,
+  PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
+  type ChatAttachment,
   type ProviderInstanceId,
   type ProviderDriverKind,
   type ProviderRuntimeEvent,
@@ -56,6 +58,8 @@ import * as ProviderEventLoggers from "./ProviderEventLoggers.ts";
 import * as AnalyticsService from "../../telemetry/AnalyticsService.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
+import { resolveAttachmentPath } from "../../attachmentStore.ts";
+import { ServerConfig } from "../../config.ts";
 const isModelSelection = Schema.is(ModelSelection);
 
 /**
@@ -200,6 +204,58 @@ const correlateRuntimeEventWithInstance = (
   return { ...event, providerInstanceId: source.instanceId };
 };
 
+/**
+ * Disclose file attachments to the agent as readable paths.
+ *
+ * Images are handed to the model as content by each adapter. Everything else is
+ * left on disk and named here, because the agent's own Read tool handles a
+ * `.eml` or a PDF better than any inlining we could do, and one text convention
+ * works across every provider without a native document format per CLI.
+ *
+ * The stored file has a `.bin` name, so the original filename is stated
+ * explicitly — it is the only thing telling the agent what it is about to read.
+ * An attachment whose path cannot be resolved is skipped rather than failing
+ * the turn: a broken attachment should not cost the user their message.
+ */
+export function withFileAttachmentPrompt<
+  T extends {
+    readonly input?: string | undefined;
+    readonly attachments?: ReadonlyArray<ChatAttachment> | undefined;
+  },
+>(turnInput: T, attachmentsDir: string): T | null {
+  const files = (turnInput.attachments ?? []).filter((entry) => entry.type === "file");
+  if (files.length === 0) {
+    return turnInput;
+  }
+
+  const lines: Array<string> = [];
+  for (const file of files) {
+    const path = resolveAttachmentPath({ attachmentsDir, attachment: file });
+    if (path) {
+      lines.push(`- ${file.name} (${file.mimeType}) — ${path}`);
+    }
+  }
+  if (lines.length === 0) {
+    return turnInput;
+  }
+
+  const notice = [
+    files.length === 1 ? "Attached file:" : "Attached files:",
+    ...lines,
+    "Read the path above to see the contents. The stored name ends in `.bin` regardless of the original type.",
+  ].join("\n");
+
+  const existingInput = turnInput.input ?? "";
+  const nextInput = existingInput.length > 0 ? `${existingInput}\n\n${notice}` : notice;
+  if (nextInput.length > PROVIDER_SEND_TURN_MAX_INPUT_CHARS) {
+    return null;
+  }
+  return {
+    ...turnInput,
+    input: nextInput,
+  };
+}
+
 const makeProviderService = Effect.fn("makeProviderService")(function* (
   options?: ProviderServiceLiveOptions,
 ) {
@@ -213,6 +269,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
 
   const registry = yield* ProviderAdapterRegistry.ProviderAdapterRegistry;
   const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+  const { attachmentsDir } = yield* ServerConfig;
   const runtimeEventPubSub = yield* PubSub.unbounded<ProviderRuntimeEvent>();
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
   let syntheticEventSequence = 0;
@@ -685,7 +742,18 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         "provider.kind": routed.adapter.provider,
         ...(input.modelSelection?.model ? { "provider.model": input.modelSelection.model } : {}),
       });
-      const turn = yield* routed.adapter.sendTurn(input);
+      // File attachments are disclosed to the agent as paths here rather than
+      // in each adapter. Every provider's sendTurn funnels through this call,
+      // and the five adapters each build their own prompt text, so doing it per
+      // adapter would mean five copies of one rule drifting apart.
+      const disclosedInput = withFileAttachmentPrompt(input, attachmentsDir);
+      if (disclosedInput === null) {
+        return yield* toValidationError(
+          "ProviderService.sendTurn",
+          `Input plus attachment paths exceeds the ${PROVIDER_SEND_TURN_MAX_INPUT_CHARS} character limit. Shorten the message and try again.`,
+        );
+      }
+      const turn = yield* routed.adapter.sendTurn(disclosedInput);
       yield* directory.upsert({
         threadId: input.threadId,
         provider: routed.adapter.provider,

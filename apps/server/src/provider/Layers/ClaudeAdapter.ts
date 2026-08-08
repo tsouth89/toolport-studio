@@ -74,7 +74,7 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
-import { resolveAttachmentPath } from "../../attachmentStore.ts";
+import { resolveAttachmentPath, resolveThreadAttachmentDirectory } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { resolveClaudeSdkExecutablePath } from "../Drivers/ClaudeExecutable.ts";
@@ -1626,6 +1626,17 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const serverConfig = yield* ServerConfig;
+  const attachmentDirectoriesForThread = (threadId: ThreadId) => {
+    const directory = resolveThreadAttachmentDirectory({
+      attachmentsDir: serverConfig.attachmentsDir,
+      threadId,
+    });
+    if (!directory) return Effect.succeed([] as ReadonlyArray<string>);
+    return fileSystem.exists(directory).pipe(
+      Effect.map((exists) => (exists ? [directory] : [])),
+      Effect.orElseSucceed(() => [] as ReadonlyArray<string>),
+    );
+  };
   const crypto = yield* Crypto.Crypto;
   const claudeEnvironment = yield* makeClaudeEnvironment(claudeSettings, options?.environment).pipe(
     Effect.provideService(Path.Path, path),
@@ -1746,7 +1757,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       includePartialMessages: true,
       canUseTool: context.canUseTool,
       env: claudeEnvironment,
-      ...(context.session.cwd ? { additionalDirectories: [context.session.cwd] } : {}),
+      additionalDirectories: [
+        ...(context.session.cwd ? [context.session.cwd] : []),
+        ...(yield* attachmentDirectoriesForThread(context.session.threadId)),
+      ],
       ...(mcpBindings.length > 0 ? { mcpServers: claudeMcpServers(mcpBindings) } : {}),
     };
 
@@ -4405,7 +4419,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         includePartialMessages: true,
         canUseTool,
         env: claudeEnvironment,
-        ...(input.cwd ? { additionalDirectories: [input.cwd] } : {}),
+        // Grant only this thread's attachment scope. Granting the storage root
+        // would let one conversation enumerate every other thread's uploads.
+        additionalDirectories: [
+          ...(input.cwd ? [input.cwd] : []),
+          ...(yield* attachmentDirectoriesForThread(input.threadId)),
+        ],
         ...(Object.keys(extraArgs).length > 0 ? { extraArgs } : {}),
         ...(mcpBindings.length > 0 ? { mcpServers: claudeMcpServers(mcpBindings) } : {}),
       };
