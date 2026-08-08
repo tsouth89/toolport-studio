@@ -65,7 +65,7 @@ import {
   type ProviderAdapterError,
 } from "../Errors.ts";
 import { type CodexAdapterShape } from "../Services/CodexAdapter.ts";
-import { resolveAttachmentPath } from "../../attachmentStore.ts";
+import { resolveAttachmentPath, resolveThreadAttachmentDirectory } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import {
   CodexResumeCursorSchema,
@@ -1631,6 +1631,11 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
   const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const crypto = yield* Crypto.Crypto;
   const serverConfig = yield* Effect.service(ServerConfig);
+  const attachmentDirectoryForThread = (threadId: ThreadId): string | undefined =>
+    resolveThreadAttachmentDirectory({
+      attachmentsDir: serverConfig.attachmentsDir,
+      threadId,
+    }) ?? undefined;
   const nativeEventLogger =
     options?.nativeEventLogger ??
     (options?.nativeEventLogPath !== undefined
@@ -1904,6 +1909,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       const mcpLaunchOptions =
         mcpBindings.length > 0 ? codexMcpLaunchOptions(mcpBindings, env) : undefined;
       const model = previous?.model ?? session.model;
+      const attachmentDirectory = attachmentDirectoryForThread(session.threadId);
       const runtimeInput: CodexSessionRuntimeOptions = {
         threadId: session.threadId,
         providerInstanceId: boundInstanceId,
@@ -1915,6 +1921,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         ...(codexConfig.homePath ? { homePath: codexConfig.homePath } : {}),
         ...(resumeCursor ? { resumeCursor } : {}),
         runtimeMode: previous?.runtimeMode ?? session.runtimeMode,
+        ...(attachmentDirectory ? { attachmentDirectory } : {}),
         ...(model ? { model } : {}),
         ...(session.serviceTier ? { serviceTier: session.serviceTier } : {}),
         ...mcpLaunchOptions,
@@ -2012,6 +2019,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           mcpBindings.length > 0
             ? codexMcpLaunchOptions(mcpBindings, options?.environment ?? process.env)
             : undefined;
+        const attachmentDirectory = attachmentDirectoryForThread(input.threadId);
         const runtimeInput: CodexSessionRuntimeOptions = {
           threadId: input.threadId,
           providerInstanceId: boundInstanceId,
@@ -2025,6 +2033,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
             ? { resumeCursor: input.resumeCursor }
             : {}),
           runtimeMode: input.runtimeMode,
+          ...(attachmentDirectory ? { attachmentDirectory } : {}),
           ...(model ? { model } : {}),
           ...(serviceTier ? { serviceTier } : {}),
           ...mcpLaunchOptions,

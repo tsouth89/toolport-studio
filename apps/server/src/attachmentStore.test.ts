@@ -6,6 +6,7 @@ import * as NodePath from "node:path";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  attachmentRelativePath,
   createAttachmentId,
   parseThreadSegmentFromAttachmentId,
   resolveAttachmentPathById,
@@ -42,6 +43,35 @@ describe("attachmentStore", () => {
       return;
     }
     expect(parseThreadSegmentFromAttachmentId(attachmentId)).toBe("thread-foo");
+  });
+
+  it("stores files beneath their thread scope", () => {
+    const attachmentId = "thread-1-00000000-0000-4000-8000-000000000001";
+    expect(
+      attachmentRelativePath({
+        type: "file",
+        id: attachmentId,
+        name: "message.eml",
+        mimeType: "message/rfc822",
+        sizeBytes: 12,
+      }),
+    ).toBe(`thread-1/${attachmentId}.bin`);
+  });
+
+  it("resolves a thread-scoped file by id", () => {
+    const attachmentsDir = NodeFS.mkdtempSync(
+      NodePath.join(NodeOS.tmpdir(), "t3code-attachment-store-"),
+    );
+    const attachmentId = "thread-1-00000000-0000-4000-8000-000000000001";
+    try {
+      const filePath = NodePath.join(attachmentsDir, "thread-1", `${attachmentId}.bin`);
+      NodeFS.mkdirSync(NodePath.dirname(filePath), { recursive: true });
+      NodeFS.writeFileSync(filePath, Buffer.from("hello"));
+
+      expect(resolveAttachmentPathById({ attachmentsDir, attachmentId })).toBe(filePath);
+    } finally {
+      NodeFS.rmSync(attachmentsDir, { recursive: true, force: true });
+    }
   });
 
   it("resolves attachment path by id using the extension that exists on disk", () => {

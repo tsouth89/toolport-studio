@@ -1075,6 +1075,7 @@ function normalizePersistedAttachment(value: unknown): PersistedComposerImageAtt
   const mimeType = candidate.mimeType;
   const sizeBytes = candidate.sizeBytes;
   const dataUrl = candidate.dataUrl;
+  const type = candidate.type;
   if (
     typeof id !== "string" ||
     typeof name !== "string" ||
@@ -1087,12 +1088,16 @@ function normalizePersistedAttachment(value: unknown): PersistedComposerImageAtt
   ) {
     return null;
   }
+  if (type !== undefined && type !== "image" && type !== "file") {
+    return null;
+  }
   return {
     id,
     name,
     mimeType,
     sizeBytes,
     dataUrl,
+    ...(type === undefined ? {} : { type }),
   };
 }
 

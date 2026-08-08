@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
+import * as NodePath from "node:path";
 
 import type { ChatAttachment } from "@toolport-studio/contracts";
 
@@ -70,7 +71,7 @@ export function attachmentRelativePath(attachment: ChatAttachment): string {
     // you do not want reaching a filesystem path. The agent is told the real
     // filename in the prompt, which is what it actually needs.
     case "file":
-      return `${attachment.id}.bin`;
+      return `${parseThreadSegmentFromAttachmentId(attachment.id) ?? "invalid"}/${attachment.id}.bin`;
   }
 }
 
@@ -78,10 +79,29 @@ export function resolveAttachmentPath(input: {
   readonly attachmentsDir: string;
   readonly attachment: ChatAttachment;
 }): string | null {
+  if (
+    input.attachment.type === "file" &&
+    !parseThreadSegmentFromAttachmentId(input.attachment.id)
+  ) {
+    return null;
+  }
   return resolveAttachmentRelativePath({
     attachmentsDir: input.attachmentsDir,
     relativePath: attachmentRelativePath(input.attachment),
   });
+}
+
+export function resolveThreadAttachmentDirectory(input: {
+  readonly attachmentsDir: string;
+  readonly threadId: string;
+}): string | null {
+  const segment = toSafeThreadAttachmentSegment(input.threadId);
+  if (!segment) return null;
+  const marker = resolveAttachmentRelativePath({
+    attachmentsDir: input.attachmentsDir,
+    relativePath: `${segment}/.scope`,
+  });
+  return marker ? NodePath.dirname(marker) : null;
 }
 
 export function resolveAttachmentPathById(input: {
@@ -92,13 +112,20 @@ export function resolveAttachmentPathById(input: {
   if (!normalizedId || normalizedId.includes("/") || normalizedId.includes(".")) {
     return null;
   }
+  const threadSegment = parseThreadSegmentFromAttachmentId(normalizedId);
   for (const extension of ATTACHMENT_FILENAME_EXTENSIONS) {
-    const maybePath = resolveAttachmentRelativePath({
-      attachmentsDir: input.attachmentsDir,
-      relativePath: `${normalizedId}${extension}`,
-    });
-    if (maybePath && NodeFS.existsSync(maybePath)) {
-      return maybePath;
+    const candidates =
+      extension === ".bin" && threadSegment
+        ? [`${threadSegment}/${normalizedId}${extension}`, `${normalizedId}${extension}`]
+        : [`${normalizedId}${extension}`];
+    for (const relativePath of candidates) {
+      const maybePath = resolveAttachmentRelativePath({
+        attachmentsDir: input.attachmentsDir,
+        relativePath,
+      });
+      if (maybePath && NodeFS.existsSync(maybePath)) {
+        return maybePath;
+      }
     }
   }
   return null;

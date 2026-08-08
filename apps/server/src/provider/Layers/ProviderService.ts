@@ -20,6 +20,7 @@ import {
   ProviderSendTurnInput,
   ProviderSessionStartInput,
   ProviderStopSessionInput,
+  PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
   type ChatAttachment,
   type ProviderInstanceId,
   type ProviderDriverKind,
@@ -221,7 +222,7 @@ export function withFileAttachmentPrompt<
     readonly input?: string | undefined;
     readonly attachments?: ReadonlyArray<ChatAttachment> | undefined;
   },
->(turnInput: T, attachmentsDir: string): T {
+>(turnInput: T, attachmentsDir: string): T | null {
   const files = (turnInput.attachments ?? []).filter((entry) => entry.type === "file");
   if (files.length === 0) {
     return turnInput;
@@ -245,9 +246,13 @@ export function withFileAttachmentPrompt<
   ].join("\n");
 
   const existingInput = turnInput.input ?? "";
+  const nextInput = existingInput.length > 0 ? `${existingInput}\n\n${notice}` : notice;
+  if (nextInput.length > PROVIDER_SEND_TURN_MAX_INPUT_CHARS) {
+    return null;
+  }
   return {
     ...turnInput,
-    input: existingInput.length > 0 ? `${existingInput}\n\n${notice}` : notice,
+    input: nextInput,
   };
 }
 
@@ -741,7 +746,14 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       // in each adapter. Every provider's sendTurn funnels through this call,
       // and the five adapters each build their own prompt text, so doing it per
       // adapter would mean five copies of one rule drifting apart.
-      const turn = yield* routed.adapter.sendTurn(withFileAttachmentPrompt(input, attachmentsDir));
+      const disclosedInput = withFileAttachmentPrompt(input, attachmentsDir);
+      if (disclosedInput === null) {
+        return yield* toValidationError(
+          "ProviderService.sendTurn",
+          `Input plus attachment paths exceeds the ${PROVIDER_SEND_TURN_MAX_INPUT_CHARS} character limit. Shorten the message and try again.`,
+        );
+      }
+      const turn = yield* routed.adapter.sendTurn(disclosedInput);
       yield* directory.upsert({
         threadId: input.threadId,
         provider: routed.adapter.provider,

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
+import { PROVIDER_SEND_TURN_MAX_INPUT_CHARS } from "@toolport-studio/contracts";
 
 import { withFileAttachmentPrompt } from "./ProviderService.ts";
 
@@ -27,6 +28,8 @@ describe("withFileAttachmentPrompt", () => {
       { input: "what does this say?", attachments: [fileAttachment] },
       ATTACHMENTS_DIR,
     );
+    expect(result).not.toBeNull();
+    if (result === null) throw new Error("Expected the attachment prompt to fit");
 
     expect(result.input).toContain("what does this say?");
     // The stored file is `.bin`, so the original name is the only thing telling
@@ -40,7 +43,7 @@ describe("withFileAttachmentPrompt", () => {
     // Images are handed to the model as content by each adapter. Describing
     // them here too would double-report them.
     expect(withFileAttachmentPrompt(turn, ATTACHMENTS_DIR)).toBe(turn);
-    expect(withFileAttachmentPrompt({ input: "hello" }, ATTACHMENTS_DIR).input).toBe("hello");
+    expect(withFileAttachmentPrompt({ input: "hello" }, ATTACHMENTS_DIR)?.input).toBe("hello");
   });
 
   it("still describes the file when the user sent no text", () => {
@@ -48,6 +51,7 @@ describe("withFileAttachmentPrompt", () => {
       { input: "", attachments: [fileAttachment] },
       ATTACHMENTS_DIR,
     );
+    if (result === null) throw new Error("Expected the attachment prompt to fit");
     expect(result.input).toContain("Re_ GageSage setup.eml");
     expect(result.input.startsWith("\n")).toBe(false);
   });
@@ -57,7 +61,17 @@ describe("withFileAttachmentPrompt", () => {
       { input: "hi", attachments: [fileAttachment], threadId: "thread-1" as never },
       ATTACHMENTS_DIR,
     );
+    if (result === null) throw new Error("Expected the attachment prompt to fit");
     expect(result.threadId).toBe("thread-1");
     expect(result.attachments).toHaveLength(1);
+  });
+
+  it("rejects a notice that would exceed the provider input limit", () => {
+    expect(
+      withFileAttachmentPrompt(
+        { input: "x".repeat(PROVIDER_SEND_TURN_MAX_INPUT_CHARS), attachments: [fileAttachment] },
+        ATTACHMENTS_DIR,
+      ),
+    ).toBeNull();
   });
 });

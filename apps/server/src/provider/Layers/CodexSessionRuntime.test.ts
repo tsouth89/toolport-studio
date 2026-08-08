@@ -68,6 +68,23 @@ function makeThreadOpenResponse(
 }
 
 describe("buildTurnStartParams", () => {
+  it.effect("grants a workspace-write turn only its thread attachment directory", () =>
+    Effect.gen(function* () {
+      const attachmentDirectory = "C:\\state\\attachments\\thread-1";
+      const params = yield* buildTurnStartParams({
+        threadId: "provider-thread-1",
+        runtimeMode: "auto",
+        prompt: "Read the attachment",
+        attachmentDirectory,
+      });
+
+      NodeAssert.deepStrictEqual(params.sandboxPolicy, {
+        type: "workspaceWrite",
+        writableRoots: [attachmentDirectory],
+      });
+    }),
+  );
+
   it("keeps invalid turn values only in the schema cause", () => {
     const secret = "codex-turn-input-secret-sentinel";
     const error = Effect.runSync(

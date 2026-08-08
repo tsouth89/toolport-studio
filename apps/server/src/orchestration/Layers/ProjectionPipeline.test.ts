@@ -1109,10 +1109,10 @@ it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-atta
             text: "Delete",
             attachments: [
               {
-                type: "image",
+                type: "file",
                 id: attachmentId,
-                name: "delete.png",
-                mimeType: "image/png",
+                name: "delete.eml",
+                mimeType: "message/rfc822",
                 sizeBytes: 5,
               },
             ],
@@ -1123,12 +1123,20 @@ it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-atta
           },
         });
 
-        const threadAttachmentPath = path.join(attachmentsDir, `${attachmentId}.png`);
+        const threadAttachmentPath = path.join(
+          attachmentsDir,
+          "thread-delete-files",
+          `${attachmentId}.bin`,
+        );
         const otherThreadAttachmentPath = path.join(
           attachmentsDir,
-          `${otherThreadAttachmentId}.png`,
+          "thread-delete-files-extra",
+          `${otherThreadAttachmentId}.bin`,
         );
-        yield* fileSystem.makeDirectory(attachmentsDir, { recursive: true });
+        yield* fileSystem.makeDirectory(path.dirname(threadAttachmentPath), { recursive: true });
+        yield* fileSystem.makeDirectory(path.dirname(otherThreadAttachmentPath), {
+          recursive: true,
+        });
         yield* fileSystem.writeFileString(threadAttachmentPath, "delete");
         yield* fileSystem.writeFileString(otherThreadAttachmentPath, "other-thread");
         assert.isTrue(yield* exists(threadAttachmentPath));

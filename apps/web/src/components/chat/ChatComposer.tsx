@@ -16,6 +16,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+  PROVIDER_SEND_TURN_MAX_FILE_BYTES,
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
 } from "@toolport-studio/contracts";
 import type { EnvironmentConnectionPresentation } from "@toolport-studio/client-runtime/connection";
@@ -193,6 +194,27 @@ import { useMediaQuery } from "../../hooks/useMediaQuery";
 import type { ReviewCommentContext } from "../../reviewCommentContext";
 
 const IMAGE_SIZE_LIMIT_LABEL = `${Math.round(PROVIDER_SEND_TURN_MAX_IMAGE_BYTES / (1024 * 1024))}MB`;
+const FILE_SIZE_LIMIT_LABEL = `${Math.round(PROVIDER_SEND_TURN_MAX_FILE_BYTES / (1024 * 1024))}MB`;
+const IMAGE_EXTENSION_MIME_TYPES: Readonly<Record<string, string>> = {
+  avif: "image/avif",
+  bmp: "image/bmp",
+  gif: "image/gif",
+  heic: "image/heic",
+  heif: "image/heif",
+  ico: "image/x-icon",
+  jpeg: "image/jpeg",
+  jpg: "image/jpeg",
+  png: "image/png",
+  svg: "image/svg+xml",
+  webp: "image/webp",
+};
+
+function inferComposerImageMimeType(file: File): string | undefined {
+  if (file.type.startsWith("image/")) return file.type;
+  if (file.type.length > 0) return undefined;
+  const extension = file.name.split(".").pop()?.toLowerCase();
+  return extension ? IMAGE_EXTENSION_MIME_TYPES[extension] : undefined;
+}
 
 const runtimeModeConfig: Record<
   RuntimeMode,
@@ -1588,7 +1610,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         await Promise.all(
           composerImages.map(async (image) => {
             try {
-              const dataUrl = await readFileAsDataUrl(image.file);
+              const rawDataUrl = await readFileAsDataUrl(image.file);
+              const dataUrl =
+                image.type === "image" && !image.file.type.startsWith("image/")
+                  ? rawDataUrl.replace(/^data:[^;,]*;/i, `data:${image.mimeType};`)
+                  : rawDataUrl;
               stagedAttachmentById.set(image.id, {
                 id: image.id,
                 name: image.name,
@@ -2038,7 +2064,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     // Scoped to images. A non-image attachment is handed over as a path the
     // agent reads itself, which does not need vision, so a text-only provider
     // must still accept it.
-    const hasImages = files.some((file) => file.type.startsWith("image/"));
+    const hasImages = files.some((file) => inferComposerImageMimeType(file) !== undefined);
     if (hasImages && !providerReadsImages) {
       // On a router the limit belongs to the chosen model rather than the
       // instance, and blaming "OpenRouter" would send the user looking for a
@@ -2062,9 +2088,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     for (const file of files) {
       // Anything that is not an image rides along as a file the agent opens by
       // path, so there is no supported-type list to fail against any more.
-      const isImage = file.type.startsWith("image/");
-      if (file.size > PROVIDER_SEND_TURN_MAX_IMAGE_BYTES) {
-        error = `'${file.name}' exceeds the ${IMAGE_SIZE_LIMIT_LABEL} attachment limit.`;
+      const imageMimeType = inferComposerImageMimeType(file);
+      const isImage = imageMimeType !== undefined;
+      const maximumBytes = isImage
+        ? PROVIDER_SEND_TURN_MAX_IMAGE_BYTES
+        : PROVIDER_SEND_TURN_MAX_FILE_BYTES;
+      if (file.size > maximumBytes) {
+        error = `'${file.name}' exceeds the ${isImage ? IMAGE_SIZE_LIMIT_LABEL : FILE_SIZE_LIMIT_LABEL} attachment limit.`;
         continue;
       }
       if (nextImageCount >= PROVIDER_SEND_TURN_MAX_ATTACHMENTS) {
@@ -2079,7 +2109,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         // A browser can report an empty type for an unrecognised extension
         // (.eml among them). The contract requires a non-empty string and
         // nothing dispatches on the value, so name it rather than reject it.
-        mimeType: file.type || "application/octet-stream",
+        mimeType: imageMimeType ?? (file.type || "application/octet-stream"),
         sizeBytes: file.size,
         previewUrl,
         file,

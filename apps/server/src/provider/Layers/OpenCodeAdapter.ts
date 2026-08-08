@@ -39,7 +39,7 @@ import {
   formatProviderEmittedFailureMessage,
 } from "@toolport-studio/shared/providerError";
 
-import { resolveAttachmentPath } from "../../attachmentStore.ts";
+import { resolveAttachmentPath, resolveThreadAttachmentDirectory } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
@@ -1903,6 +1903,11 @@ export function makeOpenCodeAdapter(
         const serverUrl = openCodeSettings.serverUrl;
         const serverPassword = openCodeSettings.serverPassword;
         const directory = input.cwd ?? serverConfig.cwd;
+        const attachmentDirectory =
+          resolveThreadAttachmentDirectory({
+            attachmentsDir: serverConfig.attachmentsDir,
+            threadId: input.threadId,
+          }) ?? undefined;
         const resumeSessionId = parseOpenCodeResume(input.resumeCursor)?.sessionId;
         const existing = sessions.get(input.threadId);
         if (existing) {
@@ -1981,7 +1986,10 @@ export function makeOpenCodeAdapter(
                   yield* runOpenCodeSdk("session.update", () =>
                     client.session.update({
                       sessionID: reusable.id,
-                      permission: buildOpenCodePermissionRules(input.runtimeMode),
+                      permission: buildOpenCodePermissionRules(
+                        input.runtimeMode,
+                        attachmentDirectory,
+                      ),
                     }),
                   );
                   return { openCodeSession: reusable, created: false };
@@ -2008,7 +2016,10 @@ export function makeOpenCodeAdapter(
                   yield* runOpenCodeSdk("session.update", () =>
                     client.session.update({
                       sessionID: forked.id,
-                      permission: buildOpenCodePermissionRules(input.runtimeMode),
+                      permission: buildOpenCodePermissionRules(
+                        input.runtimeMode,
+                        attachmentDirectory,
+                      ),
                     }),
                   );
                   return { openCodeSession: forked, created: true };
@@ -2021,7 +2032,10 @@ export function makeOpenCodeAdapter(
                 }
                 const createdSession = yield* runOpenCodeSdk("session.create", () =>
                   client.session.create({
-                    permission: buildOpenCodePermissionRules(input.runtimeMode),
+                    permission: buildOpenCodePermissionRules(
+                      input.runtimeMode,
+                      attachmentDirectory,
+                    ),
                   }),
                 );
                 if (!createdSession.data) {

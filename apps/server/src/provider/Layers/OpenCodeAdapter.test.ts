@@ -28,6 +28,7 @@ import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
 import type { OpenCodeAdapterShape } from "../Services/OpenCodeAdapter.ts";
 import {
+  buildOpenCodePermissionRules,
   OpenCodeRuntime,
   OpenCodeRuntimeError,
   type OpenCodeRuntimeShape,
@@ -49,6 +50,24 @@ class OpenCodeAdapter extends Context.Service<OpenCodeAdapter, OpenCodeAdapterSh
 ) {}
 
 const asThreadId = (value: string): ThreadId => ThreadId.make(value);
+
+describe("buildOpenCodePermissionRules", () => {
+  plainIt("allows only the current thread attachment directory", () => {
+    const attachmentDirectory = "C:\\state\\attachments\\thread-1";
+    const rules = buildOpenCodePermissionRules("auto", attachmentDirectory);
+
+    expect(rules).toContainEqual({
+      permission: "external_directory",
+      pattern: attachmentDirectory,
+      action: "allow",
+    });
+    expect(rules).not.toContainEqual({
+      permission: "external_directory",
+      pattern: "C:\\state\\attachments",
+      action: "allow",
+    });
+  });
+});
 
 type MessageEntry = {
   info: {

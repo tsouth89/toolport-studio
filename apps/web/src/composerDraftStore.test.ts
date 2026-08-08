@@ -343,6 +343,48 @@ describe("composerDraftStore syncPersistedAttachments", () => {
     expect(draftFor(threadId, TEST_ENVIRONMENT_ID)?.persistedAttachments).toEqual([]);
     expect(draftFor(threadId, TEST_ENVIRONMENT_ID)?.nonPersistedImageIds).toEqual([image.id]);
   });
+
+  it("hydrates persisted file attachments as files", () => {
+    const persistApi = useComposerDraftStore.persist as unknown as {
+      getOptions: () => {
+        merge: (
+          persistedState: unknown,
+          currentState: ReturnType<typeof useComposerDraftStore.getState>,
+        ) => ReturnType<typeof useComposerDraftStore.getState>;
+      };
+    };
+    const mergedState = persistApi.getOptions().merge(
+      {
+        draftsByThreadKey: {
+          [threadKeyFor(threadId, TEST_ENVIRONMENT_ID)]: {
+            prompt: "",
+            attachments: [
+              {
+                id: "file-persisted",
+                name: "message.eml",
+                mimeType: "message/rfc822",
+                sizeBytes: 4,
+                dataUrl: "data:message/rfc822;base64,dGVzdA==",
+                type: "file",
+              },
+            ],
+          },
+        },
+      },
+      useComposerDraftStore.getInitialState(),
+    );
+
+    expect(
+      mergedState.draftsByThreadKey[threadKeyFor(threadId, TEST_ENVIRONMENT_ID)]?.images,
+    ).toMatchObject([
+      {
+        id: "file-persisted",
+        name: "message.eml",
+        mimeType: "message/rfc822",
+        type: "file",
+      },
+    ]);
+  });
 });
 
 describe("composerDraftStore terminal contexts", () => {

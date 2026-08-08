@@ -351,9 +351,6 @@ function collectThreadAttachmentRelativePaths(
   const relativePaths = new Set<string>();
   for (const message of messages) {
     for (const attachment of message.attachments ?? []) {
-      if (attachment.type !== "image") {
-        continue;
-      }
       const attachmentThreadSegment = parseThreadSegmentFromAttachmentId(attachment.id);
       if (!attachmentThreadSegment || attachmentThreadSegment !== threadSegment) {
         continue;
@@ -373,16 +370,20 @@ const runAttachmentSideEffects = Effect.fn("runAttachmentSideEffects")(function*
 
   const attachmentsRootDir = serverConfig.attachmentsDir;
   const readAttachmentRootEntries = fileSystem
-    .readDirectory(attachmentsRootDir, { recursive: false })
+    .readDirectory(attachmentsRootDir, { recursive: true })
     .pipe(Effect.orElseSucceed(() => [] as Array<string>));
 
   const removeDeletedThreadAttachmentEntry = Effect.fn("removeDeletedThreadAttachmentEntry")(
     function* (threadSegment: string, entry: string) {
       const normalizedEntry = entry.replace(/^[/\\]+/, "").replace(/\\/g, "/");
-      if (normalizedEntry.length === 0 || normalizedEntry.includes("/")) {
+      if (normalizedEntry.length === 0) {
         return;
       }
-      const attachmentId = parseAttachmentIdFromRelativePath(normalizedEntry);
+      const [scope, fileName, extra] = normalizedEntry.includes("/")
+        ? normalizedEntry.split("/")
+        : [undefined, normalizedEntry, undefined];
+      if (extra !== undefined || (scope !== undefined && scope !== threadSegment)) return;
+      const attachmentId = parseAttachmentIdFromRelativePath(fileName ?? "");
       if (!attachmentId) {
         return;
       }
@@ -415,6 +416,8 @@ const runAttachmentSideEffects = Effect.fn("runAttachmentSideEffects")(function*
         concurrency: 1,
       },
     );
+    const scopedDirectory = path.join(attachmentsRootDir, threadSegment);
+    yield* fileSystem.remove(scopedDirectory, { recursive: true, force: true }).pipe(Effect.ignore);
   });
 
   const pruneThreadAttachmentEntry = Effect.fn("pruneThreadAttachmentEntry")(function* (
@@ -423,10 +426,14 @@ const runAttachmentSideEffects = Effect.fn("runAttachmentSideEffects")(function*
     entry: string,
   ) {
     const relativePath = entry.replace(/^[/\\]+/, "").replace(/\\/g, "/");
-    if (relativePath.length === 0 || relativePath.includes("/")) {
+    if (relativePath.length === 0) {
       return;
     }
-    const attachmentId = parseAttachmentIdFromRelativePath(relativePath);
+    const [scope, fileName, extra] = relativePath.includes("/")
+      ? relativePath.split("/")
+      : [undefined, relativePath, undefined];
+    if (extra !== undefined || (scope !== undefined && scope !== threadSegment)) return;
+    const attachmentId = parseAttachmentIdFromRelativePath(fileName ?? "");
     if (!attachmentId) {
       return;
     }
