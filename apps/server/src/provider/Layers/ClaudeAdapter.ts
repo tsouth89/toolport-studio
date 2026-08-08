@@ -343,6 +343,7 @@ interface ClaudeSessionContext {
   selectedContextWindow: number | undefined;
   lastKnownTokenUsage: ThreadTokenUsageSnapshot | undefined;
   lastKnownTotalProcessedTokens: number | undefined;
+  taskProgressTokenUsageGeneration: number;
   lastAssistantUuid: string | undefined;
   lastThreadStartedId: string | undefined;
   /**
@@ -765,9 +766,11 @@ function normalizeClaudeTaskProgressTokenUsage(
       ...(durationMs !== undefined ? { durationMs } : {}),
     };
   }
+  const previousTotalProcessedTokens =
+    lastKnownUsage.totalProcessedTokens ?? context.lastKnownTotalProcessedTokens ?? 0;
   return {
     ...lastKnownUsage,
-    ...(totalProcessedTokens > lastKnownUsage.usedTokens ? { totalProcessedTokens } : {}),
+    ...(totalProcessedTokens > previousTotalProcessedTokens ? { totalProcessedTokens } : {}),
     ...(toolUses !== undefined ? { toolUses } : {}),
     ...(durationMs !== undefined ? { durationMs } : {}),
   };
@@ -2323,9 +2326,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       readonly rawPayload: unknown;
     },
   ) {
+    const generation = ++context.taskProgressTokenUsageGeneration;
     yield* taskProgressTokenUsage(context, value).pipe(
       Effect.flatMap((usage) =>
-        context.stopped ? Effect.void : emitThreadTokenUsage(context, usage, options),
+        context.stopped || generation !== context.taskProgressTokenUsageGeneration
+          ? Effect.void
+          : emitThreadTokenUsage(context, usage, options),
       ),
       // Context telemetry is optional and may take up to the timeout above.
       // Detach it so task lifecycle events continue through the provider loop.
@@ -4598,6 +4604,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         selectedContextWindow: initialContextWindow,
         lastKnownTokenUsage: undefined,
         lastKnownTotalProcessedTokens: undefined,
+        taskProgressTokenUsageGeneration: 0,
         lastAssistantUuid: effectiveResumeSessionAt,
         lastThreadStartedId: undefined,
         needsContextRehydration,

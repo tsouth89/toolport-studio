@@ -2441,6 +2441,134 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("keeps cumulative task totals when active context is larger", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => runtimeEvents.push(event)),
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      harness.query.emit({
+        type: "system",
+        subtype: "compact_boundary",
+        compact_metadata: { trigger: "manual", pre_tokens: 195_000, post_tokens: 190_000 },
+        session_id: "sdk-session-task-total",
+        uuid: "compact-task-total",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "system",
+        subtype: "task_progress",
+        task_id: "task-total-below-active-context",
+        description: "Reporting cumulative task usage",
+        usage: { total_tokens: 150_000 },
+        session_id: "sdk-session-task-total",
+        uuid: "task-progress-total-below-active",
+      } as unknown as SDKMessage);
+
+      for (let index = 0; index < 20; index += 1) {
+        yield* Effect.yieldNow;
+      }
+
+      const usageEvents = runtimeEvents.filter(
+        (event) => event.type === "thread.token-usage.updated",
+      );
+      const finalUsage = usageEvents.at(-1);
+      assert.equal(finalUsage?.type, "thread.token-usage.updated");
+      if (finalUsage?.type === "thread.token-usage.updated") {
+        assert.equal(finalUsage.payload.usage.usedTokens, 190_000);
+        assert.equal(finalUsage.payload.usage.totalProcessedTokens, 150_000);
+      }
+      runtimeEventsFiber.interruptUnsafe();
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("drops stale task usage queries that complete out of order", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const contextUsageResolvers: Array<(value: SDKControlGetContextUsageResponse) => void> = [];
+      harness.query.getContextUsage = () =>
+        new Promise<SDKControlGetContextUsageResponse>((resolve) => {
+          contextUsageResolvers.push(resolve);
+        });
+      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => runtimeEvents.push(event)),
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      harness.query.emit({
+        type: "system",
+        subtype: "task_progress",
+        task_id: "task-usage-older",
+        description: "Older progress",
+        usage: { total_tokens: 100_000 },
+        session_id: "sdk-session-reverse-usage",
+        uuid: "task-progress-older",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "system",
+        subtype: "task_progress",
+        task_id: "task-usage-newer",
+        description: "Newer progress",
+        usage: { total_tokens: 200_000 },
+        session_id: "sdk-session-reverse-usage",
+        uuid: "task-progress-newer",
+      } as unknown as SDKMessage);
+
+      for (let index = 0; index < 20 && contextUsageResolvers.length < 2; index += 1) {
+        yield* Effect.yieldNow;
+      }
+      assert.lengthOf(contextUsageResolvers, 2);
+
+      contextUsageResolvers[1]?.({
+        totalTokens: 20_000,
+        maxTokens: 200_000,
+        isAutoCompactEnabled: true,
+      } as SDKControlGetContextUsageResponse);
+      for (let index = 0; index < 10; index += 1) {
+        yield* Effect.yieldNow;
+      }
+      contextUsageResolvers[0]?.({
+        totalTokens: 10_000,
+        maxTokens: 200_000,
+        isAutoCompactEnabled: true,
+      } as SDKControlGetContextUsageResponse);
+      for (let index = 0; index < 10; index += 1) {
+        yield* Effect.yieldNow;
+      }
+
+      const usageEvents = runtimeEvents.filter(
+        (event) => event.type === "thread.token-usage.updated",
+      );
+      assert.lengthOf(usageEvents, 1);
+      const usageEvent = usageEvents[0];
+      assert.equal(usageEvent?.type, "thread.token-usage.updated");
+      if (usageEvent?.type === "thread.token-usage.updated") {
+        assert.equal(usageEvent.payload.usage.usedTokens, 20_000);
+        assert.equal(usageEvent.payload.usage.totalProcessedTokens, 200_000);
+      }
+      runtimeEventsFiber.interruptUnsafe();
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("maps background task lifecycle to task.updated and dedupes roster repeats", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
