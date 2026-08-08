@@ -8,6 +8,7 @@ import type {
   Options as ClaudeQueryOptions,
   PermissionMode,
   PermissionResult,
+  SDKControlGetContextUsageResponse,
   SDKMessage,
   SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -119,6 +120,11 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
     this.closeCalls += 1;
     this.finish();
   };
+
+  // Left undefined by default: the adapter branches on whether the SDK exposes
+  // this at all, so declaring it always-present would put every other test on
+  // the context-usage path. Tests that need it assign a stub.
+  public getContextUsage?: () => Promise<SDKControlGetContextUsageResponse>;
 
   [Symbol.asyncIterator](): AsyncIterator<SDKMessage> {
     return {
@@ -2707,6 +2713,75 @@ describe("ClaudeAdapterLive", () => {
             maxTokens: 200000,
           },
         });
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("keeps the selected 200k window when getContextUsage reports the model ceiling", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      // The SDK reports the model's own ceiling here, not the session budget:
+      // 1M for Opus 5 and for Sonnet, whatever window the user picked. #125
+      // made the selection authoritative in completeTurn but not on this path,
+      // which runs on every poll and put the ceiling straight back.
+      harness.query.getContextUsage = async () =>
+        ({
+          totalTokens: 33_000,
+          maxTokens: 1_000_000,
+          isAutoCompactEnabled: true,
+        }) as unknown as SDKControlGetContextUsageResponse;
+
+      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 7).pipe(
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          "claude-opus-4-6",
+          [{ id: "contextWindow", value: "200k" }],
+        ),
+      });
+      yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "hello",
+        attachments: [],
+      });
+
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        duration_ms: 10,
+        duration_api_ms: 10,
+        num_turns: 1,
+        result: "done",
+        stop_reason: "end_turn",
+        session_id: "sdk-session-context-usage-window",
+        usage: { input_tokens: 10, output_tokens: 5 },
+      } as unknown as SDKMessage);
+      harness.query.finish();
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const usageEvents = runtimeEvents.filter(
+        (event) => event.type === "thread.token-usage.updated",
+      );
+      assert.isAtLeast(usageEvents.length, 1);
+      // Every emitted snapshot must agree with the selection; one that reports
+      // 1M overstates remaining room five-fold in the meter.
+      for (const usageEvent of usageEvents) {
+        if (usageEvent.type === "thread.token-usage.updated") {
+          assert.equal(usageEvent.payload.usage.maxTokens, 200000);
+        }
       }
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
