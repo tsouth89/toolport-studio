@@ -661,12 +661,11 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
           const outcome = resolveIndeterminateSnapshot({
             previous: published,
             next,
-            consecutiveFailures: priorFailuresForObservation(streak, next.checkedAt),
+            consecutiveFailures: priorFailuresForObservation(streak, next === timedOut),
             now,
           });
           streak = {
             consecutiveFailures: outcome.consecutiveFailures,
-            checkedAt: next.checkedAt,
           };
           published = outcome.provider;
           return outcome;
@@ -683,18 +682,17 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
       });
 
       it("still accumulates across genuinely separate probes", () => {
-        // The dedupe keys on `checkedAt`, so a real second timeout must still
-        // pass the tolerance — absorbing forever is the worse failure.
+        // Independent observations must still pass the tolerance even when a
+        // coarse clock gives both probes the same timestamp.
         const streak: IndeterminateStreak = {
           consecutiveFailures: 1,
-          checkedAt: timedOut.checkedAt,
         };
-        const later = { ...timedOut, checkedAt: "2026-04-14T00:10:00.000Z" } as const;
+        const later = { ...timedOut } as const;
 
         const outcome = resolveIndeterminateSnapshot({
           previous: observed,
           next: later,
-          consecutiveFailures: priorFailuresForObservation(streak, later.checkedAt),
+          consecutiveFailures: priorFailuresForObservation(streak, later === timedOut),
           now,
         });
 

@@ -3,6 +3,7 @@ import * as NodeProcess from "node:process";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -20,6 +21,7 @@ import {
   OpenCodeSettings,
   ProviderDriverKind,
   ProviderInstanceId,
+  type ProviderRuntimeEvent,
   ThreadId,
 } from "@toolport-studio/contracts";
 import { createModelSelection } from "@toolport-studio/shared/model";
@@ -1817,6 +1819,77 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive more", (it) => {
         ["question-stranded"],
         "expected the timeout to reject the question upstream",
       );
+    }),
+  );
+
+  it.effect("records Stop as the resolver of a pending permission", () =>
+    Effect.gen(function* () {
+      const threadId = asThreadId("thread-opencode-approval-aborted");
+      const adapterLayer = Layer.effect(
+        OpenCodeAdapter,
+        makeOpenCodeAdapter(openCodeAdapterTestSettings),
+      ).pipe(
+        Layer.provideMerge(Layer.succeed(OpenCodeRuntime, OpenCodeRuntimeTestDouble)),
+        Layer.provideMerge(ServerConfig.layerTest(NodeProcess.cwd(), NodeProcess.cwd())),
+        Layer.provideMerge(
+          ServerSettingsService.layerTest({
+            providers: {
+              opencode: {
+                binaryPath: "fake-opencode",
+                serverUrl: "http://127.0.0.1:9999",
+                serverPassword: "secret-password",
+              },
+            },
+          }),
+        ),
+        Layer.provideMerge(providerSessionDirectoryTestLayer),
+        Layer.provideMerge(NodeServices.layer),
+      );
+
+      yield* Effect.gen(function* () {
+        const adapter = yield* OpenCodeAdapter;
+        const opened = yield* Deferred.make<void>();
+        const resolved =
+          yield* Deferred.make<
+            Extract<ProviderRuntimeEvent, { readonly type: "request.resolved" }>
+          >();
+        runtimeMock.state.subscribedEvents = [
+          {
+            type: "permission.asked",
+            properties: {
+              id: "perm-aborted",
+              sessionID: "http://127.0.0.1:9999/session",
+              permission: "bash",
+              patterns: ["ls"],
+              metadata: {},
+            },
+          },
+        ];
+
+        const eventsFiber = yield* adapter.streamEvents.pipe(
+          Stream.filter((event) => event.threadId === threadId),
+          Stream.runForEach((event) => {
+            if (event.type === "request.opened") return Deferred.succeed(opened, undefined);
+            if (event.type === "request.resolved") return Deferred.succeed(resolved, event);
+            return Effect.void;
+          }),
+          Effect.forkChild,
+        );
+        yield* adapter.startSession({
+          provider: ProviderDriverKind.make("opencode"),
+          threadId,
+          runtimeMode: "approval-required",
+        });
+        yield* Deferred.await(opened).pipe(Effect.timeout("5 seconds"));
+        yield* adapter.interruptTurn(threadId);
+
+        const event = yield* Deferred.await(resolved).pipe(Effect.timeout("5 seconds"));
+        NodeAssert.equal(event.payload.decision, "cancel");
+        NodeAssert.equal(event.payload.resolvedBy, "aborted");
+
+        yield* Fiber.interrupt(eventsFiber).pipe(Effect.ignore);
+        yield* adapter.stopSession(threadId);
+      }).pipe(Effect.provide(adapterLayer));
     }),
   );
 

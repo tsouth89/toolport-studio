@@ -372,7 +372,9 @@ export function applyThreadDetailEvent(
       const queuedTurns =
         thread.queuedTurns === undefined || thread.queuedTurns.length === 0
           ? thread.queuedTurns
-          : thread.queuedTurns.filter((entry) => entry.message.messageId !== message.id);
+          : thread.queuedTurns.some((entry) => entry.message.messageId === message.id)
+            ? thread.queuedTurns.filter((entry) => entry.message.messageId !== message.id)
+            : thread.queuedTurns;
 
       return {
         kind: "updated",

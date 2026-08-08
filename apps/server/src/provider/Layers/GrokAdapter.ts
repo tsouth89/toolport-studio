@@ -1507,12 +1507,11 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                       answers: resolvedAnswers,
                       // A user-initiated cancel is still the user; the watchdog
                       // and a bulk abort are not.
-                      resolvedBy:
-                        raceResult._tag === "timeout"
+                      resolvedBy: pendingUserInput.settledByAbort
+                        ? "aborted"
+                        : raceResult._tag === "timeout"
                           ? "timeout"
-                          : pendingUserInput.settledByAbort
-                            ? "aborted"
-                            : "user",
+                          : "user",
                     },
                     raw: {
                       source: "acp.grok.extension",
@@ -1609,12 +1608,11 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   requestId: runtimeRequestId,
                   permissionRequest,
                   decision: resolved,
-                  resolvedBy:
-                    raceResult._tag === "timeout"
+                  resolvedBy: pendingApproval.settledByAbort
+                    ? "aborted"
+                    : raceResult._tag === "timeout"
                       ? "timeout"
-                      : pendingApproval.settledByAbort
-                        ? "aborted"
-                        : "user",
+                      : "user",
                 }),
               );
               const selectedOptionId =
@@ -3271,8 +3269,6 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         if (observed._tag === "Ignore") {
           return;
         }
-        const { interruptedTurnId } = observed;
-
         // Abort xAI pending completions BEFORE taking the lock. Grok's
         // turn_completed xAI notification can arrive asynchronously and
         // resolve a pending Deferred after settlePromptInFlight emits

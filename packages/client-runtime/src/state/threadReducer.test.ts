@@ -837,6 +837,49 @@ describe("applyThreadDetailEvent", () => {
       expect(sent.thread.queuedTurns).toEqual([]);
     });
 
+    it("preserves the queued-turn array when an unrelated message arrives", () => {
+      const queuedTurns = [
+        {
+          message: {
+            messageId: MessageId.make("queued-message"),
+            role: "user" as const,
+            text: "Run this next",
+            attachments: [],
+          },
+          runtimeMode: "full-access" as const,
+          interactionMode: "default" as const,
+          createdAt: "2026-04-01T12:00:00.000Z",
+        },
+      ];
+      const sent = applyThreadDetailEvent(
+        { ...baseThread, queuedTurns },
+        {
+          ...baseEventFields,
+          sequence: 16,
+          occurredAt: "2026-04-01T12:01:00.000Z",
+          aggregateKind: "thread",
+          aggregateId: baseThread.id,
+          type: "thread.message-sent",
+          payload: {
+            threadId: baseThread.id,
+            messageId: MessageId.make("different-message"),
+            role: "user",
+            text: "Sent immediately",
+            attachments: [],
+            turnId: null,
+            streaming: false,
+            createdAt: "2026-04-01T12:01:00.000Z",
+            updatedAt: "2026-04-01T12:01:00.000Z",
+          },
+        },
+      );
+
+      expect(sent.kind).toBe("updated");
+      if (sent.kind === "updated") {
+        expect(sent.thread.queuedTurns).toBe(queuedTurns);
+      }
+    });
+
     it("keeps FIFO position when a queued turn event is replayed", () => {
       const firstQueuedTurn = {
         message: {

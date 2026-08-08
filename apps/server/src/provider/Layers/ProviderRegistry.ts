@@ -213,10 +213,9 @@ export const resolveIndeterminateSnapshot = (input: {
   };
 };
 
-/** A failure count plus the observation it was counted from. */
+/** Consecutive indeterminate observations for one provider instance. */
 export interface IndeterminateStreak {
   readonly consecutiveFailures: number;
-  readonly checkedAt: string;
 }
 
 /**
@@ -230,19 +229,19 @@ export interface IndeterminateStreak {
  * same millisecond, blew the whole {@link INDETERMINATE_TOLERANCE} budget, and
  * reported a provider as broken that one blip should have carried through.
  *
- * `checkedAt` identifies the observation, so a repeat rewinds by one and the
- * increment inside `resolveIndeterminateSnapshot` reproduces the count instead
- * of advancing it. Genuine consecutive probes carry distinct `checkedAt`
- * values and still accumulate.
+ * The caller identifies a repeated delivery by object identity, so a repeat
+ * rewinds by one and the increment inside `resolveIndeterminateSnapshot`
+ * reproduces the count instead of advancing it. Independent probes still
+ * accumulate even when their timestamps collide.
  */
 export const priorFailuresForObservation = (
   streak: IndeterminateStreak | undefined,
-  checkedAt: string,
+  duplicateObservation: boolean,
 ): number => {
   if (streak === undefined) {
     return 0;
   }
-  return streak.checkedAt === checkedAt
+  return duplicateObservation
     ? Math.max(0, streak.consecutiveFailures - 1)
     : streak.consecutiveFailures;
 };
@@ -424,6 +423,11 @@ export const ProviderRegistryLive = Layer.effect(
     const indeterminateStreaksRef = yield* Ref.make<
       ReadonlyMap<ProviderInstanceId, IndeterminateStreak>
     >(new Map());
+    // The boot subscriber and direct snapshot read can deliver the exact same
+    // observation object. Track that identity instead of its timestamp: two
+    // independent probes are distinct observations even when a coarse or
+    // mocked clock gives them the same `checkedAt` value.
+    const seenIndeterminateObservations = new WeakSet<object>();
 
     // Live-source registry — the dynamic counterpart to the boot-time
     // `bootSources`. Keyed by `instanceId`; the stored `ProviderInstance`
@@ -491,6 +495,12 @@ export const ProviderRegistryLive = Layer.effect(
         readonly replace?: boolean;
       },
     ) {
+      const duplicateIndeterminateObservations = nextProviders.map((provider) => {
+        if (provider.indeterminate !== true) return false;
+        const duplicate = seenIndeterminateObservations.has(provider);
+        seenIndeterminateObservations.add(provider);
+        return duplicate;
+      });
       const nextProvidersWithUpdateState = yield* Effect.forEach(
         nextProviders,
         applyProviderUpdateState,
@@ -527,12 +537,15 @@ export const ProviderRegistryLive = Layer.effect(
           readonly message: string | null;
         }> = [];
 
-        for (const provider of nextProvidersWithUpdateState) {
+        for (const [index, provider] of nextProvidersWithUpdateState.entries()) {
           const key = snapshotInstanceKey(provider);
           const outcome = resolveIndeterminateSnapshot({
             previous: previousByKey.get(key),
             next: provider,
-            consecutiveFailures: priorFailuresForObservation(streaks.get(key), provider.checkedAt),
+            consecutiveFailures: priorFailuresForObservation(
+              streaks.get(key),
+              duplicateIndeterminateObservations[index] ?? false,
+            ),
             now,
           });
           if (outcome.consecutiveFailures === 0) {
@@ -540,7 +553,6 @@ export const ProviderRegistryLive = Layer.effect(
           } else {
             nextStreaks.set(key, {
               consecutiveFailures: outcome.consecutiveFailures,
-              checkedAt: provider.checkedAt,
             });
           }
           if (provider.indeterminate === true) {

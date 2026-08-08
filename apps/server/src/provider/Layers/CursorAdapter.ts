@@ -762,12 +762,11 @@ export function makeCursorAdapter(
                 requestId: runtimeRequestId,
                 payload: {
                   answers: resolved,
-                  resolvedBy:
-                    raceResult._tag === "timeout"
+                  resolvedBy: pendingUserInput.settledByAbort
+                    ? "aborted"
+                    : raceResult._tag === "timeout"
                       ? "timeout"
-                      : pendingUserInput.settledByAbort
-                        ? "aborted"
-                        : "user",
+                      : "user",
                 },
               });
               return { answers: resolved };
@@ -907,12 +906,11 @@ export function makeCursorAdapter(
                   requestId: runtimeRequestId,
                   permissionRequest,
                   decision: resolved,
-                  resolvedBy:
-                    raceResult._tag === "timeout"
+                  resolvedBy: pendingApproval.settledByAbort
+                    ? "aborted"
+                    : raceResult._tag === "timeout"
                       ? "timeout"
-                      : pendingApproval.settledByAbort
-                        ? "aborted"
-                        : "user",
+                      : "user",
                 }),
               );
               return {
