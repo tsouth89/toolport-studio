@@ -68,6 +68,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
@@ -374,6 +375,8 @@ interface ClaudeQueryRuntime extends AsyncIterable<SDKMessage> {
 const CLAUDE_PENDING_APPROVAL_TIMEOUT_MS = 3 * 60_000;
 /** Slightly longer for multi-question forms. */
 const CLAUDE_PENDING_USER_INPUT_TIMEOUT_MS = 5 * 60_000;
+/** Keep optional SDK telemetry from stalling provider event processing. */
+const CLAUDE_CONTEXT_USAGE_QUERY_TIMEOUT_MS = 1_000;
 
 /**
  * Wall-clock sleep for permission / user-input auto-cancel.
@@ -734,36 +737,22 @@ function normalizeClaudeTaskProgressTokenUsage(
   context: ClaudeSessionContext,
 ): ThreadTokenUsageSnapshot | undefined {
   const totalTokens = claudeTotalProcessedTokens(value);
-  if (totalTokens === undefined || totalTokens <= 0) {
-    return undefined;
-  }
-
-  const lastUsedTokens = context.lastKnownTokenUsage?.usedTokens;
-  const activeTokens =
-    lastUsedTokens !== undefined ? Math.max(totalTokens, lastUsedTokens) : totalTokens;
-  if (lastUsedTokens !== undefined && activeTokens === lastUsedTokens) {
+  const lastKnownUsage = context.lastKnownTokenUsage;
+  if (totalTokens === undefined || totalTokens <= 0 || !lastKnownUsage) {
     return undefined;
   }
 
   const usage = value as Record<string, unknown>;
-  const snapshot = makeClaudeTokenUsageSnapshot({
-    activeTokens,
-    ...(context.lastKnownContextWindow !== undefined
-      ? { contextWindow: context.lastKnownContextWindow }
-      : {}),
-    totalProcessedTokens: Math.max(
-      totalTokens,
-      context.lastKnownTotalProcessedTokens ?? totalTokens,
-    ),
-  });
-  if (!snapshot) {
-    return undefined;
-  }
+  const totalProcessedTokens = Math.max(
+    totalTokens,
+    context.lastKnownTotalProcessedTokens ?? totalTokens,
+  );
 
   const toolUses = finiteNonNegativeInteger(usage.tool_uses);
   const durationMs = finiteNonNegativeInteger(usage.duration_ms);
   return {
-    ...snapshot,
+    ...lastKnownUsage,
+    ...(totalProcessedTokens > lastKnownUsage.usedTokens ? { totalProcessedTokens } : {}),
     ...(toolUses !== undefined ? { toolUses } : {}),
     ...(durationMs !== undefined ? { durationMs } : {}),
   };
@@ -2268,7 +2257,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       } catch {
         return undefined;
       }
-    });
+    }).pipe(
+      Effect.timeoutOption(CLAUDE_CONTEXT_USAGE_QUERY_TIMEOUT_MS),
+      Effect.map(Option.getOrUndefined),
+    );
     if (!usage) {
       return undefined;
     }
@@ -2281,6 +2273,31 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       totalProcessedTokens,
       context.selectedContextWindow,
     );
+  });
+
+  const taskProgressTokenUsage = Effect.fn("taskProgressTokenUsage")(function* (
+    context: ClaudeSessionContext,
+    value: unknown,
+  ) {
+    const taskTotal = claudeTotalProcessedTokens(value);
+    const totalProcessedTokens =
+      taskTotal !== undefined
+        ? Math.max(taskTotal, context.lastKnownTotalProcessedTokens ?? taskTotal)
+        : context.lastKnownTotalProcessedTokens;
+    const authoritativeUsage = yield* queryCurrentContextUsage(context, totalProcessedTokens);
+    const snapshot = authoritativeUsage ?? normalizeClaudeTaskProgressTokenUsage(value, context);
+    if (!snapshot || !value || typeof value !== "object") {
+      return snapshot;
+    }
+
+    const usage = value as Record<string, unknown>;
+    const toolUses = finiteNonNegativeInteger(usage.tool_uses);
+    const durationMs = finiteNonNegativeInteger(usage.duration_ms);
+    return {
+      ...snapshot,
+      ...(toolUses !== undefined ? { toolUses } : {}),
+      ...(durationMs !== undefined ? { durationMs } : {}),
+    };
   });
 
   const emitProposedPlanCompleted = Effect.fn("emitProposedPlanCompleted")(function* (
@@ -3453,15 +3470,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           },
         });
         return;
-      case "task_progress":
-        yield* emitThreadTokenUsage(
-          context,
-          normalizeClaudeTaskProgressTokenUsage(message.usage, context),
-          {
-            rawMethod: "claude/system/task_progress",
-            rawPayload: message,
-          },
-        );
+      case "task_progress": {
+        const usage = yield* taskProgressTokenUsage(context, message.usage);
+        yield* emitThreadTokenUsage(context, usage, {
+          rawMethod: "claude/system/task_progress",
+          rawPayload: message,
+        });
         yield* offerRuntimeEvent({
           ...base,
           type: "task.progress",
@@ -3474,6 +3488,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           },
         });
         return;
+      }
       // Task state patch (status / is_backgrounded / end_time). This is the
       // only event that reports a task detaching into the background, so it
       // drives the roster between task_started and task_notification.
@@ -3513,18 +3528,15 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         });
         return;
       }
-      case "task_notification":
+      case "task_notification": {
         // Terminal for this task: drop it from the roster so a later snapshot
         // that still lists it re-emits rather than being deduped into silence.
         context.backgroundTasks.delete(message.task_id);
-        yield* emitThreadTokenUsage(
-          context,
-          normalizeClaudeTaskProgressTokenUsage(message.usage, context),
-          {
-            rawMethod: "claude/system/task_notification",
-            rawPayload: message,
-          },
-        );
+        const usage = yield* taskProgressTokenUsage(context, message.usage);
+        yield* emitThreadTokenUsage(context, usage, {
+          rawMethod: "claude/system/task_notification",
+          rawPayload: message,
+        });
         yield* offerRuntimeEvent({
           ...base,
           type: "task.completed",
@@ -3536,6 +3548,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           },
         });
         return;
+      }
       case "files_persisted":
         yield* offerRuntimeEvent({
           ...base,
