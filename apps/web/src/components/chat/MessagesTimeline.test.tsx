@@ -189,6 +189,7 @@ function buildProps() {
     markdownCwd: undefined,
     resolvedTheme: "light" as const,
     timestampFormat: "locale" as const,
+    verboseActivity: true,
     workspaceRoot: undefined,
     anchorMessageId: null,
     onAnchorReady: () => {},

@@ -147,6 +147,11 @@ function AgentStatusIcon({ status }: { status: AgentRunStatus }) {
   }
 }
 
+export function ThisTurnCardChevron({ expanded }: { readonly expanded: boolean }) {
+  const Icon = expanded ? ChevronUp : ChevronDown;
+  return <Icon className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />;
+}
+
 export function ThisTurnCard({
   model,
   agentRuns = EMPTY_AGENT_RUNS,
@@ -310,7 +315,7 @@ export function ThisTurnCard({
               <CheckCircle2 className="size-3.5 shrink-0 text-success" aria-hidden />
             )}
             <span className="min-w-0 flex-1 truncate tabular-nums">{title}</span>
-            <ChevronUp className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+            <ThisTurnCardChevron expanded={false} />
           </button>
           {onOpenAgents && agentRuns.length > 0 ? (
             <button
@@ -382,7 +387,7 @@ export function ThisTurnCard({
           <span className="min-w-0 flex-1 truncate text-[12px] font-semibold tabular-nums tracking-tight">
             {title}
           </span>
-          <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+          <ThisTurnCardChevron expanded />
         </button>
         <button
           type="button"
