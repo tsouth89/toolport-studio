@@ -227,6 +227,23 @@ function playScript(query: ScriptedClaudeQuery, script: ConformanceScript, seq: 
         });
         break;
       }
+      case "tool-untitled-update": {
+        query.emit({
+          type: "stream_event",
+          session_id: "conformance-session",
+          uuid: uuid("stream"),
+          parent_tool_use_id: null,
+          event: {
+            type: "content_block_delta",
+            index: 1,
+            delta: {
+              type: "input_json_delta",
+              partial_json: JSON.stringify({ path: "README.md" }),
+            },
+          },
+        });
+        break;
+      }
       case "tool-end": {
         query.emit({
           type: "stream_event",
@@ -267,10 +284,6 @@ function playScript(query: ScriptedClaudeQuery, script: ConformanceScript, seq: 
 
 export const claudeConformanceBinding: ConformanceBinding = {
   provider: "claude",
-  waivers: {
-    "tool-name-survives-untitled-updates":
-      "fake cannot emit an untitled update for an already-named tool",
-  },
   sendWhileRunning: "steer",
   openSession: (script, options?: ConformanceOpenSessionOptions) =>
     Effect.gen(function* () {

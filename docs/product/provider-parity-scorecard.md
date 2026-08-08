@@ -10,6 +10,18 @@ Make “first-class” measurable. Run the same checks against Studio and the of
 Not a pixel clone of Claude Desktop / Codex app / Cursor IDE / Grok TUI.  
 Bar: **trust, speed, multi-session, tools, stop, recovery**.
 
+## Executable source of truth
+
+The shared core-loop conformance suite is the source of truth for behavior that can be asserted against provider fakes in CI:
+
+```bash
+vp test run apps/server/src/provider/conformance/coreLoop.conformance.test.ts
+```
+
+Every shipped driver must have a conformance binding or an explicit adapter-family alias. The suite covers first progress, streaming, Stop settlement, open-tool and pending-interaction cleanup, send while running, post-Stop follow-up, process death, and resume history across Claude, Codex, Grok, Cursor, and OpenCode.
+
+This document remains the source of truth for live-provider dogfood: authentication, real model latency, concurrent-session feel, native tool behavior, and comparison with official clients. A live scorecard failure should become a conformance case whenever it can be reproduced without a vendor binary.
+
 ## First-class set
 
 | Tier      | Providers           | Commitment                               |

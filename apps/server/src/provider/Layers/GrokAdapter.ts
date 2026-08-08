@@ -94,12 +94,13 @@ import {
 } from "@toolport-studio/shared/providerError";
 
 import {
-  abandonTurnQueue,
+  abandonPendingTurns,
   disposeSendWhileRunning,
   emptyTurnQueue,
   formatInterjectionText,
+  markTurnStopping,
   PROVIDER_TURN_CAPABILITIES,
-  settleTurn,
+  settleTrackedTurn,
   shouldEmitSyntheticFollowUpChrome,
   shouldForceCloseOpenToolsOnSteer,
   trackLiveTurn,
@@ -936,9 +937,16 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
      */
     const takeNextQueuedSend = (
       ctx: GrokSessionContext,
+      turnId: TurnId,
       reason: "completed" | "cancelled" | "error",
     ): PendingGrokQueuedSend | undefined => {
-      const settled = settleTurn(ctx.turnQueue, reason);
+      const settled = settleTrackedTurn(ctx.turnQueue, {
+        turnId: String(turnId),
+        reason,
+      });
+      if (!settled.claimed) {
+        return undefined;
+      }
       ctx.turnQueue = settled.state;
       if (settled.next === undefined) {
         return undefined;
@@ -954,8 +962,8 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
     /** Cancel every held send (Stop / session death). Does not start them. */
     const abandonQueuedSends = (ctx: GrokSessionContext) =>
       Effect.gen(function* () {
-        const abandoned = abandonTurnQueue(ctx.turnQueue);
-        ctx.turnQueue = abandoned.state;
+        const abandoned = abandonPendingTurns(ctx.turnQueue);
+        ctx.turnQueue = markTurnStopping(abandoned.state);
         const error = queuedTurnCancelledError();
         for (const item of abandoned.abandoned) {
           const pending = ctx.pendingSends.get(item.id);
@@ -1252,7 +1260,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           : options?.completedStopReason === "cancelled"
             ? "cancelled"
             : "completed";
-        const nextPending = takeNextQueuedSend(liveCtx, settleReason);
+        const nextPending = takeNextQueuedSend(liveCtx, settleTurnId, settleReason);
         if (nextPending) {
           yield* forkDrainQueuedSend(liveCtx, nextPending);
         }
@@ -3068,7 +3076,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   }
                 }
                 ctx.interruptedTurnIds.delete(prepared.turnId);
-                const nextPending = takeNextQueuedSend(ctx, drainReason);
+                const nextPending = takeNextQueuedSend(ctx, prepared.turnId, drainReason);
                 if (nextPending) {
                   yield* forkDrainQueuedSend(ctx, nextPending);
                 }
@@ -3235,8 +3243,6 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         if (observed._tag === "Ignore") {
           return;
         }
-        const { interruptedTurnId } = observed;
-
         // Abort xAI pending completions BEFORE taking the lock. Grok's
         // turn_completed xAI notification can arrive asynchronously and
         // resolve a pending Deferred after settlePromptInFlight emits
