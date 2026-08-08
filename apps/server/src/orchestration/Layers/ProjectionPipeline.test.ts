@@ -235,6 +235,37 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
         WHERE thread_id = 'thread-1'
       `;
       assert.deepEqual(unsettledRows, [{ settledOverride: "active", settledAt: null }]);
+
+      // A background task cannot outlive the process that spawned it, so a row
+      // still in flight at bootstrap belongs to a dead process and nothing will
+      // ever deliver its terminal event. Left alone it counts as running
+      // forever, and the count grows with every restart (SBS-596).
+      yield* sql`
+        INSERT INTO projection_thread_background_tasks (
+          thread_id, task_id, task_type, description, command, status, backgrounded, created_at, updated_at
+        ) VALUES
+          ('thread-1', 'task-running', 'local_bash', 'Wait 30 min then check', NULL, 'running', 1, ${now}, ${now}),
+          ('thread-1', 'task-pending', 'local_bash', 'Queued wait', NULL, 'pending', 1, ${now}, ${now}),
+          ('thread-1', 'task-paused', 'local_bash', 'Paused wait', NULL, 'paused', 1, ${now}, ${now}),
+          ('thread-1', 'task-done', 'local_bash', 'Already finished', NULL, 'completed', 1, ${now}, ${now})
+      `;
+
+      yield* projectionPipeline.bootstrap;
+
+      const taskRows = yield* sql<{
+        readonly taskId: string;
+        readonly status: string;
+      }>`
+        SELECT task_id AS "taskId", status
+        FROM projection_thread_background_tasks
+        ORDER BY task_id ASC
+      `;
+      assert.deepEqual(taskRows, [
+        { taskId: "task-done", status: "completed" },
+        { taskId: "task-paused", status: "stopped" },
+        { taskId: "task-pending", status: "stopped" },
+        { taskId: "task-running", status: "stopped" },
+      ]);
     }),
   );
 });

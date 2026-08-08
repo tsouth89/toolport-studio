@@ -17,8 +17,21 @@ export interface BackgroundTaskProjection {
   readonly backgrounded: boolean;
 }
 
-/** Statuses that mean the task is still doing work. */
-const IN_FLIGHT_STATUSES = new Set<RuntimeTaskStatus>(["pending", "running", "paused"]);
+/**
+ * Statuses that mean the task is still doing work.
+ *
+ * Exported as a list as well as a set because the startup reconciliation sweep
+ * needs the same values inside a SQL `IN (...)`. Two hand-maintained copies
+ * would drift, and a status missing from the sweep is a task stuck in flight
+ * forever.
+ */
+export const IN_FLIGHT_BACKGROUND_TASK_STATUSES = [
+  "pending",
+  "running",
+  "paused",
+] as const satisfies ReadonlyArray<RuntimeTaskStatus>;
+
+const IN_FLIGHT_STATUSES = new Set<RuntimeTaskStatus>(IN_FLIGHT_BACKGROUND_TASK_STATUSES);
 
 export function isInFlightBackgroundTaskStatus(status: string): boolean {
   return IN_FLIGHT_STATUSES.has(status as RuntimeTaskStatus);

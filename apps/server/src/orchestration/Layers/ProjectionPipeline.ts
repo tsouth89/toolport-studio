@@ -8,6 +8,7 @@ import {
   SidebarFolderId,
   ThreadId,
 } from "@toolport-studio/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -18,7 +19,10 @@ import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { toPersistenceSqlError, type ProjectionRepositoryError } from "../../persistence/Errors.ts";
-import { backgroundTaskProjectionFromActivity } from "../backgroundTasks.ts";
+import {
+  backgroundTaskProjectionFromActivity,
+  IN_FLIGHT_BACKGROUND_TASK_STATUSES,
+} from "../backgroundTasks.ts";
 import {
   MAX_PROJECTED_THREAD_ACTIVITIES,
   ORCHESTRATION_EVENT_RETENTION_SEQUENCE_CUSHION,
@@ -1878,6 +1882,57 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
      * After projectors catch up, drop unbounded activity history and fully
      * applied event-log rows so state.sqlite cannot grow without bound.
      */
+    /**
+     * Settle background tasks left in flight by a previous process.
+     *
+     * A background task is a child of the app that spawned it, so it cannot
+     * outlive that process. Any row still `pending`/`running`/`paused` at
+     * startup therefore belongs to a task that is already dead, and nothing
+     * will ever deliver its terminal event — the row would count as running
+     * forever, and the count only grows with each restart (SBS-596).
+     *
+     * Runs as part of bootstrap, *after* the projectors have caught up, so a
+     * rebuild that replays these rows back to in-flight is corrected in the
+     * same pass rather than resurrecting the bad state.
+     */
+    const reconcileInFlightBackgroundTasks = Effect.fn("reconcileInFlightBackgroundTasks")(
+      function* () {
+        const now = DateTime.formatIso(yield* DateTime.now);
+        // Destructured rather than interpolated so the values stay parameters
+        // and stay tied to the shared constant: adding a fourth in-flight status
+        // breaks this line loudly instead of silently leaving those rows stuck.
+        const [pending, running, paused] = IN_FLIGHT_BACKGROUND_TASK_STATUSES;
+        const inFlight = yield* sql`
+            SELECT task_id
+            FROM projection_thread_background_tasks
+            WHERE status IN (${pending}, ${running}, ${paused})
+          `.pipe(
+          Effect.mapError(
+            toPersistenceSqlError("ProjectionPipeline.bootstrap:findInFlightBackgroundTasks"),
+          ),
+        );
+        if (inFlight.length === 0) {
+          return;
+        }
+
+        yield* sql`
+            UPDATE projection_thread_background_tasks
+            SET status = 'stopped', updated_at = ${now}
+            WHERE status IN (${pending}, ${running}, ${paused})
+          `.pipe(
+          Effect.mapError(
+            toPersistenceSqlError("ProjectionPipeline.bootstrap:stopInFlightBackgroundTasks"),
+          ),
+        );
+        const count = inFlight.length;
+        // Logged rather than silent: this is the only record that work the user
+        // may have been waiting on did not survive the restart.
+        yield* Effect.logInfo("settled background tasks left running by a previous process", {
+          count,
+        });
+      },
+    );
+
     const runRetentionMaintenance = Effect.fn("runProjectionRetentionMaintenance")(function* () {
       yield* projectionThreadActivityRepository.pruneAllThreadsKeepLast({
         keepLast: MAX_PROJECTED_THREAD_ACTIVITIES,
@@ -1922,6 +1977,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       Effect.provideService(FileSystem.FileSystem, fileSystem),
       Effect.provideService(Path.Path, path),
       Effect.provideService(ServerConfig, serverConfig),
+      Effect.flatMap(() => reconcileInFlightBackgroundTasks()),
       Effect.flatMap(() => runRetentionMaintenance()),
       Effect.asVoid,
       Effect.tap(() =>
