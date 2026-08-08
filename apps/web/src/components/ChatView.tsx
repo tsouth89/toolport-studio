@@ -97,6 +97,7 @@ import {
 import { type LegendListRef } from "@legendapp/list/react";
 import {
   getAnchoredTurnMetrics,
+  getRowBottom,
   isTimelineEndPositionKnown,
   type TimelineScrollMode,
 } from "./chat/timelineScrollAnchoring";
@@ -468,8 +469,14 @@ function formatOutgoingPrompt(params: {
 }
 const SCRIPT_TERMINAL_COLS = 120;
 const SCRIPT_TERMINAL_ROWS = 30;
-/** Frames to wait for an appended timeline row to get a real position before giving up. */
-const TIMELINE_END_SCROLL_MAX_FRAMES = 12;
+/**
+ * Frames to keep working a scroll-to-end before giving up — long enough to
+ * cover both waiting for an appended row to get a real position and the
+ * measurement convergence described on `requestTimelineScrollToEnd`.
+ */
+const TIMELINE_END_SCROLL_MAX_FRAMES = 40;
+/** Consecutive frames the end must hold still before the scroll is settled. */
+const TIMELINE_END_SCROLL_STABLE_FRAMES = 2;
 
 type ChatViewProps =
   | {
@@ -3861,17 +3868,41 @@ function ChatViewContent(props: ChatViewProps) {
       endScrollFrameRef.current = null;
     }
   }, []);
+  // A known position is not yet a correct one. Rows that have never been
+  // rendered are assumed `estimatedItemSize` (90px, far short of a real chat
+  // row), so on a virtualized thread the first scrollToEnd targets a content
+  // height built mostly from estimates and lands partway down. Only the rows
+  // that scroll into view then get measured, which moves the end further away.
+  // That is why "scroll to bottom" needed two clicks on a long session: the
+  // second click was reading corrected measurements. So keep re-issuing the
+  // scroll until the end holds still.
   const requestTimelineScrollToEnd = useCallback(
     (animated: boolean) => {
       cancelPendingTimelineEndScroll();
+      let previousEnd: number | null = null;
+      let stableFrames = 0;
+      let hasScrolled = false;
       const attempt = (remainingAttempts: number) => {
         const list = legendListRef.current;
         if (!list) {
           return;
         }
-        if (isTimelineEndPositionKnown(list.getState())) {
-          void list.scrollToEnd?.({ animated });
-          return;
+        const state = list.getState();
+        if (isTimelineEndPositionKnown(state)) {
+          // Only the opening scroll animates. Re-issuing an animated scroll
+          // every frame would restart the easing and never arrive.
+          void list.scrollToEnd?.({ animated: animated && !hasScrolled });
+          hasScrolled = true;
+
+          const end = getRowBottom(state, state.data.length - 1);
+          stableFrames =
+            end !== null && previousEnd !== null && Math.abs(end - previousEnd) < 1
+              ? stableFrames + 1
+              : 0;
+          previousEnd = end;
+          if (stableFrames >= TIMELINE_END_SCROLL_STABLE_FRAMES) {
+            return;
+          }
         }
         if (remainingAttempts <= 0) {
           return;
