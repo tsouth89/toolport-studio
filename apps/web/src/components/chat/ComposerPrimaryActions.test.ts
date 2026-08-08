@@ -121,7 +121,7 @@ describe("resolveSendPrimaryActionAriaLabel", () => {
     expect(
       resolveSendPrimaryActionAriaLabel({
         isProviderSelectionBlocked: true,
-        isEnvironmentUnavailable: false,
+        isEnvironmentUnavailable: true,
         isConnecting: false,
         isPreparingWorktree: false,
         isSendBusy: false,

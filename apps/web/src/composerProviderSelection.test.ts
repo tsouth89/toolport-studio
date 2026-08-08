@@ -36,11 +36,12 @@ function resolve(
   options?: {
     readonly lockedProvider?: ProviderDriverKind | null;
     readonly lockedContinuationGroupKey?: string | null;
+    readonly candidateInstanceIds?: ReadonlyArray<string>;
   },
 ) {
   return resolveComposerProviderSelection({
     entries,
-    candidateInstanceIds: [explicitSelectedInstanceId],
+    candidateInstanceIds: options?.candidateInstanceIds ?? [explicitSelectedInstanceId],
     explicitSelectedInstanceId: ProviderInstanceId.make(explicitSelectedInstanceId),
     requestedDriverKind: entries[0]?.driverKind ?? codex,
     lockedProvider: options?.lockedProvider ?? null,
@@ -90,6 +91,21 @@ describe("resolveComposerProviderSelection", () => {
 
     expect(result.instanceId).toBe("grok");
     expect(result.explicitSelectionBlock).toBeNull();
+  });
+
+  it("uses the first available candidate after a blocked explicit pick", () => {
+    const result = resolve(
+      [
+        entry({ id: "grok", driver: codex, name: "Grok", enabled: false }),
+        entry({ id: "project-default", driver: claude, name: "Project default" }),
+        entry({ id: "thread-provider", driver: claude, name: "Thread provider" }),
+      ],
+      "grok",
+      { candidateInstanceIds: ["grok", "thread-provider", "project-default"] },
+    );
+
+    expect(result.instanceId).toBe("thread-provider");
+    expect(result.explicitSelectionBlock?.fallback?.instanceId).toBe("thread-provider");
   });
 
   it("does not mistake an expected continuation lock for availability substitution", () => {
