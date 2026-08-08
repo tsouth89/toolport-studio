@@ -96,8 +96,8 @@ import {
 } from "../session-logic";
 import { type LegendListRef } from "@legendapp/list/react";
 import {
+  advanceTimelineEndConvergence,
   getAnchoredTurnMetrics,
-  isTimelineEndPositionKnown,
   type TimelineScrollMode,
 } from "./chat/timelineScrollAnchoring";
 import {
@@ -468,8 +468,16 @@ function formatOutgoingPrompt(params: {
 }
 const SCRIPT_TERMINAL_COLS = 120;
 const SCRIPT_TERMINAL_ROWS = 30;
-/** Frames to wait for an appended timeline row to get a real position before giving up. */
-const TIMELINE_END_SCROLL_MAX_FRAMES = 12;
+/**
+ * Frames to keep working a scroll-to-end before giving up — long enough to
+ * cover both waiting for an appended row to get a real position and the
+ * measurement convergence described on `requestTimelineScrollToEnd`.
+ */
+const TIMELINE_END_SCROLL_MAX_FRAMES = 40;
+/** Consecutive frames the end must hold still before the scroll is settled. */
+const TIMELINE_END_SCROLL_STABLE_FRAMES = 2;
+/** Preserve the opening smooth scroll before measurement-correction jumps begin. */
+const TIMELINE_END_SCROLL_ANIMATION_GRACE_MS = 350;
 
 type ChatViewProps =
   | {
@@ -3850,35 +3858,69 @@ function ChatViewContent(props: ChatViewProps) {
     },
     [composerOverlayHeight],
   );
-  // Never hand LegendList a scrollToEnd it cannot resolve: an appended row with no
-  // computed position makes it target offset 0, which reads as "thrown to the top of
-  // the thread for the whole response". Wait for the position instead, and if it never
-  // arrives leave the scroll alone — maintainScrollAtEnd still pins us, and staying
-  // put is always better than jumping to the oldest message.
+  // LegendList's scrollToEnd can resolve an unmeasured final row to offset 0.
+  // Drive the native scroll container instead so a long virtualized transcript
+  // can always make forward progress without jumping to the oldest message.
   const cancelPendingTimelineEndScroll = useCallback(() => {
     if (endScrollFrameRef.current !== null) {
       cancelAnimationFrame(endScrollFrameRef.current);
       endScrollFrameRef.current = null;
     }
   }, []);
+  // Newly visible rows replace estimates with measured heights, which can move
+  // scrollHeight after the first scroll. Re-pin until that height converges.
   const requestTimelineScrollToEnd = useCallback(
     (animated: boolean) => {
       cancelPendingTimelineEndScroll();
+      let convergence = advanceTimelineEndConvergence(
+        { previousEnd: null, stableFrames: 0 },
+        null,
+        TIMELINE_END_SCROLL_STABLE_FRAMES,
+      );
+      let hasScrolled = false;
+      const animationGraceEndsAt = animated
+        ? performance.now() + TIMELINE_END_SCROLL_ANIMATION_GRACE_MS
+        : 0;
       const attempt = (remainingAttempts: number) => {
         const list = legendListRef.current;
         if (!list) {
           return;
         }
-        if (isTimelineEndPositionKnown(list.getState())) {
-          void list.scrollToEnd?.({ animated });
+        const scrollNode = list.getScrollableNode();
+        if (!scrollNode) {
           return;
+        }
+        const withinAnimationGrace = animated && performance.now() < animationGraceEndsAt;
+        if (!hasScrolled) {
+          scrollNode.scrollTo({
+            top: scrollNode.scrollHeight,
+            behavior: animated ? "smooth" : "auto",
+          });
+          hasScrolled = true;
+        } else if (!withinAnimationGrace) {
+          // Once the opening animation has had time to read naturally, re-pin
+          // without animation so expanding measurements cannot restart easing.
+          scrollNode.scrollTo({ top: scrollNode.scrollHeight, behavior: "auto" });
+        }
+
+        if (withinAnimationGrace) {
+          convergence = { previousEnd: null, stableFrames: 0, settled: false };
+        } else {
+          convergence = advanceTimelineEndConvergence(
+            convergence,
+            scrollNode.scrollHeight,
+            TIMELINE_END_SCROLL_STABLE_FRAMES,
+          );
+          if (convergence.settled) {
+            return;
+          }
         }
         if (remainingAttempts <= 0) {
           return;
         }
         endScrollFrameRef.current = requestAnimationFrame(() => {
           endScrollFrameRef.current = null;
-          attempt(remainingAttempts - 1);
+          attempt(withinAnimationGrace ? remainingAttempts : remainingAttempts - 1);
         });
       };
       attempt(TIMELINE_END_SCROLL_MAX_FRAMES);

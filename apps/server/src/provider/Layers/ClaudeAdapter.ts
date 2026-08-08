@@ -690,10 +690,15 @@ function normalizeClaudeActiveTokenUsage(
 function normalizeClaudeContextUsageApiSnapshot(
   value: SDKControlGetContextUsageResponse,
   totalProcessedTokens?: number,
+  selectedContextWindow?: number,
 ): ThreadTokenUsageSnapshot | undefined {
   return makeClaudeTokenUsageSnapshot({
     activeTokens: value.totalTokens,
-    contextWindow: value.maxTokens,
+    // `value.maxTokens` is the model's own ceiling, not this session's budget:
+    // the SDK reports 1M for Opus 5 and for Sonnet regardless of the window the
+    // user picked. Same precedence as completeTurn — an explicit selection wins
+    // (SOU-574).
+    contextWindow: selectedContextWindow ?? value.maxTokens,
     ...(totalProcessedTokens !== undefined ? { totalProcessedTokens } : {}),
     compactsAutomatically: value.isAutoCompactEnabled,
   });
@@ -2254,8 +2259,14 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       return undefined;
     }
 
-    context.lastKnownContextWindow = usage.maxTokens;
-    return normalizeClaudeContextUsageApiSnapshot(usage, totalProcessedTokens);
+    // #125 made the selection authoritative in completeTurn but not here, and
+    // this path runs on every poll, so it put the model ceiling straight back.
+    context.lastKnownContextWindow = context.selectedContextWindow ?? usage.maxTokens;
+    return normalizeClaudeContextUsageApiSnapshot(
+      usage,
+      totalProcessedTokens,
+      context.selectedContextWindow,
+    );
   });
 
   const emitProposedPlanCompleted = Effect.fn("emitProposedPlanCompleted")(function* (
