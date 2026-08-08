@@ -96,9 +96,8 @@ import {
 } from "../session-logic";
 import { type LegendListRef } from "@legendapp/list/react";
 import {
+  advanceTimelineEndConvergence,
   getAnchoredTurnMetrics,
-  getRowBottom,
-  isTimelineEndPositionKnown,
   type TimelineScrollMode,
 } from "./chat/timelineScrollAnchoring";
 import {
@@ -477,6 +476,8 @@ const SCRIPT_TERMINAL_ROWS = 30;
 const TIMELINE_END_SCROLL_MAX_FRAMES = 40;
 /** Consecutive frames the end must hold still before the scroll is settled. */
 const TIMELINE_END_SCROLL_STABLE_FRAMES = 2;
+/** Preserve the opening smooth scroll before measurement-correction jumps begin. */
+const TIMELINE_END_SCROLL_ANIMATION_GRACE_MS = 350;
 
 type ChatViewProps =
   | {
@@ -3857,50 +3858,60 @@ function ChatViewContent(props: ChatViewProps) {
     },
     [composerOverlayHeight],
   );
-  // Never hand LegendList a scrollToEnd it cannot resolve: an appended row with no
-  // computed position makes it target offset 0, which reads as "thrown to the top of
-  // the thread for the whole response". Wait for the position instead, and if it never
-  // arrives leave the scroll alone — maintainScrollAtEnd still pins us, and staying
-  // put is always better than jumping to the oldest message.
+  // LegendList's scrollToEnd can resolve an unmeasured final row to offset 0.
+  // Drive the native scroll container instead so a long virtualized transcript
+  // can always make forward progress without jumping to the oldest message.
   const cancelPendingTimelineEndScroll = useCallback(() => {
     if (endScrollFrameRef.current !== null) {
       cancelAnimationFrame(endScrollFrameRef.current);
       endScrollFrameRef.current = null;
     }
   }, []);
-  // A known position is not yet a correct one. Rows that have never been
-  // rendered are assumed `estimatedItemSize` (90px, far short of a real chat
-  // row), so on a virtualized thread the first scrollToEnd targets a content
-  // height built mostly from estimates and lands partway down. Only the rows
-  // that scroll into view then get measured, which moves the end further away.
-  // That is why "scroll to bottom" needed two clicks on a long session: the
-  // second click was reading corrected measurements. So keep re-issuing the
-  // scroll until the end holds still.
+  // Newly visible rows replace estimates with measured heights, which can move
+  // scrollHeight after the first scroll. Re-pin until that height converges.
   const requestTimelineScrollToEnd = useCallback(
     (animated: boolean) => {
       cancelPendingTimelineEndScroll();
-      let previousEnd: number | null = null;
-      let stableFrames = 0;
+      let convergence = advanceTimelineEndConvergence(
+        { previousEnd: null, stableFrames: 0 },
+        null,
+        TIMELINE_END_SCROLL_STABLE_FRAMES,
+      );
       let hasScrolled = false;
+      const animationGraceEndsAt = animated
+        ? performance.now() + TIMELINE_END_SCROLL_ANIMATION_GRACE_MS
+        : 0;
       const attempt = (remainingAttempts: number) => {
         const list = legendListRef.current;
         if (!list) {
           return;
         }
-        const state = list.getState();
-        if (isTimelineEndPositionKnown(state)) {
-          // Only the opening scroll animates. Re-issuing an animated scroll
-          // every frame would restart the easing and never arrive.
-          void list.scrollToEnd?.({ animated: animated && !hasScrolled });
+        const scrollNode = list.getScrollableNode();
+        if (!scrollNode) {
+          return;
+        }
+        const withinAnimationGrace = animated && performance.now() < animationGraceEndsAt;
+        if (!hasScrolled) {
+          scrollNode.scrollTo({
+            top: scrollNode.scrollHeight,
+            behavior: animated ? "smooth" : "auto",
+          });
           hasScrolled = true;
+        } else if (!withinAnimationGrace) {
+          // Once the opening animation has had time to read naturally, re-pin
+          // without animation so expanding measurements cannot restart easing.
+          scrollNode.scrollTo({ top: scrollNode.scrollHeight, behavior: "auto" });
+        }
 
-          const end = getRowBottom(state, state.data.length - 1);
-          stableFrames =
-            end !== null && previousEnd !== null && Math.abs(end - previousEnd) < 1
-              ? stableFrames + 1
-              : 0;
-          previousEnd = end;
-          if (stableFrames >= TIMELINE_END_SCROLL_STABLE_FRAMES) {
+        if (withinAnimationGrace) {
+          convergence = { previousEnd: null, stableFrames: 0, settled: false };
+        } else {
+          convergence = advanceTimelineEndConvergence(
+            convergence,
+            scrollNode.scrollHeight,
+            TIMELINE_END_SCROLL_STABLE_FRAMES,
+          );
+          if (convergence.settled) {
             return;
           }
         }
@@ -3909,7 +3920,7 @@ function ChatViewContent(props: ChatViewProps) {
         }
         endScrollFrameRef.current = requestAnimationFrame(() => {
           endScrollFrameRef.current = null;
-          attempt(remainingAttempts - 1);
+          attempt(withinAnimationGrace ? remainingAttempts : remainingAttempts - 1);
         });
       };
       attempt(TIMELINE_END_SCROLL_MAX_FRAMES);

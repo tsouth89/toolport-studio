@@ -2729,12 +2729,15 @@ describe("ClaudeAdapterLive", () => {
       // 1M for Opus 5 and for Sonnet, whatever window the user picked. #125
       // made the selection authoritative in completeTurn but not on this path,
       // which runs on every poll and put the ceiling straight back.
-      harness.query.getContextUsage = async () =>
-        ({
+      let contextUsageQueries = 0;
+      harness.query.getContextUsage = async () => {
+        contextUsageQueries += 1;
+        return {
           totalTokens: 33_000,
           maxTokens: 1_000_000,
           isAutoCompactEnabled: true,
-        }) as unknown as SDKControlGetContextUsageResponse;
+        } as unknown as SDKControlGetContextUsageResponse;
+      };
 
       const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 7).pipe(
         Stream.runCollect,
@@ -2775,6 +2778,7 @@ describe("ClaudeAdapterLive", () => {
       const usageEvents = runtimeEvents.filter(
         (event) => event.type === "thread.token-usage.updated",
       );
+      assert.equal(contextUsageQueries, 1, "expected result settlement to query SDK usage");
       assert.isAtLeast(usageEvents.length, 1);
       // Every emitted snapshot must agree with the selection; one that reports
       // 1M overstates remaining room five-fold in the meter.

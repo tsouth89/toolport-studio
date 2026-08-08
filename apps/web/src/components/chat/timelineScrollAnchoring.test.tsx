@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
+  advanceTimelineEndConvergence,
   getAnchoredTurnMetrics,
   getRowBottom,
   isTimelineEndPositionKnown,
@@ -26,6 +27,34 @@ function buildState({
 }
 
 describe("timeline scroll anchoring", () => {
+  it("keeps converging while virtualized scroll height measurements move the end", () => {
+    let convergence = advanceTimelineEndConvergence(
+      { previousEnd: null, stableFrames: 0 },
+      null,
+      2,
+    );
+    const settled = [900, 1_400, 1_800, 1_800, 1_800].map((end) => {
+      convergence = advanceTimelineEndConvergence(convergence, end, 2);
+      return convergence.settled;
+    });
+
+    expect(settled).toEqual([false, false, false, false, true]);
+  });
+
+  it("resets convergence when the measured end moves again", () => {
+    const onceStable = advanceTimelineEndConvergence(
+      { previousEnd: 1_800, stableFrames: 0 },
+      1_800,
+      2,
+    );
+
+    expect(advanceTimelineEndConvergence(onceStable, 2_100, 2)).toMatchObject({
+      previousEnd: 2_100,
+      stableFrames: 0,
+      settled: false,
+    });
+  });
+
   it("measures row bottoms from LegendList row position and size", () => {
     const state = buildState({
       positions: [0, 120],
