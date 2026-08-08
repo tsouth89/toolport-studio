@@ -34,6 +34,7 @@ export {
 
 export type { QueuedTurnInput, SendDisposition, TurnQueueState } from "./TurnQueue.ts";
 export {
+  abandonPendingTurns,
   abandonTurnQueue,
   beginTurn,
   disposeSendWhileRunning,
@@ -42,5 +43,6 @@ export {
   markTurnStopping,
   pendingCount,
   settleTurn,
+  settleTrackedTurn,
   trackLiveTurn,
 } from "./TurnQueue.ts";

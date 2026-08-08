@@ -242,9 +242,31 @@ function playScript(
             method: "item/started",
             itemId: step.toolId as never,
             payload: {
+              startedAtMs: Date.parse(NOW),
               threadId: PROVIDER_THREAD_ID,
               turnId: String(turnId),
-              item: { type: "commandExecution", id: step.toolId, command: step.name },
+              item: {
+                type: "commandExecution",
+                id: step.toolId,
+                command: step.name,
+                cwd: "/tmp/conformance-codex",
+                status: "inProgress",
+                commandActions: [],
+              },
+            },
+          } as ProviderEvent);
+          break;
+        }
+        case "tool-untitled-update": {
+          yield* runtime.emit({
+            ...base,
+            id: nextId("terminal-interaction") as never,
+            method: "item/commandExecution/terminalInteraction",
+            itemId: step.toolId as never,
+            payload: {
+              threadId: PROVIDER_THREAD_ID,
+              turnId: String(turnId),
+              itemId: step.toolId,
             },
           } as ProviderEvent);
           break;
@@ -314,10 +336,6 @@ function playScript(
 
 export const codexConformanceBinding: ConformanceBinding = {
   provider: "codex",
-  waivers: {
-    "tool-name-survives-untitled-updates":
-      "fake cannot emit an untitled update for an already-named tool",
-  },
   // Declared to match what the client actually does: the composer sends
   // `intent: "steer"` for every provider. If Codex cannot honour that, the
   // contract must say so out loud rather than let the UI keep promising it.

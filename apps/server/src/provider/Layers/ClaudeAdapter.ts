@@ -98,9 +98,14 @@ import { type ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
 import { buildConversationRehydrationPrefix } from "../conversationRehydration.ts";
 import {
   canSteerSendTurn,
+  emptyTurnQueue,
+  markTurnStopping,
   OPEN_TOOL_FORCE_CLOSE_DETAIL,
   OPEN_TOOL_FORCE_CLOSE_SOURCE,
+  settleTrackedTurn,
   shouldForceCloseRemainingOpenToolsOnSettle,
+  trackLiveTurn,
+  type TurnQueueState,
 } from "../turnEngine/index.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.UnknownFromJsonString);
@@ -322,6 +327,8 @@ interface ClaudeSessionContext {
   readonly claudeTasks: Map<string, ClaudeTaskState>;
   /** Background-task roster dedupe; see ClaudeBackgroundTaskState. */
   readonly backgroundTasks: Map<string, ClaudeBackgroundTaskState>;
+  /** Shared lifecycle ownership; provider state below contains transport detail only. */
+  turnLifecycle: TurnQueueState;
   turnState: ClaudeTurnState | undefined;
   lastKnownContextWindow: number | undefined;
   /**
@@ -2583,6 +2590,26 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       rawPayload: result ?? { status },
     });
 
+    const settlement = settleTrackedTurn(context.turnLifecycle, {
+      turnId: String(turnState.turnId),
+      reason:
+        settleStatus === "completed"
+          ? "completed"
+          : settleStatus === "interrupted"
+            ? "cancelled"
+            : "error",
+    });
+    if (!settlement.claimed) {
+      yield* Effect.logDebug("Claude ignored duplicate or stale turn settlement", {
+        threadId: context.session.threadId,
+        turnId: turnState.turnId,
+        lifecycleTurnId: context.turnLifecycle.activeTurnId,
+        lifecyclePhase: context.turnLifecycle.phase,
+      });
+      return;
+    }
+    context.turnLifecycle = settlement.state;
+
     const stamp = yield* makeEventStamp();
     yield* offerRuntimeEvent({
       type: "turn.completed",
@@ -3116,6 +3143,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         capturedProposedPlanKeys: new Set(),
         nextSyntheticAssistantBlockIndex: -1,
       };
+      context.turnLifecycle = trackLiveTurn(context.turnLifecycle, String(turnId));
       context.session = {
         ...context.session,
         status: "running",
@@ -3802,6 +3830,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     context.pendingApprovals.clear();
 
     if (context.turnState) {
+      context.turnLifecycle = markTurnStopping(context.turnLifecycle);
       yield* completeTurn(context, "interrupted", "Session stopped.");
     }
 
@@ -4474,6 +4503,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         inFlightTools,
         claudeTasks,
         backgroundTasks,
+        turnLifecycle: emptyTurnQueue(),
         turnState: undefined,
         lastKnownContextWindow: initialContextWindow,
         selectedContextWindow: initialContextWindow,
@@ -4610,6 +4640,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
       const updatedAt = yield* nowIso;
       context.turnState = turnState;
+      context.turnLifecycle = trackLiveTurn(context.turnLifecycle, String(turnId));
       context.session = {
         ...context.session,
         status: "running",
@@ -4764,6 +4795,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       // Force-settle before talking to the SDK. interrupt() can hang on a wedged
       // child; Working and Stop must still leave the running state (Cursor/Grok).
       if (context.turnState) {
+        context.turnLifecycle = markTurnStopping(context.turnLifecycle);
         yield* completeTurn(context, "interrupted", "Turn interrupted.");
       } else if (context.session.status === "running" || context.session.status === "connecting") {
         const updatedAt = yield* nowIso;

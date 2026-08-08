@@ -143,6 +143,30 @@ export function settleTurn(
   };
 }
 
+/**
+ * Settle only when `turnId` still owns the live lifecycle. Late transport
+ * completions and duplicated Stop/result paths must not terminalize a newer
+ * turn or drain its queue.
+ */
+export function settleTrackedTurn(
+  state: TurnQueueState,
+  input: {
+    readonly turnId: string;
+    readonly reason: "completed" | "cancelled" | "error";
+  },
+): {
+  readonly claimed: boolean;
+  readonly state: TurnQueueState;
+  readonly next: QueuedTurnInput | undefined;
+} {
+  if (state.activeTurnId !== input.turnId || !isLivePhase(state.phase)) {
+    return { claimed: false, state, next: undefined };
+  }
+
+  const settled = settleTurn(state, input.reason);
+  return { claimed: true, ...settled };
+}
+
 export function pendingCount(state: TurnQueueState): number {
   return state.pending.length;
 }
@@ -157,6 +181,21 @@ export function abandonTurnQueue(state: TurnQueueState): {
 } {
   return {
     state: emptyTurnQueue(),
+    abandoned: state.pending,
+  };
+}
+
+/**
+ * Drop held sends while preserving ownership of the live turn. Stop uses this
+ * before transport cancellation so the lifecycle can still make one terminal
+ * transition for the active turn.
+ */
+export function abandonPendingTurns(state: TurnQueueState): {
+  readonly state: TurnQueueState;
+  readonly abandoned: ReadonlyArray<QueuedTurnInput>;
+} {
+  return {
+    state: { ...state, pending: [] },
     abandoned: state.pending,
   };
 }
