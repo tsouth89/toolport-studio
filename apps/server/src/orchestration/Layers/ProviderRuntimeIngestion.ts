@@ -1880,6 +1880,26 @@ const make = Effect.gen(function* () {
           switch (event.type) {
             case "session.state.changed": {
               const runtimeStatus = orchestrationSessionStatusFromRuntimeState(event.payload.state);
+              // A provider heartbeat without an active (or accepted pending)
+              // turn is not evidence that foreground work exists. In
+              // particular, Claude can emit `running` while resuming a session
+              // after the preceding turn has already settled. Projecting that
+              // heartbeat literally reopens a terminal turn and leaves the UI
+              // showing Working indefinitely (SBS-604).
+              if (runtimeStatus === "running" && activeTurnId === null && !hasPendingTurnStart) {
+                switch (thread.session?.status) {
+                  case "error":
+                  case "interrupted":
+                  case "stopped":
+                    return thread.session.status;
+                  case "starting":
+                  case "idle":
+                  case "ready":
+                  case "running":
+                  case undefined:
+                    return "ready";
+                }
+              }
               return hasPendingTurnStart && runtimeStatus === "ready" ? "starting" : runtimeStatus;
             }
             case "turn.started":

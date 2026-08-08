@@ -1,10 +1,12 @@
-import * as Clock from "effect/Clock";
+import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schedule from "effect/Schedule";
+import { CommandId, EventId } from "@toolport-studio/contracts";
 
+import { OrchestrationEngineService } from "../../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
 import {
@@ -26,6 +28,7 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
     const providerService = yield* ProviderService;
     const directory = yield* ProviderSessionDirectory;
     const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
+    const orchestrationEngine = yield* OrchestrationEngineService;
 
     const inactivityThresholdMs = Math.max(
       1,
@@ -38,7 +41,8 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
       const activeSessionThreadIds = new Set(
         (yield* providerService.listSessions()).map((session) => session.threadId),
       );
-      const now = yield* Clock.currentTimeMillis;
+      const nowDateTime = yield* DateTime.now;
+      const now = DateTime.toEpochMillis(nowDateTime);
       let reapedCount = 0;
 
       for (const binding of bindings) {
@@ -76,6 +80,70 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
         }
 
         const reaped = yield* providerService.stopSession({ threadId: binding.threadId }).pipe(
+          Effect.flatMap(() =>
+            projectionSnapshotQuery
+              .getThreadShellById(binding.threadId)
+              .pipe(Effect.map(Option.getOrUndefined)),
+          ),
+          Effect.flatMap((latestThread) =>
+            Effect.gen(function* () {
+              const session = latestThread?.session;
+              if (!session || (session.status !== "starting" && session.status !== "running")) {
+                return;
+              }
+              const createdAt = DateTime.formatIso(yield* DateTime.now);
+              // The snapshot used to choose this binding can be stale by the time
+              // stopSession returns. Never let an inactivity sweep overwrite a
+              // newer turn that began in that window.
+              if (session.activeTurnId !== (projectedActiveTurnId ?? null)) {
+                yield* Effect.logDebug("provider.session.reaper.skipped-newer-projection", {
+                  threadId: binding.threadId,
+                  previousActiveTurnId: projectedActiveTurnId ?? null,
+                  currentActiveTurnId: session.activeTurnId,
+                });
+                return;
+              }
+              yield* orchestrationEngine
+                .dispatch({
+                  type: "thread.session.set",
+                  commandId: CommandId.make(`session-reaper:set:${binding.threadId}:${now}`),
+                  threadId: binding.threadId,
+                  session: {
+                    ...session,
+                    status: "interrupted",
+                    activeTurnId: null,
+                    lastError: null,
+                    updatedAt: createdAt,
+                  },
+                  expectedSession: {
+                    activeTurnId: session.activeTurnId,
+                    updatedAt: session.updatedAt,
+                  },
+                  createdAt,
+                })
+                .pipe(
+                  Effect.flatMap(() =>
+                    orchestrationEngine.dispatch({
+                      type: "thread.activity.append",
+                      commandId: CommandId.make(
+                        `session-reaper:activity:${binding.threadId}:${now}`,
+                      ),
+                      threadId: binding.threadId,
+                      activity: {
+                        id: EventId.make(`session-reaper:${binding.threadId}:${now}`),
+                        tone: "info",
+                        kind: "provider.session.reconciled",
+                        summary: "Cleared orphaned provider turn",
+                        payload: { reason: "provider_runtime_missing" },
+                        turnId: projectedActiveTurnId ?? null,
+                        createdAt,
+                      },
+                      createdAt,
+                    }),
+                  ),
+                );
+            }),
+          ),
           Effect.tap(() =>
             Effect.logInfo("provider.session.reaped", {
               threadId: binding.threadId,

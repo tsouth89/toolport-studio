@@ -2051,6 +2051,18 @@ describe("deriveComposerPhase", () => {
     ).toBe("ready");
   });
 
+  it("treats sticky running with no active turn as ready", () => {
+    expect(
+      deriveComposerPhase(
+        {
+          status: "running",
+          activeTurnId: null,
+        } as never,
+        completedTurn,
+      ),
+    ).toBe("ready");
+  });
+
   // Regression: the sticky-running escape hatch must not fire on a turn that is
   // genuinely still running. A mid-turn checkpoint placeholder satisfied every
   // other condition here and downgraded live Codex turns to "ready", which

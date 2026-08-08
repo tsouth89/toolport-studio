@@ -1928,8 +1928,7 @@ export function deriveComposerPhase(
     latestTurn?.startedAt != null &&
     latestTurn.completedAt != null &&
     latestTurn.state !== "running" &&
-    session?.activeTurnId != null &&
-    session.activeTurnId === latestTurn.turnId
+    (session?.activeTurnId == null || session.activeTurnId === latestTurn.turnId)
   ) {
     return "ready";
   }

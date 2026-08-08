@@ -34,7 +34,10 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { deriveServerPaths, ServerConfig } from "../../config.ts";
 import { TextGenerationError } from "@toolport-studio/contracts";
-import { ProviderAdapterRequestError } from "../../provider/Errors.ts";
+import {
+  ProviderAdapterRequestError,
+  ProviderSessionNotFoundError,
+} from "../../provider/Errors.ts";
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
@@ -2286,6 +2289,140 @@ describe("ProviderCommandReactor", () => {
       "Stop failed: expected active turn id turn-a but found turn-b",
     );
     expect(thread?.session?.providerInstanceId).toBe(ProviderInstanceId.make("codex"));
+  });
+
+  it("clears a projected running turn when Stop confirms the provider session is gone", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    harness.interruptTurn.mockReturnValue(
+      Effect.fail(new ProviderSessionNotFoundError({ threadId: "thread-1" })),
+    );
+
+    await runtime!.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-missing-runtime"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "running",
+          providerName: "claudeAgent",
+          providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+          runtimeMode: "approval-required",
+          activeTurnId: asTurnId("turn-stale"),
+          lastError: "old error",
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+
+    await runtime!.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.interrupt",
+        commandId: CommandId.make("cmd-turn-interrupt-missing-runtime"),
+        threadId: ThreadId.make("thread-1"),
+        turnId: asTurnId("turn-stale"),
+        createdAt: "2026-01-01T00:00:01.000Z",
+      }),
+    );
+
+    await waitFor(async () => {
+      const readModel = await harness.readModel();
+      const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+      return thread?.session?.status === "interrupted";
+    });
+
+    const readModel = await harness.readModel();
+    const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+    expect(thread?.session).toMatchObject({
+      status: "interrupted",
+      activeTurnId: null,
+      lastError: null,
+    });
+    expect(
+      thread?.activities.find((activity) => activity.kind === "provider.turn.interrupt.reconciled"),
+    ).toMatchObject({
+      tone: "info",
+      summary: "Cleared stale turn",
+      turnId: asTurnId("turn-stale"),
+    });
+    expect(
+      thread?.activities.some((activity) => activity.kind === "provider.turn.interrupt.failed"),
+    ).toBe(false);
+  });
+
+  it("does not let stale Stop recovery overwrite a newer running turn", async () => {
+    const missingRuntimeGate = Effect.runSync(Deferred.make<void>());
+    const harness = await createHarness({
+      interruptTurnEffect: () =>
+        Deferred.await(missingRuntimeGate).pipe(
+          Effect.flatMap(() =>
+            Effect.fail(new ProviderSessionNotFoundError({ threadId: "thread-1" })),
+          ),
+        ),
+    });
+    const threadId = ThreadId.make("thread-1");
+
+    await runtime!.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-before-racing-stop"),
+        threadId,
+        session: {
+          threadId,
+          status: "starting",
+          providerName: "claudeAgent",
+          providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+          runtimeMode: "full-access",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        },
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+    await runtime!.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.interrupt",
+        commandId: CommandId.make("cmd-racing-stop"),
+        threadId,
+        createdAt: "2026-01-01T00:00:01.000Z",
+      }),
+    );
+    await waitFor(() => harness.interruptTurn.mock.calls.length === 1);
+
+    await runtime!.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-newer-turn"),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "claudeAgent",
+          providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+          runtimeMode: "full-access",
+          activeTurnId: asTurnId("turn-new"),
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:02.000Z",
+        },
+        createdAt: "2026-01-01T00:00:02.000Z",
+      }),
+    );
+    await Effect.runPromise(Deferred.succeed(missingRuntimeGate, undefined));
+    await harness.drain();
+
+    const readModel = await harness.readModel();
+    const thread = readModel.threads.find((entry) => entry.id === threadId);
+    expect(thread?.session).toMatchObject({
+      status: "running",
+      activeTurnId: asTurnId("turn-new"),
+      lastError: null,
+    });
+    expect(
+      thread?.activities.some((activity) => activity.kind === "provider.turn.interrupt.reconciled"),
+    ).toBe(false);
   });
 
   it("times out a wedged provider interrupt and keeps the running lifecycle visible", async () => {

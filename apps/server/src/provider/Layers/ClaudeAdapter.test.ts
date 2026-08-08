@@ -1550,6 +1550,83 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("does not settle a foreground turn from a resumed background-task result", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+      const completedSignal = yield* Deferred.make<void>();
+      const collector = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          runtimeEvents.push(event);
+        }).pipe(
+          Effect.flatMap(() =>
+            event.type === "turn.completed"
+              ? Deferred.succeed(completedSignal, undefined)
+              : Effect.void,
+          ),
+        ),
+      ).pipe(Effect.forkChild);
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      const turn = yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "hello after resume",
+        attachments: [],
+      });
+
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        origin: { kind: "task-notification" },
+        session_id: "sdk-session-resumed-task",
+        uuid: "result-background-task",
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "assistant",
+        session_id: "sdk-session-resumed-task",
+        uuid: "assistant-foreground",
+        parent_tool_use_id: null,
+        message: {
+          id: "assistant-message-foreground",
+          content: [{ type: "text", text: "Foreground response" }],
+        },
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        session_id: "sdk-session-resumed-task",
+        uuid: "result-foreground",
+      } as unknown as SDKMessage);
+
+      yield* Deferred.await(completedSignal);
+      yield* Effect.yieldNow;
+      yield* Fiber.interrupt(collector).pipe(Effect.ignore);
+
+      const completed = runtimeEvents.filter((event) => event.type === "turn.completed");
+      assert.equal(completed.length, 1);
+      assert.equal(String(completed[0]?.turnId), String(turn.turnId));
+      const assistantItems = runtimeEvents.filter(
+        (event) =>
+          event.type === "item.completed" && event.payload.itemType === "assistant_message",
+      );
+      assert.equal(assistantItems.length, 1);
+      assert.equal(String(assistantItems[0]?.turnId), String(turn.turnId));
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("does not report a live turn as failed when Claude stops with a tool call open", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

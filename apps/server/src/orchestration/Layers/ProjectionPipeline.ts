@@ -1940,6 +1940,110 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       },
     );
 
+    /**
+     * A provider process and its foreground turn cannot survive a Studio
+     * process restart. Replaying the event log can nevertheless rebuild their
+     * last projected state as `starting`/`running`, so reconcile only after all
+     * projectors have caught up. This makes the repair rebuild-safe and avoids
+     * presenting a dead turn as live forever (SBS-423/SBS-604).
+     */
+    const reconcileInFlightThreadSessions = Effect.fn("reconcileInFlightThreadSessions")(
+      function* () {
+        const now = DateTime.formatIso(yield* DateTime.now);
+        const inFlight = yield* sql<{
+          readonly threadId: string;
+          readonly activeTurnId: string | null;
+        }>`
+          SELECT
+            thread_id AS "threadId",
+            active_turn_id AS "activeTurnId"
+          FROM projection_thread_sessions
+          WHERE status IN ('starting', 'running')
+        `.pipe(
+          Effect.mapError(
+            toPersistenceSqlError("ProjectionPipeline.bootstrap:findInFlightThreadSessions"),
+          ),
+        );
+        if (inFlight.length === 0) {
+          return;
+        }
+
+        yield* sql
+          .withTransaction(
+            Effect.forEach(
+              inFlight,
+              ({ threadId, activeTurnId }) =>
+                Effect.all(
+                  [
+                    sql`
+                    UPDATE projection_turns
+                    SET state = 'interrupted', completed_at = ${now}
+                    WHERE thread_id = ${threadId}
+                      AND turn_id IS NOT NULL
+                      AND state = 'running'
+                  `,
+                    sql`
+                    DELETE FROM projection_turns
+                    WHERE thread_id = ${threadId}
+                      AND turn_id IS NULL
+                      AND state = 'pending'
+                  `,
+                    sql`
+                    INSERT INTO projection_thread_activities (
+                      activity_id,
+                      thread_id,
+                      turn_id,
+                      tone,
+                      kind,
+                      summary,
+                      payload_json,
+                      sequence,
+                      created_at
+                    ) VALUES (
+                      ${`startup-session-reconcile:${threadId}`},
+                      ${threadId},
+                      ${activeTurnId},
+                      'info',
+                      'provider.session.reconciled',
+                      'Turn interrupted by Studio restart',
+                      ${JSON.stringify({ reason: "startup_reconciliation" })},
+                      NULL,
+                      ${now}
+                    )
+                    ON CONFLICT (activity_id)
+                    DO UPDATE SET
+                      turn_id = excluded.turn_id,
+                      payload_json = excluded.payload_json,
+                      created_at = excluded.created_at
+                  `,
+                    sql`
+                    UPDATE projection_thread_sessions
+                    SET
+                      status = 'interrupted',
+                      active_turn_id = NULL,
+                      last_error = NULL,
+                      updated_at = ${now}
+                    WHERE thread_id = ${threadId}
+                      AND status IN ('starting', 'running')
+                  `,
+                  ],
+                  { concurrency: 1, discard: true },
+                ),
+              { concurrency: 1, discard: true },
+            ),
+          )
+          .pipe(
+            Effect.mapError(
+              toPersistenceSqlError("ProjectionPipeline.bootstrap:reconcileInFlightThreadSessions"),
+            ),
+          );
+
+        yield* Effect.logInfo("settled foreground turns left running by a previous process", {
+          count: inFlight.length,
+        });
+      },
+    );
+
     const runRetentionMaintenance = Effect.fn("runProjectionRetentionMaintenance")(function* () {
       yield* projectionThreadActivityRepository.pruneAllThreadsKeepLast({
         keepLast: MAX_PROJECTED_THREAD_ACTIVITIES,
@@ -2000,6 +2104,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
     return {
       bootstrap,
       projectEvent,
+      reconcileStartupThreadSessions: reconcileInFlightThreadSessions(),
     } satisfies OrchestrationProjectionPipelineShape;
   },
 );

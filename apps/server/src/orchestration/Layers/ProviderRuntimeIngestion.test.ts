@@ -404,9 +404,9 @@ describe("ProviderRuntimeIngestion", () => {
 
     let thread = await waitForThread(
       harness.readModel,
-      (entry) => entry.session?.status === "running" && entry.session?.activeTurnId === null,
+      (entry) => entry.session?.status === "ready" && entry.session?.activeTurnId === null,
     );
-    expect(thread.session?.status).toBe("running");
+    expect(thread.session?.status).toBe("ready");
     expect(thread.session?.lastError).toBeNull();
 
     harness.emit({
@@ -472,6 +472,99 @@ describe("ProviderRuntimeIngestion", () => {
     );
     expect(thread.session?.status).toBe("ready");
     expect(thread.session?.lastError).toBeNull();
+  });
+
+  it("does not reopen a settled turn from a late running heartbeat", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-turn-completed-before-late-heartbeat"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-1"),
+      createdAt: now,
+      payload: { state: "completed" },
+    });
+    await waitForThread(
+      harness.readModel,
+      (entry) => entry.session?.status === "ready" && entry.session?.activeTurnId === null,
+    );
+
+    harness.emit({
+      type: "session.state.changed",
+      eventId: asEventId("evt-late-running-heartbeat"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      payload: { state: "running" },
+    });
+
+    const thread = await waitForThread(
+      harness.readModel,
+      (entry) => entry.session?.updatedAt === "2026-01-01T00:00:01.000Z",
+    );
+    expect(thread.session?.status).toBe("ready");
+    expect(thread.session?.activeTurnId).toBeNull();
+  });
+
+  it("preserves a terminal interrupted session after a late running heartbeat", async () => {
+    const harness = await createHarness();
+    harness.emit({
+      type: "session.state.changed",
+      eventId: asEventId("evt-session-interrupted-before-late-heartbeat"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      payload: { state: "interrupted", reason: "Studio restarted" },
+    });
+    await waitForThread(harness.readModel, (entry) => entry.session?.status === "interrupted");
+
+    harness.emit({
+      type: "session.state.changed",
+      eventId: asEventId("evt-running-after-interrupted"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      payload: { state: "running" },
+    });
+
+    const thread = await waitForThread(
+      harness.readModel,
+      (entry) => entry.session?.updatedAt === "2026-01-01T00:00:01.000Z",
+    );
+    expect(thread.session?.status).toBe("interrupted");
+    expect(thread.session?.activeTurnId).toBeNull();
+  });
+
+  it("recovers stale starting state when a running heartbeat has no pending turn", async () => {
+    const harness = await createHarness();
+    harness.emit({
+      type: "session.state.changed",
+      eventId: asEventId("evt-session-starting-before-heartbeat"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      payload: { state: "starting" },
+    });
+    await waitForThread(harness.readModel, (entry) => entry.session?.status === "starting");
+
+    harness.emit({
+      type: "session.state.changed",
+      eventId: asEventId("evt-running-after-stale-starting"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      payload: { state: "running" },
+    });
+
+    const thread = await waitForThread(
+      harness.readModel,
+      (entry) => entry.session?.updatedAt === "2026-01-01T00:00:01.000Z",
+    );
+    expect(thread.session?.status).toBe("ready");
+    expect(thread.session?.activeTurnId).toBeNull();
   });
 
   it("clears active turn when provider session becomes ready", async () => {

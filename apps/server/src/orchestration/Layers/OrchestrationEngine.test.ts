@@ -230,6 +230,7 @@ describe("OrchestrationEngine", () => {
       Layer.provide(
         Layer.succeed(OrchestrationProjectionPipeline, {
           bootstrap: Effect.void,
+          reconcileStartupThreadSessions: Effect.void,
           projectEvent: () => Effect.void,
         } satisfies OrchestrationProjectionPipelineShape),
       ),
@@ -964,6 +965,7 @@ describe("OrchestrationEngine", () => {
     let shouldFailRequestedProjection = true;
     const flakyProjectionPipeline: OrchestrationProjectionPipelineShape = {
       bootstrap: Effect.void,
+      reconcileStartupThreadSessions: Effect.void,
       projectEvent: (event) => {
         if (
           shouldFailRequestedProjection &&
@@ -1113,6 +1115,7 @@ describe("OrchestrationEngine", () => {
     let shouldFailProjection = true;
     const flakyProjectionPipeline: OrchestrationProjectionPipelineShape = {
       bootstrap: Effect.void,
+      reconcileStartupThreadSessions: Effect.void,
       projectEvent: (event) => {
         if (
           shouldFailProjection &&
