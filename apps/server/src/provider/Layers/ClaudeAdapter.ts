@@ -100,11 +100,11 @@ import { type ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
 import { buildConversationRehydrationPrefix } from "../conversationRehydration.ts";
 import {
   canSteerSendTurn,
+  claimTurnSettlement,
   emptyTurnQueue,
   markTurnStopping,
   OPEN_TOOL_FORCE_CLOSE_DETAIL,
   OPEN_TOOL_FORCE_CLOSE_SOURCE,
-  settleTrackedTurn,
   shouldForceCloseRemainingOpenToolsOnSettle,
   trackLiveTurn,
   type TurnQueueState,
@@ -2554,9 +2554,23 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     if (!turnState) {
       // Late result after Stop/interrupt already settled — do not double-fire
       // turn.completed (that re-opens zombie Working / confuses the timeline).
-      if (context.session.status !== "running" && context.session.status !== "connecting") {
+      const lifecycleTurnId = context.turnLifecycle.activeTurnId;
+      if (
+        lifecycleTurnId === undefined ||
+        (context.session.status !== "running" && context.session.status !== "connecting")
+      ) {
         return;
       }
+      const settlement = claimTurnSettlement(context.turnLifecycle, {
+        turnId: lifecycleTurnId,
+        reason:
+          status === "completed" ? "completed" : status === "interrupted" ? "cancelled" : "error",
+      });
+      if (!settlement.claimed) {
+        return;
+      }
+      context.turnLifecycle = settlement.state;
+      const claimedTurnId = TurnId.make(settlement.turnId);
       yield* emitThreadTokenUsage(context, usageSnapshot, {
         rawMethod: "claude/result",
         rawPayload: result ?? { status },
@@ -2569,6 +2583,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         provider: PROVIDER,
         createdAt: stamp.createdAt,
         threadId: context.session.threadId,
+        turnId: claimedTurnId,
         payload: {
           state: status,
           ...(result?.stop_reason !== undefined ? { stopReason: result.stop_reason } : {}),
@@ -2581,7 +2596,73 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         },
         providerRefs: {},
       });
+      const updatedAt = yield* nowIso;
+      context.session = {
+        ...context.session,
+        status: "ready",
+        activeTurnId: undefined,
+        updatedAt,
+        ...(status === "failed" && errorMessage ? { lastError: errorMessage } : {}),
+      };
+      yield* updateResumeCursor(context);
       return;
+    }
+
+    // Classify the terminal result without mutating adapter/runtime state, then
+    // claim shared lifecycle ownership before closing tools or emitting events.
+    let settleStatus = status;
+    let settleErrorMessage = errorMessage;
+    const emittedFailure = (() => {
+      if (status !== "completed") {
+        return undefined;
+      }
+      const resultText =
+        result && "result" in result && typeof result.result === "string" ? result.result : "";
+      const blockText = turnState.assistantTextBlockOrder
+        .map((block) => block.fallbackText)
+        .join("");
+      const assistantText =
+        turnState.assistantTextAccumulator.trim().length > 0
+          ? turnState.assistantTextAccumulator
+          : blockText.trim().length > 0
+            ? blockText
+            : resultText;
+      return classifyProviderEmittedFailure(assistantText);
+    })();
+    if (emittedFailure) {
+      settleStatus = "failed";
+      settleErrorMessage = formatProviderEmittedFailureMessage(emittedFailure, {
+        providerLabel: "Claude",
+        ...(context.session.model ? { model: context.session.model } : {}),
+      });
+    }
+    const settlement = claimTurnSettlement(context.turnLifecycle, {
+      turnId: String(turnState.turnId),
+      reason:
+        settleStatus === "completed"
+          ? "completed"
+          : settleStatus === "interrupted"
+            ? "cancelled"
+            : "error",
+    });
+    if (!settlement.claimed) {
+      yield* Effect.logDebug("Claude ignored duplicate or stale turn settlement", {
+        threadId: context.session.threadId,
+        turnId: turnState.turnId,
+        lifecycleTurnId: context.turnLifecycle.activeTurnId,
+        lifecyclePhase: context.turnLifecycle.phase,
+      });
+      return;
+    }
+    context.turnLifecycle = settlement.state;
+    if (emittedFailure && settleErrorMessage) {
+      yield* Effect.logWarning("Claude turn completed with provider-emitted failure", {
+        threadId: context.session.threadId,
+        turnId: turnState.turnId,
+        code: emittedFailure.code,
+        model: context.session.model,
+      });
+      yield* emitRuntimeError(context, settleErrorMessage);
     }
 
     // Any settle with tools still open must force-close them (shared Stop
@@ -2674,39 +2755,6 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       });
     }
 
-    // Pure capacity/auth dumps as assistant text + success result must not
-    // settle as successful replies (Cursor/Grok parity).
-    let settleStatus = status;
-    let settleErrorMessage = errorMessage;
-    if (status === "completed") {
-      const resultText =
-        result && "result" in result && typeof result.result === "string" ? result.result : "";
-      const blockText = turnState.assistantTextBlockOrder
-        .map((block) => block.fallbackText)
-        .join("");
-      const assistantText =
-        turnState.assistantTextAccumulator.trim().length > 0
-          ? turnState.assistantTextAccumulator
-          : blockText.trim().length > 0
-            ? blockText
-            : resultText;
-      const emittedFailure = classifyProviderEmittedFailure(assistantText);
-      if (emittedFailure) {
-        settleStatus = "failed";
-        settleErrorMessage = formatProviderEmittedFailureMessage(emittedFailure, {
-          providerLabel: "Claude",
-          ...(context.session.model ? { model: context.session.model } : {}),
-        });
-        yield* Effect.logWarning("Claude turn completed with provider-emitted failure", {
-          threadId: context.session.threadId,
-          turnId: turnState.turnId,
-          code: emittedFailure.code,
-          model: context.session.model,
-        });
-        yield* emitRuntimeError(context, settleErrorMessage);
-      }
-    }
-
     context.turns.push({
       id: turnState.turnId,
       items: [...turnState.items],
@@ -2716,26 +2764,6 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       rawMethod: "claude/result",
       rawPayload: result ?? { status },
     });
-
-    const settlement = settleTrackedTurn(context.turnLifecycle, {
-      turnId: String(turnState.turnId),
-      reason:
-        settleStatus === "completed"
-          ? "completed"
-          : settleStatus === "interrupted"
-            ? "cancelled"
-            : "error",
-    });
-    if (!settlement.claimed) {
-      yield* Effect.logDebug("Claude ignored duplicate or stale turn settlement", {
-        threadId: context.session.threadId,
-        turnId: turnState.turnId,
-        lifecycleTurnId: context.turnLifecycle.activeTurnId,
-        lifecyclePhase: context.turnLifecycle.phase,
-      });
-      return;
-    }
-    context.turnLifecycle = settlement.state;
 
     const stamp = yield* makeEventStamp();
     yield* offerRuntimeEvent({
