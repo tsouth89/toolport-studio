@@ -1814,6 +1814,20 @@ export function makeCursorAdapter(
               ),
             );
 
+          // Stop or another terminal path may have claimed this turn while the
+          // blocking ACP prompt was still unwinding. A late result may be
+          // retained nowhere, but it must never reopen session.activeTurnId.
+          if (
+            ctx.forceSettledTurnIds.has(String(turnId)) ||
+            ctx.turnLifecycle.activeTurnId !== String(turnId)
+          ) {
+            return {
+              threadId: input.threadId,
+              turnId,
+              resumeCursor: ctx.session.resumeCursor,
+            };
+          }
+
           const turnRecord = ctx.turns.find((turn) => turn.id === turnId);
           if (turnRecord) {
             turnRecord.items.push({ prompt: promptParts, result });

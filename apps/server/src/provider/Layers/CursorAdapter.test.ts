@@ -1536,7 +1536,7 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
       assert.equal(completed.payload.state, "cancelled");
       assert.equal(completed.payload.stopReason, "cancelled");
       yield* adapter.interruptTurn(threadId);
-      yield* Effect.yieldNow;
+      yield* Effect.sleep("50 millis");
       assert.equal(turnCompletedCount, 1);
 
       const sessions = yield* adapter.listSessions();

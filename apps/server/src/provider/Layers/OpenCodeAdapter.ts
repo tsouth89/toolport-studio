@@ -2505,6 +2505,14 @@ export function makeOpenCodeAdapter(
         ).pipe(Effect.timeout("2 seconds"), Effect.ignore);
 
         if (!settlement?.claimed) {
+          // Recovery still owns session honesty when transport state says
+          // running but no lifecycle turn can be terminalized. There is no
+          // turn event to emit, but Stop must clear stale Working state.
+          context.activeTurnId = undefined;
+          context.providerBusyTurnId = undefined;
+          context.activeAgent = undefined;
+          context.activeVariant = undefined;
+          yield* updateProviderSession(context, { status: "ready" }, { clearActiveTurnId: true });
           return;
         }
         const claimedTurnId = TurnId.make(settlement.turnId);

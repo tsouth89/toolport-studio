@@ -969,7 +969,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive more", (it) => {
       });
       yield* adapter.interruptTurn(threadId);
       yield* adapter.interruptTurn(threadId);
-      yield* Effect.yieldNow;
+      yield* Effect.sleep("50 millis");
 
       NodeAssert.equal(completed.length, 1);
       NodeAssert.equal(completed[0]?.type, "turn.completed");
@@ -978,7 +978,40 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive more", (it) => {
       }
       yield* Fiber.interrupt(eventsFiber).pipe(Effect.ignore);
       yield* adapter.stopSession(threadId);
-    }),
+    }).pipe(TestClock.withLive),
+  );
+
+  it.effect("forces a running session ready when Stop has no claimable turn", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-opencode-stop-without-turn");
+      runtimeMock.state.subscribedEvents = [
+        {
+          type: "session.status",
+          properties: {
+            sessionID: "http://127.0.0.1:9999/session",
+            status: { type: "busy" },
+          },
+        },
+      ];
+
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      yield* Effect.sleep("20 millis");
+      const before = (yield* adapter.listSessions()).find((entry) => entry.threadId === threadId);
+      NodeAssert.equal(before?.status, "running");
+      NodeAssert.equal(before?.activeTurnId, undefined);
+
+      yield* adapter.interruptTurn(threadId);
+
+      const after = (yield* adapter.listSessions()).find((entry) => entry.threadId === threadId);
+      NodeAssert.equal(after?.status, "ready");
+      NodeAssert.equal(after?.activeTurnId, undefined);
+      yield* adapter.stopSession(threadId);
+    }).pipe(TestClock.withLive),
   );
 
   it.effect("passes agent and variant options for the adapter's bound custom instance id", () => {
