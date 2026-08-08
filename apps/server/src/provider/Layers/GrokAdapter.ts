@@ -479,6 +479,13 @@ export interface GrokAdapterLiveOptions {
 
 interface PendingApproval {
   readonly decision: Deferred.Deferred<ProviderApprovalDecision>;
+  /**
+   * Set by the bulk settle helpers below before they resolve the deferred. The
+   * awaiting race cannot otherwise tell their cancellation from a real one:
+   * both arrive as a settled deferred rather than a timeout, so without this
+   * an aborted request is recorded as the user having cancelled it.
+   */
+  settledByAbort?: boolean;
 }
 
 type PendingUserInputResolution =
@@ -487,6 +494,8 @@ type PendingUserInputResolution =
 
 interface PendingUserInput {
   readonly resolution: Deferred.Deferred<PendingUserInputResolution>;
+  /** See {@link PendingApproval.settledByAbort}. */
+  settledByAbort?: boolean;
 }
 
 interface GrokSessionContext {
@@ -671,7 +680,10 @@ function settlePendingApprovalsAsCancelled(
 ): Effect.Effect<void> {
   return Effect.forEach(
     Array.from(pendingApprovals.values()),
-    (pending) => Deferred.succeed(pending.decision, "cancel").pipe(Effect.ignore),
+    (pending) =>
+      Effect.sync(() => {
+        pending.settledByAbort = true;
+      }).pipe(Effect.andThen(Deferred.succeed(pending.decision, "cancel")), Effect.ignore),
     { discard: true },
   );
 }
@@ -681,7 +693,13 @@ function settlePendingUserInputsAsCancelled(
 ): Effect.Effect<void> {
   return Effect.forEach(
     Array.from(pendingUserInputs.values()),
-    (pending) => Deferred.succeed(pending.resolution, { _tag: "cancelled" }).pipe(Effect.ignore),
+    (pending) =>
+      Effect.sync(() => {
+        pending.settledByAbort = true;
+      }).pipe(
+        Effect.andThen(Deferred.succeed(pending.resolution, { _tag: "cancelled" as const })),
+        Effect.ignore,
+      ),
     { discard: true },
   );
 }
@@ -1432,7 +1450,8 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   const runtimeRequestId = RuntimeRequestId.make(requestId);
                   const resolution = yield* Deferred.make<PendingUserInputResolution>();
                   const turnId = resolveSessionCallbackTurnId(sessions, input.threadId);
-                  input.pendingUserInputs.set(requestId, { resolution });
+                  const pendingUserInput: PendingUserInput = { resolution };
+                  input.pendingUserInputs.set(requestId, pendingUserInput);
                   yield* offerRuntimeEvent({
                     type: "user-input.requested",
                     ...(yield* makeEventStamp()),
@@ -1486,9 +1505,14 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                     requestId: runtimeRequestId,
                     payload: {
                       answers: resolvedAnswers,
-                      // A user-initiated cancel is still the user; only the
-                      // watchdog branch is automatic.
-                      resolvedBy: raceResult._tag === "timeout" ? "timeout" : "user",
+                      // A user-initiated cancel is still the user; the watchdog
+                      // and a bulk abort are not.
+                      resolvedBy:
+                        raceResult._tag === "timeout"
+                          ? "timeout"
+                          : pendingUserInput.settledByAbort
+                            ? "aborted"
+                            : "user",
                     },
                     raw: {
                       source: "acp.grok.extension",
@@ -1527,7 +1551,8 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               const runtimeRequestId = RuntimeRequestId.make(requestId);
               const decision = yield* Deferred.make<ProviderApprovalDecision>();
               const turnId = resolveSessionCallbackTurnId(sessions, input.threadId);
-              input.pendingApprovals.set(requestId, { decision });
+              const pendingApproval: PendingApproval = { decision };
+              input.pendingApprovals.set(requestId, pendingApproval);
               yield* offerRuntimeEvent(
                 makeAcpRequestOpenedEvent({
                   stamp: yield* makeEventStamp(),
@@ -1584,7 +1609,12 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   requestId: runtimeRequestId,
                   permissionRequest,
                   decision: resolved,
-                  resolvedBy: raceResult._tag === "timeout" ? "timeout" : "user",
+                  resolvedBy:
+                    raceResult._tag === "timeout"
+                      ? "timeout"
+                      : pendingApproval.settledByAbort
+                        ? "aborted"
+                        : "user",
                 }),
               );
               const selectedOptionId =

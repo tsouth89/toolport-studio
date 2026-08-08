@@ -504,10 +504,15 @@ export function runtimeEventToActivities(
           createdAt: event.createdAt,
           tone: "approval",
           kind: "approval.resolved",
+          // Mirrors the user-input summary below. Claude emits `aborted` for
+          // approvals too, and without this arm it read as a plain "Approval
+          // resolved" — the same conflation this whole field exists to remove.
           summary:
             event.payload.resolvedBy === "timeout"
               ? "Approval auto-cancelled after timeout"
-              : "Approval resolved",
+              : event.payload.resolvedBy === "aborted"
+                ? "Approval cancelled"
+                : "Approval resolved",
           payload: {
             requestId: toApprovalRequestId(event.requestId),
             ...(requestKind ? { requestKind } : {}),
