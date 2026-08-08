@@ -1804,6 +1804,20 @@ export function makeOpenCodeAdapter(
           }
 
           const idleTurnId = context.providerBusyTurnId;
+          if (
+            event.properties.status.type === "idle" &&
+            !idleTurnId &&
+            context.turnLifecycle.activeTurnId === undefined
+          ) {
+            // An id-less busy/idle pair can arrive while restoring a provider
+            // session, before Studio has a turn owner to bind it to. Reconcile
+            // stale Working state only when no authoritative turn is live; a
+            // late idle must not clear a newly preparing turn.
+            context.activeTurnId = undefined;
+            context.providerBusyTurnId = undefined;
+            yield* updateProviderSession(context, { status: "ready" }, { clearActiveTurnId: true });
+            break;
+          }
           if (event.properties.status.type === "idle" && idleTurnId) {
             const emittedFailure = classifyProviderEmittedFailure(
               collectOpenCodeAssistantText(context),
@@ -1881,23 +1895,26 @@ export function makeOpenCodeAdapter(
 
         case "session.error": {
           const message = sessionErrorMessage(event.properties.error);
-          const activeTurnId = context.activeTurnId;
+          const activeTurnId =
+            context.activeTurnId ??
+            (context.turnLifecycle.activeTurnId
+              ? TurnId.make(context.turnLifecycle.activeTurnId)
+              : undefined);
           const settlement = activeTurnId
             ? claimTurnSettlement(context.turnLifecycle, {
                 turnId: String(activeTurnId),
                 reason: "error",
+                mode: "active-turn-fallback",
               })
             : undefined;
-          if (activeTurnId && !settlement?.claimed) {
-            break;
-          }
+          const claimedTurnId = settlement?.claimed ? TurnId.make(settlement.turnId) : activeTurnId;
           if (settlement?.claimed) {
             context.turnLifecycle = settlement.state;
-            yield* forceCloseOpenTools(context, activeTurnId);
+            yield* forceCloseOpenTools(context, claimedTurnId);
             yield* forceCloseOpenCodeAgents(context, message);
-            context.activeTurnId = undefined;
-            context.providerBusyTurnId = undefined;
           }
+          context.activeTurnId = undefined;
+          context.providerBusyTurnId = undefined;
           yield* updateProviderSession(
             context,
             {
@@ -1906,11 +1923,11 @@ export function makeOpenCodeAdapter(
             },
             { clearActiveTurnId: true },
           );
-          if (activeTurnId && settlement?.claimed) {
+          if (claimedTurnId && settlement?.claimed) {
             yield* emit({
               ...(yield* buildEventBase({
                 threadId: context.session.threadId,
-                turnId: activeTurnId,
+                turnId: claimedTurnId,
                 raw: event,
               })),
               type: "turn.completed",
@@ -2530,19 +2547,17 @@ export function makeOpenCodeAdapter(
         context.activeVariant = undefined;
         yield* updateProviderSession(context, { status: "ready" }, { clearActiveTurnId: true });
 
-        if (settlement.claimed) {
-          yield* emit({
-            ...(yield* buildEventBase({
-              threadId,
-              turnId: claimedTurnId,
-            })),
-            type: "turn.completed",
-            payload: {
-              state: "cancelled",
-              stopReason: "cancelled",
-            },
-          });
-        }
+        yield* emit({
+          ...(yield* buildEventBase({
+            threadId,
+            turnId: claimedTurnId,
+          })),
+          type: "turn.completed",
+          payload: {
+            state: "cancelled",
+            stopReason: "cancelled",
+          },
+        });
       },
     );
 

@@ -1814,9 +1814,16 @@ export function makeCursorAdapter(
               ),
             );
 
+          const turnRecord = ctx.turns.find((turn) => turn.id === turnId);
+          if (turnRecord) {
+            turnRecord.items.push({ prompt: promptParts, result });
+          } else {
+            ctx.turns.push({ id: turnId, items: [{ prompt: promptParts, result }] });
+          }
+
           // Stop or another terminal path may have claimed this turn while the
-          // blocking ACP prompt was still unwinding. A late result may be
-          // retained nowhere, but it must never reopen session.activeTurnId.
+          // blocking ACP prompt was still unwinding. Retain the result for
+          // readThread history, but never reopen session.activeTurnId.
           if (
             ctx.forceSettledTurnIds.has(String(turnId)) ||
             ctx.turnLifecycle.activeTurnId !== String(turnId)
@@ -1828,12 +1835,6 @@ export function makeCursorAdapter(
             };
           }
 
-          const turnRecord = ctx.turns.find((turn) => turn.id === turnId);
-          if (turnRecord) {
-            turnRecord.items.push({ prompt: promptParts, result });
-          } else {
-            ctx.turns.push({ id: turnId, items: [{ prompt: promptParts, result }] });
-          }
           ctx.session = {
             ...ctx.session,
             activeTurnId: turnId,
@@ -1980,7 +1981,6 @@ export function makeCursorAdapter(
     const interruptTurn: CursorAdapterShape["interruptTurn"] = (threadId) =>
       Effect.gen(function* () {
         const ctx = yield* requireSession(threadId);
-        ctx.turnLifecycle = markTurnStopping(ctx.turnLifecycle);
         yield* settlePendingApprovalsAsCancelled(ctx.pendingApprovals);
         yield* settlePendingUserInputsAsEmptyAnswers(ctx.pendingUserInputs);
         const settleTurnId =
@@ -1989,6 +1989,7 @@ export function makeCursorAdapter(
           (ctx.turnLifecycle.activeTurnId
             ? TurnId.make(ctx.turnLifecycle.activeTurnId)
             : undefined);
+        ctx.turnLifecycle = markTurnStopping(ctx.turnLifecycle);
         // Reserve terminal ownership before cancel so a fast prompt result
         // cannot race explicit Stop into a second terminal path.
         const settlement =

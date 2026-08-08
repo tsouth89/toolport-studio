@@ -203,6 +203,8 @@ interface CodexAdapterSessionContext {
   openAgents: Map<string, CodexOpenAgent>;
   /** Shared authoritative owner for terminal turn effects (SBS-428). */
   turnLifecycle: TurnQueueState;
+  /** Provider turn ids whose terminal ownership has already been claimed. */
+  readonly settledTurnIds: Set<string>;
 }
 
 function mapCodexRuntimeError(
@@ -1876,7 +1878,11 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
               runtimeEvent.type !== "turn.aborted" &&
               runtimeEvent.turnId !== undefined,
           );
-          if (session.turnLifecycle.activeTurnId === undefined && liveEvidence?.turnId) {
+          if (
+            session.turnLifecycle.activeTurnId === undefined &&
+            liveEvidence?.turnId &&
+            !session.settledTurnIds.has(String(liveEvidence.turnId))
+          ) {
             // A visible item/request is also proof of a live provider turn. It
             // covers a dropped/late turn.started without allowing stale
             // traffic to replace a newer owner.
@@ -1907,6 +1913,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
               return;
             }
             session.turnLifecycle = settlement.state;
+            session.settledTurnIds.add(String(terminalEvent.turnId));
           }
           runtimeEvents = trackCodexOpenToolsFromEvents(session, runtimeEvents);
         }
@@ -2169,6 +2176,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           openTools: new Map(),
           openAgents: new Map(),
           turnLifecycle: emptyTurnQueue(),
+          settledTurnIds: new Set(),
         });
         sessionScopeTransferred = true;
 
@@ -2286,6 +2294,9 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         ),
         Effect.tap((result) =>
           Effect.sync(() => {
+            if (session.settledTurnIds.has(String(result.turnId))) {
+              return;
+            }
             session.turnLifecycle = trackLiveTurn(session.turnLifecycle, String(result.turnId));
           }),
         ),
@@ -2325,6 +2336,9 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     requireSession(threadId).pipe(
       Effect.tap((session) =>
         Effect.sync(() => {
+          // CodexSessionRuntime queues its synthetic turn/completed before
+          // sending the provider interrupt RPC. The event consumer claims
+          // ownership; stopping preserves activeTurnId for that target.
           session.turnLifecycle = markTurnStopping(session.turnLifecycle);
         }),
       ),

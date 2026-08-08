@@ -34,12 +34,16 @@ model, capability matrix, stop settle rules).
   `sendWhileRunning: "queue"` (held + auto-start after settle; Stop abandons pending sends without
   erasing the live turn before terminalization). Product default remains steer so concurrent
   messages interject.
-- **Cursor:** claim-first shared lifecycle ownership + `canSteerSendTurn` + open-tool force-close on Stop + post-Stop ACP recycle + silence warning (no open tools) + provider-emitted failure classification
+- **Cursor:** claim-first shared lifecycle ownership + `canSteerSendTurn` + open-tool force-close
+  on Stop + post-Stop ACP recycle + silence warning (no open tools) + provider-emitted failure
+  classification
 - **Claude:** claim-first shared lifecycle ownership + `canSteerSendTurn` + open-tool force-close on settle +
   provider-emitted failure classification. Late or duplicate SDK results cannot claim settlement
   for a different live turn.
 - **OpenCode:** claim-first shared lifecycle ownership + `canSteerSendTurn` + force-settle session on Stop + open-tool force-close on Stop/idle/error + provider-emitted failure classification on idle. Id-less idle events bind to the turn that observed the provider's busy transition.
-- **Codex:** claim-first shared lifecycle ownership + `canSteerCodexSendTurn` → shared `canSteerSendTurn` + provider-emitted failure classification on completed turns + open-tool force-close on settle
+- **Codex:** claim-first shared lifecycle ownership + `canSteerCodexSendTurn` → shared
+  `canSteerSendTurn` + provider-emitted failure classification on completed turns + open-tool
+  force-close on settle
 - **Settle policy:** remaining open tools are force-closed on any settle (including
   successful end_turn), not only Stop — Claude/OpenCode match Grok/Cursor
 - **Provider-emitted failures:** pure capacity/auth dumps as assistant text must
@@ -50,6 +54,9 @@ model, capability matrix, stop settle rules).
 - Every provider must claim terminal ownership before session mutation, tool force-close,
   `turn.completed`, or queue drain. Normal results match the exact live turn; only explicit
   Stop/death recovery may fall back to the currently tracked turn.
+- Explicit Stop derives the candidate turn, marks the lifecycle stopping, then reserves or queues
+  terminal ownership before transport cancellation. A transport that synchronously queues its own
+  synthetic terminal event (Codex) marks stopping first and lets that event perform the claim.
 
 ## Tests
 

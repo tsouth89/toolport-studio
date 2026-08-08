@@ -909,6 +909,73 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
     }),
   );
 
+  it.effect("does not reopen a settled turn when sendTurn returns late", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      let resolveSend: ((result: ProviderTurnStartResult) => void) | undefined;
+      runtime.sendTurnImpl.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveSend = resolve;
+          }),
+      );
+      const eventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "turn.started" || event.type === "turn.completed"),
+        Stream.take(4),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      const sendFiber = yield* adapter
+        .sendTurn({
+          threadId: asThreadId("thread-1"),
+          input: "keep working",
+          modelSelection: createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.3-codex"),
+          attachments: [],
+        })
+        .pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+      NodeAssert.equal(runtime.sendTurnImpl.mock.calls.length, 1);
+
+      const emitTurn = (method: "turn/started" | "turn/completed", turnId: string) =>
+        runtime.emit({
+          id: asEventId(`evt-late-send-${method}-${turnId}`),
+          kind: "notification",
+          provider: ProviderDriverKind.make("codex"),
+          createdAt: "2026-01-01T00:00:00.000Z",
+          method,
+          threadId: asThreadId("thread-1"),
+          turnId: asTurnId(turnId),
+          payload:
+            method === "turn/started"
+              ? { threadId: "provider-thread-1", turn: { id: turnId } }
+              : {
+                  threadId: "provider-thread-1",
+                  turn: { id: turnId, status: "completed", items: [] },
+                },
+        });
+
+      yield* emitTurn("turn/started", "turn-1");
+      yield* emitTurn("turn/completed", "turn-1");
+      NodeAssert.ok(resolveSend);
+      resolveSend({ threadId: asThreadId("thread-1"), turnId: asTurnId("turn-1") });
+      yield* Fiber.join(sendFiber);
+      yield* emitTurn("turn/started", "turn-new");
+      yield* emitTurn("turn/completed", "turn-1");
+      yield* emitTurn("turn/completed", "turn-new");
+
+      const events = Array.from(yield* Fiber.join(eventsFiber).pipe(Effect.timeout("5 seconds")));
+      NodeAssert.deepEqual(
+        events.map((event) => [event.type, String(event.turnId)]),
+        [
+          ["turn.started", "turn-1"],
+          ["turn.completed", "turn-1"],
+          ["turn.started", "turn-new"],
+          ["turn.completed", "turn-new"],
+        ],
+      );
+    }),
+  );
+
   it.effect("force-closes open tools when turn completes mid-tool", () =>
     Effect.gen(function* () {
       const { adapter, runtime } = yield* startLifecycleRuntime();
