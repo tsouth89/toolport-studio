@@ -6,7 +6,6 @@ import {
   detectComposerTrigger,
   expandCollapsedComposerCursor,
   isCollapsedCursorAdjacentToInlineToken,
-  parseStandaloneComposerSlashCommand,
   replaceTextRange,
   shouldSubmitComposerOnEnter,
 } from "./composer-logic";
@@ -356,19 +355,5 @@ describe("isCollapsedCursorAdjacentToInlineToken", () => {
 
     expect(isCollapsedCursorAdjacentToInlineToken(text, tokenEnd, "left")).toBe(true);
     expect(isCollapsedCursorAdjacentToInlineToken(text, tokenStart, "right")).toBe(true);
-  });
-});
-
-describe("parseStandaloneComposerSlashCommand", () => {
-  it("parses standalone /plan command", () => {
-    expect(parseStandaloneComposerSlashCommand(" /plan ")).toBe("plan");
-  });
-
-  it("parses standalone /default command", () => {
-    expect(parseStandaloneComposerSlashCommand("/default")).toBe("default");
-  });
-
-  it("ignores slash commands with extra message text", () => {
-    expect(parseStandaloneComposerSlashCommand("/plan explain this")).toBeNull();
   });
 });

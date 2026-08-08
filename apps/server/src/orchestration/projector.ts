@@ -366,7 +366,10 @@ export function projectEvent(
             title: payload.title,
             modelSelection: payload.modelSelection,
             runtimeMode: payload.runtimeMode,
-            interactionMode: payload.interactionMode,
+            // Interaction mode was removed in SBS-598. Keep decoding the
+            // historical field so event replay remains backward-compatible,
+            // but never restore legacy plan mode into current state.
+            interactionMode: "default",
             branch: payload.branch,
             worktreePath: payload.worktreePath,
             latestTurn: null,
@@ -518,7 +521,7 @@ export function projectEvent(
         Effect.map((payload) => ({
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
-            interactionMode: payload.interactionMode,
+            interactionMode: "default",
             updatedAt: payload.updatedAt,
           }),
         })),

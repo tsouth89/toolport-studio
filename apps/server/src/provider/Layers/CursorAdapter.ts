@@ -10,7 +10,6 @@ import {
   type ProviderOptionSelection,
   EventId,
   type ProviderApprovalDecision,
-  type ProviderInteractionMode,
   type ProviderRuntimeEvent,
   type ProviderSession,
   type ProviderUserInputAnswers,
@@ -351,17 +350,12 @@ function isPlanMode(mode: AcpSessionMode): boolean {
 }
 
 function resolveRequestedModeId(input: {
-  readonly interactionMode: ProviderInteractionMode | undefined;
   readonly runtimeMode: RuntimeMode;
   readonly modeState: AcpSessionModeState | undefined;
 }): string | undefined {
   const modeState = input.modeState;
   if (!modeState) {
     return undefined;
-  }
-
-  if (input.interactionMode === "plan") {
-    return findModeByAliases(modeState.availableModes, ACP_PLAN_MODE_ALIASES)?.id;
   }
 
   if (input.runtimeMode === "approval-required") {
@@ -384,7 +378,6 @@ function resolveRequestedModeId(input: {
 function applyRequestedSessionConfiguration<E>(input: {
   readonly runtime: AcpSessionRuntime.AcpSessionRuntime["Service"];
   readonly runtimeMode: RuntimeMode;
-  readonly interactionMode: ProviderInteractionMode | undefined;
   readonly modelSelection:
     | {
         readonly model: string;
@@ -411,7 +404,6 @@ function applyRequestedSessionConfiguration<E>(input: {
     }
 
     const requestedModeId = resolveRequestedModeId({
-      interactionMode: input.interactionMode,
       runtimeMode: input.runtimeMode,
       modeState: yield* input.runtime.getModeState,
     });
@@ -1299,7 +1291,6 @@ export function makeCursorAdapter(
         yield* applyRequestedSessionConfiguration({
           runtime: acp,
           runtimeMode: ctx.session.runtimeMode,
-          interactionMode: undefined,
           modelSelection,
           mapError: ({ cause, method }) =>
             mapAcpToAdapterError(PROVIDER, ctx.threadId, method, cause),
@@ -1470,7 +1461,6 @@ export function makeCursorAdapter(
           yield* applyRequestedSessionConfiguration({
             runtime: acp,
             runtimeMode: input.runtimeMode,
-            interactionMode: undefined,
             modelSelection: cursorModelSelection,
             mapError: ({ cause, method }) =>
               mapAcpToAdapterError(PROVIDER, input.threadId, method, cause),
@@ -1675,7 +1665,6 @@ export function makeCursorAdapter(
           yield* applyRequestedSessionConfiguration({
             runtime: ctx.acp,
             runtimeMode: ctx.session.runtimeMode,
-            interactionMode: input.interactionMode,
             modelSelection:
               model === undefined
                 ? undefined

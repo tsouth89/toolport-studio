@@ -106,6 +106,56 @@ describe("orchestration projector", () => {
     ]);
   });
 
+  it("neutralizes historical plan-mode events during replay", async () => {
+    const now = "2026-08-08T00:00:00.000Z";
+    const created = await Effect.runPromise(
+      projectEvent(
+        createEmptyReadModel(now),
+        makeEvent({
+          sequence: 1,
+          type: "thread.created",
+          aggregateKind: "thread",
+          aggregateId: "thread-plan",
+          occurredAt: now,
+          commandId: "cmd-create-plan",
+          payload: {
+            threadId: "thread-plan",
+            projectId: null,
+            title: "Legacy plan thread",
+            modelSelection: { provider: "codex", model: "gpt-5-codex" },
+            runtimeMode: "full-access",
+            interactionMode: "plan",
+            branch: null,
+            worktreePath: null,
+            createdAt: now,
+            updatedAt: now,
+          },
+        }),
+      ),
+    );
+    expect(created.threads[0]?.interactionMode).toBe("default");
+
+    const afterLegacyModeChange = await Effect.runPromise(
+      projectEvent(
+        created,
+        makeEvent({
+          sequence: 2,
+          type: "thread.interaction-mode-set",
+          aggregateKind: "thread",
+          aggregateId: "thread-plan",
+          occurredAt: now,
+          commandId: "cmd-set-plan",
+          payload: {
+            threadId: "thread-plan",
+            interactionMode: "plan",
+            updatedAt: now,
+          },
+        }),
+      ),
+    );
+    expect(afterLegacyModeChange.threads[0]?.interactionMode).toBe("default");
+  });
+
   it("fails when event payload cannot be decoded by runtime schema", async () => {
     const now = "2026-01-01T00:00:00.000Z";
     const model = createEmptyReadModel(now);

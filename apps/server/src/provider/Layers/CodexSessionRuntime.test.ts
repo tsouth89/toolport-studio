@@ -11,7 +11,6 @@ import * as CodexRpc from "effect-codex-app-server/rpc";
 import {
   buildCodexDeveloperInstructions,
   CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
-  CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
 } from "../CodexDeveloperInstructions.ts";
 import { codexSessionAppServerArgs } from "./codexLaunchArgs.ts";
 import {
@@ -111,47 +110,6 @@ describe("buildTurnStartParams", () => {
     NodeAssert.doesNotMatch(JSON.stringify(directDiagnostics), new RegExp(secret));
   });
 
-  it("includes plan collaboration mode when requested", () => {
-    const params = Effect.runSync(
-      buildTurnStartParams({
-        threadId: "provider-thread-1",
-        runtimeMode: "full-access",
-        prompt: "Make a plan",
-        model: "gpt-5.3-codex",
-        effort: "medium",
-        interactionMode: "plan",
-      }),
-    );
-
-    NodeAssert.deepStrictEqual(params, {
-      threadId: "provider-thread-1",
-      approvalPolicy: "never",
-      approvalsReviewer: "user",
-      sandboxPolicy: {
-        type: "dangerFullAccess",
-      },
-      input: [
-        {
-          type: "text",
-          text: "Make a plan",
-        },
-      ],
-      model: "gpt-5.3-codex",
-      effort: "medium",
-      collaborationMode: {
-        mode: "plan",
-        settings: {
-          model: "gpt-5.3-codex",
-          reasoning_effort: "medium",
-          developer_instructions: buildCodexDeveloperInstructions("plan", {
-            model: "gpt-5.3-codex",
-            reasoningEffort: "medium",
-          }),
-        },
-      },
-    });
-  });
-
   it("includes default collaboration mode and image attachments", () => {
     const params = Effect.runSync(
       buildTurnStartParams({
@@ -159,7 +117,6 @@ describe("buildTurnStartParams", () => {
         runtimeMode: "auto-accept-edits",
         prompt: "Implement it",
         model: "gpt-5.3-codex",
-        interactionMode: "default",
         attachments: [
           {
             type: "image",
@@ -192,7 +149,7 @@ describe("buildTurnStartParams", () => {
         settings: {
           model: "gpt-5.3-codex",
           reasoning_effort: "medium",
-          developer_instructions: buildCodexDeveloperInstructions("default", {
+          developer_instructions: buildCodexDeveloperInstructions({
             model: "gpt-5.3-codex",
             reasoningEffort: "medium",
           }),
@@ -207,7 +164,6 @@ describe("buildTurnStartParams", () => {
         threadId: "provider-thread-1",
         runtimeMode: "full-access",
         prompt: "Go",
-        interactionMode: "default",
       }),
     );
 
@@ -238,11 +194,22 @@ describe("buildTurnStartParams", () => {
             text: "Ship it",
           },
         ],
+        collaborationMode: {
+          mode: "default",
+          settings: {
+            model: DEFAULT_MODEL,
+            reasoning_effort: "medium",
+            developer_instructions: buildCodexDeveloperInstructions({
+              model: DEFAULT_MODEL,
+              reasoningEffort: "medium",
+            }),
+          },
+        },
       });
     }),
   );
 
-  it("omits collaboration mode when interaction mode is absent", () => {
+  it("always includes the default collaboration mode", () => {
     const params = Effect.runSync(
       buildTurnStartParams({
         threadId: "provider-thread-1",
@@ -264,13 +231,24 @@ describe("buildTurnStartParams", () => {
           text: "Review",
         },
       ],
+      collaborationMode: {
+        mode: "default",
+        settings: {
+          model: DEFAULT_MODEL,
+          reasoning_effort: "medium",
+          developer_instructions: buildCodexDeveloperInstructions({
+            model: DEFAULT_MODEL,
+            reasoningEffort: "medium",
+          }),
+        },
+      },
     });
   });
 });
 
 describe("buildCodexDeveloperInstructions", () => {
   it("appends runtime info after the mode instructions", () => {
-    const instructions = buildCodexDeveloperInstructions("default", {
+    const instructions = buildCodexDeveloperInstructions({
       model: "gpt-5.3-codex",
       reasoningEffort: "high",
     });
@@ -281,22 +259,12 @@ describe("buildCodexDeveloperInstructions", () => {
     NodeAssert.match(instructions, /as gpt-5\.3-codex with high reasoning effort/);
   });
 
-  it("includes runtime info alongside plan mode instructions", () => {
-    const instructions = buildCodexDeveloperInstructions("plan", {
-      model: "gpt-5.3-codex",
-      reasoningEffort: "medium",
-    });
-
-    NodeAssert.ok(instructions.startsWith(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS));
-    NodeAssert.match(instructions, /as gpt-5\.3-codex with medium reasoning effort/);
-  });
-
   it("varies with the model and effort of each turn", () => {
-    const first = buildCodexDeveloperInstructions("default", {
+    const first = buildCodexDeveloperInstructions({
       model: "gpt-5.3-codex",
       reasoningEffort: "medium",
     });
-    const second = buildCodexDeveloperInstructions("default", {
+    const second = buildCodexDeveloperInstructions({
       model: "gpt-5.4",
       reasoningEffort: "high",
     });
@@ -305,7 +273,7 @@ describe("buildCodexDeveloperInstructions", () => {
   });
 
   it("flattens multiline metadata into single-line runtime info", () => {
-    const instructions = buildCodexDeveloperInstructions("default", {
+    const instructions = buildCodexDeveloperInstructions({
       model: "gpt\n5.3\ncodex",
       reasoningEffort: " high\neffort ",
     });
@@ -316,16 +284,14 @@ describe("buildCodexDeveloperInstructions", () => {
 });
 
 describe("T3 browser developer instructions", () => {
-  it("prefers the product-native preview tools in both collaboration modes", () => {
-    for (const instructions of [
+  it("prefers the product-native preview tools", () => {
+    NodeAssert.match(CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS, /t3-code/);
+    NodeAssert.match(CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS, /preview_status/);
+    NodeAssert.match(CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS, /preview_open/);
+    NodeAssert.match(
       CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
-      CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
-    ]) {
-      NodeAssert.match(instructions, /t3-code/);
-      NodeAssert.match(instructions, /preview_status/);
-      NodeAssert.match(instructions, /preview_open/);
-      NodeAssert.match(instructions, /Do not switch to global browser skills/);
-    }
+      /Do not switch to global browser skills/,
+    );
   });
 });
 

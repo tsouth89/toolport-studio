@@ -8,7 +8,6 @@ import {
   type ProviderInstanceId,
   type ProviderApprovalDecision,
   type ProviderEvent,
-  type ProviderInteractionMode,
   type ProviderRequestKind,
   type RequestResolutionSource,
   type ProviderSession,
@@ -198,7 +197,6 @@ export interface CodexSessionRuntimeSendTurnInput {
   readonly model?: string;
   readonly serviceTier?: CodexServiceTier | undefined;
   readonly effort?: EffectCodexSchema.V2TurnStartParams__ReasoningEffort | undefined;
-  readonly interactionMode?: ProviderInteractionMode;
   /** Studio projected history for cold-start rehydration when thread resume missed. */
   readonly conversationHistory?: ReadonlyArray<{
     readonly role: "user" | "assistant";
@@ -427,21 +425,17 @@ function runtimeModeToTurnSandboxPolicy(
 }
 
 function buildCodexCollaborationMode(input: {
-  readonly interactionMode?: ProviderInteractionMode;
   readonly model?: string;
   readonly effort?: EffectCodexSchema.V2TurnStartParams__ReasoningEffort;
-}): EffectCodexSchema.V2TurnStartParams__CollaborationMode | undefined {
-  if (input.interactionMode === undefined) {
-    return undefined;
-  }
+}): EffectCodexSchema.V2TurnStartParams__CollaborationMode {
   const model = normalizeCodexModelSlug(input.model) ?? DEFAULT_MODEL;
   const reasoningEffort = input.effort ?? "medium";
   return {
-    mode: input.interactionMode,
+    mode: "default",
     settings: {
       model,
       reasoning_effort: reasoningEffort,
-      developer_instructions: buildCodexDeveloperInstructions(input.interactionMode, {
+      developer_instructions: buildCodexDeveloperInstructions({
         model,
         reasoningEffort,
       }),
@@ -549,7 +543,6 @@ export function buildTurnStartParams(input: {
   readonly model?: string;
   readonly serviceTier?: CodexServiceTier;
   readonly effort?: EffectCodexSchema.V2TurnStartParams__ReasoningEffort;
-  readonly interactionMode?: ProviderInteractionMode;
   readonly attachmentDirectory?: string;
 }): Effect.Effect<
   CodexTurnStartParamsWithCollaborationMode,
@@ -562,7 +555,6 @@ export function buildTurnStartParams(input: {
 
   const config = runtimeModeToThreadConfig(input.runtimeMode);
   const collaborationMode = buildCodexCollaborationMode({
-    ...(input.interactionMode ? { interactionMode: input.interactionMode } : {}),
     ...(input.model ? { model: input.model } : {}),
     ...(input.effort ? { effort: input.effort } : {}),
   });
@@ -576,7 +568,7 @@ export function buildTurnStartParams(input: {
     ...(input.model ? { model: input.model } : {}),
     ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
     ...(input.effort ? { effort: input.effort } : {}),
-    ...(collaborationMode ? { collaborationMode } : {}),
+    collaborationMode,
   }).pipe(
     Effect.mapError((cause) =>
       CodexErrors.CodexAppServerProtocolParseError.fromSchemaError(
@@ -1879,7 +1871,6 @@ export const makeCodexSessionRuntime = (
             ...(normalizedModel ? { model: normalizedModel } : {}),
             ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
             ...(input.effort ? { effort: input.effort } : {}),
-            ...(input.interactionMode ? { interactionMode: input.interactionMode } : {}),
             ...(options.attachmentDirectory
               ? { attachmentDirectory: options.attachmentDirectory }
               : {}),

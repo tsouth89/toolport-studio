@@ -18,7 +18,6 @@ import {
   type TurnId,
   type KeybindingCommand,
   OrchestrationThreadActivity,
-  ProviderInteractionMode,
   ProviderDriverKind,
   RuntimeMode,
   TerminalOpenInput,
@@ -76,10 +75,7 @@ import { AsyncResult } from "effect/unstable/reactivity";
 import { isElectron } from "../env";
 import { readLocalApi } from "../localApi";
 import { useDiffPanelStore } from "../diffPanelStore";
-import {
-  collapseExpandedComposerCursor,
-  parseStandaloneComposerSlashCommand,
-} from "../composer-logic";
+import { collapseExpandedComposerCursor } from "../composer-logic";
 import {
   derivePendingApprovals,
   derivePendingUserInputs,
@@ -90,7 +86,6 @@ import {
   findSidebarProposedPlan,
   findLatestProposedPlan,
   deriveWorkLogEntries,
-  hasActionableProposedPlan,
   isLatestTurnSettled,
   isPendingRequestTimeoutWarningMessage,
 } from "../session-logic";
@@ -1272,9 +1267,6 @@ function ChatViewContent(props: ChatViewProps) {
   const setThreadRuntimeMode = useAtomCommand(threadEnvironment.setRuntimeMode, {
     reportFailure: false,
   });
-  const setThreadInteractionMode = useAtomCommand(threadEnvironment.setInteractionMode, {
-    reportFailure: false,
-  });
   const startThreadTurn = useAtomCommand(threadEnvironment.startTurn, { reportFailure: false });
   const queueThreadTurn = useAtomCommand(threadEnvironment.queueTurn, { reportFailure: false });
   const discardQueuedTurns = useAtomCommand(threadEnvironment.discardQueuedTurns, {
@@ -1327,9 +1319,6 @@ function ChatViewContent(props: ChatViewProps) {
   const composerRuntimeMode = useComposerDraftStore(
     (store) => store.getComposerDraft(composerDraftTarget)?.runtimeMode ?? null,
   );
-  const composerInteractionMode = useComposerDraftStore(
-    (store) => store.getComposerDraft(composerDraftTarget)?.interactionMode ?? null,
-  );
   const composerActiveProvider = useComposerDraftStore(
     (store) => store.getComposerDraft(composerDraftTarget)?.activeProvider ?? null,
   );
@@ -1347,9 +1336,6 @@ function ChatViewContent(props: ChatViewProps) {
   const setComposerDraftReviewComments = useComposerDraftStore((store) => store.setReviewComments);
   const setComposerDraftModelSelection = useComposerDraftStore((store) => store.setModelSelection);
   const setComposerDraftRuntimeMode = useComposerDraftStore((store) => store.setRuntimeMode);
-  const setComposerDraftInteractionMode = useComposerDraftStore(
-    (store) => store.setInteractionMode,
-  );
   const clearComposerDraftContent = useComposerDraftStore((store) => store.clearComposerContent);
   const setDraftThreadContext = useComposerDraftStore((store) => store.setDraftThreadContext);
   const getDraftSessionByLogicalProjectKey = useComposerDraftStore(
@@ -1583,8 +1569,7 @@ function ChatViewContent(props: ChatViewProps) {
       })
     : localDraftError;
   const runtimeMode = composerRuntimeMode ?? activeThread?.runtimeMode ?? DEFAULT_RUNTIME_MODE;
-  const interactionMode =
-    composerInteractionMode ?? activeThread?.interactionMode ?? DEFAULT_INTERACTION_MODE;
+  const interactionMode = DEFAULT_INTERACTION_MODE;
   const isLocalDraftThread = !isServerThread && localDraftThread !== undefined;
   const canCheckoutPullRequestIntoThread = isLocalDraftThread;
   const activeThreadId = activeThread?.id ?? null;
@@ -2215,12 +2200,8 @@ function ChatViewContent(props: ChatViewProps) {
     () => deriveActivePlanState(threadActivities, activeLatestTurn?.turnId ?? undefined),
     [activeLatestTurn?.turnId, threadActivities],
   );
-  const planSidebarLabel = sidebarProposedPlan || interactionMode === "plan" ? "Plan" : "Tasks";
-  const showPlanFollowUpPrompt =
-    pendingUserInputs.length === 0 &&
-    interactionMode === "plan" &&
-    latestTurnSettled &&
-    hasActionableProposedPlan(activeProposedPlan);
+  const planSidebarLabel = sidebarProposedPlan ? "Plan" : "Tasks";
+  const showPlanFollowUpPrompt = false;
   const activePendingApproval = pendingApprovals[0] ?? null;
   const {
     beginLocalDispatch,
@@ -3293,27 +3274,6 @@ function ChatViewContent(props: ChatViewProps) {
     ],
   );
 
-  const handleInteractionModeChange = useCallback(
-    (mode: ProviderInteractionMode) => {
-      if (mode === interactionMode) return;
-      setComposerDraftInteractionMode(composerDraftTarget, mode);
-      if (isLocalDraftThread) {
-        setDraftThreadContext(composerDraftTarget, { interactionMode: mode });
-      }
-      scheduleComposerFocus();
-    },
-    [
-      interactionMode,
-      isLocalDraftThread,
-      scheduleComposerFocus,
-      composerDraftTarget,
-      setComposerDraftInteractionMode,
-      setDraftThreadContext,
-    ],
-  );
-  const toggleInteractionMode = useCallback(() => {
-    handleInteractionModeChange(interactionMode === "plan" ? "default" : "plan");
-  }, [handleInteractionModeChange, interactionMode]);
   const dismissPlanSidebarForCurrentTurn = useCallback(() => {
     planSidebarDismissedForTurnRef.current =
       activePlan?.turnId ?? sidebarProposedPlan?.turnId ?? "__dismissed__";
@@ -3724,7 +3684,6 @@ function ChatViewContent(props: ChatViewProps) {
       modelSelection?: ModelSelection;
       branch?: string;
       runtimeMode: RuntimeMode;
-      interactionMode: ProviderInteractionMode;
     }): Promise<AtomCommandResult<void, unknown>> => {
       if (!serverThread) {
         return AsyncResult.success(undefined);
@@ -3770,28 +3729,9 @@ function ChatViewContent(props: ChatViewProps) {
         }
       }
 
-      if (input.interactionMode !== serverThread.interactionMode) {
-        result = mapAtomCommandResult(
-          await setThreadInteractionMode({
-            environmentId,
-            input: {
-              threadId: input.threadId,
-              interactionMode: input.interactionMode,
-              createdAt: input.createdAt,
-            },
-          }),
-          () => undefined,
-        );
-      }
       return result;
     },
-    [
-      environmentId,
-      serverThread,
-      setThreadInteractionMode,
-      setThreadRuntimeMode,
-      updateThreadMetadata,
-    ],
+    [environmentId, serverThread, setThreadRuntimeMode, updateThreadMetadata],
   );
 
   // Debounce *showing* the scroll-to-bottom pill so it doesn't flash during
@@ -4858,21 +4798,6 @@ function ChatViewContent(props: ChatViewProps) {
       });
       return true;
     }
-    const standaloneSlashCommand =
-      composerImages.length === 0 &&
-      sendableComposerTerminalContexts.length === 0 &&
-      composerElementContexts.length === 0 &&
-      composerPreviewAnnotations.length === 0 &&
-      composerReviewComments.length === 0
-        ? parseStandaloneComposerSlashCommand(trimmed)
-        : null;
-    if (standaloneSlashCommand) {
-      handleInteractionModeChange(standaloneSlashCommand);
-      promptRef.current = "";
-      clearComposerDraftContent(composerDraftTarget);
-      composerRef.current?.resetCursorState();
-      return true;
-    }
     if (!hasSendableContent) {
       if (expiredTerminalContextCount > 0) {
         const toastCopy = buildExpiredTerminalContextToastCopy(
@@ -5088,7 +5013,6 @@ function ChatViewContent(props: ChatViewProps) {
           ? { branch: localCheckoutBranchMismatch.currentBranch }
           : {}),
         runtimeMode,
-        interactionMode,
       });
       if (settingsResult._tag === "Failure") {
         failure = settingsResult;
@@ -5594,19 +5518,11 @@ function ChatViewContent(props: ChatViewProps) {
           ? { branch: localCheckoutBranchMismatch.currentBranch }
           : {}),
         runtimeMode,
-        interactionMode: nextInteractionMode,
       });
       let failure: AtomCommandResult<unknown, unknown> | null =
         settingsResult._tag === "Failure" ? settingsResult : null;
 
       if (failure === null) {
-        // Keep the mode toggle and plan-follow-up banner in sync immediately
-        // while the same-thread implementation turn is starting.
-        setComposerDraftInteractionMode(
-          scopeThreadRef(activeThread.environmentId, threadIdForSend),
-          nextInteractionMode,
-        );
-
         const startResult = await startThreadTurn({
           environmentId,
           input: {
@@ -5683,7 +5599,6 @@ function ChatViewContent(props: ChatViewProps) {
       persistThreadSettingsForNextTurn,
       resetLocalDispatch,
       runtimeMode,
-      setComposerDraftInteractionMode,
       setThreadError,
       startThreadTurn,
       autoOpenPlanSidebar,
@@ -6461,7 +6376,6 @@ function ChatViewContent(props: ChatViewProps) {
                             planSidebarLabel={planSidebarLabel}
                             planSidebarOpen={planSidebarOpen}
                             runtimeMode={runtimeMode}
-                            interactionMode={interactionMode}
                             lockedProvider={lockedProvider}
                             providerStatuses={providerStatuses as ServerProvider[]}
                             activeProjectDefaultModelSelection={
@@ -6496,9 +6410,7 @@ function ChatViewContent(props: ChatViewProps) {
                             }
                             onProviderModelSelect={onProviderModelSelect}
                             getModelDisabledReason={getModelDisabledReason}
-                            toggleInteractionMode={toggleInteractionMode}
                             handleRuntimeModeChange={handleRuntimeModeChange}
-                            handleInteractionModeChange={handleInteractionModeChange}
                             togglePlanSidebar={togglePlanSidebar}
                             focusComposer={focusComposer}
                             scheduleComposerFocus={scheduleComposerFocus}

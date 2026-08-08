@@ -2328,7 +2328,7 @@ export function makeOpenCodeAdapter(
       const variant = getModelSelectionStringOptionValue(modelSelection, "variant");
 
       context.activeTurnId = turnId;
-      context.activeAgent = agent ?? (input.interactionMode === "plan" ? "plan" : undefined);
+      context.activeAgent = agent;
       context.activeVariant = variant;
       yield* updateProviderSession(
         context,
