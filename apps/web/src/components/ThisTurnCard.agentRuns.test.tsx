@@ -4,7 +4,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import type { AgentRun } from "../agentRuns";
 import type { ThreadActivityViewModel } from "../threadActivityViewModel";
-import { ThisTurnCard } from "./ThisTurnCard";
+import { ThisTurnCard, ThisTurnCardChevron } from "./ThisTurnCard";
 
 const model: ThreadActivityViewModel = {
   isWorking: true,
@@ -42,6 +42,13 @@ function run(overrides: Partial<AgentRun> = {}): AgentRun {
 }
 
 describe("ThisTurnCard agent runs", () => {
+  it("points down when collapsed and up when expanded", () => {
+    expect(renderToStaticMarkup(<ThisTurnCardChevron expanded={false} />)).toContain(
+      "lucide-chevron-down",
+    );
+    expect(renderToStaticMarkup(<ThisTurnCardChevron expanded />)).toContain("lucide-chevron-up");
+  });
+
   it("shows live agent status and one-click Agents links", () => {
     const markup = renderToStaticMarkup(
       <ThisTurnCard
