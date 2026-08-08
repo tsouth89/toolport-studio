@@ -738,7 +738,7 @@ function normalizeClaudeTaskProgressTokenUsage(
 ): ThreadTokenUsageSnapshot | undefined {
   const totalTokens = claudeTotalProcessedTokens(value);
   const lastKnownUsage = context.lastKnownTokenUsage;
-  if (totalTokens === undefined || totalTokens <= 0 || !lastKnownUsage) {
+  if (totalTokens === undefined || totalTokens <= 0) {
     return undefined;
   }
 
@@ -750,6 +750,21 @@ function normalizeClaudeTaskProgressTokenUsage(
 
   const toolUses = finiteNonNegativeInteger(usage.tool_uses);
   const durationMs = finiteNonNegativeInteger(usage.duration_ms);
+  if (!lastKnownUsage) {
+    // Task totals are cumulative work, not active context. Preserve the first
+    // available usage signal without turning an unknown active count into a
+    // falsely full meter while the authoritative SDK query is unavailable.
+    return {
+      usedTokens: 0,
+      lastUsedTokens: 0,
+      totalProcessedTokens,
+      ...(context.selectedContextWindow !== undefined
+        ? { maxTokens: context.selectedContextWindow }
+        : {}),
+      ...(toolUses !== undefined ? { toolUses } : {}),
+      ...(durationMs !== undefined ? { durationMs } : {}),
+    };
+  }
   return {
     ...lastKnownUsage,
     ...(totalProcessedTokens > lastKnownUsage.usedTokens ? { totalProcessedTokens } : {}),
@@ -2300,6 +2315,25 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     };
   });
 
+  const scheduleTaskProgressTokenUsage = Effect.fn("scheduleTaskProgressTokenUsage")(function* (
+    context: ClaudeSessionContext,
+    value: unknown,
+    options: {
+      readonly rawMethod: string;
+      readonly rawPayload: unknown;
+    },
+  ) {
+    yield* taskProgressTokenUsage(context, value).pipe(
+      Effect.flatMap((usage) =>
+        context.stopped ? Effect.void : emitThreadTokenUsage(context, usage, options),
+      ),
+      // Context telemetry is optional and may take up to the timeout above.
+      // Detach it so task lifecycle events continue through the provider loop.
+      Effect.forkDetach({ startImmediately: true }),
+      Effect.asVoid,
+    );
+  });
+
   const emitProposedPlanCompleted = Effect.fn("emitProposedPlanCompleted")(function* (
     context: ClaudeSessionContext,
     input: {
@@ -3471,8 +3505,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         });
         return;
       case "task_progress": {
-        const usage = yield* taskProgressTokenUsage(context, message.usage);
-        yield* emitThreadTokenUsage(context, usage, {
+        yield* scheduleTaskProgressTokenUsage(context, message.usage, {
           rawMethod: "claude/system/task_progress",
           rawPayload: message,
         });
@@ -3532,8 +3565,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         // Terminal for this task: drop it from the roster so a later snapshot
         // that still lists it re-emits rather than being deduped into silence.
         context.backgroundTasks.delete(message.task_id);
-        const usage = yield* taskProgressTokenUsage(context, message.usage);
-        yield* emitThreadTokenUsage(context, usage, {
+        yield* scheduleTaskProgressTokenUsage(context, message.usage, {
           rawMethod: "claude/system/task_notification",
           rawPayload: message,
         });
