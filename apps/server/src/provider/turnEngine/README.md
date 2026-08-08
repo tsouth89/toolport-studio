@@ -1,4 +1,4 @@
-# Turn engine (SOU-428)
+# Turn engine (SBS-428)
 
 Shared **turn policy and lifecycle semantics** for all providers.
 
@@ -16,6 +16,7 @@ model, capability matrix, stop settle rules).
 | `SteerPolicy`        | Whether a send continues the live turn                             |
 | `StopPolicy`         | Stop settle order + terminal/settled event classification          |
 | `TurnQueue`          | In-memory disposition for send-while-running (`steer` \| `queue`)  |
+| `TurnSettlement`     | Claim-once ownership for exact completion and explicit recovery    |
 
 ## Product defaults (dogfood lessons)
 
@@ -28,13 +29,13 @@ model, capability matrix, stop settle rules).
 
 ## Wiring status
 
-- **Grok:** shared lifecycle ownership + mid-turn **steer** (ACP preempt) + force-close/chrome +
+- **Grok:** claim-first shared lifecycle ownership + mid-turn **steer** (ACP preempt) + force-close/chrome +
   provider-emitted failure classification. TurnQueue drain is fully wired for
   `sendWhileRunning: "queue"` (held + auto-start after settle; Stop abandons pending sends without
   erasing the live turn before terminalization). Product default remains steer so concurrent
   messages interject.
 - **Cursor:** `canSteerSendTurn` + open-tool force-close on Stop + post-Stop ACP recycle + silence warning (no open tools) + provider-emitted failure classification
-- **Claude:** shared lifecycle ownership + `canSteerSendTurn` + open-tool force-close on settle +
+- **Claude:** claim-first shared lifecycle ownership + `canSteerSendTurn` + open-tool force-close on settle +
   provider-emitted failure classification. Late or duplicate SDK results cannot claim settlement
   for a different live turn.
 - **OpenCode:** `canSteerSendTurn` + force-settle session on Stop + open-tool force-close on Stop/idle/error + provider-emitted failure classification on idle
@@ -46,6 +47,9 @@ model, capability matrix, stop settle rules).
 - Conformance (all five providers): first-progress, assistant-text, interrupt, stop-mid-tool,
   send-while-running, post-stop-follow-up, pending-approval, process-death, resume-preserves-history
 - Queue drain is transport-wired on **Grok** only; other providers still declare `steer`.
+- Claude and Grok must claim terminal ownership before session mutation, tool force-close,
+  `turn.completed`, or queue drain. Normal results match the exact live turn; only explicit
+  Stop/death recovery may fall back to the currently tracked turn.
 
 ## Tests
 

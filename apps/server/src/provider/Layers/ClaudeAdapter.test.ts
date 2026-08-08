@@ -1550,6 +1550,98 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("does not let an interrupted result settle the follow-up turn", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+      const collector = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          runtimeEvents.push(event);
+        }),
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      const interruptedTurn = yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "stop this turn",
+        attachments: [],
+      });
+      yield* adapter.interruptTurn(THREAD_ID, interruptedTurn.turnId);
+      const followUpTurn = yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "follow up immediately",
+        attachments: [],
+      });
+
+      harness.query.emit({
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: false,
+        errors: ["Error: Request was aborted."],
+        stop_reason: "tool_use",
+        session_id: "sdk-session-stale-after-stop",
+        uuid: "result-stale-after-stop",
+      } as unknown as SDKMessage);
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+
+      const liveSessions = yield* adapter.listSessions();
+      const liveSession = liveSessions.find((entry) => entry.threadId === THREAD_ID);
+      assert.equal(liveSession?.status, "running");
+      assert.equal(String(liveSession?.activeTurnId), String(followUpTurn.turnId));
+      assert.isFalse(
+        runtimeEvents.some(
+          (event) =>
+            event.type === "turn.completed" && String(event.turnId) === String(followUpTurn.turnId),
+        ),
+      );
+
+      harness.query.emit({
+        type: "assistant",
+        session_id: "sdk-session-follow-up",
+        uuid: "assistant-follow-up",
+        parent_tool_use_id: null,
+        message: {
+          id: "assistant-message-follow-up",
+          content: [{ type: "text", text: "Follow-up completed." }],
+        },
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        session_id: "sdk-session-follow-up",
+        uuid: "result-follow-up",
+      } as unknown as SDKMessage);
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+
+      const completions = runtimeEvents.filter(
+        (event): event is Extract<ProviderRuntimeEvent, { type: "turn.completed" }> =>
+          event.type === "turn.completed",
+      );
+      assert.deepEqual(
+        completions.map((event) => [String(event.turnId), event.payload.state]),
+        [
+          [String(interruptedTurn.turnId), "interrupted"],
+          [String(followUpTurn.turnId), "completed"],
+        ],
+      );
+
+      yield* Fiber.interrupt(collector).pipe(Effect.ignore);
+      yield* adapter.stopSession(THREAD_ID);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("does not settle a foreground turn from a resumed background-task result", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

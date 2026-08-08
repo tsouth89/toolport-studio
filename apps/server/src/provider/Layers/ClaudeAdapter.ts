@@ -100,11 +100,11 @@ import { type ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
 import { buildConversationRehydrationPrefix } from "../conversationRehydration.ts";
 import {
   canSteerSendTurn,
+  claimTurnSettlement,
   emptyTurnQueue,
   markTurnStopping,
   OPEN_TOOL_FORCE_CLOSE_DETAIL,
   OPEN_TOOL_FORCE_CLOSE_SOURCE,
-  settleTrackedTurn,
   shouldForceCloseRemainingOpenToolsOnSettle,
   trackLiveTurn,
   type TurnQueueState,
@@ -332,6 +332,8 @@ interface ClaudeSessionContext {
   /** Shared lifecycle ownership; provider state below contains transport detail only. */
   turnLifecycle: TurnQueueState;
   turnState: ClaudeTurnState | undefined;
+  /** The SDK emits one trailing result after interrupt; never bind it to a follow-up turn. */
+  ignoreNextResultAfterInterrupt: boolean;
   lastKnownContextWindow: number | undefined;
   /**
    * The window the user actually selected, when they selected one.
@@ -1833,6 +1835,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     const nextSessionId = resumedNatively ? resumeSessionId! : freshSessionId!;
 
     context.query = nextQuery;
+    // The previous stream is closed, so it cannot deliver the interrupted
+    // result this guard was waiting to discard.
+    context.ignoreNextResultAfterInterrupt = false;
     context.resumeSessionId = nextSessionId;
     context.needsContextRehydration = !resumedNatively;
     context.injectsToolportMcp = injectsToolport;
@@ -2552,36 +2557,69 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
     const turnState = context.turnState;
     if (!turnState) {
-      // Late result after Stop/interrupt already settled — do not double-fire
-      // turn.completed (that re-opens zombie Working / confuses the timeline).
-      if (context.session.status !== "running" && context.session.status !== "connecting") {
-        return;
-      }
-      yield* emitThreadTokenUsage(context, usageSnapshot, {
-        rawMethod: "claude/result",
-        rawPayload: result ?? { status },
-      });
-
-      const stamp = yield* makeEventStamp();
-      yield* offerRuntimeEvent({
-        type: "turn.completed",
-        eventId: stamp.eventId,
-        provider: PROVIDER,
-        createdAt: stamp.createdAt,
+      yield* Effect.logDebug("Claude ignored result without a live turn owner", {
         threadId: context.session.threadId,
-        payload: {
-          state: status,
-          ...(result?.stop_reason !== undefined ? { stopReason: result.stop_reason } : {}),
-          ...(result?.usage ? { usage: result.usage } : {}),
-          ...(result?.modelUsage ? { modelUsage: result.modelUsage } : {}),
-          ...(typeof result?.total_cost_usd === "number"
-            ? { totalCostUsd: result.total_cost_usd }
-            : {}),
-          ...(errorMessage ? { errorMessage } : {}),
-        },
-        providerRefs: {},
+        lifecycleTurnId: context.turnLifecycle.activeTurnId,
+        lifecyclePhase: context.turnLifecycle.phase,
       });
       return;
+    }
+
+    // Classify the terminal result without mutating adapter/runtime state, then
+    // claim shared lifecycle ownership before closing tools or emitting events.
+    let settleStatus = status;
+    let settleErrorMessage = errorMessage;
+    const emittedFailure = (() => {
+      if (status !== "completed") {
+        return undefined;
+      }
+      const resultText =
+        result && "result" in result && typeof result.result === "string" ? result.result : "";
+      const blockText = turnState.assistantTextBlockOrder
+        .map((block) => block.fallbackText)
+        .join("");
+      const assistantText =
+        turnState.assistantTextAccumulator.trim().length > 0
+          ? turnState.assistantTextAccumulator
+          : blockText.trim().length > 0
+            ? blockText
+            : resultText;
+      return classifyProviderEmittedFailure(assistantText);
+    })();
+    if (emittedFailure) {
+      settleStatus = "failed";
+      settleErrorMessage = formatProviderEmittedFailureMessage(emittedFailure, {
+        providerLabel: "Claude",
+        ...(context.session.model ? { model: context.session.model } : {}),
+      });
+    }
+    const settlement = claimTurnSettlement(context.turnLifecycle, {
+      turnId: String(turnState.turnId),
+      reason:
+        settleStatus === "completed"
+          ? "completed"
+          : settleStatus === "interrupted"
+            ? "cancelled"
+            : "error",
+    });
+    if (!settlement.claimed) {
+      yield* Effect.logDebug("Claude ignored duplicate or stale turn settlement", {
+        threadId: context.session.threadId,
+        turnId: turnState.turnId,
+        lifecycleTurnId: context.turnLifecycle.activeTurnId,
+        lifecyclePhase: context.turnLifecycle.phase,
+      });
+      return;
+    }
+    context.turnLifecycle = settlement.state;
+    if (emittedFailure && settleErrorMessage) {
+      yield* Effect.logWarning("Claude turn completed with provider-emitted failure", {
+        threadId: context.session.threadId,
+        turnId: turnState.turnId,
+        code: emittedFailure.code,
+        model: context.session.model,
+      });
+      yield* emitRuntimeError(context, settleErrorMessage);
     }
 
     // Any settle with tools still open must force-close them (shared Stop
@@ -2674,39 +2712,6 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       });
     }
 
-    // Pure capacity/auth dumps as assistant text + success result must not
-    // settle as successful replies (Cursor/Grok parity).
-    let settleStatus = status;
-    let settleErrorMessage = errorMessage;
-    if (status === "completed") {
-      const resultText =
-        result && "result" in result && typeof result.result === "string" ? result.result : "";
-      const blockText = turnState.assistantTextBlockOrder
-        .map((block) => block.fallbackText)
-        .join("");
-      const assistantText =
-        turnState.assistantTextAccumulator.trim().length > 0
-          ? turnState.assistantTextAccumulator
-          : blockText.trim().length > 0
-            ? blockText
-            : resultText;
-      const emittedFailure = classifyProviderEmittedFailure(assistantText);
-      if (emittedFailure) {
-        settleStatus = "failed";
-        settleErrorMessage = formatProviderEmittedFailureMessage(emittedFailure, {
-          providerLabel: "Claude",
-          ...(context.session.model ? { model: context.session.model } : {}),
-        });
-        yield* Effect.logWarning("Claude turn completed with provider-emitted failure", {
-          threadId: context.session.threadId,
-          turnId: turnState.turnId,
-          code: emittedFailure.code,
-          model: context.session.model,
-        });
-        yield* emitRuntimeError(context, settleErrorMessage);
-      }
-    }
-
     context.turns.push({
       id: turnState.turnId,
       items: [...turnState.items],
@@ -2716,26 +2721,6 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       rawMethod: "claude/result",
       rawPayload: result ?? { status },
     });
-
-    const settlement = settleTrackedTurn(context.turnLifecycle, {
-      turnId: String(turnState.turnId),
-      reason:
-        settleStatus === "completed"
-          ? "completed"
-          : settleStatus === "interrupted"
-            ? "cancelled"
-            : "error",
-    });
-    if (!settlement.claimed) {
-      yield* Effect.logDebug("Claude ignored duplicate or stale turn settlement", {
-        threadId: context.session.threadId,
-        turnId: turnState.turnId,
-        lifecycleTurnId: context.turnLifecycle.activeTurnId,
-        lifecyclePhase: context.turnLifecycle.phase,
-      });
-      return;
-    }
-    context.turnLifecycle = settlement.state;
 
     const stamp = yield* makeEventStamp();
     yield* offerRuntimeEvent({
@@ -3254,6 +3239,14 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       return;
     }
 
+    // SDK stream order guarantees an assistant message precedes its result.
+    // If a follow-up is already producing output, the interrupted turn did not
+    // leave a trailing result ahead of it, so the guard must not swallow this
+    // turn's legitimate completion.
+    if (context.turnState && context.ignoreNextResultAfterInterrupt) {
+      context.ignoreNextResultAfterInterrupt = false;
+    }
+
     // Auto-start a synthetic turn for assistant messages that arrive without
     // an active turn (e.g., background agent/subagent responses between user prompts).
     if (!context.turnState) {
@@ -3355,6 +3348,16 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       yield* Effect.logDebug("ignored Claude background-task result for foreground lifecycle", {
         threadId: context.session.threadId,
         ...(context.turnState ? { turnId: context.turnState.turnId } : {}),
+      });
+      return;
+    }
+
+    if (context.ignoreNextResultAfterInterrupt) {
+      context.ignoreNextResultAfterInterrupt = false;
+      yield* Effect.logDebug("ignored Claude result trailing an interrupted turn", {
+        threadId: context.session.threadId,
+        subtype: message.subtype,
+        ...(context.turnState ? { liveTurnId: context.turnState.turnId } : {}),
       });
       return;
     }
@@ -4659,6 +4662,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         backgroundTasks,
         turnLifecycle: emptyTurnQueue(),
         turnState: undefined,
+        ignoreNextResultAfterInterrupt: false,
         lastKnownContextWindow: initialContextWindow,
         selectedContextWindow: initialContextWindow,
         lastKnownTokenUsage: undefined,
@@ -4936,6 +4940,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       // Force-settle before talking to the SDK. interrupt() can hang on a wedged
       // child; Working and Stop must still leave the running state (Cursor/Grok).
       if (context.turnState) {
+        context.ignoreNextResultAfterInterrupt = true;
         context.turnLifecycle = markTurnStopping(context.turnLifecycle);
         yield* completeTurn(context, "interrupted", "Turn interrupted.");
       } else if (context.session.status === "running" || context.session.status === "connecting") {

@@ -95,12 +95,12 @@ import {
 
 import {
   abandonPendingTurns,
+  claimTurnSettlement,
   disposeSendWhileRunning,
   emptyTurnQueue,
   formatInterjectionText,
   markTurnStopping,
   PROVIDER_TURN_CAPABILITIES,
-  settleTrackedTurn,
   shouldEmitSyntheticFollowUpChrome,
   shouldForceCloseOpenToolsOnSteer,
   trackLiveTurn,
@@ -591,6 +591,8 @@ interface GrokSessionContext {
    * back to a blank session/new, the next prompt rehydrates from this log.
    */
   conversationLog: Array<GrokConversationTurn>;
+  /** First conversation entry owned by the currently tracked turn. */
+  turnConversationStartIndex: number;
   /** After recycle landed on a different session id, rehydrate once. */
   needsContextRehydration: boolean;
   /**
@@ -629,6 +631,20 @@ export function appendGrokConversationText(
   text: string,
 ): Array<GrokConversationTurn> {
   return appendConversationHistoryText(log, role, text);
+}
+
+/** Return only assistant text recorded during the current turn. Exported for tests. */
+export function lastGrokAssistantTextSince(
+  conversationLog: ReadonlyArray<GrokConversationTurn>,
+  startIndex: number,
+): string {
+  for (let index = conversationLog.length - 1; index >= Math.max(0, startIndex); index -= 1) {
+    const entry = conversationLog[index];
+    if (entry?.role === "assistant") {
+      return entry.text;
+    }
+  }
+  return "";
 }
 
 /**
@@ -953,27 +969,18 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
      * Dequeue the next held send after a terminal settle. Returns undefined when
      * the queue is empty or the waiter was already abandoned (Stop).
      */
-    const takeNextQueuedSend = (
+    const takeQueuedSend = (
       ctx: GrokSessionContext,
-      turnId: TurnId,
-      reason: "completed" | "cancelled" | "error",
+      next: QueuedTurnInput | undefined,
     ): PendingGrokQueuedSend | undefined => {
-      const settled = settleTrackedTurn(ctx.turnQueue, {
-        turnId: String(turnId),
-        reason,
-      });
-      if (!settled.claimed) {
+      if (next === undefined) {
         return undefined;
       }
-      ctx.turnQueue = settled.state;
-      if (settled.next === undefined) {
-        return undefined;
-      }
-      const pending = ctx.pendingSends.get(settled.next.id);
+      const pending = ctx.pendingSends.get(next.id);
       if (!pending) {
         return undefined;
       }
-      ctx.pendingSends.delete(settled.next.id);
+      ctx.pendingSends.delete(next.id);
       return pending;
     };
 
@@ -1090,6 +1097,12 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         if (!liveCtx) {
           return;
         }
+        const settlementReason =
+          options?.errorMessage !== undefined
+            ? "error"
+            : options?.completedStopReason === "cancelled"
+              ? "cancelled"
+              : "completed";
         const settlementBelongsToLiveContext = grokPromptSettlementBelongsToContext({
           liveAcpSessionId: liveCtx.acpSessionId,
           expectedAcpSessionId,
@@ -1119,6 +1132,17 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             if (!wasLive) {
               return;
             }
+            const settlement = claimTurnSettlement(liveCtx.turnQueue, {
+              turnId: String(turnId),
+              reason: settlementReason,
+              mode: "active-turn-fallback",
+            });
+            if (!settlement.claimed) {
+              return;
+            }
+            liveCtx.turnQueue = settlement.state;
+            const claimedTurnId = TurnId.make(settlement.turnId);
+            const nextPending = takeQueuedSend(liveCtx, settlement.next);
             const updatedAt = yield* nowIso;
             const { activeTurnId: _cleared, ...readySession } = liveCtx.session;
             liveCtx.activeTurnId = undefined;
@@ -1127,14 +1151,14 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               status: "ready",
               updatedAt,
             };
-            yield* forceCloseOpenTools(liveCtx, threadId, turnId);
+            yield* forceCloseOpenTools(liveCtx, threadId, claimedTurnId);
             if (options?.errorMessage !== undefined) {
               yield* offerRuntimeEvent({
                 type: "turn.completed",
                 ...(yield* makeEventStamp()),
                 provider: PROVIDER,
                 threadId,
-                turnId,
+                turnId: claimedTurnId,
                 payload: {
                   state: "failed",
                   errorMessage: options.errorMessage,
@@ -1146,50 +1170,20 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 ...(yield* makeEventStamp()),
                 provider: PROVIDER,
                 threadId,
-                turnId,
+                turnId: claimedTurnId,
                 payload: {
                   state: options.completedStopReason === "cancelled" ? "cancelled" : "completed",
                   stopReason: options.completedStopReason ?? null,
                 },
               });
             }
-            return;
-          }
-          // Non-interrupt late settlement for a non-live turn: skip quietly.
-          if (
-            liveCtx.acpSessionId !== expectedAcpSessionId ||
-            liveCtx.interruptedTurnIds.has(turnId)
-          ) {
-            return;
-          }
-          if (options?.emitTurnCompletion !== false) {
-            yield* forceCloseOpenTools(liveCtx, threadId, turnId);
-            if (options?.errorMessage !== undefined) {
-              yield* offerRuntimeEvent({
-                type: "turn.completed",
-                ...(yield* makeEventStamp()),
-                provider: PROVIDER,
-                threadId,
-                turnId,
-                payload: {
-                  state: "failed",
-                  errorMessage: options.errorMessage,
-                },
-              });
-            } else if (options?.completedStopReason !== undefined) {
-              yield* offerRuntimeEvent({
-                type: "turn.completed",
-                ...(yield* makeEventStamp()),
-                provider: PROVIDER,
-                threadId,
-                turnId,
-                payload: {
-                  state: options.completedStopReason === "cancelled" ? "cancelled" : "completed",
-                  stopReason: options.completedStopReason ?? null,
-                },
-              });
+            if (nextPending) {
+              yield* forkDrainQueuedSend(liveCtx, nextPending);
             }
+            return;
           }
+          // A late normal result never owns a different live context. Only an
+          // explicit Stop/death path above may fall back to the active turn.
           return;
         }
         let settleTurnId = turnId;
@@ -1224,6 +1218,17 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           }
           liveCtx.promptsInFlight = remainingPrompts;
         }
+        const settlement = claimTurnSettlement(liveCtx.turnQueue, {
+          turnId: String(settleTurnId),
+          reason: settlementReason,
+          ...(options?.settleAllPrompts ? { mode: "active-turn-fallback" as const } : {}),
+        });
+        if (!settlement.claimed) {
+          return;
+        }
+        liveCtx.turnQueue = settlement.state;
+        settleTurnId = TurnId.make(settlement.turnId);
+        const nextPending = takeQueuedSend(liveCtx, settlement.next);
         const updatedAt = yield* nowIso;
         const canEmitTurnCompletion =
           liveCtx.session.status === "running" || liveCtx.session.status === "connecting";
@@ -1241,6 +1246,9 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           // Still close open tools so a suppressed completion cannot leave
           // ghost inProgress rows after Stop/watchdog.
           yield* forceCloseOpenTools(liveCtx, threadId, settleTurnId);
+          if (nextPending) {
+            yield* forkDrainQueuedSend(liveCtx, nextPending);
+          }
           return;
         }
         // Close tools before the terminal turn event so the UI never paints
@@ -1273,12 +1281,6 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         }
         // Auto-start the next held send (TurnQueue drain). Stop abandons the
         // queue first, so this is a no-op after interrupt.
-        const settleReason: "completed" | "cancelled" | "error" = shouldEmitFailedTurn
-          ? "error"
-          : options?.completedStopReason === "cancelled"
-            ? "cancelled"
-            : "completed";
-        const nextPending = takeNextQueuedSend(liveCtx, settleTurnId, settleReason);
         if (nextPending) {
           yield* forkDrainQueuedSend(liveCtx, nextPending);
         }
@@ -2317,6 +2319,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             notificationGeneration: 0,
             acpDisposed: false,
             conversationLog: [],
+            turnConversationStartIndex: 0,
             // True resume keeps Grok's own history. session/new (cold start,
             // failed load, no resume cursor) needs Studio rehydration on the
             // next prompt if the thread has projected messages.
@@ -2580,6 +2583,9 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   role: turn.role,
                   text: turn.text,
                 }));
+              }
+              if (steeringTurnId === undefined) {
+                ctx.turnConversationStartIndex = ctx.conversationLog.length;
               }
               const rehydrationPrefix =
                 steeringTurnId === undefined && ctx.needsContextRehydration
@@ -3009,6 +3015,42 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                     resumeCursor: ctx.session.resumeCursor,
                   };
                 }
+                const completedStopReason = completedStopReasonFromPromptResponse(result);
+                const cancelled = result.stopReason === "cancelled";
+                const silentEmptyCompletion = !cancelled && ctx.turnVisibleUpdateCount === 0;
+                const lastAssistantText = lastGrokAssistantTextSince(
+                  ctx.conversationLog,
+                  ctx.turnConversationStartIndex,
+                );
+                const emittedFailure =
+                  cancelled || silentEmptyCompletion
+                    ? undefined
+                    : classifyProviderEmittedFailure(lastAssistantText);
+                const drainReason: "completed" | "cancelled" | "error" =
+                  silentEmptyCompletion || emittedFailure
+                    ? "error"
+                    : cancelled
+                      ? "cancelled"
+                      : "completed";
+                const settlement = claimTurnSettlement(ctx.turnQueue, {
+                  turnId: String(prepared.turnId),
+                  reason: drainReason,
+                });
+                if (!settlement.claimed) {
+                  yield* Effect.logDebug("Grok ignored duplicate or stale turn settlement", {
+                    threadId: input.threadId,
+                    turnId: prepared.turnId,
+                  });
+                  yield* Ref.set(promptSettled, true);
+                  return {
+                    threadId: input.threadId,
+                    turnId: prepared.turnId,
+                    resumeCursor: ctx.session.resumeCursor,
+                  };
+                }
+                ctx.turnQueue = settlement.state;
+                const settledTurnId = TurnId.make(settlement.turnId);
+                const nextPending = takeQueuedSend(ctx, settlement.next);
                 const completedAt = yield* nowIso;
                 const { activeTurnId: _completedTurnId, ...readySession } = ctx.session;
                 ctx.activeTurnId = undefined;
@@ -3018,27 +3060,20 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   updatedAt: completedAt,
                   ...(prepared.displayModel ? { model: prepared.displayModel } : {}),
                 };
-                const completedStopReason = completedStopReasonFromPromptResponse(result);
-                const cancelled = result.stopReason === "cancelled";
-                const silentEmptyCompletion = !cancelled && ctx.turnVisibleUpdateCount === 0;
-                let drainReason: "completed" | "cancelled" | "error" = cancelled
-                  ? "cancelled"
-                  : "completed";
                 // Agent end_turn without tool completion still leaves open tools
                 // in the work log unless we force-close them here.
-                yield* forceCloseOpenTools(ctx, input.threadId, prepared.turnId);
+                yield* forceCloseOpenTools(ctx, input.threadId, settledTurnId);
                 if (silentEmptyCompletion) {
                   // Real Grok sessions after Stop/recycle can return end_turn with
                   // zero stream updates. Treat that as failure + compromise so the
                   // next message recycles instead of silently "working" forever.
-                  drainReason = "error";
                   yield* markAcpCompromised(ctx, "silent empty end_turn");
                   yield* offerRuntimeEvent({
                     type: "turn.completed",
                     ...(yield* makeEventStamp()),
                     provider: PROVIDER,
                     threadId: input.threadId,
-                    turnId: prepared.turnId,
+                    turnId: settledTurnId,
                     payload: {
                       state: "failed",
                       errorMessage:
@@ -3048,27 +3083,14 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 } else {
                   // Same contract as Cursor: pure capacity/quota dumps as assistant
                   // text + end_turn must not settle as successful replies.
-                  const lastAssistantText = (() => {
-                    for (let index = ctx.conversationLog.length - 1; index >= 0; index -= 1) {
-                      const entry = ctx.conversationLog[index];
-                      if (entry?.role === "assistant") {
-                        return entry.text;
-                      }
-                    }
-                    return "";
-                  })();
-                  const emittedFailure = cancelled
-                    ? undefined
-                    : classifyProviderEmittedFailure(lastAssistantText);
                   if (emittedFailure) {
-                    drainReason = "error";
                     const message = formatProviderEmittedFailureMessage(emittedFailure, {
                       providerLabel: "Grok",
                       model: prepared.displayModel,
                     });
                     yield* Effect.logWarning("Grok turn completed with provider-emitted failure", {
                       threadId: input.threadId,
-                      turnId: prepared.turnId,
+                      turnId: settledTurnId,
                       code: emittedFailure.code,
                       model: prepared.displayModel,
                     });
@@ -3077,7 +3099,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                       ...(yield* makeEventStamp()),
                       provider: PROVIDER,
                       threadId: input.threadId,
-                      turnId: prepared.turnId,
+                      turnId: settledTurnId,
                       payload: {
                         message,
                         class: emittedFailure.class,
@@ -3088,7 +3110,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                       ...(yield* makeEventStamp()),
                       provider: PROVIDER,
                       threadId: input.threadId,
-                      turnId: prepared.turnId,
+                      turnId: settledTurnId,
                       payload: {
                         state: "failed",
                         stopReason: completedStopReason,
@@ -3101,7 +3123,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                       ...(yield* makeEventStamp()),
                       provider: PROVIDER,
                       threadId: input.threadId,
-                      turnId: prepared.turnId,
+                      turnId: settledTurnId,
                       payload: {
                         state: cancelled ? "cancelled" : "completed",
                         stopReason: completedStopReason,
@@ -3110,7 +3132,6 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   }
                 }
                 ctx.interruptedTurnIds.delete(prepared.turnId);
-                const nextPending = takeNextQueuedSend(ctx, prepared.turnId, drainReason);
                 if (nextPending) {
                   yield* forkDrainQueuedSend(ctx, nextPending);
                 }

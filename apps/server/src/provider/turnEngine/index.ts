@@ -46,3 +46,9 @@ export {
   settleTrackedTurn,
   trackLiveTurn,
 } from "./TurnQueue.ts";
+export { claimTurnSettlement } from "./TurnSettlement.ts";
+export type {
+  TurnSettlementDecision,
+  TurnSettlementMode,
+  TurnSettlementReason,
+} from "./TurnSettlement.ts";

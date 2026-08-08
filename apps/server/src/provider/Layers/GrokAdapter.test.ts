@@ -38,6 +38,7 @@ import {
   formatGrokSilentTurnWorkSummary,
   grokPromptSettlementBelongsToContext,
   isGrokLongRunningToolKind,
+  lastGrokAssistantTextSince,
   makeGrokAdapter,
   resolveGrokOpenToolWatchdogMs,
   slimGrokStreamDeltaNativeLog,
@@ -395,6 +396,23 @@ it("merges consecutive conversation turns of the same role", () => {
     { role: "user", text: "hello" },
     { role: "assistant", text: "hi there" },
   ]);
+});
+
+it("scopes provider failure text to the current Grok turn", () => {
+  const conversationLog = [
+    { role: "user" as const, text: "first" },
+    { role: "assistant" as const, text: "previous rate limit failure" },
+    { role: "user" as const, text: "retry" },
+  ];
+
+  assert.equal(lastGrokAssistantTextSince(conversationLog, 2), "");
+  assert.equal(
+    lastGrokAssistantTextSince(
+      [...conversationLog, { role: "assistant" as const, text: "current answer" }],
+      2,
+    ),
+    "current answer",
+  );
 });
 
 it("builds a rehydration prefix from Studio-side conversation history", () => {
