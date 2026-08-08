@@ -166,13 +166,12 @@ import {
   XIcon,
 } from "lucide-react";
 import { proposedPlanTitle } from "../../proposedPlan";
+import { resolveComposerProviderSelection } from "../../composerProviderSelection";
 import { getProviderDisplayName } from "../../providerModels";
 import {
   applyProviderInstanceSettings,
   deriveProviderInstanceEntries,
-  NO_PROVIDER_MODEL_SELECTION,
   resolveProviderDriverKindForInstanceSelection,
-  resolveSelectableProviderInstanceEntry,
   sortProviderInstanceEntries,
   type ProviderInstanceEntry,
 } from "../../providerInstances";
@@ -401,6 +400,7 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
   isSendBusy: boolean;
   isConnecting: boolean;
   isEnvironmentUnavailable: boolean;
+  isProviderSelectionBlocked: boolean;
   hasSendableContent: boolean;
   preserveComposerFocusOnPointerDown?: boolean;
   onPreviousPendingQuestion: () => void;
@@ -430,6 +430,7 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
         isSendBusy={props.isSendBusy}
         isConnecting={props.isConnecting}
         isEnvironmentUnavailable={props.isEnvironmentUnavailable}
+        isProviderSelectionBlocked={props.isProviderSelectionBlocked}
         isPreparingWorktree={props.isPreparingWorktree}
         hasSendableContent={props.hasSendableContent}
         preserveComposerFocusOnPointerDown={props.preserveComposerFocusOnPointerDown ?? false}
@@ -769,123 +770,43 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     providerInstanceEntries,
   ]);
 
-  // Resolve which configured instance the composer is currently targeting.
-  // Priority:
-  //   1. The composer draft's `activeProvider` — the user's unsaved pick
-  //      from the model picker (must win, otherwise the UI appears to
-  //      ignore picker selections).
-  //   2. Thread's persisted instance id (server-side saved selection).
-  //   3. Project default's instance id.
-  //   4. First enabled entry matching the current driver kind.
-  //   5. First enabled entry overall / default instance for the kind.
-  //
-  const selectedInstanceId = useMemo<ProviderInstanceId>(() => {
-    const candidates: Array<string | null | undefined> = [
-      composerDraft.activeProvider,
-      activeThread?.session?.providerInstanceId,
-      activeThreadModelSelection?.instanceId,
-      activeProjectDefaultModelSelection?.instanceId,
-    ];
-    for (const candidate of candidates) {
-      if (!candidate) continue;
-      const match = providerInstanceEntries.find(
-        (entry) => entry.instanceId === candidate && entry.enabled && entry.isAvailable,
-      );
-      if (match) {
-        // When locked to a specific driver kind, ignore persisted instance
-        // ids from a different kind or continuation group.
-        if (lockedProvider && match.driverKind !== lockedProvider) continue;
-        if (
-          lockedContinuationGroupKey &&
-          match.continuationGroupKey !== lockedContinuationGroupKey
-        ) {
-          continue;
-        }
-        return match.instanceId;
-      }
-    }
-    const compatibleEntries = providerInstanceEntries.filter(
-      (entry) =>
-        (!lockedProvider || entry.driverKind === lockedProvider) &&
-        (!lockedContinuationGroupKey || entry.continuationGroupKey === lockedContinuationGroupKey),
-    );
-    const requestedDriverEntries = compatibleEntries.filter(
-      (entry) => entry.driverKind === requestedDriverKind,
-    );
-    return (
-      resolveSelectableProviderInstanceEntry(requestedDriverEntries, undefined)?.instanceId ??
-      resolveSelectableProviderInstanceEntry(compatibleEntries, undefined)?.instanceId ??
-      NO_PROVIDER_MODEL_SELECTION.instanceId
-    );
+  const providerSelection = useMemo(() => {
+    return resolveComposerProviderSelection({
+      entries: providerInstanceEntries,
+      candidateInstanceIds: [
+        composerDraft.activeProvider,
+        activeThread?.session?.providerInstanceId,
+        activeThreadModelSelection?.instanceId,
+        activeProjectDefaultModelSelection?.instanceId,
+      ],
+      explicitSelectedInstanceId,
+      requestedDriverKind,
+      lockedProvider,
+      lockedContinuationGroupKey,
+    });
   }, [
     activeProjectDefaultModelSelection?.instanceId,
     activeThread?.session?.providerInstanceId,
     activeThreadModelSelection?.instanceId,
     composerDraft.activeProvider,
+    explicitSelectedInstanceId,
     lockedContinuationGroupKey,
     lockedProvider,
     providerInstanceEntries,
     requestedDriverKind,
   ]);
+  const selectedInstanceId = providerSelection.instanceId;
 
   // Resolve the active instance's snapshot by `instanceId` so a custom
   // instance gets its own slash commands, skills, and model list — not
   // the first snapshot for the same driver kind.
-  const selectedProviderEntry = useMemo(
-    () => providerInstanceEntries.find((entry) => entry.instanceId === selectedInstanceId),
-    [providerInstanceEntries, selectedInstanceId],
-  );
+  const selectedProviderEntry = providerSelection.entry;
   const noProviderAvailable = selectedProviderEntry === undefined;
-
-  /**
-   * The composer is about to run on an instance the user did not pick.
-   *
-   * `selectedInstanceId` only accepts a candidate whose entry is
-   * `enabled && isAvailable`, so a pick that is momentarily unavailable is
-   * skipped and the turn runs on whatever sorts first instead — a different
-   * agent, with its own default model, chosen on the user's behalf without
-   * asking. A user reported a full-access agent running on Cursor while they
-   * believed they were on Grok; the only disclosure was a top-of-view banner
-   * that auto-dismissed after six seconds (SOU-570).
-   *
-   * Reported here, next to the picker the user actually looks at, and it does
-   * not disappear on its own.
-   */
-  const providerSubstitutionNotice = useMemo(() => {
-    if (!explicitSelectedInstanceId || explicitSelectedInstanceId === selectedInstanceId) {
-      return null;
-    }
-    const requestedEntry = providerInstanceEntries.find(
-      (entry) => entry.instanceId === explicitSelectedInstanceId,
-    );
-    // A pick that no longer exists was removed rather than made unavailable.
-    // Falling back is the only option and there is nothing to warn about.
-    if (!requestedEntry) return null;
-    // Availability is what this is about. An entry that is both enabled and
-    // available was not substituted for availability reasons.
-    if (requestedEntry.enabled && requestedEntry.isAvailable) return null;
-    // A thread locked to a driver kind is *expected* to ignore a pick from a
-    // different kind. That is the continuation rule, not a silent swap.
-    if (lockedProvider && requestedEntry.driverKind !== lockedProvider) return null;
-    // Without a resolved entry there is no instance to name, and the composer
-    // already renders "No provider available" for that state. Naming a raw
-    // instance id here would be worse than saying nothing.
-    if (!selectedProviderEntry) return null;
-    return {
-      requested: requestedEntry.displayName,
-      running: selectedProviderEntry.displayName,
-      reason: requestedEntry.enabled ? ("unavailable" as const) : ("disabled" as const),
-    };
-  }, [
-    explicitSelectedInstanceId,
-    lockedProvider,
-    providerInstanceEntries,
-    selectedInstanceId,
-    selectedProviderEntry,
-  ]);
-  // The driver kind follows the instance that will actually run the turn,
-  // which can differ from the persisted selection when that selection is
-  // disabled.
+  const explicitProviderSelectionBlock = providerSelection.explicitSelectionBlock;
+  const providerSendBlocked = explicitProviderSelectionBlock !== null;
+  // The driver kind follows the suggested fallback so its model picker can be
+  // rendered. Dispatch remains blocked until the user explicitly accepts that
+  // fallback when their persisted selection is unavailable.
   const selectedProvider: ProviderDriverKind =
     selectedProviderEntry?.driverKind ?? requestedDriverKind;
 
@@ -975,6 +896,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       ? selectedModelForPicker
       : (normalizeModelSlug(selectedModelForPicker, selectedProvider) ?? selectedModelForPicker);
   }, [modelOptionsByInstance, selectedInstanceId, selectedModelForPicker, selectedProvider]);
+  const acceptProviderFallback = useCallback(() => {
+    const fallback = explicitProviderSelectionBlock?.fallback;
+    if (!fallback) return;
+    onProviderModelSelect(fallback.instanceId, selectedModel);
+  }, [explicitProviderSelectionBlock, onProviderModelSelect, selectedModel]);
 
   // ------------------------------------------------------------------
   // Context window
@@ -1273,6 +1199,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     isSendBusy ||
     isConnecting ||
     noProviderAvailable ||
+    providerSendBlocked ||
     projectSelectionRequired ||
     environmentUnavailable !== null ||
     (collapsedRunningPrimaryAction?.action === "send-now"
@@ -1845,6 +1772,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       isSendBusy ||
       isConnecting ||
       noProviderAvailable ||
+      providerSendBlocked ||
       environmentUnavailable !== null ||
       phase === "running" ||
       phase === "connecting"
@@ -1864,6 +1792,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     isMobileViewport,
     isSendBusy,
     noProviderAvailable,
+    providerSendBlocked,
     phase,
     showPlanFollowUpPrompt,
   ]);
@@ -1876,7 +1805,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         readonly ctrlOrMetaKey?: boolean;
       },
     ) => {
-      if (noProviderAvailable) {
+      if (noProviderAvailable || providerSendBlocked) {
         event?.preventDefault();
         return;
       }
@@ -1891,6 +1820,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       noProviderAvailable,
       onSend,
       phase,
+      providerSendBlocked,
       shouldBlurMobileComposerOnSubmit,
     ],
   );
@@ -2295,7 +2225,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         selectedPromptEffort,
         selectedModelOptionsForDispatch,
         selectedModelSelection,
-        providerAvailable: !noProviderAvailable,
+        providerAvailable: !noProviderAvailable && !providerSendBlocked,
         selectedProvider,
         selectedModel,
         selectedProviderModels,
@@ -2324,6 +2254,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       selectedModelOptionsForDispatch,
       selectedModelSelection,
       noProviderAvailable,
+      providerSendBlocked,
       selectedPromptEffort,
       selectedProvider,
       selectedProviderModels,
@@ -2775,22 +2706,34 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
             </div>
           ) : (
             <>
-              {providerSubstitutionNotice ? (
+              {explicitProviderSelectionBlock ? (
                 <div
                   data-chat-provider-substitution="true"
-                  className="mx-2.5 mb-1.5 flex items-start gap-1.5 rounded-md bg-amber-500/10 px-2 py-1.5 text-[11px] font-medium text-amber-700 sm:mx-3 dark:text-amber-400"
+                  data-chat-provider-substitution-blocked="true"
+                  role="alert"
+                  className="mx-2.5 mb-1.5 flex flex-wrap items-center gap-2 rounded-md bg-amber-500/10 px-2 py-1.5 text-[11px] font-medium text-amber-700 sm:mx-3 dark:text-amber-400"
                 >
-                  <CircleAlertIcon className="mt-px size-3.5 shrink-0" />
-                  {/* Wraps rather than truncating, and sits on its own line
-                    instead of competing for room in the scrolling toolbar.
-                    This is the only warning that a turn will run on a provider
-                    the user did not pick; hiding half of it behind a title
-                    tooltip, which touch and keyboard users never see, defeats
-                    the point of showing it at all. */}
-                  <span className="min-w-0">
-                    {providerSubstitutionNotice.requested} is {providerSubstitutionNotice.reason}.
-                    This message will run on {providerSubstitutionNotice.running}.
+                  <CircleAlertIcon className="size-3.5 shrink-0" />
+                  <span className="min-w-0 flex-1">
+                    {explicitProviderSelectionBlock.requestedDisplayName} is{" "}
+                    {explicitProviderSelectionBlock.reason === "removed"
+                      ? "no longer configured"
+                      : explicitProviderSelectionBlock.reason}
+                    . Sending is blocked so Studio cannot switch agents without your approval.
                   </span>
+                  {explicitProviderSelectionBlock.fallback ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      data-chat-provider-substitution-switch="true"
+                      className="h-7 shrink-0 border-amber-600/30 bg-background/70 px-2 text-[11px] text-amber-800 hover:bg-amber-500/10 dark:text-amber-300"
+                      onPointerDown={(event) => event.preventDefault()}
+                      onClick={acceptProviderFallback}
+                    >
+                      Switch to {explicitProviderSelectionBlock.fallback.displayName}
+                    </Button>
+                  ) : null}
                 </div>
               ) : null}
               <div
@@ -2901,6 +2844,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       noProviderAvailable ||
                       projectSelectionRequired
                     }
+                    isProviderSelectionBlocked={providerSendBlocked}
                     isPreparingWorktree={isPreparingWorktree}
                     hasSendableContent={composerSendState.hasSendableContent}
                     preserveComposerFocusOnPointerDown={isMobileViewport}
