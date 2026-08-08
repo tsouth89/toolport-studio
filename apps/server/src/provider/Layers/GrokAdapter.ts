@@ -591,6 +591,8 @@ interface GrokSessionContext {
    * back to a blank session/new, the next prompt rehydrates from this log.
    */
   conversationLog: Array<GrokConversationTurn>;
+  /** First conversation entry owned by the currently tracked turn. */
+  turnConversationStartIndex: number;
   /** After recycle landed on a different session id, rehydrate once. */
   needsContextRehydration: boolean;
   /**
@@ -629,6 +631,20 @@ export function appendGrokConversationText(
   text: string,
 ): Array<GrokConversationTurn> {
   return appendConversationHistoryText(log, role, text);
+}
+
+/** Return only assistant text recorded during the current turn. Exported for tests. */
+export function lastGrokAssistantTextSince(
+  conversationLog: ReadonlyArray<GrokConversationTurn>,
+  startIndex: number,
+): string {
+  for (let index = conversationLog.length - 1; index >= Math.max(0, startIndex); index -= 1) {
+    const entry = conversationLog[index];
+    if (entry?.role === "assistant") {
+      return entry.text;
+    }
+  }
+  return "";
 }
 
 /**
@@ -1126,6 +1142,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             }
             liveCtx.turnQueue = settlement.state;
             const claimedTurnId = TurnId.make(settlement.turnId);
+            const nextPending = takeQueuedSend(liveCtx, settlement.next);
             const updatedAt = yield* nowIso;
             const { activeTurnId: _cleared, ...readySession } = liveCtx.session;
             liveCtx.activeTurnId = undefined;
@@ -1159,6 +1176,9 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   stopReason: options.completedStopReason ?? null,
                 },
               });
+            }
+            if (nextPending) {
+              yield* forkDrainQueuedSend(liveCtx, nextPending);
             }
             return;
           }
@@ -2299,6 +2319,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             notificationGeneration: 0,
             acpDisposed: false,
             conversationLog: [],
+            turnConversationStartIndex: 0,
             // True resume keeps Grok's own history. session/new (cold start,
             // failed load, no resume cursor) needs Studio rehydration on the
             // next prompt if the thread has projected messages.
@@ -2562,6 +2583,9 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   role: turn.role,
                   text: turn.text,
                 }));
+              }
+              if (steeringTurnId === undefined) {
+                ctx.turnConversationStartIndex = ctx.conversationLog.length;
               }
               const rehydrationPrefix =
                 steeringTurnId === undefined && ctx.needsContextRehydration
@@ -2994,15 +3018,10 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 const completedStopReason = completedStopReasonFromPromptResponse(result);
                 const cancelled = result.stopReason === "cancelled";
                 const silentEmptyCompletion = !cancelled && ctx.turnVisibleUpdateCount === 0;
-                const lastAssistantText = (() => {
-                  for (let index = ctx.conversationLog.length - 1; index >= 0; index -= 1) {
-                    const entry = ctx.conversationLog[index];
-                    if (entry?.role === "assistant") {
-                      return entry.text;
-                    }
-                  }
-                  return "";
-                })();
+                const lastAssistantText = lastGrokAssistantTextSince(
+                  ctx.conversationLog,
+                  ctx.turnConversationStartIndex,
+                );
                 const emittedFailure =
                   cancelled || silentEmptyCompletion
                     ? undefined

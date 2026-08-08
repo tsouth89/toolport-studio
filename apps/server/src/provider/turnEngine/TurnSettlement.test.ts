@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { beginTurn, emptyTurnQueue, markTurnRunning } from "./TurnQueue.ts";
+import {
+  beginTurn,
+  disposeSendWhileRunning,
+  emptyTurnQueue,
+  markTurnRunning,
+} from "./TurnQueue.ts";
 import { claimTurnSettlement } from "./TurnSettlement.ts";
 
 function runningTurn(turnId: string) {
@@ -36,6 +41,24 @@ describe("claimTurnSettlement", () => {
       next: undefined,
       turnId: undefined,
     });
+  });
+
+  it("returns the next queued turn to the settlement owner", () => {
+    const queued = {
+      id: "turn-next",
+      text: "continue",
+      enqueuedAtMs: 42,
+    };
+    const state = disposeSendWhileRunning(runningTurn("turn-live"), {
+      sendWhileRunning: "queue",
+      nextTurn: queued,
+    }).state;
+    const settlement = claimTurnSettlement(state, {
+      turnId: "turn-live",
+      reason: "completed",
+    });
+
+    expect(settlement).toMatchObject({ claimed: true, next: queued });
   });
 
   it("lets explicit recovery settle the currently tracked turn", () => {
