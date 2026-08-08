@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   formatPendingPrimaryActionLabel,
   resolveRunningPrimaryAction,
+  resolveSendPrimaryActionAriaLabel,
 } from "./ComposerPrimaryActions";
 
 describe("formatPendingPrimaryActionLabel", () => {
@@ -112,5 +113,19 @@ describe("resolveRunningPrimaryAction", () => {
     expect(
       resolveRunningPrimaryAction({ hasSendableContent: true, queuedMessageCount: 2 }),
     ).toMatchObject({ action: "queue", label: "Send" });
+  });
+});
+
+describe("resolveSendPrimaryActionAriaLabel", () => {
+  it("names provider approval as the blocking reason instead of environment connectivity", () => {
+    expect(
+      resolveSendPrimaryActionAriaLabel({
+        isProviderSelectionBlocked: true,
+        isEnvironmentUnavailable: true,
+        isConnecting: false,
+        isPreparingWorktree: false,
+        isSendBusy: false,
+      }),
+    ).toBe("Provider switch approval required");
   });
 });
