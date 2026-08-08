@@ -50,9 +50,14 @@ import {
   formatProviderEmittedFailureMessage,
 } from "@toolport-studio/shared/providerError";
 import {
+  claimTurnSettlement,
+  emptyTurnQueue,
+  markTurnStopping,
   OPEN_TOOL_FORCE_CLOSE_DETAIL,
   OPEN_TOOL_FORCE_CLOSE_SOURCE,
   shouldForceCloseRemainingOpenToolsOnSettle,
+  trackLiveTurn,
+  type TurnQueueState,
 } from "../turnEngine/index.ts";
 import { getCodexServiceTierOptionValue } from "../../codexModelOptions.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
@@ -196,6 +201,8 @@ interface CodexAdapterSessionContext {
   openTools: Map<string, CodexOpenTool>;
   /** Native subagents still active for the live turn. */
   openAgents: Map<string, CodexOpenAgent>;
+  /** Shared authoritative owner for terminal turn effects (SBS-428). */
+  turnLifecycle: TurnQueueState;
 }
 
 function mapCodexRuntimeError(
@@ -1863,6 +1870,44 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         }
         const session = sessions.get(event.threadId);
         if (session) {
+          const liveEvidence = runtimeEvents.find(
+            (runtimeEvent) =>
+              runtimeEvent.type !== "turn.completed" &&
+              runtimeEvent.type !== "turn.aborted" &&
+              runtimeEvent.turnId !== undefined,
+          );
+          if (session.turnLifecycle.activeTurnId === undefined && liveEvidence?.turnId) {
+            // A visible item/request is also proof of a live provider turn. It
+            // covers a dropped/late turn.started without allowing stale
+            // traffic to replace a newer owner.
+            session.turnLifecycle = trackLiveTurn(
+              session.turnLifecycle,
+              String(liveEvidence.turnId),
+            );
+          }
+          const terminalEvent = runtimeEvents.find(
+            (runtimeEvent) =>
+              runtimeEvent.type === "turn.completed" || runtimeEvent.type === "turn.aborted",
+          );
+          if (terminalEvent) {
+            if (!terminalEvent.turnId) {
+              return;
+            }
+            const settlement = claimTurnSettlement(session.turnLifecycle, {
+              turnId: String(terminalEvent.turnId),
+              reason:
+                terminalEvent.type === "turn.aborted" || terminalEvent.payload.state === "failed"
+                  ? "error"
+                  : terminalEvent.payload.state === "cancelled" ||
+                      terminalEvent.payload.state === "interrupted"
+                    ? "cancelled"
+                    : "completed",
+            });
+            if (!settlement.claimed) {
+              return;
+            }
+            session.turnLifecycle = settlement.state;
+          }
           runtimeEvents = trackCodexOpenToolsFromEvents(session, runtimeEvents);
         }
         yield* Queue.offerAll(runtimeEventQueue, runtimeEvents);
@@ -2123,6 +2168,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           stopped: false,
           openTools: new Map(),
           openAgents: new Map(),
+          turnLifecycle: emptyTurnQueue(),
         });
         sessionScopeTransferred = true;
 
@@ -2238,6 +2284,11 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         Effect.mapError((cause) =>
           mapCodexRuntimeError(input.threadId, "turn/start", cause, boundDriverKind),
         ),
+        Effect.tap((result) =>
+          Effect.sync(() => {
+            session.turnLifecycle = trackLiveTurn(session.turnLifecycle, String(result.turnId));
+          }),
+        ),
         // Attachment/prep path can leave session marked running without a turn
         // when turn/start fails; force ready so Working cannot stick.
         Effect.tapError(() =>
@@ -2272,7 +2323,18 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
 
   const interruptTurn: CodexAdapterShape["interruptTurn"] = (threadId, turnId) =>
     requireSession(threadId).pipe(
-      Effect.flatMap((session) => session.runtime.interruptTurn(turnId)),
+      Effect.tap((session) =>
+        Effect.sync(() => {
+          session.turnLifecycle = markTurnStopping(session.turnLifecycle);
+        }),
+      ),
+      Effect.flatMap((session) =>
+        session.runtime.interruptTurn(
+          session.turnLifecycle.activeTurnId
+            ? TurnId.make(session.turnLifecycle.activeTurnId)
+            : turnId,
+        ),
+      ),
       Effect.mapError((cause) =>
         cause._tag === "ProviderAdapterSessionNotFoundError"
           ? cause

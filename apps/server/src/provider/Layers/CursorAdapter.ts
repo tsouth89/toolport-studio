@@ -84,7 +84,15 @@ import {
   extractTodosAsPlan,
 } from "../acp/CursorAcpExtension.ts";
 import { type CursorAdapterShape } from "../Services/CursorAdapter.ts";
-import { canSteerSendTurn, shouldForceCloseOpenToolsOnStop } from "../turnEngine/index.ts";
+import {
+  canSteerSendTurn,
+  claimTurnSettlement,
+  emptyTurnQueue,
+  markTurnStopping,
+  shouldForceCloseOpenToolsOnStop,
+  trackLiveTurn,
+  type TurnQueueState,
+} from "../turnEngine/index.ts";
 import { resolveCursorAcpBaseModelId } from "./CursorProvider.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.UnknownFromJsonString);
@@ -168,6 +176,8 @@ interface CursorSessionContext {
   readonly turns: Array<{ id: TurnId; items: Array<unknown> }>;
   lastPlanFingerprint: string | undefined;
   activeTurnId: TurnId | undefined;
+  /** Shared authoritative owner for terminal turn effects (SBS-428). */
+  turnLifecycle: TurnQueueState;
   /**
    * Last turn that owned live ACP stream traffic. Survives force-settle so late
    * session/update chunks after Stop still bind to a turn (otherwise content.delta
@@ -1494,6 +1504,7 @@ export function makeCursorAdapter(
             turns: [],
             lastPlanFingerprint: undefined,
             activeTurnId: undefined,
+            turnLifecycle: emptyTurnQueue(),
             lastNotificationTurnId: undefined,
             lastVisibleActivityAtMs: yield* Clock.currentTimeMillis,
             silentPromptWarningTurnId: undefined,
@@ -1591,6 +1602,7 @@ export function makeCursorAdapter(
           ctx.lastNotificationTurnId = turnId;
           ctx.lastVisibleActivityAtMs = yield* Clock.currentTimeMillis;
           if (steeringTurnId === undefined) {
+            ctx.turnLifecycle = trackLiveTurn(ctx.turnLifecycle, String(turnId));
             ctx.lastPlanFingerprint = undefined;
             ctx.silentPromptWarningTurnId = undefined;
             ctx.turnAssistantText = "";
@@ -1744,6 +1756,14 @@ export function makeCursorAdapter(
                   if (ctx.promptsInFlight !== 1) {
                     return;
                   }
+                  const settlement = claimTurnSettlement(ctx.turnLifecycle, {
+                    turnId: String(turnId),
+                    reason: "error",
+                  });
+                  if (!settlement.claimed) {
+                    return;
+                  }
+                  ctx.turnLifecycle = settlement.state;
                   ctx.forceSettledTurnIds.add(String(turnId));
                   ctx.interruptedTurnIds.add(turnId);
                   ctx.activeTurnId = undefined;
@@ -1812,6 +1832,27 @@ export function makeCursorAdapter(
           // in flight or pending must leave the merged turn running.
           // Skip if Stop already force-settled this turn.
           if (ctx.promptsInFlight === 1 && !ctx.forceSettledTurnIds.has(String(turnId))) {
+            const emittedFailure =
+              result.stopReason === "cancelled"
+                ? undefined
+                : classifyProviderEmittedFailure(ctx.turnAssistantText);
+            const settlement = claimTurnSettlement(ctx.turnLifecycle, {
+              turnId: String(turnId),
+              reason:
+                emittedFailure !== undefined
+                  ? "error"
+                  : result.stopReason === "cancelled"
+                    ? "cancelled"
+                    : "completed",
+            });
+            if (!settlement.claimed) {
+              return {
+                threadId: input.threadId,
+                turnId,
+                resumeCursor: ctx.session.resumeCursor,
+              };
+            }
+            ctx.turnLifecycle = settlement.state;
             const updatedAt = yield* nowIso;
             ctx.activeTurnId = undefined;
             const { activeTurnId: _cleared, ...readySession } = ctx.session;
@@ -1831,10 +1872,6 @@ export function makeCursorAdapter(
             // ordinary agent_message_chunk text and still return end_turn.
             // Treat those as failed turns, not successful replies. Does not
             // mean the user's Cursor plan is necessarily depleted.
-            const emittedFailure =
-              result.stopReason === "cancelled"
-                ? undefined
-                : classifyProviderEmittedFailure(ctx.turnAssistantText);
             if (emittedFailure) {
               const message = formatProviderEmittedFailureMessage(emittedFailure, {
                 providerLabel: "Cursor",
@@ -1929,9 +1966,28 @@ export function makeCursorAdapter(
     const interruptTurn: CursorAdapterShape["interruptTurn"] = (threadId) =>
       Effect.gen(function* () {
         const ctx = yield* requireSession(threadId);
+        ctx.turnLifecycle = markTurnStopping(ctx.turnLifecycle);
         yield* settlePendingApprovalsAsCancelled(ctx.pendingApprovals);
         yield* settlePendingUserInputsAsEmptyAnswers(ctx.pendingUserInputs);
-        const settleTurnId = ctx.activeTurnId ?? ctx.session.activeTurnId;
+        const settleTurnId =
+          ctx.activeTurnId ??
+          ctx.session.activeTurnId ??
+          (ctx.turnLifecycle.activeTurnId
+            ? TurnId.make(ctx.turnLifecycle.activeTurnId)
+            : undefined);
+        // Reserve terminal ownership before cancel so a fast prompt result
+        // cannot race explicit Stop into a second terminal path.
+        const settlement =
+          settleTurnId !== undefined && !ctx.forceSettledTurnIds.has(String(settleTurnId))
+            ? claimTurnSettlement(ctx.turnLifecycle, {
+                turnId: String(settleTurnId),
+                reason: "cancelled",
+                mode: "active-turn-fallback",
+              })
+            : undefined;
+        if (settlement?.claimed) {
+          ctx.turnLifecycle = settlement.state;
+        }
         // Never block Stop on a wedged ACP child process.
         yield* ctx.acp.cancel.pipe(
           Effect.mapError((error) =>
@@ -1942,15 +1998,16 @@ export function makeCursorAdapter(
         );
         // Force-settle immediately so Working cannot stick if cancel never
         // resolves the in-flight prompt (Claude/Grok parity).
-        if (settleTurnId !== undefined && !ctx.forceSettledTurnIds.has(String(settleTurnId))) {
-          ctx.forceSettledTurnIds.add(String(settleTurnId));
-          ctx.interruptedTurnIds.add(settleTurnId);
+        if (settlement?.claimed) {
+          const claimedTurnId = TurnId.make(settlement.turnId);
+          ctx.forceSettledTurnIds.add(String(claimedTurnId));
+          ctx.interruptedTurnIds.add(claimedTurnId);
           // Clear live turn for Working chrome, but keep lastNotificationTurnId
           // so late ACP stream chunks after cancel still bind to this turn.
           ctx.activeTurnId = undefined;
-          ctx.lastNotificationTurnId = settleTurnId;
+          ctx.lastNotificationTurnId = claimedTurnId;
           ctx.promptsInFlight = 0;
-          yield* forceCloseOpenTools(ctx, threadId, settleTurnId);
+          yield* forceCloseOpenTools(ctx, threadId, claimedTurnId);
           // Stop may leave the ACP child wedged mid-tool; recycle before the
           // next message so long sessions stay usable.
           yield* markAcpCompromised(ctx, "stop");
@@ -1966,7 +2023,7 @@ export function makeCursorAdapter(
             ...(yield* makeEventStamp()),
             provider: PROVIDER,
             threadId,
-            turnId: settleTurnId,
+            turnId: claimedTurnId,
             payload: {
               state: "cancelled",
               stopReason: "cancelled",

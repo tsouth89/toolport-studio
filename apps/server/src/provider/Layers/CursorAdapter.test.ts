@@ -1491,6 +1491,7 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
       const turnStarted = yield* Deferred.make<void>();
       const turnCompleted =
         yield* Deferred.make<Extract<ProviderRuntimeEvent, { type: "turn.completed" }>>();
+      let turnCompletedCount = 0;
 
       const wrapperPath = yield* Effect.promise(() =>
         makeMockAgentWrapper({ TOOLPORT_STUDIO_ACP_HANG_PROMPT_TEXT: "hang forever" }),
@@ -1506,6 +1507,7 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
             yield* Deferred.succeed(turnStarted, undefined).pipe(Effect.ignore);
           }
           if (event.type === "turn.completed") {
+            turnCompletedCount += 1;
             yield* Deferred.succeed(turnCompleted, event).pipe(Effect.ignore);
           }
         }),
@@ -1533,6 +1535,9 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
       const completed = yield* Deferred.await(turnCompleted).pipe(Effect.timeout("5 seconds"));
       assert.equal(completed.payload.state, "cancelled");
       assert.equal(completed.payload.stopReason, "cancelled");
+      yield* adapter.interruptTurn(threadId);
+      yield* Effect.yieldNow;
+      assert.equal(turnCompletedCount, 1);
 
       const sessions = yield* adapter.listSessions();
       const session = sessions.find((entry) => entry.threadId === threadId);

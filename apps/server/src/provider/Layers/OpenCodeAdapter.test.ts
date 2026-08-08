@@ -943,6 +943,44 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive more", (it) => {
     }),
   );
 
+  it.effect("emits one terminal event when Stop is requested twice", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-opencode-double-stop");
+      const completed: Array<ProviderRuntimeEvent> = [];
+      const eventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.threadId === threadId && event.type === "turn.completed"),
+        Stream.runForEach((event) => Effect.sync(() => completed.push(event))),
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId,
+        input: "keep working",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("opencode"),
+          model: "openai/gpt-5",
+        },
+      });
+      yield* adapter.interruptTurn(threadId);
+      yield* adapter.interruptTurn(threadId);
+      yield* Effect.yieldNow;
+
+      NodeAssert.equal(completed.length, 1);
+      NodeAssert.equal(completed[0]?.type, "turn.completed");
+      if (completed[0]?.type === "turn.completed") {
+        NodeAssert.equal(completed[0].payload.state, "cancelled");
+      }
+      yield* Fiber.interrupt(eventsFiber).pipe(Effect.ignore);
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
   it.effect("passes agent and variant options for the adapter's bound custom instance id", () => {
     const instanceId = ProviderInstanceId.make("opencode_zen");
     const adapterLayer = Layer.effect(
