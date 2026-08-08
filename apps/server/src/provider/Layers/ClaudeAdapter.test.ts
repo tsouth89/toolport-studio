@@ -2492,14 +2492,24 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
-  it.effect("drops stale task usage queries that complete out of order", () => {
+  it.effect("coalesces task usage queries and preserves the maximum cumulative total", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
       const contextUsageResolvers: Array<(value: SDKControlGetContextUsageResponse) => void> = [];
+      let activeContextUsageQueries = 0;
+      let maxActiveContextUsageQueries = 0;
       harness.query.getContextUsage = () =>
         new Promise<SDKControlGetContextUsageResponse>((resolve) => {
-          contextUsageResolvers.push(resolve);
+          activeContextUsageQueries += 1;
+          maxActiveContextUsageQueries = Math.max(
+            maxActiveContextUsageQueries,
+            activeContextUsageQueries,
+          );
+          contextUsageResolvers.push((value) => {
+            activeContextUsageQueries -= 1;
+            resolve(value);
+          });
         });
       const runtimeEvents: Array<ProviderRuntimeEvent> = [];
       const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
@@ -2516,7 +2526,7 @@ describe("ClaudeAdapterLive", () => {
         subtype: "task_progress",
         task_id: "task-usage-older",
         description: "Older progress",
-        usage: { total_tokens: 100_000 },
+        usage: { total_tokens: 200_000 },
         session_id: "sdk-session-reverse-usage",
         uuid: "task-progress-older",
       } as unknown as SDKMessage);
@@ -2525,26 +2535,34 @@ describe("ClaudeAdapterLive", () => {
         subtype: "task_progress",
         task_id: "task-usage-newer",
         description: "Newer progress",
-        usage: { total_tokens: 200_000 },
+        usage: { total_tokens: 100_000 },
         session_id: "sdk-session-reverse-usage",
         uuid: "task-progress-newer",
       } as unknown as SDKMessage);
 
+      for (let index = 0; index < 20 && contextUsageResolvers.length < 1; index += 1) {
+        yield* Effect.yieldNow;
+      }
+      assert.lengthOf(contextUsageResolvers, 1);
+      assert.equal(maxActiveContextUsageQueries, 1);
+
+      contextUsageResolvers[0]?.({
+        totalTokens: 10_000,
+        maxTokens: 200_000,
+        isAutoCompactEnabled: true,
+      } as SDKControlGetContextUsageResponse);
       for (let index = 0; index < 20 && contextUsageResolvers.length < 2; index += 1) {
         yield* Effect.yieldNow;
       }
       assert.lengthOf(contextUsageResolvers, 2);
+      assert.equal(maxActiveContextUsageQueries, 1);
+      assert.lengthOf(
+        runtimeEvents.filter((event) => event.type === "thread.token-usage.updated"),
+        0,
+      );
 
       contextUsageResolvers[1]?.({
         totalTokens: 20_000,
-        maxTokens: 200_000,
-        isAutoCompactEnabled: true,
-      } as SDKControlGetContextUsageResponse);
-      for (let index = 0; index < 10; index += 1) {
-        yield* Effect.yieldNow;
-      }
-      contextUsageResolvers[0]?.({
-        totalTokens: 10_000,
         maxTokens: 200_000,
         isAutoCompactEnabled: true,
       } as SDKControlGetContextUsageResponse);
@@ -2562,6 +2580,121 @@ describe("ClaudeAdapterLive", () => {
         assert.equal(usageEvent.payload.usage.usedTokens, 20_000);
         assert.equal(usageEvent.payload.usage.totalProcessedTokens, 200_000);
       }
+      runtimeEventsFiber.interruptUnsafe();
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("does not let a pending task query overwrite a compacted context", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      let resolveContextUsage: ((value: SDKControlGetContextUsageResponse) => void) | undefined;
+      harness.query.getContextUsage = () =>
+        new Promise<SDKControlGetContextUsageResponse>((resolve) => {
+          resolveContextUsage = resolve;
+        });
+      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => runtimeEvents.push(event)),
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      harness.query.emit({
+        type: "system",
+        subtype: "task_progress",
+        task_id: "task-before-compaction",
+        description: "Progress before compaction",
+        usage: { total_tokens: 370_000 },
+        session_id: "sdk-session-pending-compaction",
+        uuid: "task-progress-before-compaction",
+      } as unknown as SDKMessage);
+      for (let index = 0; index < 20; index += 1) {
+        yield* Effect.yieldNow;
+      }
+      assert.isDefined(resolveContextUsage);
+
+      harness.query.emit({
+        type: "system",
+        subtype: "compact_boundary",
+        compact_metadata: { trigger: "auto", pre_tokens: 198_000, post_tokens: 40_000 },
+        session_id: "sdk-session-pending-compaction",
+        uuid: "compact-while-context-query-pending",
+      } as unknown as SDKMessage);
+      for (let index = 0; index < 10; index += 1) {
+        yield* Effect.yieldNow;
+      }
+      resolveContextUsage?.({
+        totalTokens: 190_000,
+        maxTokens: 200_000,
+        isAutoCompactEnabled: true,
+      } as SDKControlGetContextUsageResponse);
+      for (let index = 0; index < 20; index += 1) {
+        yield* Effect.yieldNow;
+      }
+
+      const usageEvents = runtimeEvents.filter(
+        (event) => event.type === "thread.token-usage.updated",
+      );
+      const finalUsage = usageEvents.at(-1);
+      assert.equal(finalUsage?.type, "thread.token-usage.updated");
+      if (finalUsage?.type === "thread.token-usage.updated") {
+        assert.equal(finalUsage.payload.usage.usedTokens, 40_000);
+      }
+      runtimeEventsFiber.interruptUnsafe();
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("does not query context usage for task progress without usage", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      let contextUsageQueries = 0;
+      harness.query.getContextUsage = async () => {
+        contextUsageQueries += 1;
+        return {
+          totalTokens: 10_000,
+          maxTokens: 200_000,
+          isAutoCompactEnabled: true,
+        } as SDKControlGetContextUsageResponse;
+      };
+      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => runtimeEvents.push(event)),
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      harness.query.emit({
+        type: "system",
+        subtype: "task_progress",
+        task_id: "task-without-usage",
+        description: "Progress without usage",
+        session_id: "sdk-session-no-task-usage",
+        uuid: "task-progress-without-usage",
+      } as unknown as SDKMessage);
+      for (let index = 0; index < 20; index += 1) {
+        yield* Effect.yieldNow;
+      }
+
+      assert.equal(contextUsageQueries, 0);
+      assert.lengthOf(
+        runtimeEvents.filter((event) => event.type === "thread.token-usage.updated"),
+        0,
+      );
+      assert.isTrue(runtimeEvents.some((event) => event.type === "task.progress"));
       runtimeEventsFiber.interruptUnsafe();
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),

@@ -343,7 +343,17 @@ interface ClaudeSessionContext {
   selectedContextWindow: number | undefined;
   lastKnownTokenUsage: ThreadTokenUsageSnapshot | undefined;
   lastKnownTotalProcessedTokens: number | undefined;
-  taskProgressTokenUsageGeneration: number;
+  tokenUsageVersion: number;
+  taskProgressTokenUsagePending:
+    | {
+        readonly value: unknown;
+        readonly options: {
+          readonly rawMethod: string;
+          readonly rawPayload: unknown;
+        };
+      }
+    | undefined;
+  taskProgressTokenUsageWorkerRunning: boolean;
   lastAssistantUuid: string | undefined;
   lastThreadStartedId: string | undefined;
   /**
@@ -766,8 +776,7 @@ function normalizeClaudeTaskProgressTokenUsage(
       ...(durationMs !== undefined ? { durationMs } : {}),
     };
   }
-  const previousTotalProcessedTokens =
-    lastKnownUsage.totalProcessedTokens ?? context.lastKnownTotalProcessedTokens ?? 0;
+  const previousTotalProcessedTokens = lastKnownUsage.totalProcessedTokens ?? 0;
   return {
     ...lastKnownUsage,
     ...(totalProcessedTokens > previousTotalProcessedTokens ? { totalProcessedTokens } : {}),
@@ -2232,9 +2241,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       return;
     }
 
+    context.tokenUsageVersion += 1;
     context.lastKnownTokenUsage = usage;
     context.lastKnownTotalProcessedTokens =
       usage.totalProcessedTokens ?? context.lastKnownTotalProcessedTokens;
+    context.lastKnownContextWindow = usage.maxTokens ?? context.lastKnownContextWindow;
 
     const turnState = context.turnState;
     const stamp = yield* makeEventStamp();
@@ -2285,7 +2296,6 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
     // #125 made the selection authoritative in completeTurn but not here, and
     // this path runs on every poll, so it put the model ceiling straight back.
-    context.lastKnownContextWindow = context.selectedContextWindow ?? usage.maxTokens;
     return normalizeClaudeContextUsageApiSnapshot(
       usage,
       totalProcessedTokens,
@@ -2318,6 +2328,25 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     };
   });
 
+  const drainTaskProgressTokenUsage = Effect.fn("drainTaskProgressTokenUsage")(function* (
+    context: ClaudeSessionContext,
+  ) {
+    while (!context.stopped && context.taskProgressTokenUsagePending) {
+      const request = context.taskProgressTokenUsagePending;
+      context.taskProgressTokenUsagePending = undefined;
+      const tokenUsageVersion = context.tokenUsageVersion;
+      const usage = yield* taskProgressTokenUsage(context, request.value);
+      if (
+        context.stopped ||
+        context.taskProgressTokenUsagePending !== undefined ||
+        context.tokenUsageVersion !== tokenUsageVersion
+      ) {
+        continue;
+      }
+      yield* emitThreadTokenUsage(context, usage, request.options);
+    }
+  });
+
   const scheduleTaskProgressTokenUsage = Effect.fn("scheduleTaskProgressTokenUsage")(function* (
     context: ClaudeSessionContext,
     value: unknown,
@@ -2326,15 +2355,30 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       readonly rawPayload: unknown;
     },
   ) {
-    const generation = ++context.taskProgressTokenUsageGeneration;
-    yield* taskProgressTokenUsage(context, value).pipe(
-      Effect.flatMap((usage) =>
-        context.stopped || generation !== context.taskProgressTokenUsageGeneration
-          ? Effect.void
-          : emitThreadTokenUsage(context, usage, options),
+    const taskTotal = claudeTotalProcessedTokens(value);
+    if (taskTotal === undefined) {
+      return;
+    }
+
+    context.lastKnownTotalProcessedTokens = Math.max(
+      taskTotal,
+      context.lastKnownTotalProcessedTokens ?? taskTotal,
+    );
+    context.taskProgressTokenUsagePending = { value, options };
+    if (context.taskProgressTokenUsageWorkerRunning) {
+      return;
+    }
+
+    context.taskProgressTokenUsageWorkerRunning = true;
+    yield* drainTaskProgressTokenUsage(context).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          context.taskProgressTokenUsageWorkerRunning = false;
+        }),
       ),
       // Context telemetry is optional and may take up to the timeout above.
-      // Detach it so task lifecycle events continue through the provider loop.
+      // One detached coalescing worker keeps task lifecycle events moving while
+      // bounding SDK usage queries to one per session.
       Effect.forkDetach({ startImmediately: true }),
       Effect.asVoid,
     );
@@ -4604,7 +4648,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         selectedContextWindow: initialContextWindow,
         lastKnownTokenUsage: undefined,
         lastKnownTotalProcessedTokens: undefined,
-        taskProgressTokenUsageGeneration: 0,
+        tokenUsageVersion: 0,
+        taskProgressTokenUsagePending: undefined,
+        taskProgressTokenUsageWorkerRunning: false,
         lastAssistantUuid: effectiveResumeSessionAt,
         lastThreadStartedId: undefined,
         needsContextRehydration,
