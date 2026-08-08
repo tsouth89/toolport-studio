@@ -3344,6 +3344,21 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       return;
     }
 
+    // Resumed Claude sessions may first replay the completion of a background
+    // task. The SDK marks that result explicitly. It belongs to the prior task,
+    // not to the foreground prompt Studio just opened; settling the current
+    // turn here clears its correlation and makes the real response appear as a
+    // synthetic second turn (observed in SBS-604).
+    const origin = (message as SDKMessage & { readonly origin?: { readonly kind?: string } })
+      .origin;
+    if (origin?.kind === "task-notification") {
+      yield* Effect.logDebug("ignored Claude background-task result for foreground lifecycle", {
+        threadId: context.session.threadId,
+        ...(context.turnState ? { turnId: context.turnState.turnId } : {}),
+      });
+      return;
+    }
+
     const status = turnStatusFromResult(message);
     const errorMessage = message.subtype === "success" ? undefined : message.errors[0];
 

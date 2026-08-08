@@ -33,7 +33,12 @@ import {
   type ProviderSessionContinuity,
 } from "../providerSwitch.ts";
 import { increment, orchestrationEventsProcessedTotal } from "../../observability/Metrics.ts";
-import { ProviderAdapterRequestError } from "../../provider/Errors.ts";
+import {
+  ProviderAdapterRequestError,
+  ProviderAdapterSessionClosedError,
+  ProviderAdapterSessionNotFoundError,
+  ProviderSessionNotFoundError,
+} from "../../provider/Errors.ts";
 import { TextGeneration } from "../../textGeneration/TextGeneration.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
@@ -51,7 +56,12 @@ import {
   OrchestrationEventStore,
 } from "../../persistence/Services/OrchestrationEventStore.ts";
 import { makeDurableSideEffectReactor } from "../DurableSideEffectReactor.ts";
+import { OrchestrationCommandInvariantError } from "../Errors.ts";
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
+const isProviderAdapterSessionClosedError = Schema.is(ProviderAdapterSessionClosedError);
+const isProviderAdapterSessionNotFoundError = Schema.is(ProviderAdapterSessionNotFoundError);
+const isProviderSessionNotFoundError = Schema.is(ProviderSessionNotFoundError);
+const isOrchestrationCommandInvariantError = Schema.is(OrchestrationCommandInvariantError);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
 
 type ProviderIntentEvent = Extract<
@@ -425,6 +435,36 @@ const make = Effect.gen(function* () {
       ),
     );
 
+  const appendStaleTurnReconciledActivity = (input: {
+    readonly threadId: ThreadId;
+    readonly turnId: TurnId | null;
+    readonly createdAt: string;
+  }) =>
+    Effect.all({
+      commandId: serverCommandId("provider-stale-turn-activity"),
+      eventId: serverEventId(),
+    }).pipe(
+      Effect.flatMap(({ commandId, eventId }) =>
+        orchestrationEngine.dispatch({
+          type: "thread.activity.append",
+          commandId,
+          threadId: input.threadId,
+          activity: {
+            id: eventId,
+            tone: "info",
+            kind: "provider.turn.interrupt.reconciled",
+            summary: "Cleared stale turn",
+            payload: {
+              detail: "The provider process was no longer bound to this thread.",
+            },
+            turnId: input.turnId,
+            createdAt: input.createdAt,
+          },
+          createdAt: input.createdAt,
+        }),
+      ),
+    );
+
   /**
    * Record a provider handoff in the transcript.
    *
@@ -480,6 +520,10 @@ const make = Effect.gen(function* () {
   const setThreadSession = (input: {
     readonly threadId: ThreadId;
     readonly session: OrchestrationSession;
+    readonly expectedSession?: {
+      readonly activeTurnId: TurnId | null;
+      readonly updatedAt: string;
+    };
     readonly createdAt: string;
   }) =>
     serverCommandId("provider-session-set").pipe(
@@ -489,8 +533,20 @@ const make = Effect.gen(function* () {
           commandId,
           threadId: input.threadId,
           session: input.session,
+          expectedSession: input.expectedSession,
           createdAt: input.createdAt,
         }),
+      ),
+    );
+
+  const setThreadSessionIfCurrent = (input: Parameters<typeof setThreadSession>[0]) =>
+    setThreadSession(input).pipe(
+      Effect.as(true),
+      Effect.catchIf(isOrchestrationCommandInvariantError, (error) =>
+        Effect.logDebug("skipped stale conditional session update", {
+          threadId: input.threadId,
+          detail: error.detail,
+        }).pipe(Effect.as(false)),
       ),
     );
 
@@ -1354,7 +1410,7 @@ const make = Effect.gen(function* () {
     if (session.status !== "running" && session.status !== "starting") {
       return;
     }
-    yield* setThreadSession({
+    yield* setThreadSessionIfCurrent({
       threadId: input.threadId,
       session: {
         threadId: session.threadId,
@@ -1368,8 +1424,58 @@ const make = Effect.gen(function* () {
         lastError: null,
         updatedAt: input.createdAt,
       },
+      expectedSession: {
+        activeTurnId: session.activeTurnId,
+        updatedAt: session.updatedAt,
+      },
       createdAt: input.createdAt,
     });
+  });
+
+  const reconcileMissingProviderSessionAfterInterrupt = Effect.fnUntraced(function* (input: {
+    readonly threadId: ThreadId;
+    readonly turnId: TurnId | null;
+    readonly expectedActiveTurnId: TurnId | null;
+    readonly createdAt: string;
+  }) {
+    const thread = yield* resolveThread(input.threadId);
+    const session = thread?.session;
+    if (!session || (session.status !== "running" && session.status !== "starting")) {
+      return;
+    }
+    // Control and turn execution intentionally use separate lanes. A new turn
+    // can therefore start while an older Stop is discovering that its runtime
+    // is gone; never let that older recovery overwrite newer projected work.
+    if (session.activeTurnId !== input.expectedActiveTurnId) {
+      return;
+    }
+    if (Date.parse(session.updatedAt) > Date.parse(input.createdAt)) {
+      return;
+    }
+    const applied = yield* setThreadSessionIfCurrent({
+      threadId: input.threadId,
+      session: {
+        threadId: session.threadId,
+        status: "interrupted",
+        providerName: session.providerName,
+        ...(session.providerInstanceId !== undefined
+          ? { providerInstanceId: session.providerInstanceId }
+          : {}),
+        runtimeMode: session.runtimeMode,
+        activeTurnId: null,
+        lastError: null,
+        updatedAt: input.createdAt,
+      },
+      expectedSession: {
+        activeTurnId: session.activeTurnId,
+        updatedAt: session.updatedAt,
+      },
+      createdAt: input.createdAt,
+    });
+    if (!applied) {
+      return;
+    }
+    yield* appendStaleTurnReconciledActivity(input);
   });
 
   const processTurnInterruptRequested = Effect.fn("processTurnInterruptRequested")(function* (
@@ -1392,6 +1498,7 @@ const make = Effect.gen(function* () {
         createdAt: event.payload.createdAt,
       });
     }
+    const expectedActiveTurnId = thread.session.activeTurnId;
 
     // Orchestration turn ids are not provider turn ids, so interrupt by session.
     // Provider rejections must not be swallowed by processDomainEventSafely —
@@ -1414,6 +1521,22 @@ const make = Effect.gen(function* () {
       Effect.catchCause((cause) => {
         if (Cause.hasInterruptsOnly(cause)) {
           return Effect.void;
+        }
+        const failure = cause.reasons.find(Cause.isFailReason)?.error;
+        if (
+          isProviderSessionNotFoundError(failure) ||
+          isProviderAdapterSessionNotFoundError(failure) ||
+          isProviderAdapterSessionClosedError(failure)
+        ) {
+          // There is nothing left to interrupt. This is positive evidence that
+          // the projected running turn is stale, so clear it rather than
+          // preserving an impossible lifecycle behind an error banner.
+          return reconcileMissingProviderSessionAfterInterrupt({
+            threadId: event.payload.threadId,
+            turnId,
+            expectedActiveTurnId,
+            createdAt: event.payload.createdAt,
+          });
         }
         const failureDetail = formatFailureDetail(cause);
         // Prefix so the thread banner is unambiguous: dispatch accepted, stop did not.

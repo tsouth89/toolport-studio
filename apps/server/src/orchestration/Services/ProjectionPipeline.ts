@@ -24,6 +24,13 @@ export interface OrchestrationProjectionPipelineShape {
   readonly bootstrap: Effect.Effect<void, ProjectionRepositoryError>;
 
   /**
+   * Reconcile provider turns that could not have survived the process restart.
+   * The orchestration engine invokes this after projection catch-up and before
+   * it starts accepting commands.
+   */
+  readonly reconcileStartupThreadSessions: Effect.Effect<void, ProjectionRepositoryError>;
+
+  /**
    * Project a single orchestration event into projection repositories.
    *
    * Projectors are executed sequentially to preserve deterministic ordering.

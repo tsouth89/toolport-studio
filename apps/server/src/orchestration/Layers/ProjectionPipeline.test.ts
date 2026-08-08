@@ -2753,6 +2753,132 @@ it.layer(makeProjectionPipelinePrefixedTestLayer("t3-pending-turn-terminal-test-
   },
 );
 
+it.layer(makeProjectionPipelinePrefixedTestLayer("t3-startup-turn-reconcile-test-"))(
+  "OrchestrationProjectionPipeline startup turn reconciliation",
+  (it) => {
+    it.effect("interrupts running turns and drops unaccepted starts after projector catch-up", () =>
+      Effect.gen(function* () {
+        const projectionPipeline = yield* OrchestrationProjectionPipeline;
+        const sql = yield* SqlClient.SqlClient;
+        const staleAt = "2026-01-01T00:00:00.000Z";
+
+        yield* sql`
+          INSERT INTO projection_thread_sessions (
+            thread_id, status, provider_name, runtime_mode, active_turn_id, last_error, updated_at
+          ) VALUES
+            ('thread-running-at-restart', 'running', 'claudeAgent', 'full-access', 'turn-running-at-restart', 'stale error', ${staleAt}),
+            ('thread-starting-at-restart', 'starting', 'codex', 'approval-required', NULL, NULL, ${staleAt}),
+            ('thread-ready-at-restart', 'ready', 'codex', 'full-access', NULL, NULL, ${staleAt})
+        `;
+        yield* sql`
+          INSERT INTO projection_turns (
+            thread_id, turn_id, pending_message_id, state, requested_at, started_at,
+            completed_at, checkpoint_files_json
+          ) VALUES
+            ('thread-running-at-restart', 'turn-running-at-restart', 'message-running', 'running', ${staleAt}, ${staleAt}, NULL, '[]'),
+            ('thread-starting-at-restart', NULL, 'message-pending', 'pending', ${staleAt}, NULL, NULL, '[]'),
+            ('thread-ready-at-restart', 'turn-ready', 'message-ready', 'completed', ${staleAt}, ${staleAt}, ${staleAt}, '[]')
+        `;
+
+        yield* projectionPipeline.bootstrap;
+        const beforeStartupRepair = yield* sql<{
+          readonly threadId: string;
+          readonly status: string;
+        }>`
+          SELECT thread_id AS "threadId", status
+          FROM projection_thread_sessions
+          WHERE thread_id IN ('thread-running-at-restart', 'thread-starting-at-restart')
+          ORDER BY thread_id ASC
+        `;
+        assert.deepEqual(beforeStartupRepair, [
+          { threadId: "thread-running-at-restart", status: "running" },
+          { threadId: "thread-starting-at-restart", status: "starting" },
+        ]);
+        yield* projectionPipeline.reconcileStartupThreadSessions;
+
+        const sessions = yield* sql<{
+          readonly threadId: string;
+          readonly status: string;
+          readonly activeTurnId: string | null;
+          readonly lastError: string | null;
+        }>`
+          SELECT
+            thread_id AS "threadId",
+            status,
+            active_turn_id AS "activeTurnId",
+            last_error AS "lastError"
+          FROM projection_thread_sessions
+          ORDER BY thread_id ASC
+        `;
+        assert.deepEqual(sessions, [
+          {
+            threadId: "thread-ready-at-restart",
+            status: "ready",
+            activeTurnId: null,
+            lastError: null,
+          },
+          {
+            threadId: "thread-running-at-restart",
+            status: "interrupted",
+            activeTurnId: null,
+            lastError: null,
+          },
+          {
+            threadId: "thread-starting-at-restart",
+            status: "interrupted",
+            activeTurnId: null,
+            lastError: null,
+          },
+        ]);
+
+        const turns = yield* sql<{
+          readonly threadId: string;
+          readonly state: string;
+          readonly completedAt: string | null;
+        }>`
+          SELECT
+            thread_id AS "threadId",
+            state,
+            completed_at AS "completedAt"
+          FROM projection_turns
+          ORDER BY thread_id ASC
+        `;
+        assert.equal(
+          turns.some((turn) => turn.threadId === "thread-starting-at-restart"),
+          false,
+        );
+        assert.equal(
+          turns.find((turn) => turn.threadId === "thread-running-at-restart")?.state,
+          "interrupted",
+        );
+        assert.ok(turns.find((turn) => turn.threadId === "thread-running-at-restart")?.completedAt);
+
+        const activities = yield* sql<{
+          readonly threadId: string;
+          readonly kind: string;
+          readonly summary: string;
+        }>`
+          SELECT thread_id AS "threadId", kind, summary
+          FROM projection_thread_activities
+          ORDER BY thread_id ASC
+        `;
+        assert.deepEqual(activities, [
+          {
+            threadId: "thread-running-at-restart",
+            kind: "provider.session.reconciled",
+            summary: "Turn interrupted by Studio restart",
+          },
+          {
+            threadId: "thread-starting-at-restart",
+            kind: "provider.session.reconciled",
+            summary: "Turn interrupted by Studio restart",
+          },
+        ]);
+      }),
+    );
+  },
+);
+
 it.effect("restores pending turn-start metadata across projection pipeline restart", () =>
   Effect.gen(function* () {
     const { dbPath } = yield* ServerConfig;

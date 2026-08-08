@@ -1274,6 +1274,17 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      if (
+        command.expectedSession !== undefined &&
+        (thread.session === null ||
+          thread.session.activeTurnId !== command.expectedSession.activeTurnId ||
+          thread.session.updatedAt !== command.expectedSession.updatedAt)
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Thread session changed before the conditional update was applied.",
+        });
+      }
       const sessionSetEvent: Omit<OrchestrationEvent, "sequence"> = {
         ...(yield* withEventBase({
           aggregateKind: "thread",
