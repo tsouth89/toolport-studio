@@ -137,6 +137,11 @@ async function hydrateClientSettings(): Promise<void> {
  * write defaults over every key the user had set in an earlier session. Waiting for hydration and
  * re-applying the change on top of what it loaded is what keeps the rest of the settings intact.
  *
+ * `apply` must be pure and idempotent. It is called once against the current snapshot for the
+ * optimistic UI update, then again after hydration so the change lands on top of whatever was
+ * loaded from disk. A side-effecting updater, or one that appends or increments, would therefore
+ * apply twice.
+ *
  * The snapshot is still updated synchronously first, so the UI reflects the change immediately
  * rather than waiting on disk.
  *
