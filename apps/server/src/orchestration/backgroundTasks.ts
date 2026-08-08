@@ -29,7 +29,7 @@ export const IN_FLIGHT_BACKGROUND_TASK_STATUSES = [
   "pending",
   "running",
   "paused",
-] as const satisfies ReadonlyArray<RuntimeTaskStatus>;
+] as const satisfies readonly [RuntimeTaskStatus, RuntimeTaskStatus, RuntimeTaskStatus];
 
 const IN_FLIGHT_STATUSES = new Set<RuntimeTaskStatus>(IN_FLIGHT_BACKGROUND_TASK_STATUSES);
 
