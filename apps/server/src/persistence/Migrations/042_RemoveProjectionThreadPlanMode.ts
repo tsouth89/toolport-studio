@@ -12,6 +12,6 @@ export default Effect.gen(function* () {
   yield* sql`
     UPDATE projection_threads
     SET interaction_mode = 'default'
-    WHERE interaction_mode <> 'default'
+    WHERE interaction_mode IS NULL OR interaction_mode <> 'default'
   `;
 });
