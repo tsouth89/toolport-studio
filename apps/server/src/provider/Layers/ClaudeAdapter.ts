@@ -1835,6 +1835,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     const nextSessionId = resumedNatively ? resumeSessionId! : freshSessionId!;
 
     context.query = nextQuery;
+    // The previous stream is closed, so it cannot deliver the interrupted
+    // result this guard was waiting to discard.
+    context.ignoreNextResultAfterInterrupt = false;
     context.resumeSessionId = nextSessionId;
     context.needsContextRehydration = !resumedNatively;
     context.injectsToolportMcp = injectsToolport;
