@@ -25,10 +25,12 @@ export type ColdStartMarkName = (typeof ColdStartMark)[keyof typeof ColdStartMar
 
 /** Record a named mark. Returns elapsed ms from process origin. */
 export function markColdStart(name: ColdStartMarkName): number {
-  const elapsedMs = Math.round(performance.now() - originMs);
-  if (!marks.has(name)) {
-    marks.set(name, elapsedMs);
+  const existing = marks.get(name);
+  if (existing !== undefined) {
+    return existing;
   }
+  const elapsedMs = Math.round(performance.now() - originMs);
+  marks.set(name, elapsedMs);
   return elapsedMs;
 }
 
