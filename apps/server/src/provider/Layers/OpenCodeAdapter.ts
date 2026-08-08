@@ -66,9 +66,14 @@ import {
 } from "../opencodeRuntime.ts";
 import {
   canSteerSendTurn,
+  claimTurnSettlement,
+  emptyTurnQueue,
+  markTurnStopping,
   OPEN_TOOL_FORCE_CLOSE_DETAIL,
   OPEN_TOOL_FORCE_CLOSE_SOURCE,
   shouldForceCloseRemainingOpenToolsOnSettle,
+  trackLiveTurn,
+  type TurnQueueState,
 } from "../turnEngine/index.ts";
 import * as Option from "effect/Option";
 
@@ -300,6 +305,10 @@ interface OpenCodeSessionContext {
   readonly agentRunsBySessionId: Map<string, OpenCodeAgentRun>;
   readonly turns: Array<OpenCodeTurnSnapshot>;
   activeTurnId: TurnId | undefined;
+  /** Turn for which OpenCode has emitted session.status=busy. */
+  providerBusyTurnId: TurnId | undefined;
+  /** Shared authoritative owner for terminal turn effects (SBS-428). */
+  turnLifecycle: TurnQueueState;
   activeAgent: string | undefined;
   activeVariant: string | undefined;
   /**
@@ -1231,7 +1240,22 @@ export function makeOpenCodeAdapter(
       if (yield* Ref.getAndSet(context.stopped, true)) {
         return;
       }
-      const turnId = context.activeTurnId;
+      const turnId =
+        context.activeTurnId ??
+        (context.turnLifecycle.activeTurnId
+          ? TurnId.make(context.turnLifecycle.activeTurnId)
+          : undefined);
+      const settlement = turnId
+        ? claimTurnSettlement(context.turnLifecycle, {
+            turnId: String(turnId),
+            reason: "error",
+            mode: "active-turn-fallback",
+          })
+        : undefined;
+      if (settlement?.claimed) {
+        context.turnLifecycle = settlement.state;
+      }
+      const claimedTurnId = settlement?.claimed ? TurnId.make(settlement.turnId) : turnId;
       sessions.delete(context.session.threadId);
       // Emit lifecycle events BEFORE tearing down the scope. Both call sites
       // run this inside a fiber forked via `Effect.forkIn(context.sessionScope)`;
@@ -1240,7 +1264,7 @@ export function makeOpenCodeAdapter(
       yield* emit({
         ...(yield* buildEventBase({
           threadId: context.session.threadId,
-          turnId,
+          turnId: claimedTurnId,
         })),
         type: "runtime.error",
         payload: {
@@ -1248,14 +1272,17 @@ export function makeOpenCodeAdapter(
           class: "transport_error",
         },
       }).pipe(Effect.ignore);
-      yield* forceCloseOpenCodeAgents(
-        context,
-        "OpenCode exited before the child session reported a terminal state.",
-      ).pipe(Effect.ignore);
+      if (settlement?.claimed) {
+        yield* forceCloseOpenTools(context, claimedTurnId).pipe(Effect.ignore);
+        yield* forceCloseOpenCodeAgents(
+          context,
+          "OpenCode exited before the child session reported a terminal state.",
+        ).pipe(Effect.ignore);
+      }
       yield* emit({
         ...(yield* buildEventBase({
           threadId: context.session.threadId,
-          turnId,
+          turnId: claimedTurnId,
         })),
         type: "session.exited",
         payload: {
@@ -1753,6 +1780,7 @@ export function makeOpenCodeAdapter(
 
         case "session.status": {
           if (event.properties.status.type === "busy") {
+            context.providerBusyTurnId = turnId;
             yield* updateProviderSession(context, {
               status: "running",
               activeTurnId: turnId,
@@ -1775,8 +1803,35 @@ export function makeOpenCodeAdapter(
             break;
           }
 
-          if (event.properties.status.type === "idle" && turnId) {
-            yield* forceCloseOpenTools(context, turnId);
+          const idleTurnId = context.providerBusyTurnId;
+          if (
+            event.properties.status.type === "idle" &&
+            !idleTurnId &&
+            context.turnLifecycle.activeTurnId === undefined
+          ) {
+            // An id-less busy/idle pair can arrive while restoring a provider
+            // session, before Studio has a turn owner to bind it to. Reconcile
+            // stale Working state only when no authoritative turn is live; a
+            // late idle must not clear a newly preparing turn.
+            context.activeTurnId = undefined;
+            context.providerBusyTurnId = undefined;
+            yield* updateProviderSession(context, { status: "ready" }, { clearActiveTurnId: true });
+            break;
+          }
+          if (event.properties.status.type === "idle" && idleTurnId) {
+            const emittedFailure = classifyProviderEmittedFailure(
+              collectOpenCodeAssistantText(context),
+            );
+            const settlement = claimTurnSettlement(context.turnLifecycle, {
+              turnId: String(idleTurnId),
+              reason: emittedFailure ? "error" : "completed",
+            });
+            if (!settlement.claimed) {
+              break;
+            }
+            context.turnLifecycle = settlement.state;
+            context.providerBusyTurnId = undefined;
+            yield* forceCloseOpenTools(context, idleTurnId);
             yield* forceCloseOpenCodeAgents(
               context,
               "Parent turn settled before OpenCode reported a terminal child-session state.",
@@ -1784,9 +1839,6 @@ export function makeOpenCodeAdapter(
             context.activeTurnId = undefined;
             // Pure provider failure dumps as assistant text + idle must not
             // settle as successful replies (Cursor/Grok/Claude parity).
-            const emittedFailure = classifyProviderEmittedFailure(
-              collectOpenCodeAssistantText(context),
-            );
             const failureMessage = emittedFailure
               ? formatProviderEmittedFailureMessage(emittedFailure, {
                   providerLabel: "OpenCode",
@@ -1796,14 +1848,14 @@ export function makeOpenCodeAdapter(
             if (emittedFailure && failureMessage) {
               yield* Effect.logWarning("OpenCode turn completed with provider-emitted failure", {
                 threadId: context.session.threadId,
-                turnId,
+                turnId: idleTurnId,
                 code: emittedFailure.code,
                 model: context.session.model,
               });
               yield* emit({
                 ...(yield* buildEventBase({
                   threadId: context.session.threadId,
-                  turnId,
+                  turnId: idleTurnId,
                   raw: event,
                 })),
                 type: "runtime.error",
@@ -1824,7 +1876,7 @@ export function makeOpenCodeAdapter(
             yield* emit({
               ...(yield* buildEventBase({
                 threadId: context.session.threadId,
-                turnId,
+                turnId: idleTurnId,
                 raw: event,
               })),
               type: "turn.completed",
@@ -1843,10 +1895,26 @@ export function makeOpenCodeAdapter(
 
         case "session.error": {
           const message = sessionErrorMessage(event.properties.error);
-          const activeTurnId = context.activeTurnId;
-          yield* forceCloseOpenTools(context, activeTurnId);
-          yield* forceCloseOpenCodeAgents(context, message);
+          const activeTurnId =
+            context.activeTurnId ??
+            (context.turnLifecycle.activeTurnId
+              ? TurnId.make(context.turnLifecycle.activeTurnId)
+              : undefined);
+          const settlement = activeTurnId
+            ? claimTurnSettlement(context.turnLifecycle, {
+                turnId: String(activeTurnId),
+                reason: "error",
+                mode: "active-turn-fallback",
+              })
+            : undefined;
+          const claimedTurnId = settlement?.claimed ? TurnId.make(settlement.turnId) : activeTurnId;
+          if (settlement?.claimed) {
+            context.turnLifecycle = settlement.state;
+            yield* forceCloseOpenTools(context, claimedTurnId);
+            yield* forceCloseOpenCodeAgents(context, message);
+          }
           context.activeTurnId = undefined;
+          context.providerBusyTurnId = undefined;
           yield* updateProviderSession(
             context,
             {
@@ -1855,11 +1923,11 @@ export function makeOpenCodeAdapter(
             },
             { clearActiveTurnId: true },
           );
-          if (activeTurnId) {
+          if (claimedTurnId && settlement?.claimed) {
             yield* emit({
               ...(yield* buildEventBase({
                 threadId: context.session.threadId,
-                turnId: activeTurnId,
+                turnId: claimedTurnId,
                 raw: event,
               })),
               type: "turn.completed",
@@ -2176,6 +2244,8 @@ export function makeOpenCodeAdapter(
           agentRunsBySessionId: new Map(),
           turns: [],
           activeTurnId: undefined,
+          providerBusyTurnId: undefined,
+          turnLifecycle: emptyTurnQueue(),
           activeAgent: undefined,
           activeVariant: undefined,
           injectsToolportMcp: started.injectsToolportMcp,
@@ -2341,6 +2411,7 @@ export function makeOpenCodeAdapter(
       );
 
       if (steeringTurnId === undefined) {
+        context.turnLifecycle = trackLiveTurn(context.turnLifecycle, String(turnId));
         yield* emit({
           ...(yield* buildEventBase({ threadId: input.threadId, turnId })),
           type: "turn.started",
@@ -2370,7 +2441,16 @@ export function makeOpenCodeAdapter(
           steeringTurnId !== undefined
             ? Effect.void
             : Effect.gen(function* () {
+                const settlement = claimTurnSettlement(context.turnLifecycle, {
+                  turnId: String(turnId),
+                  reason: "error",
+                });
+                if (!settlement.claimed) {
+                  return;
+                }
+                context.turnLifecycle = settlement.state;
                 context.activeTurnId = undefined;
+                context.providerBusyTurnId = undefined;
                 context.activeAgent = undefined;
                 context.activeVariant = undefined;
                 yield* updateProviderSession(
@@ -2410,47 +2490,74 @@ export function makeOpenCodeAdapter(
     const interruptTurn: OpenCodeAdapterShape["interruptTurn"] = Effect.fn("interruptTurn")(
       function* (threadId, turnId) {
         const context = yield* ensureSessionContext(sessions, threadId);
-        const settleTurnId = turnId ?? context.activeTurnId;
+        const settleTurnId =
+          turnId ??
+          context.activeTurnId ??
+          (context.turnLifecycle.activeTurnId
+            ? TurnId.make(context.turnLifecycle.activeTurnId)
+            : undefined);
+        context.turnLifecycle = markTurnStopping(context.turnLifecycle);
 
         // Drop pending interactive waits so Stop cannot leave the composer
         // stuck on an approval/question while the turn settles (Cursor/Grok).
         yield* settlePendingRequestsAsAborted(context, settleTurnId);
+
+        // Reserve terminal ownership before abort: OpenCode answers abort with
+        // session.status=idle, and that notification must not race Stop into a
+        // successful completion.
+        const settlement = settleTurnId
+          ? claimTurnSettlement(context.turnLifecycle, {
+              turnId: String(settleTurnId),
+              reason: "cancelled",
+              mode: "active-turn-fallback",
+            })
+          : undefined;
+        if (settlement?.claimed) {
+          context.turnLifecycle = settlement.state;
+        }
 
         // Never block Stop on a wedged OpenCode server.
         yield* runOpenCodeSdk("session.abort", () =>
           context.client.session.abort({ sessionID: context.openCodeSessionId }),
         ).pipe(Effect.timeout("2 seconds"), Effect.ignore);
 
+        if (!settlement?.claimed) {
+          // Recovery still owns session honesty when transport state says
+          // running but no lifecycle turn can be terminalized. There is no
+          // turn event to emit, but Stop must clear stale Working state.
+          context.activeTurnId = undefined;
+          context.providerBusyTurnId = undefined;
+          context.activeAgent = undefined;
+          context.activeVariant = undefined;
+          yield* updateProviderSession(context, { status: "ready" }, { clearActiveTurnId: true });
+          return;
+        }
+        const claimedTurnId = TurnId.make(settlement.turnId);
+
         // Close ghost tool rows before clearing the turn (Stop settle order).
-        yield* forceCloseOpenTools(context, settleTurnId);
+        yield* forceCloseOpenTools(context, claimedTurnId);
         yield* forceCloseOpenCodeAgents(context, "Parent turn was cancelled.");
 
         // Force session ready even if OpenCode never emits session.status idle.
         // Leaving activeTurnId set after Stop makes the next send look like a
         // steer into a dead turn and breaks long multi-turn sessions.
         context.activeTurnId = undefined;
+        context.providerBusyTurnId = undefined;
         context.activeAgent = undefined;
         context.activeVariant = undefined;
         yield* updateProviderSession(context, { status: "ready" }, { clearActiveTurnId: true });
 
-        if (settleTurnId) {
-          yield* emit({
-            ...(yield* buildEventBase({
-              threadId,
-              turnId: settleTurnId,
-            })),
-            type: "turn.completed",
-            payload: {
-              state: "cancelled",
-              stopReason: "cancelled",
-            },
-          });
-        } else if (
-          context.session.status === "running" ||
-          context.session.status === "connecting"
-        ) {
-          // Status already forced ready above; no terminal turn to emit.
-        }
+        yield* emit({
+          ...(yield* buildEventBase({
+            threadId,
+            turnId: claimedTurnId,
+          })),
+          type: "turn.completed",
+          payload: {
+            state: "cancelled",
+            stopReason: "cancelled",
+          },
+        });
       },
     );
 

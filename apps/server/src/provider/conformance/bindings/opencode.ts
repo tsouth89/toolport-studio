@@ -306,6 +306,13 @@ function makeRuntimeDouble(
           // asserted for OpenCode. The adapter passes it as
           // `parts: [{ type: "text", text }]`.
           promptAsync: async (input?: { readonly parts?: ReadonlyArray<unknown> }) => {
+            // The real server announces that this session is busy before it
+            // later reports idle. Terminal ownership uses that edge to bind
+            // id-less session.status events to the accepted turn.
+            events.push({
+              type: "session.status",
+              properties: { sessionID: SESSION_ID, status: { type: "busy" } },
+            });
             for (const part of input?.parts ?? []) {
               const text = (part as { text?: unknown } | undefined)?.text;
               if (typeof text === "string") {

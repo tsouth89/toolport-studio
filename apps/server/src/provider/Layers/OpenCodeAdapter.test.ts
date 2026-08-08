@@ -943,6 +943,107 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive more", (it) => {
     }),
   );
 
+  it.effect("emits one terminal event when Stop is requested twice", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-opencode-double-stop");
+      const completed: Array<ProviderRuntimeEvent> = [];
+      const eventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.threadId === threadId && event.type === "turn.completed"),
+        Stream.runForEach((event) => Effect.sync(() => completed.push(event))),
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId,
+        input: "keep working",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("opencode"),
+          model: "openai/gpt-5",
+        },
+      });
+      yield* adapter.interruptTurn(threadId);
+      yield* adapter.interruptTurn(threadId);
+      yield* Effect.sleep("50 millis");
+
+      NodeAssert.equal(completed.length, 1);
+      NodeAssert.equal(completed[0]?.type, "turn.completed");
+      if (completed[0]?.type === "turn.completed") {
+        NodeAssert.equal(completed[0].payload.state, "cancelled");
+      }
+      yield* Fiber.interrupt(eventsFiber).pipe(Effect.ignore);
+      yield* adapter.stopSession(threadId);
+    }).pipe(TestClock.withLive),
+  );
+
+  it.effect("forces a running session ready when Stop has no claimable turn", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-opencode-stop-without-turn");
+      runtimeMock.state.subscribedEvents = [
+        {
+          type: "session.status",
+          properties: {
+            sessionID: "http://127.0.0.1:9999/session",
+            status: { type: "busy" },
+          },
+        },
+      ];
+
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      yield* Effect.sleep("20 millis");
+      const before = (yield* adapter.listSessions()).find((entry) => entry.threadId === threadId);
+      NodeAssert.equal(before?.status, "running");
+      NodeAssert.equal(before?.activeTurnId, undefined);
+
+      yield* adapter.interruptTurn(threadId);
+
+      const after = (yield* adapter.listSessions()).find((entry) => entry.threadId === threadId);
+      NodeAssert.equal(after?.status, "ready");
+      NodeAssert.equal(after?.activeTurnId, undefined);
+      yield* adapter.stopSession(threadId);
+    }).pipe(TestClock.withLive),
+  );
+
+  it.effect("reconciles an id-less idle when no lifecycle turn is active", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-opencode-idless-idle");
+      const sessionID = "http://127.0.0.1:9999/session";
+      runtimeMock.state.subscribedEvents = [
+        {
+          type: "session.status",
+          properties: { sessionID, status: { type: "busy" } },
+        },
+        {
+          type: "session.status",
+          properties: { sessionID, status: { type: "idle" } },
+        },
+      ];
+
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      yield* Effect.sleep("20 millis");
+
+      const session = (yield* adapter.listSessions()).find((entry) => entry.threadId === threadId);
+      NodeAssert.equal(session?.status, "ready");
+      NodeAssert.equal(session?.activeTurnId, undefined);
+      yield* adapter.stopSession(threadId);
+    }).pipe(TestClock.withLive),
+  );
+
   it.effect("passes agent and variant options for the adapter's bound custom instance id", () => {
     const instanceId = ProviderInstanceId.make("opencode_zen");
     const adapterLayer = Layer.effect(
