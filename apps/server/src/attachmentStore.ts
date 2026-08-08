@@ -63,6 +63,14 @@ export function attachmentRelativePath(attachment: ChatAttachment): string {
       });
       return `${attachment.id}${extension}`;
     }
+    // Deliberately not the uploaded file's own extension. `resolveAttachmentPathById`
+    // finds a stored file by trying a fixed allowlist of extensions, so honouring
+    // arbitrary ones would either break that lookup or make the allowlist
+    // unbounded — and an attacker-chosen extension is exactly the kind of thing
+    // you do not want reaching a filesystem path. The agent is told the real
+    // filename in the prompt, which is what it actually needs.
+    case "file":
+      return `${attachment.id}.bin`;
   }
 }
 

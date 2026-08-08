@@ -1595,6 +1595,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 mimeType: image.mimeType,
                 sizeBytes: image.sizeBytes,
                 dataUrl,
+                // Without this a file attachment rehydrates as an image after a
+                // reload and gets sent as one.
+                type: image.type,
               });
             } catch {
               const existingPersisted = existingPersistedById.get(image.id);
@@ -2031,7 +2034,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     // swaps image input for placeholder text and answers anyway, so silently
     // forwarding an attachment produces a confident answer about an image the
     // model never received.
-    if (!providerReadsImages) {
+    //
+    // Scoped to images. A non-image attachment is handed over as a path the
+    // agent reads itself, which does not need vision, so a text-only provider
+    // must still accept it.
+    const hasImages = files.some((file) => file.type.startsWith("image/"));
+    if (hasImages && !providerReadsImages) {
       // On a router the limit belongs to the chosen model rather than the
       // instance, and blaming "OpenRouter" would send the user looking for a
       // different provider when switching model is the actual fix.
@@ -2052,24 +2060,26 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     let nextImageCount = composerImagesRef.current.length;
     let error: string | null = null;
     for (const file of files) {
-      if (!file.type.startsWith("image/")) {
-        error = `Unsupported file type for '${file.name}'. Please attach image files only.`;
-        continue;
-      }
+      // Anything that is not an image rides along as a file the agent opens by
+      // path, so there is no supported-type list to fail against any more.
+      const isImage = file.type.startsWith("image/");
       if (file.size > PROVIDER_SEND_TURN_MAX_IMAGE_BYTES) {
         error = `'${file.name}' exceeds the ${IMAGE_SIZE_LIMIT_LABEL} attachment limit.`;
         continue;
       }
       if (nextImageCount >= PROVIDER_SEND_TURN_MAX_ATTACHMENTS) {
-        error = `You can attach up to ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS} images per message.`;
+        error = `You can attach up to ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS} attachments per message.`;
         break;
       }
       const previewUrl = URL.createObjectURL(file);
       nextImages.push({
-        type: "image",
+        type: isImage ? "image" : "file",
         id: randomUUID(),
-        name: file.name || "image",
-        mimeType: file.type,
+        name: file.name || (isImage ? "image" : "file"),
+        // A browser can report an empty type for an unrecognised extension
+        // (.eml among them). The contract requires a non-empty string and
+        // nothing dispatches on the value, so name it rather than reject it.
+        mimeType: file.type || "application/octet-stream",
         sizeBytes: file.size,
         previewUrl,
         file,
@@ -2680,7 +2690,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                         key={image.id}
                         className="relative h-16 w-16 overflow-hidden rounded-lg border border-border/80 bg-background"
                       >
-                        {image.previewUrl ? (
+                        {/* A file has an object URL too, but nothing to show
+                            from it — rendering it as an image would give a
+                            broken thumbnail. Fall through to the name chip. */}
+                        {image.type === "image" && image.previewUrl ? (
                           <button
                             type="button"
                             className="h-full w-full cursor-zoom-in"

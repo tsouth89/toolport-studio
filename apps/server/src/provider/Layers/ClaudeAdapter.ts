@@ -1733,7 +1733,14 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       includePartialMessages: true,
       canUseTool: context.canUseTool,
       env: claudeEnvironment,
-      ...(context.session.cwd ? { additionalDirectories: [context.session.cwd] } : {}),
+      additionalDirectories: [
+        ...(context.session.cwd ? [context.session.cwd] : []),
+        // File attachments are handed to the agent as paths under this
+        // directory, which sits outside the workspace. Without the grant the
+        // Read either prompts for permission or fails, and the attachment the
+        // user just dropped reads as unavailable.
+        serverConfig.attachmentsDir,
+      ],
       ...(mcpBindings.length > 0 ? { mcpServers: claudeMcpServers(mcpBindings) } : {}),
     };
 
@@ -4351,7 +4358,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         includePartialMessages: true,
         canUseTool,
         env: claudeEnvironment,
-        ...(input.cwd ? { additionalDirectories: [input.cwd] } : {}),
+        // See the rebind query below: the attachments directory is always
+        // granted so a dropped file is readable by path.
+        additionalDirectories: [...(input.cwd ? [input.cwd] : []), serverConfig.attachmentsDir],
         ...(Object.keys(extraArgs).length > 0 ? { extraArgs } : {}),
         ...(mcpBindings.length > 0 ? { mcpServers: claudeMcpServers(mcpBindings) } : {}),
       };

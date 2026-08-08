@@ -33,7 +33,12 @@ import { createModelSelection, normalizeModelSlug } from "@toolport-studio/share
 import { useMemo } from "react";
 import { getLocalStorageItem } from "./hooks/useLocalStorage";
 import { resolveAppModelSelection, resolveAppModelSelectionForInstance } from "./modelSelection";
-import { DEFAULT_INTERACTION_MODE, DEFAULT_RUNTIME_MODE, type ChatImageAttachment } from "./types";
+import {
+  DEFAULT_INTERACTION_MODE,
+  DEFAULT_RUNTIME_MODE,
+  type ChatFileAttachment,
+  type ChatImageAttachment,
+} from "./types";
 import {
   type TerminalContextDraft,
   ensureInlineTerminalContextPlaceholders,
@@ -84,10 +89,24 @@ export const PersistedComposerImageAttachment = Schema.Struct({
   mimeType: Schema.String,
   sizeBytes: Schema.Number,
   dataUrl: Schema.String,
+  // Optional so drafts persisted before file attachments existed still decode.
+  // Those are all images, which is what the fallback assumes.
+  type: Schema.optional(Schema.Literals(["image", "file"])),
 });
 export type PersistedComposerImageAttachment = typeof PersistedComposerImageAttachment.Type;
 
-export interface ComposerImageAttachment extends Omit<ChatImageAttachment, "previewUrl"> {
+/**
+ * A staged composer attachment. Still named for images because that is all it
+ * carried originally; it now also holds `type: "file"` entries, which reach the
+ * agent as a readable path rather than as inlined content.
+ *
+ * `previewUrl` is an object URL for both kinds. Only images render from it —
+ * callers branch on `type`, not on whether a preview exists.
+ */
+export interface ComposerImageAttachment extends Omit<
+  ChatImageAttachment | ChatFileAttachment,
+  "previewUrl"
+> {
   previewUrl: string;
   file: File;
 }
@@ -2100,7 +2119,9 @@ function hydrateImagesFromPersisted(
 
     return [
       {
-        type: "image" as const,
+        // Drafts written before file attachments existed carry no `type`, and
+        // every one of those is an image.
+        type: attachment.type ?? ("image" as const),
         id: attachment.id,
         name: attachment.name,
         mimeType: attachment.mimeType,
