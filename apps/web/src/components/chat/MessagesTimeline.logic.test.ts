@@ -11,7 +11,7 @@ import {
   sharedToolLabelForWorkEntries,
   shouldOfferLastUserMessageRetry,
 } from "./MessagesTimeline.logic";
-import { type TimelineEntry } from "../../session-logic";
+import { type TimelineEntry, type WorkLogEntry } from "../../session-logic";
 
 describe("computeMessageDurationStart", () => {
   it("returns message createdAt when there is no preceding user message", () => {
@@ -267,6 +267,68 @@ describe("resolveAssistantMessageCopyState", () => {
 });
 
 describe("deriveMessagesTimelineRows", () => {
+  it("hides routine activity in concise mode but keeps failures and handoffs", () => {
+    const workEntry = (id: string, overrides: Partial<WorkLogEntry> = {}) => ({
+      id,
+      kind: "work" as const,
+      createdAt: `2026-01-01T00:00:0${id.length}Z`,
+      entry: {
+        id,
+        createdAt: `2026-01-01T00:00:0${id.length}Z`,
+        turnId: null,
+        label: id,
+        tone: "tool" as const,
+        sourceActivityKind: "tool.completed",
+        toolLifecycleStatus: "completed" as const,
+        ...overrides,
+      },
+    });
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        workEntry("routine"),
+        workEntry("failed", { toolLifecycleStatus: "failed" }),
+        workEntry("handoff", { sourceActivityKind: "provider.handoff", tone: "info" }),
+      ],
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+      verboseActivity: false,
+    });
+
+    expect(rows.some((row) => row.kind === "work" && row.id === "routine")).toBe(false);
+    expect(rows.some((row) => row.kind === "work" && row.id === "failed")).toBe(true);
+    expect(rows.some((row) => row.kind === "provider-handoff")).toBe(true);
+  });
+
+  it("restores routine activity when verbose mode is enabled", () => {
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "routine",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:01Z",
+          entry: {
+            id: "routine",
+            createdAt: "2026-01-01T00:00:01Z",
+            turnId: null,
+            label: "Ran PowerShell inline",
+            tone: "tool",
+            sourceActivityKind: "tool.completed",
+            toolLifecycleStatus: "completed",
+          },
+        },
+      ],
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+      verboseActivity: true,
+    });
+
+    expect(rows.some((row) => row.kind === "work" && row.id === "routine")).toBe(true);
+  });
+
   it("only enables assistant copy for the terminal assistant message in a turn", () => {
     const rows = deriveMessagesTimelineRows({
       timelineEntries: [

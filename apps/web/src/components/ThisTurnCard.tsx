@@ -310,7 +310,7 @@ export function ThisTurnCard({
               <CheckCircle2 className="size-3.5 shrink-0 text-success" aria-hidden />
             )}
             <span className="min-w-0 flex-1 truncate tabular-nums">{title}</span>
-            <ChevronUp className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+            <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
           </button>
           {onOpenAgents && agentRuns.length > 0 ? (
             <button
@@ -382,7 +382,7 @@ export function ThisTurnCard({
           <span className="min-w-0 flex-1 truncate text-[12px] font-semibold tabular-nums tracking-tight">
             {title}
           </span>
-          <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+          <ChevronUp className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
         </button>
         <button
           type="button"
