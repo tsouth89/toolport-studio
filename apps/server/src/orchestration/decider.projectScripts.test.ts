@@ -380,7 +380,7 @@ it.layer(NodeServices.layer)("decider project scripts", (it) => {
     }),
   );
 
-  it.effect("emits thread.interaction-mode-set from thread.interaction-mode.set", () =>
+  it.effect("canonicalizes legacy plan-mode commands to default", () =>
     Effect.gen(function* () {
       const now = "2026-01-01T00:00:00.000Z";
       const initial = createEmptyReadModel(now);
@@ -452,7 +452,7 @@ it.layer(NodeServices.layer)("decider project scripts", (it) => {
         type: "thread.interaction-mode-set",
         payload: {
           threadId: ThreadId.make("thread-1"),
-          interactionMode: "plan",
+          interactionMode: "default",
         },
       });
     }),

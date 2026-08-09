@@ -33,6 +33,17 @@ describe("ClientSettings word wrap", () => {
   });
 });
 
+describe("ClientSettings activity detail", () => {
+  it("defaults routine activity to concise presentation", () => {
+    expect(decodeClientSettings({}).verboseActivity).toBe(false);
+  });
+
+  it("accepts verbose activity in stored settings and patches", () => {
+    expect(decodeClientSettings({ verboseActivity: true }).verboseActivity).toBe(true);
+    expect(decodeClientSettingsPatch({ verboseActivity: true }).verboseActivity).toBe(true);
+  });
+});
+
 describe("ClientSettings glass opacity", () => {
   it("defaults to a readable translucent surface", () => {
     expect(decodeClientSettings({}).glassOpacity).toBe(80);

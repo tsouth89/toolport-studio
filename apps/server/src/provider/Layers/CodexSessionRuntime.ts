@@ -8,8 +8,8 @@ import {
   type ProviderInstanceId,
   type ProviderApprovalDecision,
   type ProviderEvent,
-  type ProviderInteractionMode,
   type ProviderRequestKind,
+  type RequestResolutionSource,
   type ProviderSession,
   type ProviderTurnStartResult,
   type ProviderUserInputAnswers,
@@ -47,7 +47,7 @@ import { codexSessionAppServerArgs } from "./codexLaunchArgs.ts";
 import { expandHomePath } from "../../pathExpansion.ts";
 import { buildCodexDeveloperInstructions } from "../CodexDeveloperInstructions.ts";
 import { buildConversationRehydrationPrefix } from "../conversationRehydration.ts";
-import { canSteerSendTurn } from "../turnEngine/index.ts";
+import { canSteerSendTurn, PROVIDER_TURN_CAPABILITIES } from "../turnEngine/index.ts";
 const decodeV2TurnStartResponse = Schema.decodeUnknownEffect(EffectCodexSchema.V2TurnStartResponse);
 
 const PROVIDER = ProviderDriverKind.make("codex");
@@ -161,6 +161,7 @@ export interface CodexSessionRuntimeOptions {
   readonly environment?: NodeJS.ProcessEnv;
   readonly cwd: string;
   readonly runtimeMode: RuntimeMode;
+  readonly attachmentDirectory?: string;
   readonly model?: string;
   readonly serviceTier?: CodexServiceTier | undefined;
   readonly resumeCursor?: CodexResumeCursor;
@@ -196,7 +197,6 @@ export interface CodexSessionRuntimeSendTurnInput {
   readonly model?: string;
   readonly serviceTier?: CodexServiceTier | undefined;
   readonly effort?: EffectCodexSchema.V2TurnStartParams__ReasoningEffort | undefined;
-  readonly interactionMode?: ProviderInteractionMode;
   /** Studio projected history for cold-start rehydration when thread resume missed. */
   readonly conversationHistory?: ReadonlyArray<{
     readonly role: "user" | "assistant";
@@ -296,6 +296,7 @@ interface PendingApproval {
   readonly turnId: TurnId | undefined;
   readonly itemId: ProviderItemId | undefined;
   readonly decision: Deferred.Deferred<ProviderApprovalDecision>;
+  resolvedBy?: RequestResolutionSource;
 }
 
 interface ApprovalCorrelation {
@@ -310,6 +311,7 @@ interface PendingUserInput {
   readonly turnId: TurnId | undefined;
   readonly itemId: ProviderItemId | undefined;
   readonly answers: Deferred.Deferred<ProviderUserInputAnswers>;
+  resolvedBy?: RequestResolutionSource;
 }
 
 type CodexServerNotification = {
@@ -401,6 +403,7 @@ function buildThreadStartParams(input: {
 
 function runtimeModeToTurnSandboxPolicy(
   input: RuntimeMode,
+  attachmentDirectory?: string,
 ): EffectCodexSchema.V2TurnStartParams__SandboxPolicy {
   switch (input) {
     case "approval-required":
@@ -411,6 +414,7 @@ function runtimeModeToTurnSandboxPolicy(
     case "auto":
       return {
         type: "workspaceWrite",
+        ...(attachmentDirectory ? { writableRoots: [attachmentDirectory] } : {}),
       };
     case "full-access":
     default:
@@ -421,21 +425,17 @@ function runtimeModeToTurnSandboxPolicy(
 }
 
 function buildCodexCollaborationMode(input: {
-  readonly interactionMode?: ProviderInteractionMode;
   readonly model?: string;
   readonly effort?: EffectCodexSchema.V2TurnStartParams__ReasoningEffort;
-}): EffectCodexSchema.V2TurnStartParams__CollaborationMode | undefined {
-  if (input.interactionMode === undefined) {
-    return undefined;
-  }
+}): EffectCodexSchema.V2TurnStartParams__CollaborationMode {
   const model = normalizeCodexModelSlug(input.model) ?? DEFAULT_MODEL;
   const reasoningEffort = input.effort ?? "medium";
   return {
-    mode: input.interactionMode,
+    mode: "default",
     settings: {
       model,
       reasoning_effort: reasoningEffort,
-      developer_instructions: buildCodexDeveloperInstructions(input.interactionMode, {
+      developer_instructions: buildCodexDeveloperInstructions({
         model,
         reasoningEffort,
       }),
@@ -481,6 +481,7 @@ export function canSteerCodexSendTurn(input: {
   }
   if (
     !canSteerSendTurn({
+      sendWhileRunning: PROVIDER_TURN_CAPABILITIES.codex.sendWhileRunning,
       promptsInFlight: input.status === "running" ? 1 : 0,
       hasActiveTurnId: input.activeTurnId !== undefined,
       activeTurnInterrupted: false,
@@ -543,7 +544,7 @@ export function buildTurnStartParams(input: {
   readonly model?: string;
   readonly serviceTier?: CodexServiceTier;
   readonly effort?: EffectCodexSchema.V2TurnStartParams__ReasoningEffort;
-  readonly interactionMode?: ProviderInteractionMode;
+  readonly attachmentDirectory?: string;
 }): Effect.Effect<
   CodexTurnStartParamsWithCollaborationMode,
   CodexErrors.CodexAppServerProtocolParseError
@@ -555,7 +556,6 @@ export function buildTurnStartParams(input: {
 
   const config = runtimeModeToThreadConfig(input.runtimeMode);
   const collaborationMode = buildCodexCollaborationMode({
-    ...(input.interactionMode ? { interactionMode: input.interactionMode } : {}),
     ...(input.model ? { model: input.model } : {}),
     ...(input.effort ? { effort: input.effort } : {}),
   });
@@ -565,11 +565,11 @@ export function buildTurnStartParams(input: {
     input: turnInput,
     approvalPolicy: config.approvalPolicy,
     approvalsReviewer: config.approvalsReviewer,
-    sandboxPolicy: runtimeModeToTurnSandboxPolicy(input.runtimeMode),
+    sandboxPolicy: runtimeModeToTurnSandboxPolicy(input.runtimeMode, input.attachmentDirectory),
     ...(input.model ? { model: input.model } : {}),
     ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
     ...(input.effort ? { effort: input.effort } : {}),
-    ...(collaborationMode ? { collaborationMode } : {}),
+    collaborationMode,
   }).pipe(
     Effect.mapError((cause) =>
       CodexErrors.CodexAppServerProtocolParseError.fromSchemaError(
@@ -1031,7 +1031,26 @@ export const makeCodexSessionRuntime = (
           Effect.forEach(
             Array.from(pendingApprovals.values()),
             (pendingApproval) =>
-              Deferred.succeed(pendingApproval.decision, decision).pipe(Effect.ignore),
+              Effect.gen(function* () {
+                if (pendingApproval.resolvedBy !== undefined) return;
+                pendingApproval.resolvedBy = "aborted";
+                yield* Deferred.succeed(pendingApproval.decision, decision).pipe(Effect.ignore);
+                yield* emitEvent({
+                  kind: "notification",
+                  threadId: options.threadId,
+                  method: "item/requestApproval/decision",
+                  requestId: pendingApproval.requestId,
+                  requestKind: pendingApproval.requestKind,
+                  ...(pendingApproval.turnId ? { turnId: pendingApproval.turnId } : {}),
+                  ...(pendingApproval.itemId ? { itemId: pendingApproval.itemId } : {}),
+                  payload: {
+                    requestId: pendingApproval.requestId,
+                    requestKind: pendingApproval.requestKind,
+                    decision,
+                    resolvedBy: "aborted" as const,
+                  },
+                }).pipe(Effect.ignore({ log: true }));
+              }),
             { discard: true },
           ),
         ),
@@ -1043,14 +1062,27 @@ export const makeCodexSessionRuntime = (
           Effect.forEach(
             Array.from(pendingUserInputs.values()),
             (pendingUserInput) =>
-              Deferred.succeed(pendingUserInput.answers, answers).pipe(Effect.ignore),
+              Effect.gen(function* () {
+                if (pendingUserInput.resolvedBy !== undefined) return;
+                pendingUserInput.resolvedBy = "aborted";
+                yield* Deferred.succeed(pendingUserInput.answers, answers).pipe(Effect.ignore);
+                yield* emitEvent({
+                  kind: "notification",
+                  threadId: options.threadId,
+                  method: "item/tool/requestUserInput/answered",
+                  requestId: pendingUserInput.requestId,
+                  ...(pendingUserInput.turnId ? { turnId: pendingUserInput.turnId } : {}),
+                  ...(pendingUserInput.itemId ? { itemId: pendingUserInput.itemId } : {}),
+                  payload: { answers, resolvedBy: "aborted" as const },
+                }).pipe(Effect.ignore({ log: true }));
+              }),
             { discard: true },
           ),
         ),
       );
 
     const awaitApprovalDecision = (
-      decision: Deferred.Deferred<ProviderApprovalDecision>,
+      pending: PendingApproval,
       meta: {
         readonly requestId: ApprovalRequestId;
         readonly requestKind: ProviderRequestKind;
@@ -1060,7 +1092,7 @@ export const makeCodexSessionRuntime = (
     ) =>
       Effect.gen(function* () {
         const raceResult = yield* Effect.raceFirst(
-          Deferred.await(decision).pipe(
+          Deferred.await(pending.decision).pipe(
             Effect.map((value) => ({ _tag: "decided" as const, value })),
           ),
           Effect.sleep(`${pendingApprovalTimeoutMs} millis`).pipe(
@@ -1068,7 +1100,11 @@ export const makeCodexSessionRuntime = (
           ),
         );
         if (raceResult._tag === "timeout") {
-          yield* Deferred.succeed(decision, "cancel").pipe(Effect.ignore);
+          if (pending.resolvedBy === "aborted") {
+            return yield* Deferred.await(pending.decision);
+          }
+          pending.resolvedBy = "timeout";
+          yield* Deferred.succeed(pending.decision, "cancel").pipe(Effect.ignore);
           yield* Effect.logWarning("Codex approval request timed out; auto-cancelled", {
             threadId: options.threadId,
             requestId: meta.requestId,
@@ -1093,6 +1129,10 @@ export const makeCodexSessionRuntime = (
               requestId: meta.requestId,
               requestKind: meta.requestKind,
               decision: "cancel" as const,
+              // Studio-side marker, not Codex wire protocol. The adapter reads
+              // it off the raw payload so the resolved event can say the
+              // watchdog cancelled rather than the user.
+              resolvedBy: "timeout" as const,
             },
           });
           return "cancel" as const satisfies ProviderApprovalDecision;
@@ -1101,7 +1141,7 @@ export const makeCodexSessionRuntime = (
       });
 
     const awaitUserInputAnswers = (
-      answers: Deferred.Deferred<ProviderUserInputAnswers>,
+      pending: PendingUserInput,
       meta: {
         readonly requestId: ApprovalRequestId;
         readonly turnId?: TurnId;
@@ -1110,7 +1150,7 @@ export const makeCodexSessionRuntime = (
     ) =>
       Effect.gen(function* () {
         const raceResult = yield* Effect.raceFirst(
-          Deferred.await(answers).pipe(
+          Deferred.await(pending.answers).pipe(
             Effect.map((value) => ({ _tag: "answered" as const, value })),
           ),
           Effect.sleep(`${pendingUserInputTimeoutMs} millis`).pipe(
@@ -1118,7 +1158,11 @@ export const makeCodexSessionRuntime = (
           ),
         );
         if (raceResult._tag === "timeout") {
-          yield* Deferred.succeed(answers, {}).pipe(Effect.ignore);
+          if (pending.resolvedBy === "aborted") {
+            return yield* Deferred.await(pending.answers);
+          }
+          pending.resolvedBy = "timeout";
+          yield* Deferred.succeed(pending.answers, {}).pipe(Effect.ignore);
           yield* Effect.logWarning("Codex user-input request timed out; auto-cancelled", {
             threadId: options.threadId,
             requestId: meta.requestId,
@@ -1140,6 +1184,10 @@ export const makeCodexSessionRuntime = (
             ...(meta.itemId ? { itemId: meta.itemId } : {}),
             payload: {
               answers: {},
+              // Studio-side marker, not Codex wire protocol. Without it this
+              // synthetic answer is indistinguishable from the user submitting
+              // an empty form.
+              resolvedBy: "timeout" as const,
             },
           });
           return {} as ProviderUserInputAnswers;
@@ -1318,17 +1366,18 @@ export const makeCodexSessionRuntime = (
         const turnId = TurnId.make(payload.turnId);
         const itemId = ProviderItemId.make(payload.itemId);
         const decision = yield* Deferred.make<ProviderApprovalDecision>();
+        const pending = {
+          requestId,
+          jsonRpcId: payload.approvalId ?? payload.itemId,
+          requestKind: "command" as const,
+          turnId,
+          itemId,
+          decision,
+        };
 
         yield* Ref.update(pendingApprovalsRef, (current) => {
           const next = new Map(current);
-          next.set(requestId, {
-            requestId,
-            jsonRpcId: payload.approvalId ?? payload.itemId,
-            requestKind: "command",
-            turnId,
-            itemId,
-            decision,
-          });
+          next.set(requestId, pending);
           return next;
         });
         yield* Ref.update(approvalCorrelationsRef, (current) => {
@@ -1353,7 +1402,7 @@ export const makeCodexSessionRuntime = (
           payload,
         });
 
-        const resolved = yield* awaitApprovalDecision(decision, {
+        const resolved = yield* awaitApprovalDecision(pending, {
           requestId,
           requestKind: "command",
           turnId,
@@ -1381,17 +1430,18 @@ export const makeCodexSessionRuntime = (
         const turnId = TurnId.make(payload.turnId);
         const itemId = ProviderItemId.make(payload.itemId);
         const decision = yield* Deferred.make<ProviderApprovalDecision>();
+        const pending = {
+          requestId,
+          jsonRpcId: payload.itemId,
+          requestKind: "file-change" as const,
+          turnId,
+          itemId,
+          decision,
+        };
 
         yield* Ref.update(pendingApprovalsRef, (current) => {
           const next = new Map(current);
-          next.set(requestId, {
-            requestId,
-            jsonRpcId: payload.itemId,
-            requestKind: "file-change",
-            turnId,
-            itemId,
-            decision,
-          });
+          next.set(requestId, pending);
           return next;
         });
         yield* Ref.update(approvalCorrelationsRef, (current) => {
@@ -1416,7 +1466,7 @@ export const makeCodexSessionRuntime = (
           payload,
         });
 
-        const resolved = yield* awaitApprovalDecision(decision, {
+        const resolved = yield* awaitApprovalDecision(pending, {
           requestId,
           requestKind: "file-change",
           turnId,
@@ -1442,15 +1492,11 @@ export const makeCodexSessionRuntime = (
         const turnId = TurnId.make(payload.turnId);
         const itemId = ProviderItemId.make(payload.itemId);
         const answers = yield* Deferred.make<ProviderUserInputAnswers>();
+        const pending = { requestId, turnId, itemId, answers };
 
         yield* Ref.update(pendingUserInputsRef, (current) => {
           const next = new Map(current);
-          next.set(requestId, {
-            requestId,
-            turnId,
-            itemId,
-            answers,
-          });
+          next.set(requestId, pending);
           return next;
         });
 
@@ -1464,7 +1510,7 @@ export const makeCodexSessionRuntime = (
           payload,
         });
 
-        const resolvedAnswers = yield* awaitUserInputAnswers(answers, {
+        const resolvedAnswers = yield* awaitUserInputAnswers(pending, {
           requestId,
           turnId,
           itemId,
@@ -1826,7 +1872,9 @@ export const makeCodexSessionRuntime = (
             ...(normalizedModel ? { model: normalizedModel } : {}),
             ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
             ...(input.effort ? { effort: input.effort } : {}),
-            ...(input.interactionMode ? { interactionMode: input.interactionMode } : {}),
+            ...(options.attachmentDirectory
+              ? { attachmentDirectory: options.attachmentDirectory }
+              : {}),
           });
           const rawResponse = yield* client.raw.request("turn/start", params);
           const response = yield* decodeV2TurnStartResponse(rawResponse).pipe(

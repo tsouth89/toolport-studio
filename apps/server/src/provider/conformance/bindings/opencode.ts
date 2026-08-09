@@ -128,6 +128,7 @@ class PushableEvents {
 /** Translate the neutral script vocabulary into OpenCode SDK events. */
 function playScript(events: PushableEvents, script: ConformanceScript, seq: number): void {
   const messageId = `msg-${seq}`;
+  const toolNames = new Map<string, string>();
   events.push({
     type: "message.updated",
     properties: { sessionID: SESSION_ID, info: { id: messageId, role: "assistant" } },
@@ -153,6 +154,7 @@ function playScript(events: PushableEvents, script: ConformanceScript, seq: numb
         break;
       }
       case "tool-start": {
+        toolNames.set(step.toolId, step.name);
         events.push({
           type: "message.part.updated",
           properties: {
@@ -166,6 +168,28 @@ function playScript(events: PushableEvents, script: ConformanceScript, seq: numb
               state: { status: "running", time: { start: 1 } },
             },
             time: 1,
+          },
+        });
+        break;
+      }
+      case "tool-untitled-update": {
+        const tool = toolNames.get(step.toolId);
+        if (tool === undefined) {
+          throw new Error(`untitled update references unknown tool ${step.toolId}`);
+        }
+        events.push({
+          type: "message.part.updated",
+          properties: {
+            sessionID: SESSION_ID,
+            part: {
+              id: step.toolId,
+              messageID: messageId,
+              sessionID: SESSION_ID,
+              type: "tool",
+              tool,
+              state: { status: "running", time: { start: 1 } },
+            },
+            time: 2,
           },
         });
         break;
@@ -282,6 +306,13 @@ function makeRuntimeDouble(
           // asserted for OpenCode. The adapter passes it as
           // `parts: [{ type: "text", text }]`.
           promptAsync: async (input?: { readonly parts?: ReadonlyArray<unknown> }) => {
+            // The real server announces that this session is busy before it
+            // later reports idle. Terminal ownership uses that edge to bind
+            // id-less session.status events to the accepted turn.
+            events.push({
+              type: "session.status",
+              properties: { sessionID: SESSION_ID, status: { type: "busy" } },
+            });
             for (const part of input?.parts ?? []) {
               const text = (part as { text?: unknown } | undefined)?.text;
               if (typeof text === "string") {
@@ -307,10 +338,7 @@ function makeRuntimeDouble(
 
 export const openCodeConformanceBinding: ConformanceBinding = {
   provider: "opencode",
-  waivers: {
-    "tool-name-survives-untitled-updates":
-      "fake cannot emit an untitled update for an already-named tool",
-  },
+  // Independent oracle: OpenCode reuses the busy session's live turn.
   sendWhileRunning: "steer",
   openSession: (script, options?: ConformanceOpenSessionOptions) =>
     Effect.gen(function* () {

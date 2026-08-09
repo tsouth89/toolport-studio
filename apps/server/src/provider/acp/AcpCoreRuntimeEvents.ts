@@ -5,6 +5,7 @@ import {
   type CanonicalRequestType,
   type EventId,
   type ProviderApprovalDecision,
+  type RequestResolutionSource,
   type ProviderDriverKind,
   type ProviderRuntimeEvent,
   type RuntimeRequestId,
@@ -119,6 +120,8 @@ export function makeAcpRequestResolvedEvent(input: {
   readonly requestId: RuntimeRequestId;
   readonly permissionRequest: AcpPermissionRequest;
   readonly decision: ProviderApprovalDecision;
+  /** Omit only where the caller genuinely cannot tell who resolved it. */
+  readonly resolvedBy?: RequestResolutionSource;
 }): ProviderRuntimeEvent {
   return {
     type: "request.resolved",
@@ -130,6 +133,7 @@ export function makeAcpRequestResolvedEvent(input: {
     payload: {
       requestType: canonicalRequestTypeFromAcpKind(input.permissionRequest.kind),
       decision: input.decision,
+      ...(input.resolvedBy ? { resolvedBy: input.resolvedBy } : {}),
     },
   };
 }

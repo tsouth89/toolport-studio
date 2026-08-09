@@ -5,12 +5,10 @@
  * `runtimeFactory` seam, so the fake is a `CodexSessionRuntimeShape` whose
  * events are pushed onto a queue.
  *
- * The fake models the real app-server faithfully on the one point this
- * contract turns on: `turn/start` always mints a **new** turn id. Codex has no
- * interject primitive, and `CodexAdapter.sendTurn` makes no attempt to reuse
- * or preempt a live turn — so `send-while-running-has-one-behavior` is
- * expected to fail against a `steer` declaration. That failure is SOU-421,
- * surfaced as a test rather than an audit note.
+ * The fake models both Codex app-server send paths: `turn/start` mints a new
+ * turn while `turn/steer` folds input into the live turn. The binding reads the
+ * real provider behavior independently of the shared declaration, so the
+ * conformance registry can fail if runtime capability data drifts.
  */
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -242,9 +240,31 @@ function playScript(
             method: "item/started",
             itemId: step.toolId as never,
             payload: {
+              startedAtMs: Date.parse(NOW),
               threadId: PROVIDER_THREAD_ID,
               turnId: String(turnId),
-              item: { type: "commandExecution", id: step.toolId, command: step.name },
+              item: {
+                type: "commandExecution",
+                id: step.toolId,
+                command: step.name,
+                cwd: "/tmp/conformance-codex",
+                status: "inProgress",
+                commandActions: [],
+              },
+            },
+          } as ProviderEvent);
+          break;
+        }
+        case "tool-untitled-update": {
+          yield* runtime.emit({
+            ...base,
+            id: nextId("terminal-interaction") as never,
+            method: "item/commandExecution/terminalInteraction",
+            itemId: step.toolId as never,
+            payload: {
+              threadId: PROVIDER_THREAD_ID,
+              turnId: String(turnId),
+              itemId: step.toolId,
             },
           } as ProviderEvent);
           break;
@@ -314,13 +334,10 @@ function playScript(
 
 export const codexConformanceBinding: ConformanceBinding = {
   provider: "codex",
-  waivers: {
-    "tool-name-survives-untitled-updates":
-      "fake cannot emit an untitled update for an already-named tool",
-  },
   // Declared to match what the client actually does: the composer sends
   // `intent: "steer"` for every provider. If Codex cannot honour that, the
   // contract must say so out loud rather than let the UI keep promising it.
+  // Independent oracle: current Codex app-server exposes turn/steer.
   sendWhileRunning: "steer",
   openSession: (script, options?: ConformanceOpenSessionOptions) =>
     Effect.gen(function* () {

@@ -114,6 +114,10 @@ const FailSideEffectDeliveryRequestSchema = Schema.Struct({
 const CountRowSchema = Schema.Struct({
   count: NonNegativeInt,
 });
+const CountLaterStreamStopsRequestSchema = Schema.Struct({
+  streamId: Schema.String,
+  afterSequence: Schema.Number,
+});
 const DEFAULT_READ_FROM_SEQUENCE_LIMIT = 1_000;
 const READ_PAGE_SIZE = 500;
 
@@ -402,6 +406,30 @@ const makeEventStore = Effect.gen(function* () {
       `,
   });
 
+  const countLaterStreamStopRows = SqlSchema.findOne({
+    Request: CountLaterStreamStopsRequestSchema,
+    Result: CountRowSchema,
+    execute: ({ streamId, afterSequence }) =>
+      sql`
+        SELECT COUNT(*) AS count
+        FROM orchestration_events
+        WHERE stream_id = ${streamId}
+          AND sequence > ${afterSequence}
+          AND event_type IN ('thread.turn-interrupt-requested', 'thread.session-stop-requested')
+      `,
+  });
+
+  const hasLaterStreamStop: OrchestrationEventStoreShape["hasLaterStreamStop"] = (input) =>
+    countLaterStreamStopRows(input).pipe(
+      Effect.map((row) => row.count > 0),
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "OrchestrationEventStore.hasLaterStreamStop:query",
+          "OrchestrationEventStore.hasLaterStreamStop:decodeRow",
+        ),
+      ),
+    );
+
   const append: OrchestrationEventStoreShape["append"] = (event) =>
     sql
       .withTransaction(
@@ -636,6 +664,7 @@ const makeEventStore = Effect.gen(function* () {
     completeSideEffectDelivery,
     failSideEffectDelivery,
     countUnfinishedSideEffectDeliveries,
+    hasLaterStreamStop,
   } satisfies OrchestrationEventStoreShape;
 });
 

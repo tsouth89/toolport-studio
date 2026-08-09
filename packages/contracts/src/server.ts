@@ -209,7 +209,6 @@ export const ServerProvider = Schema.Struct({
   visionModelSlugs: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
   badgeLabel: Schema.optional(TrimmedNonEmptyString),
   continuation: Schema.optional(ServerProviderContinuation),
-  showInteractionModeToggle: Schema.optional(Schema.Boolean),
   requiresNewThreadForModelChange: Schema.optional(Schema.Boolean),
   enabled: Schema.Boolean,
   installed: Schema.Boolean,

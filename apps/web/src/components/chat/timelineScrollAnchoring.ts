@@ -19,6 +19,29 @@ export interface AnchoredTurnMetrics {
   readonly scrollDeltaToRevealEnd: number;
 }
 
+export interface TimelineEndConvergenceState {
+  readonly previousEnd: number | null;
+  readonly stableFrames: number;
+}
+
+export function advanceTimelineEndConvergence(
+  state: TimelineEndConvergenceState,
+  currentEnd: number | null,
+  requiredStableFrames: number,
+): TimelineEndConvergenceState & { readonly settled: boolean } {
+  const stableFrames =
+    currentEnd !== null &&
+    state.previousEnd !== null &&
+    Math.abs(currentEnd - state.previousEnd) < 1
+      ? state.stableFrames + 1
+      : 0;
+  return {
+    previousEnd: currentEnd,
+    stableFrames,
+    settled: stableFrames >= requiredStableFrames,
+  };
+}
+
 export function getRowBottom(state: TimelineListMeasurementState, index: number): number | null {
   const top = state.positionAtIndex(index);
   const height = state.sizeAtIndex(index);

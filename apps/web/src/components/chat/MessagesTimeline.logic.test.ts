@@ -3,7 +3,6 @@ import {
   collapseConsecutiveTimelineWorkEntries,
   computeStableMessagesTimelineRows,
   computeMessageDurationStart,
-  deriveActiveWorkingFollowUpIntent,
   deriveActiveWorkingToolLabel,
   deriveActiveWorkingToolStatus,
   deriveMessagesTimelineRows,
@@ -12,7 +11,7 @@ import {
   sharedToolLabelForWorkEntries,
   shouldOfferLastUserMessageRetry,
 } from "./MessagesTimeline.logic";
-import { type TimelineEntry } from "../../session-logic";
+import { type TimelineEntry, type WorkLogEntry } from "../../session-logic";
 
 describe("computeMessageDurationStart", () => {
   it("returns message createdAt when there is no preceding user message", () => {
@@ -268,6 +267,68 @@ describe("resolveAssistantMessageCopyState", () => {
 });
 
 describe("deriveMessagesTimelineRows", () => {
+  it("hides routine activity in concise mode but keeps failures and handoffs", () => {
+    const workEntry = (id: string, overrides: Partial<WorkLogEntry> = {}) => ({
+      id,
+      kind: "work" as const,
+      createdAt: `2026-01-01T00:00:0${id.length}Z`,
+      entry: {
+        id,
+        createdAt: `2026-01-01T00:00:0${id.length}Z`,
+        turnId: null,
+        label: id,
+        tone: "tool" as const,
+        sourceActivityKind: "tool.completed",
+        toolLifecycleStatus: "completed" as const,
+        ...overrides,
+      },
+    });
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        workEntry("routine"),
+        workEntry("failed", { toolLifecycleStatus: "failed" }),
+        workEntry("handoff", { sourceActivityKind: "provider.handoff", tone: "info" }),
+      ],
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+      verboseActivity: false,
+    });
+
+    expect(rows.some((row) => row.kind === "work" && row.id === "routine")).toBe(false);
+    expect(rows.some((row) => row.kind === "work" && row.id === "failed")).toBe(true);
+    expect(rows.some((row) => row.kind === "provider-handoff")).toBe(true);
+  });
+
+  it("restores routine activity when verbose mode is enabled", () => {
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "routine",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:01Z",
+          entry: {
+            id: "routine",
+            createdAt: "2026-01-01T00:00:01Z",
+            turnId: null,
+            label: "Ran PowerShell inline",
+            tone: "tool",
+            sourceActivityKind: "tool.completed",
+            toolLifecycleStatus: "completed",
+          },
+        },
+      ],
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+      verboseActivity: true,
+    });
+
+    expect(rows.some((row) => row.kind === "work" && row.id === "routine")).toBe(true);
+  });
+
   it("only enables assistant copy for the terminal assistant message in a turn", () => {
     const rows = deriveMessagesTimelineRows({
       timelineEntries: [
@@ -1732,43 +1793,118 @@ describe("computeStableMessagesTimelineRows", () => {
     });
   });
 
-  it("surfaces mid-turn follow-up intent on the Working row over a ghost tool", () => {
-    expect(
-      deriveActiveWorkingFollowUpIntent({
-        timelineEntries: [
-          {
-            id: "u1",
-            kind: "message",
+  it("keeps a provider handoff visible inside a folded turn", () => {
+    // Folding hides turn *content*. Which agent ran is not turn content, and a
+    // marker the reader cannot find later is the banner problem again.
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "u1",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:00Z",
+          message: {
+            id: "u1" as never,
+            role: "user",
+            text: "go",
+            turnId: "turn-1" as never,
+            createdAt: "2026-01-01T00:00:00Z",
+            updatedAt: "2026-01-01T00:00:00Z",
+            streaming: false,
+          },
+        },
+        {
+          id: "w-handoff",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:01Z",
+          entry: {
+            id: "w-handoff",
             createdAt: "2026-01-01T00:00:01Z",
-            message: {
-              id: "u1" as never,
-              role: "user",
-              text: "proceed as recommended",
-              turnId: null,
-              createdAt: "2026-01-01T00:00:01Z",
-              updatedAt: "2026-01-01T00:00:01Z",
-              streaming: false,
-            },
+            turnId: "turn-1" as never,
+            label: "Switched provider from grok to cursor",
+            tone: "info",
+            sourceActivityKind: "provider.handoff",
           },
-          {
-            id: "u2",
-            kind: "message",
-            createdAt: "2026-01-01T00:00:40Z",
-            message: {
-              id: "u2" as never,
-              role: "user",
-              text: "save it as a draft release before you publish",
-              turnId: "turn-1" as never,
-              createdAt: "2026-01-01T00:00:40Z",
-              updatedAt: "2026-01-01T00:00:40Z",
-              streaming: false,
-            },
+        },
+        {
+          id: "a1",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:02Z",
+          message: {
+            id: "a1" as never,
+            role: "assistant",
+            text: "done",
+            turnId: "turn-1" as never,
+            createdAt: "2026-01-01T00:00:02Z",
+            updatedAt: "2026-01-01T00:00:02Z",
+            streaming: false,
           },
-        ],
-        activeTurnStartedAt: "2026-01-01T00:00:00Z",
-      }),
-    ).toBe("save it as a draft release before you publish");
+        },
+      ],
+      latestTurn: { id: "turn-1" as never, state: "completed" } as never,
+      expandedTurnIds: new Set(),
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
 
+    expect(rows.find((row) => row.kind === "provider-handoff")).toMatchObject({
+      kind: "provider-handoff",
+      label: "Switched provider from grok to cursor",
+    });
+  });
+
+  it("marks a provider handoff inline instead of burying it in a work group", () => {
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "w1",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:01Z",
+          entry: {
+            id: "w1",
+            createdAt: "2026-01-01T00:00:01Z",
+            label: "Reading files",
+            tone: "tool",
+          },
+        },
+        {
+          id: "w2",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:02Z",
+          entry: {
+            id: "w2",
+            createdAt: "2026-01-01T00:00:02Z",
+            label: "Switched provider from grok to cursor",
+            tone: "info",
+            sourceActivityKind: "provider.handoff",
+          },
+        },
+      ],
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    // Its own row, at the point in the transcript where the switch happened.
+    expect(rows.find((row) => row.kind === "provider-handoff")).toMatchObject({
+      kind: "provider-handoff",
+      createdAt: "2026-01-01T00:00:02Z",
+      label: "Switched provider from grok to cursor",
+    });
+    // And never folded into the preceding work group, where a collapse toggle
+    // could hide the one thing that explains the change of voice.
+    for (const row of rows) {
+      if (row.kind !== "work") continue;
+      expect(row.groupedEntries.some((entry) => entry.id === "w2")).toBe(false);
+    }
+  });
+
+  it("reports live tool status on the Working row, not the user's interjection", () => {
+    // A turn carrying a second user message used to flip the Working row to
+    // "Following up: <that message>" for the rest of the turn, hiding what the
+    // agent was actually doing. The interjection is already in the transcript.
     const rows = deriveMessagesTimelineRows({
       timelineEntries: [
         {
@@ -1826,11 +1962,16 @@ describe("computeStableMessagesTimelineRows", () => {
       revertTurnCountByUserMessageId: new Map(),
     });
 
-    expect(rows.find((row) => row.kind === "working")).toMatchObject({
+    const workingRow = rows.find((row) => row.kind === "working");
+    expect(workingRow).toMatchObject({
       kind: "working",
-      activeToolLabel: "Following up",
-      activeToolDetail: "save it as a draft release before you publish · Running a tool",
+      activeToolLabel: "Running a tool",
     });
+    // detail too: the old chrome concatenated `followUpIntent · label · detail`,
+    // so a regression could leak the interjection there while the label looks
+    // correct.
+    const detail = workingRow?.kind === "working" ? workingRow.activeToolDetail : undefined;
+    expect(detail ?? "").not.toContain("save it as a draft release");
   });
 });
 

@@ -156,13 +156,15 @@ const HYDRATION_WAIT_BEFORE_PERSIST_MS = 5_000;
 
 function persistClientSettings(apply: (current: ClientSettings) => ClientSettings): void {
   replaceClientSettingsSnapshot(apply(getClientSettingsSnapshot()));
+  let hydrationTimer: ReturnType<typeof setTimeout> | undefined;
   void Promise.race([
     Promise.resolve(hydrateClientSettings()),
     new Promise<void>((resolve) => {
-      setTimeout(resolve, HYDRATION_WAIT_BEFORE_PERSIST_MS);
+      hydrationTimer = setTimeout(resolve, HYDRATION_WAIT_BEFORE_PERSIST_MS);
     }),
   ])
     .then(() => {
+      clearTimeout(hydrationTimer);
       const merged = apply(getClientSettingsSnapshot());
       // Retire any hydration that started before this change. It read state older than the write,
       // so allowing it to resolve afterwards would silently discard what the user just did. This

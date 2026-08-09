@@ -16,7 +16,6 @@ import {
   PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
   ProviderApprovalDecision,
   ProviderApprovalPolicy,
-  ProviderInteractionMode,
   ProviderRequestKind,
   ProviderSandboxMode,
   ProviderUserInputAnswers,
@@ -85,7 +84,6 @@ export const ProviderSendTurnInput = Schema.Struct({
     Schema.Array(ChatAttachment).check(Schema.isMaxLength(PROVIDER_SEND_TURN_MAX_ATTACHMENTS)),
   ),
   modelSelection: Schema.optional(ModelSelection),
-  interactionMode: Schema.optional(ProviderInteractionMode),
   /**
    * Optional Studio-side history for cold-start rehydration. Exclude the
    * message currently being sent — that is `input`.

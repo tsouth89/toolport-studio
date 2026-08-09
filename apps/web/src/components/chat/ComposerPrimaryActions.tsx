@@ -23,6 +23,7 @@ interface ComposerPrimaryActionsProps {
   isSendBusy: boolean;
   isConnecting: boolean;
   isEnvironmentUnavailable: boolean;
+  isProviderSelectionBlocked?: boolean;
   isPreparingWorktree: boolean;
   hasSendableContent: boolean;
   queuedMessageCount: number;
@@ -74,6 +75,21 @@ export const resolveRunningPrimaryAction = (input: {
   } as const;
 };
 
+export const resolveSendPrimaryActionAriaLabel = (input: {
+  readonly isProviderSelectionBlocked: boolean;
+  readonly isEnvironmentUnavailable: boolean;
+  readonly isConnecting: boolean;
+  readonly isPreparingWorktree: boolean;
+  readonly isSendBusy: boolean;
+}): string => {
+  if (input.isProviderSelectionBlocked) return "Provider switch approval required";
+  if (input.isEnvironmentUnavailable) return "Environment disconnected";
+  if (input.isConnecting) return "Connecting";
+  if (input.isPreparingWorktree) return "Preparing worktree";
+  if (input.isSendBusy) return "Sending";
+  return "Send message";
+};
+
 const preventPointerFocus: PointerEventHandler<HTMLElement> = (event) => {
   event.preventDefault();
 };
@@ -111,6 +127,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   isSendBusy,
   isConnecting,
   isEnvironmentUnavailable,
+  isProviderSelectionBlocked = false,
   isPreparingWorktree,
   hasSendableContent,
   queuedMessageCount,
@@ -197,6 +214,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
     });
     const canRunPrimaryAction =
       !isEnvironmentUnavailable &&
+      !isProviderSelectionBlocked &&
       (primaryAction.action === "queue"
         ? hasSendableContent && Boolean(onQueue)
         : Boolean(onSteer));
@@ -241,7 +259,9 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
           size="sm"
           className={cn("rounded-full", compact ? "h-9 px-3 sm:h-8" : "h-9 px-4 sm:h-8")}
           {...pointerFocusProps}
-          disabled={isSendBusy || isConnecting || isEnvironmentUnavailable}
+          disabled={
+            isSendBusy || isConnecting || isEnvironmentUnavailable || isProviderSelectionBlocked
+          }
         >
           {isConnecting || isSendBusy ? "Sending..." : "Refine"}
         </Button>
@@ -255,7 +275,9 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
           size="sm"
           className="h-9 rounded-l-full rounded-r-none px-4 sm:h-8"
           {...pointerFocusProps}
-          disabled={isSendBusy || isConnecting || isEnvironmentUnavailable}
+          disabled={
+            isSendBusy || isConnecting || isEnvironmentUnavailable || isProviderSelectionBlocked
+          }
         >
           {isConnecting || isSendBusy ? "Sending..." : "Implement"}
         </Button>
@@ -268,7 +290,12 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
                 className="h-9 rounded-l-none rounded-r-full border-l-white/12 px-2 sm:h-8"
                 aria-label="Implementation actions"
                 {...pointerFocusProps}
-                disabled={isSendBusy || isConnecting || isEnvironmentUnavailable}
+                disabled={
+                  isSendBusy ||
+                  isConnecting ||
+                  isEnvironmentUnavailable ||
+                  isProviderSelectionBlocked
+                }
               />
             }
           >
@@ -276,7 +303,9 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
           </MenuTrigger>
           <MenuPopup align="end" side="top">
             <MenuItem
-              disabled={isSendBusy || isConnecting || isEnvironmentUnavailable}
+              disabled={
+                isSendBusy || isConnecting || isEnvironmentUnavailable || isProviderSelectionBlocked
+              }
               onClick={() => void onImplementPlanInNewThread()}
             >
               Implement in a new thread
@@ -297,18 +326,20 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
           : "bg-primary/90 enabled:shadow-primary/24 hover:bg-primary",
       )}
       {...pointerFocusProps}
-      disabled={isSendBusy || isConnecting || isEnvironmentUnavailable || !hasSendableContent}
-      aria-label={
-        isEnvironmentUnavailable
-          ? "Environment disconnected"
-          : isConnecting
-            ? "Connecting"
-            : isPreparingWorktree
-              ? "Preparing worktree"
-              : isSendBusy
-                ? "Sending"
-                : "Send message"
+      disabled={
+        isSendBusy ||
+        isConnecting ||
+        isEnvironmentUnavailable ||
+        isProviderSelectionBlocked ||
+        !hasSendableContent
       }
+      aria-label={resolveSendPrimaryActionAriaLabel({
+        isProviderSelectionBlocked,
+        isEnvironmentUnavailable,
+        isConnecting,
+        isPreparingWorktree,
+        isSendBusy,
+      })}
     >
       <span className="absolute inset-0 -z-10" aria-hidden="true">
         <StageBackdropButtonArt variant={stageBackdropVariant} />

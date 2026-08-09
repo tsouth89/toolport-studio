@@ -135,4 +135,62 @@ it.layer(NodeServices.layer)("queued turn decider", (it) => {
       expect(projected.threads[0]?.messages.map((message) => message.id)).toEqual([messageId]);
     }),
   );
+
+  it.effect("stamps the flushed message at flush time, not at queue time", () =>
+    Effect.gen(function* () {
+      const readModel = yield* makeReadModel;
+      const queued = yield* decideOrchestrationCommand({
+        readModel,
+        command: {
+          type: "thread.turn.queue",
+          commandId: CommandId.make("queue-command"),
+          threadId,
+          message: {
+            messageId,
+            role: "user",
+            text: "Run after the active turn",
+            attachments: [],
+          },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          createdAt: now,
+        },
+      });
+      const queuedEvent = (Array.isArray(queued) ? queued[0] : queued) as Omit<
+        OrchestrationEvent,
+        "sequence"
+      >;
+      const withQueue = yield* projectEvent(readModel, {
+        ...queuedEvent,
+        sequence: 3,
+      } as OrchestrationEvent);
+
+      // The user typed this at `now`, while the previous turn was still
+      // running. Anything the previous turn said afterwards carries a later
+      // timestamp, and messages render `ORDER BY created_at ASC`.
+      const flushedAt = "2026-07-31T12:05:00.000Z";
+      const flushed = (yield* decideOrchestrationCommand({
+        readModel: withQueue,
+        command: {
+          type: "thread.turn.queue.flush",
+          commandId: CommandId.make("server:queued-turn:message-queued-turn"),
+          threadId,
+          messageId,
+          createdAt: flushedAt,
+        },
+      })) as ReadonlyArray<Omit<OrchestrationEvent, "sequence">>;
+
+      const messageEvent = flushed.find((event) => event.type === "thread.message-sent");
+      expect(messageEvent?.occurredAt).toBe(flushedAt);
+      const payload = messageEvent?.payload as {
+        readonly createdAt: string;
+        readonly updatedAt: string;
+      };
+      expect(payload.createdAt).toBe(flushedAt);
+      expect(payload.updatedAt).toBe(flushedAt);
+      // Queue time must not leak back in: at `now` this message would sort
+      // above the previous turn's response.
+      expect(payload.createdAt).not.toBe(now);
+    }),
+  );
 });

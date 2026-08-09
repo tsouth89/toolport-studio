@@ -108,6 +108,21 @@ export interface OrchestrationEventStoreShape {
     readonly updatedAt: string;
   }) => Effect.Effect<void, OrchestrationEventStoreError>;
 
+  /**
+   * Whether this stream carries a Stop after `afterSequence`.
+   *
+   * Authoritative answer to "did the user stop this thread after that turn was
+   * requested?". The turn and control lanes run concurrently, so the in-memory
+   * view of a Stop is not reliable at the moment a queued turn dispatches: the
+   * Stop event is durable as soon as it is appended, but the control lane may
+   * not have processed it yet. Reading the log closes that race and does not
+   * depend on cache TTL or capacity (SOU-569).
+   */
+  readonly hasLaterStreamStop: (input: {
+    readonly streamId: string;
+    readonly afterSequence: number;
+  }) => Effect.Effect<boolean, OrchestrationEventStoreError>;
+
   readonly countUnfinishedSideEffectDeliveries: (
     consumer: OrchestrationSideEffectConsumer,
   ) => Effect.Effect<number, OrchestrationEventStoreError>;

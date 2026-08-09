@@ -333,6 +333,7 @@ validationLayer("CodexAdapterLive validation", (it) => {
       });
 
       NodeAssert.deepStrictEqual(validationRuntimeFactory.factory.mock.calls[0]?.[0], {
+        attachmentDirectory: NodePath.join(process.cwd(), "userdata", "attachments", "thread-1"),
         binaryPath: "codex",
         cwd: process.cwd(),
         // The runtime stamps sessions and events with this, so it has to
@@ -704,6 +705,27 @@ function startLifecycleRuntime() {
   });
 }
 
+function bindLifecycleTurn(adapter: CodexAdapterShape, runtime: FakeCodexRuntime, turnId: TurnId) {
+  return Effect.gen(function* () {
+    const startedEvent = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+    yield* runtime.emit({
+      id: asEventId(`evt-start-${String(turnId)}`),
+      kind: "notification",
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      method: "turn/started",
+      threadId: asThreadId("thread-1"),
+      turnId,
+      payload: { threadId: "provider-thread-1", turn: { id: String(turnId) } },
+    });
+    const started = yield* Fiber.join(startedEvent);
+    NodeAssert.equal(started._tag, "Some");
+    if (started._tag === "Some") {
+      NodeAssert.equal(started.value.type, "turn.started");
+    }
+  });
+}
+
 lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
   it.effect("keeps projecting after the fiber that started the session finishes", () =>
     Effect.gen(function* () {
@@ -755,6 +777,7 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
       // Matches the synthetic payload CodexSessionRuntime.interruptTurn emits so
       // Working settles even when app-server never sends turn/completed.
       const { adapter, runtime } = yield* startLifecycleRuntime();
+      yield* bindLifecycleTurn(adapter, runtime, asTurnId("turn-force-settle"));
       const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
 
       yield* runtime.emit({
@@ -794,6 +817,7 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
     () =>
       Effect.gen(function* () {
         const { adapter, runtime } = yield* startLifecycleRuntime();
+        yield* bindLifecycleTurn(adapter, runtime, asTurnId("turn-exhausted"));
         const eventsFiber = yield* adapter.streamEvents.pipe(
           Stream.take(2),
           Stream.runCollect,
@@ -836,6 +860,120 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
           NodeAssert.match(String(events[1].payload.errorMessage ?? ""), /resource_exhausted/i);
         }
       }),
+  );
+
+  it.effect("ignores a late terminal event after a newer Codex turn owns the session", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const eventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "turn.started" || event.type === "turn.completed"),
+        Stream.take(4),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      const emitTurn = (method: "turn/started" | "turn/completed", turnId: string) =>
+        runtime.emit({
+          id: asEventId(`evt-${method}-${turnId}`),
+          kind: "notification",
+          provider: ProviderDriverKind.make("codex"),
+          createdAt: "2026-01-01T00:00:00.000Z",
+          method,
+          threadId: asThreadId("thread-1"),
+          turnId: asTurnId(turnId),
+          payload:
+            method === "turn/started"
+              ? { threadId: "provider-thread-1", turn: { id: turnId } }
+              : {
+                  threadId: "provider-thread-1",
+                  turn: { id: turnId, status: "completed", items: [] },
+                },
+        });
+
+      yield* emitTurn("turn/started", "turn-old");
+      yield* emitTurn("turn/completed", "turn-old");
+      yield* emitTurn("turn/started", "turn-new");
+      yield* emitTurn("turn/completed", "turn-old");
+      yield* emitTurn("turn/completed", "turn-new");
+
+      const events = Array.from(yield* Fiber.join(eventsFiber).pipe(Effect.timeout("5 seconds")));
+      NodeAssert.deepEqual(
+        events.map((event) => [event.type, String(event.turnId)]),
+        [
+          ["turn.started", "turn-old"],
+          ["turn.completed", "turn-old"],
+          ["turn.started", "turn-new"],
+          ["turn.completed", "turn-new"],
+        ],
+      );
+    }),
+  );
+
+  it.effect("does not reopen a settled turn when sendTurn returns late", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      let resolveSend: ((result: ProviderTurnStartResult) => void) | undefined;
+      runtime.sendTurnImpl.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveSend = resolve;
+          }),
+      );
+      const eventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "turn.started" || event.type === "turn.completed"),
+        Stream.take(4),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      const sendFiber = yield* adapter
+        .sendTurn({
+          threadId: asThreadId("thread-1"),
+          input: "keep working",
+          modelSelection: createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.3-codex"),
+          attachments: [],
+        })
+        .pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+      NodeAssert.equal(runtime.sendTurnImpl.mock.calls.length, 1);
+
+      const emitTurn = (method: "turn/started" | "turn/completed", turnId: string) =>
+        runtime.emit({
+          id: asEventId(`evt-late-send-${method}-${turnId}`),
+          kind: "notification",
+          provider: ProviderDriverKind.make("codex"),
+          createdAt: "2026-01-01T00:00:00.000Z",
+          method,
+          threadId: asThreadId("thread-1"),
+          turnId: asTurnId(turnId),
+          payload:
+            method === "turn/started"
+              ? { threadId: "provider-thread-1", turn: { id: turnId } }
+              : {
+                  threadId: "provider-thread-1",
+                  turn: { id: turnId, status: "completed", items: [] },
+                },
+        });
+
+      yield* emitTurn("turn/started", "turn-1");
+      yield* emitTurn("turn/completed", "turn-1");
+      NodeAssert.ok(resolveSend);
+      resolveSend({ threadId: asThreadId("thread-1"), turnId: asTurnId("turn-1") });
+      yield* Fiber.join(sendFiber);
+      yield* emitTurn("turn/started", "turn-new");
+      yield* emitTurn("turn/completed", "turn-1");
+      yield* emitTurn("turn/completed", "turn-new");
+
+      const events = Array.from(yield* Fiber.join(eventsFiber).pipe(Effect.timeout("5 seconds")));
+      NodeAssert.deepEqual(
+        events.map((event) => [event.type, String(event.turnId)]),
+        [
+          ["turn.started", "turn-1"],
+          ["turn.completed", "turn-1"],
+          ["turn.started", "turn-new"],
+          ["turn.completed", "turn-new"],
+        ],
+      );
+    }),
   );
 
   it.effect("force-closes open tools when turn completes mid-tool", () =>
@@ -1545,6 +1683,71 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
       NodeAssert.deepEqual(firstEvent.value.payload.answers, {
         scope: [],
       });
+    }),
+  );
+
+  it.effect("carries the auto-cancel marker through user-input translation", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+
+      // Shaped like the synthetic notification CodexSessionRuntime emits when
+      // the watchdog fires: empty answers plus the Studio-side marker, which
+      // is not part of the Codex wire protocol.
+      const event: ProviderEvent = {
+        id: asEventId("evt-user-input-timed-out"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("thread-1"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        method: "item/tool/requestUserInput/answered",
+        payload: { answers: {}, resolvedBy: "timeout" },
+      };
+
+      yield* runtime.emit(event);
+      const firstEvent = yield* Fiber.join(firstEventFiber);
+
+      NodeAssert.equal(firstEvent._tag, "Some");
+      if (firstEvent._tag !== "Some") {
+        return;
+      }
+      NodeAssert.equal(firstEvent.value.type, "user-input.resolved");
+      if (firstEvent.value.type !== "user-input.resolved") {
+        return;
+      }
+      NodeAssert.deepEqual(firstEvent.value.payload.answers, {});
+      NodeAssert.equal(firstEvent.value.payload.resolvedBy, "timeout");
+    }),
+  );
+
+  it.effect("leaves provider-sent user-input answers unlabelled", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+
+      const event: ProviderEvent = {
+        id: asEventId("evt-user-input-unmarked"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("thread-1"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        method: "item/tool/requestUserInput/answered",
+        payload: { answers: { scope: { answers: ["all"] } } },
+      };
+
+      yield* runtime.emit(event);
+      const firstEvent = yield* Fiber.join(firstEventFiber);
+
+      NodeAssert.equal(firstEvent._tag, "Some");
+      if (firstEvent._tag !== "Some") {
+        return;
+      }
+      NodeAssert.equal(firstEvent.value.type, "user-input.resolved");
+      if (firstEvent.value.type !== "user-input.resolved") {
+        return;
+      }
+      // Absent means "not reported", never "automatic".
+      NodeAssert.equal(firstEvent.value.payload.resolvedBy, undefined);
     }),
   );
 

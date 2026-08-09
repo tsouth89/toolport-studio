@@ -46,7 +46,7 @@ import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
 import * as ProviderAdapterRegistry from "../Services/ProviderAdapterRegistry.ts";
 import * as ProviderService from "../Services/ProviderService.ts";
 import * as ProviderSessionDirectory from "../Services/ProviderSessionDirectory.ts";
-import { makeProviderServiceLive } from "./ProviderService.ts";
+import { makeProviderServiceLive as makeProviderServiceLiveRaw } from "./ProviderService.ts";
 import * as ProviderEventLoggers from "./ProviderEventLoggers.ts";
 import { ProviderSessionDirectoryLive } from "./ProviderSessionDirectory.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -55,11 +55,24 @@ import {
   makeSqlitePersistenceLive,
   SqlitePersistenceMemory,
 } from "../../persistence/Layers/Sqlite.ts";
+import { ServerConfig } from "../../config.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import * as AnalyticsService from "../../telemetry/AnalyticsService.ts";
 import { makeAdapterRegistryMock } from "../testUtils/providerAdapterRegistryMock.ts";
 
 const defaultServerSettingsLayer = ServerSettings.ServerSettingsService.layerTest();
+
+/**
+ * ProviderService resolves file-attachment paths, so every construction needs a
+ * `ServerConfig`. Wrapping the constructor once keeps the dozen call sites in
+ * this file unchanged.
+ */
+const testServerConfigLayer = ServerConfig.layerTest(process.cwd(), {
+  prefix: "provider-service-unit",
+}).pipe(Layer.provide(NodeServices.layer));
+
+const makeProviderServiceLive = (...args: Parameters<typeof makeProviderServiceLiveRaw>) =>
+  makeProviderServiceLiveRaw(...args).pipe(Layer.provide(testServerConfigLayer));
 
 const asRequestId = (value: string): ApprovalRequestId => ApprovalRequestId.make(value);
 const asEventId = (value: string): EventId => EventId.make(value);

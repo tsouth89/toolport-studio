@@ -7,8 +7,9 @@
   - Backend changes must include and run focused tests for the changed behavior.
   - Run targeted formatting, lint, and type checks for the affected scope when available.
 - Do not run repo-wide `vp check`, `vp run typecheck`, `vp run test`, or equivalent full-suite commands locally unless the user explicitly requests them. CI is responsible for the full verification suite.
-- After frontend feature development or any user-visible frontend behavior change, the primary agent must run one integrated verification pass for the web/desktop client after integrating the work:
+- After changing frontend **interaction** behavior, the primary agent must run one integrated verification pass for the web/desktop client after integrating the work. Interaction behavior means drag and drop, focus and selection, scroll and virtualization, animation and transitions, and pointer or keyboard handling — anything a unit test is structurally incapable of exercising, because jsdom reproduces neither native drag nor layout nor real event ordering.
   - Web: use the `test-t3-app` skill. Launch one isolated environment, authenticate through the printed pairing URL, and verify the affected flow in the controlled browser.
+  - A change whose behavior a focused logic test fully covers — copy, labels, formatting, conditional rendering driven by a pure derivation — does not need this pass. Say so in the PR rather than running it out of habit.
   - Subagents must not independently launch dev servers or repeat integrated client verification unless their delegated task explicitly requires it.
   - Stop dev servers, watchers, and other long-running verification processes when the focused verification is complete.
 

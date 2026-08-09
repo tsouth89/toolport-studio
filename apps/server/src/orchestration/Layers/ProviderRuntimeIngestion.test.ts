@@ -404,9 +404,9 @@ describe("ProviderRuntimeIngestion", () => {
 
     let thread = await waitForThread(
       harness.readModel,
-      (entry) => entry.session?.status === "running" && entry.session?.activeTurnId === null,
+      (entry) => entry.session?.status === "ready" && entry.session?.activeTurnId === null,
     );
-    expect(thread.session?.status).toBe("running");
+    expect(thread.session?.status).toBe("ready");
     expect(thread.session?.lastError).toBeNull();
 
     harness.emit({
@@ -472,6 +472,99 @@ describe("ProviderRuntimeIngestion", () => {
     );
     expect(thread.session?.status).toBe("ready");
     expect(thread.session?.lastError).toBeNull();
+  });
+
+  it("does not reopen a settled turn from a late running heartbeat", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-turn-completed-before-late-heartbeat"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-1"),
+      createdAt: now,
+      payload: { state: "completed" },
+    });
+    await waitForThread(
+      harness.readModel,
+      (entry) => entry.session?.status === "ready" && entry.session?.activeTurnId === null,
+    );
+
+    harness.emit({
+      type: "session.state.changed",
+      eventId: asEventId("evt-late-running-heartbeat"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      payload: { state: "running" },
+    });
+
+    const thread = await waitForThread(
+      harness.readModel,
+      (entry) => entry.session?.updatedAt === "2026-01-01T00:00:01.000Z",
+    );
+    expect(thread.session?.status).toBe("ready");
+    expect(thread.session?.activeTurnId).toBeNull();
+  });
+
+  it("preserves a terminal interrupted session after a late running heartbeat", async () => {
+    const harness = await createHarness();
+    harness.emit({
+      type: "session.state.changed",
+      eventId: asEventId("evt-session-interrupted-before-late-heartbeat"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      payload: { state: "interrupted", reason: "Studio restarted" },
+    });
+    await waitForThread(harness.readModel, (entry) => entry.session?.status === "interrupted");
+
+    harness.emit({
+      type: "session.state.changed",
+      eventId: asEventId("evt-running-after-interrupted"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      payload: { state: "running" },
+    });
+
+    const thread = await waitForThread(
+      harness.readModel,
+      (entry) => entry.session?.updatedAt === "2026-01-01T00:00:01.000Z",
+    );
+    expect(thread.session?.status).toBe("interrupted");
+    expect(thread.session?.activeTurnId).toBeNull();
+  });
+
+  it("recovers stale starting state when a running heartbeat has no pending turn", async () => {
+    const harness = await createHarness();
+    harness.emit({
+      type: "session.state.changed",
+      eventId: asEventId("evt-session-starting-before-heartbeat"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      payload: { state: "starting" },
+    });
+    await waitForThread(harness.readModel, (entry) => entry.session?.status === "starting");
+
+    harness.emit({
+      type: "session.state.changed",
+      eventId: asEventId("evt-running-after-stale-starting"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      payload: { state: "running" },
+    });
+
+    const thread = await waitForThread(
+      harness.readModel,
+      (entry) => entry.session?.updatedAt === "2026-01-01T00:00:01.000Z",
+    );
+    expect(thread.session?.status).toBe("ready");
+    expect(thread.session?.activeTurnId).toBeNull();
   });
 
   it("clears active turn when provider session becomes ready", async () => {
@@ -3603,6 +3696,76 @@ describe("ProviderRuntimeIngestion", () => {
     expect(resolvedPayload?.answers).toEqual({
       sandbox_mode: "workspace-write",
     });
+  });
+
+  it("records an auto-cancelled user input as automatic, not as an empty submission", async () => {
+    const harness = await createHarness();
+
+    harness.emit({
+      type: "user-input.resolved",
+      eventId: asEventId("evt-user-input-timed-out"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-user-input"),
+      requestId: ApprovalRequestId.make("req-user-input-2"),
+      payload: { answers: {}, resolvedBy: "timeout" },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.id === "evt-user-input-timed-out",
+      ),
+    );
+
+    const resolved = thread.activities.find(
+      (activity: ProviderRuntimeTestActivity) => activity.id === "evt-user-input-timed-out",
+    );
+    const resolvedPayload =
+      resolved?.payload && typeof resolved.payload === "object"
+        ? (resolved.payload as Record<string, unknown>)
+        : undefined;
+    expect(resolvedPayload?.resolvedBy).toBe("timeout");
+    // The empty answers are identical to a user-submitted empty form, so the
+    // row label has to carry the disclosure.
+    expect(resolved?.summary).toBe("User input auto-cancelled after timeout");
+  });
+
+  it("labels an auto-cancelled approval the same way user input is labelled", async () => {
+    const harness = await createHarness();
+
+    for (const [suffix, resolvedBy, summary] of [
+      ["timed-out", "timeout", "Approval auto-cancelled after timeout"],
+      ["aborted", "aborted", "Approval cancelled"],
+      ["answered", "user", "Approval resolved"],
+    ] as const) {
+      harness.emit({
+        type: "request.resolved",
+        eventId: asEventId(`evt-approval-${suffix}`),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-approval"),
+        requestId: ApprovalRequestId.make(`req-approval-${suffix}`),
+        payload: {
+          requestType: "command_execution_approval",
+          decision: "cancel",
+          resolvedBy,
+        },
+      });
+
+      const thread = await waitForThread(harness.readModel, (entry) =>
+        entry.activities.some(
+          (activity: ProviderRuntimeTestActivity) => activity.id === `evt-approval-${suffix}`,
+        ),
+      );
+      const resolved = thread.activities.find(
+        (activity: ProviderRuntimeTestActivity) => activity.id === `evt-approval-${suffix}`,
+      );
+      // `decision: "cancel"` is identical across all three, so the summary is
+      // the only thing separating a watchdog from a user who pressed cancel.
+      expect(resolved?.summary).toBe(summary);
+    }
   });
 
   it("continues processing runtime events after a single event handler failure", async () => {

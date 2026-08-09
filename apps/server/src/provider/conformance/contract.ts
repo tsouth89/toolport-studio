@@ -26,6 +26,9 @@ import * as Schema from "effect/Schema";
 
 import type { ProviderAdapterError } from "../Errors.ts";
 import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
+import type { SendWhileRunningBehavior } from "../turnEngine/index.ts";
+
+export type { SendWhileRunningBehavior } from "../turnEngine/index.ts";
 
 /**
  * Failure raised by the conformance harness itself — a binding that could not
@@ -90,17 +93,6 @@ export type ConformanceScriptStep =
   | { readonly kind: "complete" };
 
 export type ConformanceScript = ReadonlyArray<ConformanceScriptStep>;
-
-/**
- * How an adapter behaves when a turn is sent while one is already running.
- * Every adapter must declare exactly one — "it depends" is the bug this
- * contract exists to catch (SOU-421).
- */
-export type SendWhileRunningBehavior =
-  /** New input folds into the live turn; the same turn id continues. */
-  | "steer"
-  /** New input is held and starts a fresh turn once the live one settles. */
-  | "queue";
 
 export interface ConformanceSession {
   readonly adapter: ProviderAdapterShape<ProviderAdapterError>;
