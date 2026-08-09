@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   archiveSelectedThreadEntries,
+  buildBulkTitleRegenerationContextMenuItem,
   buildMultiSelectThreadContextMenuItems,
   createThreadJumpHintVisibilityController,
-  encodeSidebarThreadDragPayload,
   getSidebarThreadIdsToPrewarm,
   getVisibleSidebarThreadIds,
   resolveAdjacentThreadId,
@@ -12,25 +12,23 @@ import {
   getProjectSortTimestamp,
   hasUnseenCompletion,
   isContextMenuPointerDown,
-  isThreadAlreadyInProject,
   isTrailingDoubleClick,
   orderItemsByPreferredIds,
-  parseSidebarThreadDragPayload,
   resolveProjectStatusIndicator,
-  resolveSameEnvironmentProjectMember,
-  resolveSidebarProjectShelfExpanded,
   resolveSidebarStageBadgeLabel,
   resolveThreadRowClassName,
-  resolveSidebarStatus,
+  resolveSidebarThreadStatus,
   resolveThreadStatusPill,
   resolveWorkingStartedAt,
+  searchSidebarThreadsByTitle,
   formatWorkingDurationLabel,
-  isSidebarThreadRunningAttention,
-  selectRunningSidebarThreads,
   shouldNavigateAfterProjectRemoval,
   shouldClearThreadSelectionOnMouseDown,
   sortLogicalProjectsForSidebar,
   sortSettledThreadsForSidebar,
+  pinOrderKeyBetween,
+  planPinnedReorder,
+  sortPinnedThreadsForSidebar,
   sortThreadsForSidebar,
   sortProjectsForSidebar,
   sortScopedProjectsForSidebar,
@@ -156,6 +154,42 @@ describe("archiveSelectedThreadEntries", () => {
   });
 });
 
+describe("buildBulkTitleRegenerationContextMenuItem", () => {
+  it("counts only threads that can start a new regeneration", () => {
+    expect(
+      buildBulkTitleRegenerationContextMenuItem({
+        supportedCount: 4,
+        actionableCount: 3,
+      }),
+    ).toEqual({
+      id: "regenerate-title",
+      label: "Regenerate titles (3)",
+    });
+  });
+
+  it("shows a disabled progress item when every supported thread is pending", () => {
+    expect(
+      buildBulkTitleRegenerationContextMenuItem({
+        supportedCount: 2,
+        actionableCount: 0,
+      }),
+    ).toEqual({
+      id: "regenerate-title",
+      label: "Regenerating… (2)",
+      disabled: true,
+    });
+  });
+
+  it("omits the action when no selected environment supports it", () => {
+    expect(
+      buildBulkTitleRegenerationContextMenuItem({
+        supportedCount: 0,
+        actionableCount: 0,
+      }),
+    ).toBeNull();
+  });
+});
+
 describe("buildMultiSelectThreadContextMenuItems", () => {
   it("offers bulk archive with the selected count", () => {
     expect(
@@ -239,7 +273,7 @@ describe("hasUnseenCompletion", () => {
     ).toBe(true);
   });
 
-  it("treats a missing client visit marker as unseen", () => {
+  it("treats a missing client visit marker as read", () => {
     expect(
       hasUnseenCompletion({
         hasActionableProposedPlan: false,
@@ -250,7 +284,7 @@ describe("hasUnseenCompletion", () => {
         lastVisitedAt: undefined,
         session: null,
       }),
-    ).toBe(true);
+    ).toBe(false);
   });
 });
 
@@ -593,7 +627,7 @@ describe("isContextMenuPointerDown", () => {
   });
 });
 
-describe("resolveSidebarStatus", () => {
+describe("resolveSidebarThreadStatus", () => {
   const session = {
     threadId: ThreadId.make("thread-1"),
     status: "running" as const,
@@ -608,13 +642,17 @@ describe("resolveSidebarStatus", () => {
   const idle = { hasPendingApprovals: false, hasPendingUserInput: false };
 
   it("prioritizes approval over a running session", () => {
-    expect(resolveSidebarStatus({ ...idle, hasPendingApprovals: true, session })).toBe("approval");
+    expect(resolveSidebarThreadStatus({ ...idle, hasPendingApprovals: true, session })).toBe(
+      "approval",
+    );
   });
 
   it("prioritizes awaiting input over a running session, below approval", () => {
-    expect(resolveSidebarStatus({ ...idle, hasPendingUserInput: true, session })).toBe("input");
+    expect(resolveSidebarThreadStatus({ ...idle, hasPendingUserInput: true, session })).toBe(
+      "input",
+    );
     expect(
-      resolveSidebarStatus({
+      resolveSidebarThreadStatus({
         ...idle,
         hasPendingApprovals: true,
         hasPendingUserInput: true,
@@ -624,9 +662,9 @@ describe("resolveSidebarStatus", () => {
   });
 
   it("reports working for running and starting sessions", () => {
-    expect(resolveSidebarStatus({ ...idle, session })).toBe("working");
+    expect(resolveSidebarThreadStatus({ ...idle, session })).toBe("working");
     expect(
-      resolveSidebarStatus({
+      resolveSidebarThreadStatus({
         ...idle,
         session: { ...session, status: "starting" as const },
       }),
@@ -635,19 +673,19 @@ describe("resolveSidebarStatus", () => {
 
   it("reports failed only while the session status is error", () => {
     expect(
-      resolveSidebarStatus({
+      resolveSidebarThreadStatus({
         ...idle,
         session: { ...session, status: "error" as const, lastError: "boom" },
       }),
     ).toBe("failed");
     expect(
-      resolveSidebarStatus({
+      resolveSidebarThreadStatus({
         ...idle,
         session: { ...session, status: "stopped" as const, lastError: "persisted" },
       }),
     ).toBe("ready");
     expect(
-      resolveSidebarStatus({
+      resolveSidebarThreadStatus({
         ...idle,
         session: { ...session, status: "ready" as const, lastError: "persisted" },
       }),
@@ -655,91 +693,27 @@ describe("resolveSidebarStatus", () => {
   });
 
   it("defaults to ready with no session", () => {
-    expect(resolveSidebarStatus({ ...idle, session: null })).toBe("ready");
+    expect(resolveSidebarThreadStatus({ ...idle, session: null })).toBe("ready");
   });
 });
 
-describe("selectRunningSidebarThreads", () => {
-  const baseSession = {
-    threadId: ThreadId.make("thread-1"),
-    status: "running" as const,
-    providerName: "Codex",
-    providerInstanceId: ProviderInstanceId.make("codex"),
-    runtimeMode: DEFAULT_RUNTIME_MODE,
-    activeTurnId: "turn-1" as never,
-    lastError: null,
-    updatedAt: "2026-03-09T10:00:00.000Z",
-  };
+describe("searchSidebarThreadsByTitle", () => {
+  const threads = [
+    { id: "thread-1", title: "Fix workspace search", project: "Alpha" },
+    { id: "thread-2", title: "Review providers", project: "Workspace" },
+    { id: "thread-3", title: "WORKTREE cleanup", project: "Beta" },
+  ];
 
-  const thread = (input: {
-    id: string;
-    status?: "running" | "starting" | "error" | "ready" | "stopped";
-    hasPendingApprovals?: boolean;
-    hasPendingUserInput?: boolean;
-    updatedAt?: string;
-    createdAt?: string;
-  }) => ({
-    id: input.id,
-    hasPendingApprovals: input.hasPendingApprovals ?? false,
-    hasPendingUserInput: input.hasPendingUserInput ?? false,
-    session:
-      input.status === undefined
-        ? { ...baseSession, threadId: ThreadId.make(input.id) }
-        : input.status === "ready" || input.status === "stopped"
-          ? {
-              ...baseSession,
-              threadId: ThreadId.make(input.id),
-              status: input.status,
-              activeTurnId: null,
-            }
-          : {
-              ...baseSession,
-              threadId: ThreadId.make(input.id),
-              status: input.status,
-            },
-    updatedAt: input.updatedAt ?? "2026-03-09T10:00:00.000Z",
-    createdAt: input.createdAt ?? "2026-03-09T09:00:00.000Z",
+  it("matches thread titles case-insensitively and preserves their order", () => {
+    expect(searchSidebarThreadsByTitle(threads, "work")).toEqual([threads[0], threads[2]]);
   });
 
-  it("keeps only live and needs-action sessions", () => {
-    const running = selectRunningSidebarThreads([
-      thread({ id: "ready", status: "ready" }),
-      thread({ id: "working", status: "running" }),
-      thread({ id: "approval", hasPendingApprovals: true, status: "running" }),
-      thread({ id: "input", hasPendingUserInput: true, status: "ready" }),
-      thread({ id: "failed", status: "error" }),
-    ]);
-    expect(running.map((entry) => entry.id)).toEqual(["approval", "input", "working", "failed"]);
+  it("does not match project metadata", () => {
+    expect(searchSidebarThreadsByTitle(threads, "workspace")).toEqual([threads[0]]);
   });
 
-  it("orders by urgency then creation order", () => {
-    const running = selectRunningSidebarThreads([
-      thread({
-        id: "older-working",
-        status: "running",
-        createdAt: "2026-03-09T10:00:00.000Z",
-      }),
-      thread({
-        id: "newer-working",
-        status: "running",
-        createdAt: "2026-03-09T11:00:00.000Z",
-      }),
-      thread({
-        id: "approval",
-        hasPendingApprovals: true,
-        createdAt: "2026-03-09T08:00:00.000Z",
-      }),
-    ]);
-    expect(running.map((entry) => entry.id)).toEqual([
-      "approval",
-      "newer-working",
-      "older-working",
-    ]);
-  });
-
-  it("isSidebarThreadRunningAttention matches the Running section filter", () => {
-    expect(isSidebarThreadRunningAttention(thread({ id: "w", status: "running" }))).toBe(true);
-    expect(isSidebarThreadRunningAttention(thread({ id: "r", status: "ready" }))).toBe(false);
+  it("returns no results for an empty query", () => {
+    expect(searchSidebarThreadsByTitle(threads, "   ")).toEqual([]);
   });
 });
 
@@ -763,6 +737,136 @@ describe("sortThreadsForSidebar", () => {
     const sorted = sortThreadsForSidebar([
       sortable({ id: "b", createdAt: "2026-03-09T10:00:00.000Z" }),
       sortable({ id: "a", createdAt: "2026-03-09T10:00:00.000Z" }),
+    ]);
+
+    expect(sorted.map((thread) => thread.id)).toEqual(["a", "b"]);
+  });
+});
+
+describe("pinOrderKeyBetween", () => {
+  it("produces keys that sort between their bounds", () => {
+    const middle = pinOrderKeyBetween(null, null)!;
+    const top = pinOrderKeyBetween(null, middle)!;
+    const bottom = pinOrderKeyBetween(middle, null)!;
+    expect(top < middle).toBe(true);
+    expect(middle < bottom).toBe(true);
+
+    const between = pinOrderKeyBetween(top, middle)!;
+    expect(top < between && between < middle).toBe(true);
+  });
+
+  it("extends into new digits when bounds are adjacent", () => {
+    const key = pinOrderKeyBetween("g", "h")!;
+    expect("g" < key && key < "h").toBe(true);
+  });
+
+  it("stays strictly ordered under repeated top insertion", () => {
+    // Every new pin lands at the head of the arranged run; keys must keep
+    // sorting before the previous head without ever bottoming out.
+    let head: string | null = null;
+    const keys: string[] = [];
+    for (let i = 0; i < 100; i += 1) {
+      const key: string = pinOrderKeyBetween(null, head)!;
+      expect(key).not.toBeNull();
+      if (head !== null) expect(key < head).toBe(true);
+      keys.push(key);
+      head = key;
+    }
+    expect(new Set(keys).size).toBe(100);
+  });
+
+  it("stays strictly ordered under repeated middle insertion", () => {
+    let low = pinOrderKeyBetween(null, null)!;
+    let high = pinOrderKeyBetween(low, null)!;
+    for (let i = 0; i < 100; i += 1) {
+      const key: string = pinOrderKeyBetween(low, high)!;
+      expect(low < key && key < high).toBe(true);
+      if (i % 2 === 0) low = key;
+      else high = key;
+    }
+  });
+
+  it("returns null for corrupt or out-of-order bounds instead of throwing", () => {
+    expect(pinOrderKeyBetween("z", "a")).toBeNull();
+    expect(pinOrderKeyBetween("A!", null)).toBeNull();
+    expect(pinOrderKeyBetween(null, "ma")).toBeNull();
+    expect(pinOrderKeyBetween("m", "m")).toBeNull();
+  });
+});
+
+describe("planPinnedReorder", () => {
+  it("writes only the moved thread when neighbors are keyed", () => {
+    const assignments = planPinnedReorder({
+      orderedIds: ["a", "c", "b"],
+      keysById: new Map([
+        ["a", "f"],
+        ["b", "m"],
+        ["c", "t"],
+      ]),
+      movedId: "c",
+    });
+    expect(assignments).toHaveLength(1);
+    expect(assignments[0]!.id).toBe("c");
+    expect(assignments[0]!.orderKey > "f" && assignments[0]!.orderKey < "m").toBe(true);
+  });
+
+  it("treats list edges as open bounds", () => {
+    const assignments = planPinnedReorder({
+      orderedIds: ["b", "a"],
+      keysById: new Map([
+        ["a", "m"],
+        ["b", null],
+      ]),
+      movedId: "b",
+    });
+    expect(assignments).toHaveLength(1);
+    expect(assignments[0]!.orderKey < "m").toBe(true);
+  });
+
+  it("materializes keys for the whole section when a neighbor is keyless", () => {
+    const assignments = planPinnedReorder({
+      orderedIds: ["b", "a", "c"],
+      keysById: new Map([
+        ["a", null],
+        ["b", "m"],
+        ["c", null],
+      ]),
+      movedId: "b",
+    });
+    expect(assignments.map((entry) => entry.id)).toEqual(["b", "a", "c"]);
+    const keys = assignments.map((entry) => entry.orderKey);
+    expect([...keys].sort()).toEqual(keys);
+    expect(new Set(keys).size).toBe(keys.length);
+  });
+});
+
+describe("sortPinnedThreadsForSidebar", () => {
+  const pinnable = (input: { id: string; createdAt: string; pinOrderKey?: string | null }) => ({
+    id: input.id,
+    createdAt: input.createdAt,
+    pinOrderKey: input.pinOrderKey ?? null,
+  });
+
+  it("sorts keyed threads by key ahead of keyless threads in creation order", () => {
+    const sorted = sortPinnedThreadsForSidebar([
+      pinnable({ id: "keyless-old", createdAt: "2026-03-09T08:00:00.000Z" }),
+      pinnable({ id: "second", createdAt: "2026-03-09T09:00:00.000Z", pinOrderKey: "t" }),
+      pinnable({ id: "keyless-new", createdAt: "2026-03-09T12:00:00.000Z" }),
+      pinnable({ id: "first", createdAt: "2026-03-09T07:00:00.000Z", pinOrderKey: "g" }),
+    ]);
+
+    expect(sorted.map((thread) => thread.id)).toEqual([
+      "first",
+      "second",
+      "keyless-new",
+      "keyless-old",
+    ]);
+  });
+
+  it("breaks equal keys by id so raced writes render identically everywhere", () => {
+    const sorted = sortPinnedThreadsForSidebar([
+      pinnable({ id: "b", createdAt: "2026-03-09T10:00:00.000Z", pinOrderKey: "m" }),
+      pinnable({ id: "a", createdAt: "2026-03-09T11:00:00.000Z", pinOrderKey: "m" }),
     ]);
 
     expect(sorted.map((thread) => thread.id)).toEqual(["a", "b"]);
@@ -972,7 +1076,7 @@ describe("resolveThreadStatusPill", () => {
     ).toMatchObject({ label: "Plan Ready", pulse: false });
   });
 
-  it("returns completed for a turn that finished before any client visit", () => {
+  it("does not manufacture completed state without a client visit marker", () => {
     expect(
       resolveThreadStatusPill({
         thread: {
@@ -985,12 +1089,7 @@ describe("resolveThreadStatusPill", () => {
           },
         },
       }),
-    ).toEqual({
-      label: "Completed",
-      colorClass: "text-emerald-600 dark:text-emerald-300/90",
-      dotClass: "bg-emerald-500 dark:bg-emerald-300/90",
-      pulse: false,
-    });
+    ).toBeNull();
   });
 
   it("shows completed when there is an unseen completion and no active blocker", () => {
@@ -1081,62 +1180,6 @@ describe("resolveProjectStatusIndicator", () => {
         },
       ]),
     ).toMatchObject({ label: "Plan Ready", dotClass: "bg-violet-500" });
-  });
-});
-
-describe("resolveSidebarProjectShelfExpanded", () => {
-  it("opens shelves that carry no explicit preference", () => {
-    expect(resolveSidebarProjectShelfExpanded({ persistedExpanded: undefined })).toBe(true);
-  });
-
-  it("honors an explicit persisted choice", () => {
-    expect(resolveSidebarProjectShelfExpanded({ persistedExpanded: false })).toBe(false);
-    expect(resolveSidebarProjectShelfExpanded({ persistedExpanded: true })).toBe(true);
-  });
-});
-
-describe("sidebar session drag helpers", () => {
-  it("round-trips thread drag payloads", () => {
-    const payload = {
-      environmentId: "env-1",
-      threadId: "thread-1",
-      projectId: "proj-a",
-    };
-    expect(parseSidebarThreadDragPayload(encodeSidebarThreadDragPayload(payload))).toEqual(payload);
-  });
-
-  it("rejects invalid thread drag payloads", () => {
-    expect(parseSidebarThreadDragPayload("")).toBeNull();
-    expect(parseSidebarThreadDragPayload("not-json")).toBeNull();
-    expect(parseSidebarThreadDragPayload(JSON.stringify({ environmentId: "e" }))).toBeNull();
-    expect(
-      parseSidebarThreadDragPayload(
-        JSON.stringify({ environmentId: "", threadId: "t", projectId: "p" }),
-      ),
-    ).toBeNull();
-  });
-
-  it("resolves same-environment project members only", () => {
-    const envA = EnvironmentId.make("env-a");
-    const envB = EnvironmentId.make("env-b");
-    const members = [
-      { environmentId: envA, projectId: ProjectId.make("proj-a") },
-      { environmentId: envB, projectId: ProjectId.make("proj-b") },
-    ];
-    expect(resolveSameEnvironmentProjectMember(members, envA)?.projectId).toBe("proj-a");
-    expect(resolveSameEnvironmentProjectMember(members, envB)?.projectId).toBe("proj-b");
-    expect(
-      resolveSameEnvironmentProjectMember(members, EnvironmentId.make("env-missing")),
-    ).toBeNull();
-  });
-
-  it("detects no-op moves when already in the target project", () => {
-    expect(isThreadAlreadyInProject({ sourceProjectId: "proj-a", targetProjectId: "proj-a" })).toBe(
-      true,
-    );
-    expect(isThreadAlreadyInProject({ sourceProjectId: "proj-a", targetProjectId: "proj-b" })).toBe(
-      false,
-    );
   });
 });
 
@@ -1309,17 +1352,15 @@ describe("getFallbackThreadIdAfterDelete", () => {
   });
 });
 describe("sortProjectsForSidebar", () => {
-  it("sorts projects by the most recent activity across their threads", () => {
+  it("sorts projects by the most recent user message across their threads", () => {
     const projects = [
       makeProject({ id: ProjectId.make("project-1"), title: "Older project" }),
       makeProject({ id: ProjectId.make("project-2"), title: "Newer project" }),
     ];
-    // SOU-356 activity sort uses max(user message, messages, updatedAt).
-    // Keep updatedAt aligned with message times so message recency decides.
     const threads = [
       makeThread({
         projectId: ProjectId.make("project-1"),
-        updatedAt: "2026-03-09T10:01:00.000Z",
+        updatedAt: "2026-03-09T10:20:00.000Z",
         messages: [
           {
             id: "message-1" as never,
