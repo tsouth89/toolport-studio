@@ -64,11 +64,24 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
           .getThreadShellById(binding.threadId)
           .pipe(Effect.map(Option.getOrUndefined));
         const projectedActiveTurnId = thread?.session?.activeTurnId;
+        const projectedRunningBackgroundTaskCount = thread?.runningBackgroundTaskCount ?? 0;
         const hasLiveRuntime = activeSessionThreadIds.has(binding.threadId);
         if (projectedActiveTurnId != null && hasLiveRuntime) {
           yield* Effect.logDebug("provider.session.reaper.skipped-active-turn", {
             threadId: binding.threadId,
             activeTurnId: projectedActiveTurnId,
+          });
+          continue;
+        }
+
+        // A provider turn can settle while subagents, workflows, or monitor
+        // loops keep running inside the same provider process. Their projection
+        // is authoritative liveness even when the parent activeTurnId is clear
+        // and the persisted provider heartbeat is old.
+        if (projectedRunningBackgroundTaskCount > 0) {
+          yield* Effect.logDebug("provider.session.reaper.skipped-background-work", {
+            threadId: binding.threadId,
+            runningBackgroundTaskCount: projectedRunningBackgroundTaskCount,
           });
           continue;
         }
@@ -87,6 +100,22 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
           ),
           Effect.flatMap((latestThread) =>
             Effect.gen(function* () {
+              // Preserve a newer background-work projection just as we preserve
+              // a newer active turn below. stopSession has already been asked
+              // to settle the stale runtime, but the reaper must not overwrite
+              // authoritative liveness that appeared during that request.
+              const latestRunningBackgroundTaskCount =
+                latestThread?.runningBackgroundTaskCount ?? 0;
+              if (latestRunningBackgroundTaskCount > 0) {
+                yield* Effect.logDebug(
+                  "provider.session.reaper.skipped-newer-background-projection",
+                  {
+                    threadId: binding.threadId,
+                    runningBackgroundTaskCount: latestRunningBackgroundTaskCount,
+                  },
+                );
+                return;
+              }
               const session = latestThread?.session;
               if (!session || (session.status !== "starting" && session.status !== "running")) {
                 return;
