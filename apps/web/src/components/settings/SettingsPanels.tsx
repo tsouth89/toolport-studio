@@ -21,9 +21,21 @@ import {
   squashAtomCommandFailure,
 } from "@toolport-studio/client-runtime/state/runtime";
 import {
+  DEFAULT_CODE_FONT_SIZE,
+  DEFAULT_INTERFACE_FONT_SIZE,
+  DEFAULT_PROMPT_FONT_SIZE,
+  DEFAULT_TERMINAL_FONT_SIZE,
   DEFAULT_UNIFIED_SETTINGS,
+  MAX_CODE_FONT_SIZE,
   MAX_GLASS_OPACITY,
+  MAX_INTERFACE_FONT_SIZE,
+  MAX_PROMPT_FONT_SIZE,
+  MAX_TERMINAL_FONT_SIZE,
+  MIN_CODE_FONT_SIZE,
   MIN_GLASS_OPACITY,
+  MIN_INTERFACE_FONT_SIZE,
+  MIN_PROMPT_FONT_SIZE,
+  MIN_TERMINAL_FONT_SIZE,
 } from "@toolport-studio/contracts/settings";
 import { createModelSelection } from "@toolport-studio/shared/model";
 import * as Arr from "effect/Array";
@@ -43,6 +55,13 @@ import { TraitsPicker } from "../chat/TraitsPicker";
 import { isElectron } from "../../env";
 import { buildHostedChannelSelectionUrl, type HostedAppChannel } from "../../hostedPairing";
 import { useTheme } from "../../hooks/useTheme";
+import {
+  EMBER_THEME,
+  GROVE_THEME,
+  IRIS_THEME,
+  OCEAN_THEME,
+  T3_CHAT_THEME,
+} from "../../themePalette";
 import { usePrimarySettings, useUpdatePrimarySettings } from "../../hooks/useSettings";
 import { useThreadActions } from "../../hooks/useThreadActions";
 import { useDesktopUpdateState } from "../../state/desktopUpdate";
@@ -112,6 +131,26 @@ const THEME_OPTIONS = [
   {
     value: "dark",
     label: "Dark",
+  },
+  {
+    value: T3_CHAT_THEME.id,
+    label: "Studio",
+  },
+  {
+    value: GROVE_THEME.id,
+    label: GROVE_THEME.label,
+  },
+  {
+    value: OCEAN_THEME.id,
+    label: OCEAN_THEME.label,
+  },
+  {
+    value: EMBER_THEME.id,
+    label: EMBER_THEME.label,
+  },
+  {
+    value: IRIS_THEME.id,
+    label: IRIS_THEME.label,
   },
 ] as const;
 
@@ -412,6 +451,17 @@ export function useSettingsRestore(onRestored?: () => void) {
     () => [
       ...(theme !== "system" ? ["Theme"] : []),
       ...(settings.glassOpacity !== DEFAULT_UNIFIED_SETTINGS.glassOpacity ? ["Glass opacity"] : []),
+      ...(settings.fontFamilySans !== DEFAULT_UNIFIED_SETTINGS.fontFamilySans ||
+      settings.fontFamilyComposer !== DEFAULT_UNIFIED_SETTINGS.fontFamilyComposer ||
+      settings.fontFamilyCode !== DEFAULT_UNIFIED_SETTINGS.fontFamilyCode ||
+      settings.fontFamilyTerminal !== DEFAULT_UNIFIED_SETTINGS.fontFamilyTerminal ||
+      settings.fontSizeInterface !== DEFAULT_UNIFIED_SETTINGS.fontSizeInterface ||
+      settings.fontSizePrompt !== DEFAULT_UNIFIED_SETTINGS.fontSizePrompt ||
+      settings.fontSizeCode !== DEFAULT_UNIFIED_SETTINGS.fontSizeCode ||
+      settings.fontSizeTerminal !== DEFAULT_UNIFIED_SETTINGS.fontSizeTerminal ||
+      settings.fontSmoothing !== DEFAULT_UNIFIED_SETTINGS.fontSmoothing
+        ? ["Fonts"]
+        : []),
       ...(settings.timestampFormat !== DEFAULT_UNIFIED_SETTINGS.timestampFormat
         ? ["Time format"]
         : []),
@@ -478,6 +528,15 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.newWorktreesStartFromOrigin,
       settings.diffIgnoreWhitespace,
       settings.glassOpacity,
+      settings.fontFamilySans,
+      settings.fontFamilyComposer,
+      settings.fontFamilyCode,
+      settings.fontFamilyTerminal,
+      settings.fontSizeInterface,
+      settings.fontSizePrompt,
+      settings.fontSizeCode,
+      settings.fontSizeTerminal,
+      settings.fontSmoothing,
       settings.automaticGitFetchInterval,
       settings.enableAssistantStreaming,
       settings.enableProviderUpdateChecks,
@@ -509,6 +568,15 @@ export function useSettingsRestore(onRestored?: () => void) {
       wordWrap: DEFAULT_UNIFIED_SETTINGS.wordWrap,
       diffIgnoreWhitespace: DEFAULT_UNIFIED_SETTINGS.diffIgnoreWhitespace,
       glassOpacity: DEFAULT_UNIFIED_SETTINGS.glassOpacity,
+      fontFamilySans: DEFAULT_UNIFIED_SETTINGS.fontFamilySans,
+      fontFamilyComposer: DEFAULT_UNIFIED_SETTINGS.fontFamilyComposer,
+      fontFamilyCode: DEFAULT_UNIFIED_SETTINGS.fontFamilyCode,
+      fontFamilyTerminal: DEFAULT_UNIFIED_SETTINGS.fontFamilyTerminal,
+      fontSizeInterface: DEFAULT_UNIFIED_SETTINGS.fontSizeInterface,
+      fontSizePrompt: DEFAULT_UNIFIED_SETTINGS.fontSizePrompt,
+      fontSizeCode: DEFAULT_UNIFIED_SETTINGS.fontSizeCode,
+      fontSizeTerminal: DEFAULT_UNIFIED_SETTINGS.fontSizeTerminal,
+      fontSmoothing: DEFAULT_UNIFIED_SETTINGS.fontSmoothing,
       sidebarThreadPreviewCount: DEFAULT_UNIFIED_SETTINGS.sidebarThreadPreviewCount,
       sidebarGroupingAxis: DEFAULT_UNIFIED_SETTINGS.sidebarGroupingAxis,
       sidebarProjectGroupingMode: DEFAULT_UNIFIED_SETTINGS.sidebarProjectGroupingMode,
@@ -559,9 +627,7 @@ export function AppearanceSettingsPanel() {
             <Select
               value={theme}
               onValueChange={(value) => {
-                if (value === "system" || value === "light" || value === "dark") {
-                  setTheme(value);
-                }
+                if (value !== null) setTheme(value);
               }}
             >
               <SelectTrigger className="w-full sm:w-40" aria-label="Theme preference">
@@ -627,6 +693,144 @@ export function AppearanceSettingsPanel() {
         />
 
         <SettingsRow
+          title="Interface font"
+          description="Choose the font family and base size used throughout Studio. Leave the family empty for the app default."
+          control={
+            <FontPreferenceControl
+              ariaLabel="Interface font"
+              family={settings.fontFamilySans}
+              size={settings.fontSizeInterface}
+              min={MIN_INTERFACE_FONT_SIZE}
+              max={MAX_INTERFACE_FONT_SIZE}
+              onFamilyChange={(fontFamilySans) => updateSettings({ fontFamilySans })}
+              onSizeChange={(fontSizeInterface) => updateSettings({ fontSizeInterface })}
+            />
+          }
+          resetAction={
+            settings.fontFamilySans !== "" ||
+            settings.fontSizeInterface !== DEFAULT_INTERFACE_FONT_SIZE ? (
+              <SettingResetButton
+                label="interface font"
+                onClick={() =>
+                  updateSettings({
+                    fontFamilySans: "",
+                    fontSizeInterface: DEFAULT_INTERFACE_FONT_SIZE,
+                  })
+                }
+              />
+            ) : null
+          }
+        />
+
+        <SettingsRow
+          title="Prompt font"
+          description="Set the composer font independently so prompts stay comfortable to write and review."
+          control={
+            <FontPreferenceControl
+              ariaLabel="Prompt font"
+              family={settings.fontFamilyComposer}
+              size={settings.fontSizePrompt}
+              min={MIN_PROMPT_FONT_SIZE}
+              max={MAX_PROMPT_FONT_SIZE}
+              onFamilyChange={(fontFamilyComposer) => updateSettings({ fontFamilyComposer })}
+              onSizeChange={(fontSizePrompt) => updateSettings({ fontSizePrompt })}
+            />
+          }
+          resetAction={
+            settings.fontFamilyComposer !== "" ||
+            settings.fontSizePrompt !== DEFAULT_PROMPT_FONT_SIZE ? (
+              <SettingResetButton
+                label="prompt font"
+                onClick={() =>
+                  updateSettings({
+                    fontFamilyComposer: "",
+                    fontSizePrompt: DEFAULT_PROMPT_FONT_SIZE,
+                  })
+                }
+              />
+            ) : null
+          }
+        />
+
+        <SettingsRow
+          title="Code font"
+          description="Choose the monospace family and size for code blocks, diffs, and file previews."
+          control={
+            <FontPreferenceControl
+              ariaLabel="Code font"
+              family={settings.fontFamilyCode}
+              size={settings.fontSizeCode}
+              min={MIN_CODE_FONT_SIZE}
+              max={MAX_CODE_FONT_SIZE}
+              onFamilyChange={(fontFamilyCode) => updateSettings({ fontFamilyCode })}
+              onSizeChange={(fontSizeCode) => updateSettings({ fontSizeCode })}
+            />
+          }
+          resetAction={
+            settings.fontFamilyCode !== "" || settings.fontSizeCode !== DEFAULT_CODE_FONT_SIZE ? (
+              <SettingResetButton
+                label="code font"
+                onClick={() =>
+                  updateSettings({ fontFamilyCode: "", fontSizeCode: DEFAULT_CODE_FONT_SIZE })
+                }
+              />
+            ) : null
+          }
+        />
+
+        <SettingsRow
+          title="Terminal font"
+          description="Set the family and size used by Studio's xterm.js terminal."
+          control={
+            <FontPreferenceControl
+              ariaLabel="Terminal font"
+              family={settings.fontFamilyTerminal}
+              size={settings.fontSizeTerminal}
+              min={MIN_TERMINAL_FONT_SIZE}
+              max={MAX_TERMINAL_FONT_SIZE}
+              onFamilyChange={(fontFamilyTerminal) => updateSettings({ fontFamilyTerminal })}
+              onSizeChange={(fontSizeTerminal) => updateSettings({ fontSizeTerminal })}
+            />
+          }
+          resetAction={
+            settings.fontFamilyTerminal !== "" ||
+            settings.fontSizeTerminal !== DEFAULT_TERMINAL_FONT_SIZE ? (
+              <SettingResetButton
+                label="terminal font"
+                onClick={() =>
+                  updateSettings({
+                    fontFamilyTerminal: "",
+                    fontSizeTerminal: DEFAULT_TERMINAL_FONT_SIZE,
+                  })
+                }
+              />
+            ) : null
+          }
+        />
+
+        <SettingsRow
+          title="Font smoothing"
+          description="Use thinner antialiased text on platforms that support it."
+          control={
+            <Switch
+              checked={settings.fontSmoothing}
+              onCheckedChange={(checked) => updateSettings({ fontSmoothing: Boolean(checked) })}
+              aria-label="Use antialiased font smoothing"
+            />
+          }
+          resetAction={
+            settings.fontSmoothing !== DEFAULT_UNIFIED_SETTINGS.fontSmoothing ? (
+              <SettingResetButton
+                label="font smoothing"
+                onClick={() =>
+                  updateSettings({ fontSmoothing: DEFAULT_UNIFIED_SETTINGS.fontSmoothing })
+                }
+              />
+            ) : null
+          }
+        />
+
+        <SettingsRow
           title="Word wrap"
           description="Wrap long lines in code blocks, tables, diffs, and file previews by default."
           resetAction={
@@ -651,6 +855,50 @@ export function AppearanceSettingsPanel() {
         />
       </SettingsSection>
     </SettingsPageContainer>
+  );
+}
+
+function FontPreferenceControl({
+  ariaLabel,
+  family,
+  size,
+  min,
+  max,
+  onFamilyChange,
+  onSizeChange,
+}: {
+  ariaLabel: string;
+  family: string;
+  size: number;
+  min: number;
+  max: number;
+  onFamilyChange: (family: string) => void;
+  onSizeChange: (size: number) => void;
+}) {
+  return (
+    <div className="flex w-full items-center gap-2 sm:w-auto">
+      <DraftInput
+        className="min-w-0 flex-1 sm:w-44"
+        value={family}
+        onCommit={onFamilyChange}
+        placeholder="Default"
+        spellCheck={false}
+        aria-label={`${ariaLabel} family`}
+      />
+      <input
+        className="h-8 w-16 rounded-md border border-input bg-background px-2 text-sm text-foreground"
+        type="number"
+        value={size}
+        min={min}
+        max={max}
+        step={1}
+        aria-label={`${ariaLabel} size`}
+        onChange={(event) => {
+          const next = Number(event.currentTarget.value);
+          if (Number.isInteger(next) && next >= min && next <= max) onSizeChange(next);
+        }}
+      />
+    </div>
   );
 }
 

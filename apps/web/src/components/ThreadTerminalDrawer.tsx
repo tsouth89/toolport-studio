@@ -35,6 +35,8 @@ import { writeTextToClipboard } from "~/hooks/useCopyToClipboard";
 import { cn } from "~/lib/utils";
 import { type TerminalContextSelection } from "~/lib/terminalContext";
 import { useOpenInPreferredEditor } from "../editorPreferences";
+import { appearanceFontStack, DEFAULT_CODE_FONT_STACK } from "../appearanceFonts";
+import { useClientSettings } from "../hooks/useSettings";
 import {
   collectWrappedTerminalLinkLine,
   extractTerminalLinks,
@@ -311,6 +313,8 @@ export function TerminalViewport({
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
+  const terminalFontFamily = useClientSettings((settings) => settings.fontFamilyTerminal);
+  const terminalFontSize = useClientSettings((settings) => settings.fontSizeTerminal);
   const environmentId = threadRef.environmentId;
   const serverConfig = useAtomValue(serverEnvironment.configValueAtom(environmentId));
   const openInPreferredEditor = useOpenInPreferredEditor(
@@ -389,10 +393,9 @@ export function TerminalViewport({
     const terminal = new Terminal({
       cursorBlink: true,
       lineHeight: 1,
-      fontSize: 12,
+      fontSize: terminalFontSize,
       scrollback: 5_000,
-      fontFamily:
-        '"SF Mono", "SFMono-Regular", "JetBrains Mono", Consolas, "Liberation Mono", Menlo, monospace',
+      fontFamily: appearanceFontStack(terminalFontFamily, DEFAULT_CODE_FONT_STACK),
       theme: terminalThemeFromApp(mount),
     });
     terminal.loadAddon(fitAddon);
@@ -731,10 +734,18 @@ export function TerminalViewport({
       fitAddonRef.current = null;
       terminal.dispose();
     };
-    // autoFocus is intentionally omitted;
-    // it is only read at mount time and must not trigger terminal teardown/recreation.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cwd, environmentId, runtimeEnvKey, terminalId, threadId, worktreePath]);
+
+  useEffect(() => {
+    const terminal = terminalRef.current;
+    const fitAddon = fitAddonRef.current;
+    if (!terminal || !fitAddon) return;
+    terminal.options.fontFamily = appearanceFontStack(terminalFontFamily, DEFAULT_CODE_FONT_STACK);
+    terminal.options.fontSize = terminalFontSize;
+    fitTerminalSafely(fitAddon);
+    terminal.refresh(0, terminal.rows - 1);
+    void resizeTerminal(terminal.cols, terminal.rows);
+  }, [resizeTerminal, terminalFontFamily, terminalFontSize]);
 
   useEffect(() => {
     const terminal = terminalRef.current;

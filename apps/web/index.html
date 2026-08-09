@@ -44,12 +44,20 @@
         const themeColorMeta = document.querySelector('meta[name="theme-color"]');
         try {
           const storedTheme = window.localStorage.getItem("toolport-studio:theme");
-          const theme =
-            storedTheme === "light" || storedTheme === "dark" || storedTheme === "system"
-              ? storedTheme
-              : "system";
+          const theme = storedTheme ?? "system";
+          const storedAppearance = window.localStorage.getItem(
+            "toolport-studio:theme-appearance-mode",
+          );
+          const appearance =
+            storedAppearance === "light" ||
+            storedAppearance === "dark" ||
+            storedAppearance === "system"
+              ? storedAppearance
+              : theme === "light" || theme === "dark"
+                ? theme
+                : "system";
           const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-          const isDark = theme === "dark" || (theme === "system" && prefersDark);
+          const isDark = appearance === "dark" || (appearance === "system" && prefersDark);
           document.documentElement.classList.toggle("dark", isDark);
           const chromeColor = isDark ? DARK_BACKGROUND : LIGHT_BACKGROUND;
           document.documentElement.style.backgroundColor = chromeColor;
