@@ -106,6 +106,7 @@ import {
   OPEN_TOOL_FORCE_CLOSE_DETAIL,
   OPEN_TOOL_FORCE_CLOSE_SOURCE,
   shouldForceCloseRemainingOpenToolsOnSettle,
+  PROVIDER_TURN_CAPABILITIES,
   trackLiveTurn,
   type TurnQueueState,
 } from "../turnEngine/index.ts";
@@ -4774,6 +4775,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     const liveRealTurn =
       context.turnState && context.turnState.synthetic !== true ? context.turnState : null;
     const canSteer = canSteerSendTurn({
+      sendWhileRunning: PROVIDER_TURN_CAPABILITIES.claudeAgent.sendWhileRunning,
       promptsInFlight: liveRealTurn !== null ? 1 : 0,
       hasActiveTurnId: liveRealTurn !== null,
       activeTurnInterrupted: false,

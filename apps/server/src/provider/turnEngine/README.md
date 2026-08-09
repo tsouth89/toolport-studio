@@ -25,6 +25,9 @@ model, capability matrix, stop settle rules).
 - **No synthetic “Following up”** `runtime.warning`. Silence beats invention.
 - **No force-close open tools on steer.** Ghost tool rows are a projection
   problem; killing real tools is not the fix.
+- **Capability declarations drive steer.** Every adapter reads
+  `PROVIDER_TURN_CAPABILITIES`; independent conformance bindings describe the
+  real transport and fail if a declaration drifts from observed behavior.
 - **Force-close open tools on Stop.** Settlement must not wait on wedged tools.
 
 ## Wiring status
@@ -51,6 +54,8 @@ model, capability matrix, stop settle rules).
 - Conformance (all five providers): first-progress, assistant-text, interrupt, stop-mid-tool,
   send-while-running, post-stop-follow-up, pending-approval, process-death, resume-preserves-history
 - Queue drain is transport-wired on **Grok** only; other providers still declare `steer`.
+  The shared eligibility gate rejects native interjection whenever a provider
+  declares queueing, and conformance asserts the declared behavior.
 - Every provider must claim terminal ownership before session mutation, tool force-close,
   `turn.completed`, or queue drain. Normal results match the exact live turn; only explicit
   Stop/death recovery may fall back to the currently tracked turn.

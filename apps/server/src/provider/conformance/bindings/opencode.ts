@@ -338,6 +338,7 @@ function makeRuntimeDouble(
 
 export const openCodeConformanceBinding: ConformanceBinding = {
   provider: "opencode",
+  // Independent oracle: OpenCode reuses the busy session's live turn.
   sendWhileRunning: "steer",
   openSession: (script, options?: ConformanceOpenSessionOptions) =>
     Effect.gen(function* () {

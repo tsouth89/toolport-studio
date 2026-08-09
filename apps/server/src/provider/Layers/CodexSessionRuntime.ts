@@ -47,7 +47,7 @@ import { codexSessionAppServerArgs } from "./codexLaunchArgs.ts";
 import { expandHomePath } from "../../pathExpansion.ts";
 import { buildCodexDeveloperInstructions } from "../CodexDeveloperInstructions.ts";
 import { buildConversationRehydrationPrefix } from "../conversationRehydration.ts";
-import { canSteerSendTurn } from "../turnEngine/index.ts";
+import { canSteerSendTurn, PROVIDER_TURN_CAPABILITIES } from "../turnEngine/index.ts";
 const decodeV2TurnStartResponse = Schema.decodeUnknownEffect(EffectCodexSchema.V2TurnStartResponse);
 
 const PROVIDER = ProviderDriverKind.make("codex");
@@ -481,6 +481,7 @@ export function canSteerCodexSendTurn(input: {
   }
   if (
     !canSteerSendTurn({
+      sendWhileRunning: PROVIDER_TURN_CAPABILITIES.codex.sendWhileRunning,
       promptsInFlight: input.status === "running" ? 1 : 0,
       hasActiveTurnId: input.activeTurnId !== undefined,
       activeTurnInterrupted: false,

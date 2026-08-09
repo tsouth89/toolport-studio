@@ -284,6 +284,7 @@ function playScript(query: ScriptedClaudeQuery, script: ConformanceScript, seq: 
 
 export const claudeConformanceBinding: ConformanceBinding = {
   provider: "claude",
+  // Independent oracle: Claude's prompt queue actually supports native steer.
   sendWhileRunning: "steer",
   openSession: (script, options?: ConformanceOpenSessionOptions) =>
     Effect.gen(function* () {

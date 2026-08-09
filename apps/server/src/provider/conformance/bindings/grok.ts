@@ -124,6 +124,7 @@ export function scriptToAcpEnv(script: ConformanceScript): Record<string, string
 
 export const grokConformanceBinding: ConformanceBinding = {
   provider: "grok",
+  // Independent oracle: Grok ACP accepts a concurrent preempting prompt.
   sendWhileRunning: "steer",
   openSession: (script, options?: ConformanceOpenSessionOptions) =>
     Effect.gen(function* () {

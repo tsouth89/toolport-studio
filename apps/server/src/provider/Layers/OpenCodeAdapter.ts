@@ -71,6 +71,7 @@ import {
   markTurnStopping,
   OPEN_TOOL_FORCE_CLOSE_DETAIL,
   OPEN_TOOL_FORCE_CLOSE_SOURCE,
+  PROVIDER_TURN_CAPABILITIES,
   shouldForceCloseRemainingOpenToolsOnSettle,
   trackLiveTurn,
   type TurnQueueState,
@@ -2349,6 +2350,7 @@ export function makeOpenCodeAdapter(
       // the active turn id is reused instead of opening a new turn.
       // Steer eligibility is shared turn-engine policy (SOU-428).
       const steeringTurnId = canSteerSendTurn({
+        sendWhileRunning: PROVIDER_TURN_CAPABILITIES.opencode.sendWhileRunning,
         promptsInFlight: context.activeTurnId !== undefined ? 1 : 0,
         hasActiveTurnId: context.activeTurnId !== undefined,
         activeTurnInterrupted: false,
