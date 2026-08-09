@@ -22,6 +22,7 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
+import { writeFileStringAtomically } from "../atomicWrite.ts";
 import * as WorkspaceEntries from "./WorkspaceEntries.ts";
 import * as WorkspacePaths from "./WorkspacePaths.ts";
 
@@ -267,20 +268,73 @@ export const make = Effect.gen(function* () {
       relativePath: input.relativePath,
     });
 
-    yield* fileSystem.makeDirectory(path.dirname(target.absolutePath), { recursive: true }).pipe(
-      Effect.mapError(
-        (cause) =>
+    const realWorkspaceRoot = yield* Effect.tryPromise({
+      try: () => NodeFSP.realpath(input.cwd),
+      catch: (cause) =>
+        new WorkspaceFileSystemOperationError({
+          workspaceRoot: input.cwd,
+          relativePath: input.relativePath,
+          resolvedPath: target.absolutePath,
+          operationPath: input.cwd,
+          operation: "realpath-workspace-root",
+          cause,
+        }),
+    });
+
+    // Resolve the nearest existing ancestor so a symlink escape is caught even
+    // when the file (or some parent directories) does not exist yet and would
+    // otherwise be created through the symlink.
+    let probePath = target.absolutePath;
+    while (true) {
+      const resolvedProbe = yield* Effect.tryPromise({
+        try: async () => {
+          try {
+            return await NodeFSP.realpath(probePath);
+          } catch (cause) {
+            if (
+              (cause as NodeJS.ErrnoException).code === "ENOENT" &&
+              probePath !== realWorkspaceRoot
+            ) {
+              probePath = path.dirname(probePath);
+              return null;
+            }
+            throw cause;
+          }
+        },
+        catch: (cause) =>
           new WorkspaceFileSystemOperationError({
             workspaceRoot: input.cwd,
             relativePath: input.relativePath,
             resolvedPath: target.absolutePath,
-            operationPath: path.dirname(target.absolutePath),
-            operation: "make-directory",
+            operationPath: probePath,
+            operation: "realpath-target",
             cause,
           }),
-      ),
-    );
-    yield* fileSystem.writeFileString(target.absolutePath, input.contents).pipe(
+      });
+      if (resolvedProbe !== null) {
+        const relativeRealPath = path.relative(realWorkspaceRoot, resolvedProbe);
+        if (
+          relativeRealPath.startsWith(`..${path.sep}`) ||
+          relativeRealPath === ".." ||
+          path.isAbsolute(relativeRealPath)
+        ) {
+          return yield* new WorkspaceFilePathEscapeError({
+            workspaceRoot: input.cwd,
+            relativePath: input.relativePath,
+            resolvedWorkspaceRoot: realWorkspaceRoot,
+            resolvedPath: resolvedProbe,
+          });
+        }
+        break;
+      }
+    }
+
+    yield* writeFileStringAtomically({
+      filePath: target.absolutePath,
+      contents: input.contents,
+    }).pipe(
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(Path.Path, path),
       Effect.mapError(
         (cause) =>
           new WorkspaceFileSystemOperationError({
