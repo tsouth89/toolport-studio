@@ -1642,6 +1642,82 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  // interrupt() is best-effort (2s timeout, errors ignored), so the trailing
+  // result it is supposed to leave behind may never arrive. The guard that
+  // discards that result then stays armed, and the next turn to reach `result`
+  // without emitting an assistant message first — an immediate rate-limit or
+  // auth rejection, error_max_turns — had its own completion swallowed and sat
+  // on Working forever.
+  it.effect("settles a follow-up turn that produces no assistant message", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+      const collector = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          runtimeEvents.push(event);
+        }),
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      const interruptedTurn = yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "stop this turn",
+        attachments: [],
+      });
+      // Stop arms the discard guard, but this interrupt leaves no trailing
+      // result behind for it to consume.
+      yield* adapter.interruptTurn(THREAD_ID, interruptedTurn.turnId);
+      const followUpTurn = yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "follow up immediately",
+        attachments: [],
+      });
+
+      // Non-assistant traffic for the live turn: proof the follow-up is
+      // producing its own messages, which is all the guard needs to disarm.
+      harness.query.emit({
+        type: "rate_limit_event",
+        session_id: "sdk-session-follow-up",
+        uuid: "rate-limit-follow-up",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+        errors: ["Claude usage limit reached."],
+        session_id: "sdk-session-follow-up",
+        uuid: "result-follow-up-no-assistant",
+      } as unknown as SDKMessage);
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+
+      const completions = runtimeEvents.filter(
+        (event): event is Extract<ProviderRuntimeEvent, { type: "turn.completed" }> =>
+          event.type === "turn.completed",
+      );
+      assert.deepEqual(
+        completions.map((event) => String(event.turnId)),
+        [String(interruptedTurn.turnId), String(followUpTurn.turnId)],
+      );
+      const liveSession = (yield* adapter.listSessions()).find(
+        (entry) => entry.threadId === THREAD_ID,
+      );
+      assert.notEqual(liveSession?.status, "running");
+      assert.equal(liveSession?.activeTurnId, undefined);
+
+      yield* Fiber.interrupt(collector).pipe(Effect.ignore);
+      yield* adapter.stopSession(THREAD_ID);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("does not settle a foreground turn from a resumed background-task result", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

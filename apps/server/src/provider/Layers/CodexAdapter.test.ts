@@ -1006,6 +1006,65 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
     }),
   );
 
+  // One Codex notification maps to a batch of runtime events: a provider-emitted
+  // capacity/auth failure arrives as `[runtime.error, turn.completed]`. Refusing
+  // the whole batch because the terminal event lost the settlement race threw
+  // away the only copy of that banner the user would ever see.
+  it.effect("keeps a batched runtime.error when its terminal event cannot claim", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const eventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter(
+          (event) => event.type === "turn.completed" || event.type === "runtime.error",
+        ),
+        Stream.take(2),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      const emit = (id: string, method: "turn/started" | "turn/completed", turn: unknown) =>
+        runtime.emit({
+          id: asEventId(id),
+          kind: "notification",
+          provider: ProviderDriverKind.make("codex"),
+          createdAt: "2026-01-01T00:00:00.000Z",
+          method,
+          threadId: asThreadId("thread-1"),
+          turnId: asTurnId("turn-batched"),
+          payload: { threadId: "provider-thread-1", turn },
+        });
+
+      yield* emit("evt-batched-start", "turn/started", { id: "turn-batched" });
+      yield* emit("evt-batched-done", "turn/completed", {
+        id: "turn-batched",
+        status: "completed",
+        items: [],
+      });
+      // Duplicate terminal for the turn that already settled, this time
+      // carrying the provider's explanation as assistant text.
+      yield* emit("evt-batched-dupe", "turn/completed", {
+        id: "turn-batched",
+        status: "completed",
+        items: [
+          {
+            type: "agentMessage",
+            id: "m1",
+            text: "Error: RetriableError: [resource_exhausted] Error",
+          },
+        ],
+      });
+
+      const events = Array.from(yield* Fiber.join(eventsFiber).pipe(Effect.timeout("5 seconds")));
+      NodeAssert.deepEqual(
+        events.map((event) => event.type),
+        ["turn.completed", "runtime.error"],
+      );
+      // The duplicate terminal itself stays suppressed — only its companion
+      // event survives.
+      NodeAssert.equal(events.filter((event) => event.type === "turn.completed").length, 1);
+    }),
+  );
+
   it.effect("does not reopen a settled turn when sendTurn returns late", () =>
     Effect.gen(function* () {
       const { adapter, runtime } = yield* startLifecycleRuntime();

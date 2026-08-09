@@ -1804,12 +1804,18 @@ export function makeOpenCodeAdapter(
             break;
           }
 
-          const idleTurnId = context.providerBusyTurnId;
-          if (
-            event.properties.status.type === "idle" &&
-            !idleTurnId &&
-            context.turnLifecycle.activeTurnId === undefined
-          ) {
+          // Terminal idle binds to the turn that observed the provider's busy
+          // transition. OpenCode only emits that edge on idle -> busy, so a turn
+          // opened while the server was already busy never records one. Fall back
+          // to the authoritative lifecycle owner rather than dropping the only
+          // terminal signal this provider has: a dropped idle strands the turn on
+          // Working with no further event to recover from.
+          const idleTurnId =
+            context.providerBusyTurnId ??
+            (context.turnLifecycle.activeTurnId
+              ? TurnId.make(context.turnLifecycle.activeTurnId)
+              : undefined);
+          if (event.properties.status.type === "idle" && !idleTurnId) {
             // An id-less busy/idle pair can arrive while restoring a provider
             // session, before Studio has a turn owner to bind it to. Reconcile
             // stale Working state only when no authoritative turn is live; a

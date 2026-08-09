@@ -3240,14 +3240,6 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       return;
     }
 
-    // SDK stream order guarantees an assistant message precedes its result.
-    // If a follow-up is already producing output, the interrupted turn did not
-    // leave a trailing result ahead of it, so the guard must not swallow this
-    // turn's legitimate completion.
-    if (context.turnState && context.ignoreNextResultAfterInterrupt) {
-      context.ignoreNextResultAfterInterrupt = false;
-    }
-
     // Auto-start a synthetic turn for assistant messages that arrive without
     // an active turn (e.g., background agent/subagent responses between user prompts).
     if (!context.turnState) {
@@ -3838,6 +3830,23 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
   ) {
     yield* logNativeSdkMessage(context, message);
     yield* ensureThreadId(context, message);
+
+    // The interrupted turn's trailing result arrives before any message of the
+    // next prompt. So once a live turn produces traffic of its own, that result
+    // either already came and went or is never coming, and the guard has to be
+    // disarmed either way — leaving it armed swallows this turn's own result
+    // and strands it on Working. Keying only off assistant messages missed the
+    // turns that reach `result` without producing one (immediate rate-limit or
+    // auth rejection, error_max_turns), and interrupt() itself is best-effort
+    // (2s timeout, errors ignored), so "a trailing result always follows" is
+    // not something the guard can assume.
+    if (
+      message.type !== "result" &&
+      context.turnState !== undefined &&
+      context.ignoreNextResultAfterInterrupt
+    ) {
+      context.ignoreNextResultAfterInterrupt = false;
+    }
 
     switch (message.type) {
       case "stream_event":
