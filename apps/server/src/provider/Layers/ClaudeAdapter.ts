@@ -3240,14 +3240,6 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       return;
     }
 
-    // SDK stream order guarantees an assistant message precedes its result.
-    // If a follow-up is already producing output, the interrupted turn did not
-    // leave a trailing result ahead of it, so the guard must not swallow this
-    // turn's legitimate completion.
-    if (context.turnState && context.ignoreNextResultAfterInterrupt) {
-      context.ignoreNextResultAfterInterrupt = false;
-    }
-
     // Auto-start a synthetic turn for assistant messages that arrive without
     // an active turn (e.g., background agent/subagent responses between user prompts).
     if (!context.turnState) {
@@ -3264,6 +3256,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         capturedProposedPlanKeys: new Set(),
         nextSyntheticAssistantBlockIndex: -1,
       };
+      // Synthetic turns are live stream traffic after Stop. Disarm so their
+      // result is not treated as the interrupted turn's trailing completion.
+      context.ignoreNextResultAfterInterrupt = false;
       context.turnLifecycle = trackLiveTurn(context.turnLifecycle, String(turnId));
       context.session = {
         ...context.session,
@@ -3337,13 +3332,14 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     if (message.type !== "result") {
       return;
     }
+    const result = message as SDKResultMessage;
 
     // Resumed Claude sessions may first replay the completion of a background
     // task. The SDK marks that result explicitly. It belongs to the prior task,
     // not to the foreground prompt Studio just opened; settling the current
     // turn here clears its correlation and makes the real response appear as a
     // synthetic second turn (observed in SBS-604).
-    const origin = (message as SDKMessage & { readonly origin?: { readonly kind?: string } })
+    const origin = (result as SDKResultMessage & { readonly origin?: { readonly kind?: string } })
       .origin;
     if (origin?.kind === "task-notification") {
       yield* Effect.logDebug("ignored Claude background-task result for foreground lifecycle", {
@@ -3353,18 +3349,28 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       return;
     }
 
+    // After Stop, the SDK may still emit one trailing result for the interrupted
+    // turn. Ignore that when it classifies as an interrupt/abort diagnostic.
+    // Do not ignore ordinary failures (rate-limit, auth, error_max_turns): when
+    // interrupt() never left a trailing result, those are the live turn's only
+    // completion and must settle it. The non-result disarm below covers the
+    // case where the trailing result is delayed past live traffic.
     if (context.ignoreNextResultAfterInterrupt) {
+      if (context.turnState === undefined || isInterruptedResult(result)) {
+        context.ignoreNextResultAfterInterrupt = false;
+        yield* Effect.logDebug("ignored Claude result trailing an interrupted turn", {
+          threadId: context.session.threadId,
+          subtype: result.subtype,
+          ...(context.turnState ? { liveTurnId: context.turnState.turnId } : {}),
+        });
+        return;
+      }
+      // Live turn + non-interrupt result: this is the follow-up's own terminal.
       context.ignoreNextResultAfterInterrupt = false;
-      yield* Effect.logDebug("ignored Claude result trailing an interrupted turn", {
-        threadId: context.session.threadId,
-        subtype: message.subtype,
-        ...(context.turnState ? { liveTurnId: context.turnState.turnId } : {}),
-      });
-      return;
     }
 
-    const status = turnStatusFromResult(message);
-    const errorMessage = message.subtype === "success" ? undefined : message.errors[0];
+    const status = turnStatusFromResult(result);
+    const errorMessage = result.subtype === "success" ? undefined : result.errors[0];
 
     // A result with no live turn is the tail of a turn we already settled —
     // interruptTurn force-settles and clears turnState before the SDK's result
@@ -3386,12 +3392,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     } else if (status === "failed") {
       yield* Effect.logDebug("Claude result arrived after the turn was already settled", {
         threadId: context.session.threadId,
-        subtype: message.subtype,
+        subtype: result.subtype,
         ...(errorMessage ? { errorMessage } : {}),
       });
     }
 
-    yield* completeTurn(context, status, errorMessage, message);
+    yield* completeTurn(context, status, errorMessage, result);
   });
 
   const handleSystemMessage = Effect.fn("handleSystemMessage")(function* (
@@ -3838,6 +3844,19 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
   ) {
     yield* logNativeSdkMessage(context, message);
     yield* ensureThreadId(context, message);
+
+    // Belt-and-suspenders with the sendTurn/synthetic disarm above: any
+    // non-result traffic on a live turn also proves the interrupted trailing
+    // result is either gone or will not arrive. interrupt() is best-effort
+    // (2s timeout, errors ignored), so the guard must not assume it always
+    // leaves a result behind.
+    if (
+      message.type !== "result" &&
+      context.turnState !== undefined &&
+      context.ignoreNextResultAfterInterrupt
+    ) {
+      context.ignoreNextResultAfterInterrupt = false;
+    }
 
     switch (message.type) {
       case "stream_event":

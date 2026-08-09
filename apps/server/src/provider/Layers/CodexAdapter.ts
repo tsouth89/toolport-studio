@@ -1896,24 +1896,36 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
               runtimeEvent.type === "turn.completed" || runtimeEvent.type === "turn.aborted",
           );
           if (terminalEvent) {
-            if (!terminalEvent.turnId) {
-              return;
+            const settlement = terminalEvent.turnId
+              ? claimTurnSettlement(session.turnLifecycle, {
+                  turnId: String(terminalEvent.turnId),
+                  reason:
+                    terminalEvent.type === "turn.aborted" ||
+                    terminalEvent.payload.state === "failed"
+                      ? "error"
+                      : terminalEvent.payload.state === "cancelled" ||
+                          terminalEvent.payload.state === "interrupted"
+                        ? "cancelled"
+                        : "completed",
+                })
+              : undefined;
+            if (settlement?.claimed) {
+              session.turnLifecycle = settlement.state;
+              session.settledTurnIds.add(String(terminalEvent.turnId));
+            } else {
+              // Suppress only the terminal event itself. One provider
+              // notification maps to a batch, and a provider-emitted capacity
+              // or auth failure arrives as `[runtime.error, turn.completed]` —
+              // dropping the batch wholesale threw away the only copy of that
+              // banner Studio will ever see, and skipped the open-tool
+              // bookkeeping below, leaving ghost inProgress rows behind.
+              runtimeEvents = runtimeEvents.filter(
+                (runtimeEvent) => runtimeEvent !== terminalEvent,
+              );
+              if (runtimeEvents.length === 0) {
+                return;
+              }
             }
-            const settlement = claimTurnSettlement(session.turnLifecycle, {
-              turnId: String(terminalEvent.turnId),
-              reason:
-                terminalEvent.type === "turn.aborted" || terminalEvent.payload.state === "failed"
-                  ? "error"
-                  : terminalEvent.payload.state === "cancelled" ||
-                      terminalEvent.payload.state === "interrupted"
-                    ? "cancelled"
-                    : "completed",
-            });
-            if (!settlement.claimed) {
-              return;
-            }
-            session.turnLifecycle = settlement.state;
-            session.settledTurnIds.add(String(terminalEvent.turnId));
           }
           runtimeEvents = trackCodexOpenToolsFromEvents(session, runtimeEvents);
         }

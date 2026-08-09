@@ -90,6 +90,7 @@ const runtimeMock = {
     revertCalls: [] as Array<{ sessionID: string; messageID?: string }>,
     promptCalls: [] as Array<unknown>,
     promptAsyncError: null as Error | null,
+    onPromptAsync: null as (() => void) | null,
     closeError: null as Error | null,
     messages: [] as MessageEntry[],
     subscribedEvents: [] as unknown[],
@@ -114,6 +115,7 @@ const runtimeMock = {
     this.state.revertCalls.length = 0;
     this.state.promptCalls.length = 0;
     this.state.promptAsyncError = null;
+    this.state.onPromptAsync = null;
     this.state.closeError = null;
     this.state.messages = [];
     this.state.subscribedEvents = [];
@@ -212,6 +214,10 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
         },
         promptAsync: async (input: unknown) => {
           runtimeMock.state.promptCalls.push(input);
+          // Lets a test push provider events that only exist once a turn is
+          // live. The subscribed-event array is iterated lazily, so appending
+          // here still reaches the adapter.
+          runtimeMock.state.onPromptAsync?.();
           if (runtimeMock.state.promptAsyncError) {
             throw runtimeMock.state.promptAsyncError;
           }
@@ -238,9 +244,23 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
       },
       event: {
         subscribe: async () => ({
+          // Yield current events, then briefly poll for late pushes from
+          // onPromptAsync / mid-test subscribedEvents.push. Cap idle wait so
+          // tests that never stopSession still finish.
           stream: (async function* () {
-            for (const event of runtimeMock.state.subscribedEvents) {
-              yield event;
+            let index = 0;
+            let idleRounds = 0;
+            while (idleRounds < 40) {
+              if (index < runtimeMock.state.subscribedEvents.length) {
+                idleRounds = 0;
+                while (index < runtimeMock.state.subscribedEvents.length) {
+                  yield runtimeMock.state.subscribedEvents[index++];
+                }
+                continue;
+              }
+              idleRounds++;
+              // @effect-diagnostics-next-line globalTimers:off - test double polls for late push events
+              await new Promise((resolve) => setTimeout(resolve, 5));
             }
           })(),
         }),
@@ -1040,6 +1060,162 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive more", (it) => {
       const session = (yield* adapter.listSessions()).find((entry) => entry.threadId === threadId);
       NodeAssert.equal(session?.status, "ready");
       NodeAssert.equal(session?.activeTurnId, undefined);
+      yield* adapter.stopSession(threadId);
+    }).pipe(TestClock.withLive),
+  );
+
+  // OpenCode only emits session.status busy on the idle -> busy edge, so a turn
+  // opened while the server is already busy (Stop that never landed, an error
+  // that settled Studio's side while the server kept working) never records
+  // one. Binding terminal idle solely to that edge dropped the only terminal
+  // signal this provider has and stranded the turn on Working forever.
+  it.effect("settles a turn whose terminal idle arrives with no busy edge", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-opencode-idle-without-busy");
+      const sessionID = "http://127.0.0.1:9999/session";
+      const completed: Array<ProviderRuntimeEvent> = [];
+      const eventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.threadId === threadId && event.type === "turn.completed"),
+        Stream.runForEach((event) => Effect.sync(() => completed.push(event))),
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      // First turn observes busy so the adapter learns the server is busy.
+      // Stop settles Studio without an idle (abort never lands), leaving the
+      // provider still busy — the next turn must settle from unpaired idle.
+      runtimeMock.state.onPromptAsync = () => {
+        runtimeMock.state.subscribedEvents.push({
+          type: "session.status",
+          properties: { sessionID, status: { type: "busy" } },
+        });
+      };
+      const firstTurn = yield* adapter.sendTurn({
+        threadId,
+        input: "first",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("opencode"),
+          model: "openai/gpt-5",
+        },
+      });
+      yield* Effect.sleep("30 millis");
+      yield* adapter.interruptTurn(threadId, firstTurn.turnId);
+      yield* Effect.sleep("20 millis");
+      NodeAssert.equal(completed.length, 1);
+      NodeAssert.equal(String(completed[0]?.turnId), String(firstTurn.turnId));
+
+      // Follow-up: no busy edge (server already busy). Idle alone must settle.
+      runtimeMock.state.onPromptAsync = () => {
+        runtimeMock.state.subscribedEvents.push({
+          type: "session.status",
+          properties: { sessionID, status: { type: "idle" } },
+        });
+      };
+      const secondTurn = yield* adapter.sendTurn({
+        threadId,
+        input: "do the thing",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("opencode"),
+          model: "openai/gpt-5",
+        },
+      });
+      yield* Effect.sleep("50 millis");
+
+      NodeAssert.equal(completed.length, 2);
+      NodeAssert.equal(String(completed[1]?.turnId), String(secondTurn.turnId));
+      if (completed[1]?.type === "turn.completed") {
+        NodeAssert.equal(completed[1].payload.state, "completed");
+      }
+      const session = (yield* adapter.listSessions()).find((entry) => entry.threadId === threadId);
+      NodeAssert.equal(session?.status, "ready");
+      NodeAssert.equal(session?.activeTurnId, undefined);
+      yield* Fiber.interrupt(eventsFiber).pipe(Effect.ignore);
+      yield* adapter.stopSession(threadId);
+    }).pipe(TestClock.withLive),
+  );
+
+  // After a clean busy→idle settle, the next turn must observe its own busy
+  // edge. A stale idle with no busy for the new turn must not complete it.
+  it.effect("does not settle a fresh turn from a stale idle without busy", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-opencode-stale-idle");
+      const sessionID = "http://127.0.0.1:9999/session";
+      const completed: Array<ProviderRuntimeEvent> = [];
+      const eventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.threadId === threadId && event.type === "turn.completed"),
+        Stream.runForEach((event) => Effect.sync(() => completed.push(event))),
+        Effect.forkChild,
+      );
+
+      runtimeMock.state.onPromptAsync = () => {
+        runtimeMock.state.subscribedEvents.push({
+          type: "session.status",
+          properties: { sessionID, status: { type: "busy" } },
+        });
+        runtimeMock.state.subscribedEvents.push({
+          type: "session.status",
+          properties: { sessionID, status: { type: "idle" } },
+        });
+      };
+
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const firstTurn = yield* adapter.sendTurn({
+        threadId,
+        input: "first",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("opencode"),
+          model: "openai/gpt-5",
+        },
+      });
+      yield* Effect.sleep("50 millis");
+      NodeAssert.equal(completed.length, 1);
+      NodeAssert.equal(String(completed[0]?.turnId), String(firstTurn.turnId));
+
+      // Fresh turn after a clean idle: do not attach unpaired fallback.
+      runtimeMock.state.onPromptAsync = null;
+      const secondTurn = yield* adapter.sendTurn({
+        threadId,
+        input: "second",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("opencode"),
+          model: "openai/gpt-5",
+        },
+      });
+      runtimeMock.state.subscribedEvents.push({
+        type: "session.status",
+        properties: { sessionID, status: { type: "idle" } },
+      });
+      yield* Effect.sleep("50 millis");
+
+      NodeAssert.equal(completed.length, 1);
+      const session = (yield* adapter.listSessions()).find((entry) => entry.threadId === threadId);
+      NodeAssert.equal(session?.status, "running");
+      NodeAssert.equal(String(session?.activeTurnId), String(secondTurn.turnId));
+
+      // Real busy→idle for the second turn still settles it.
+      runtimeMock.state.subscribedEvents.push({
+        type: "session.status",
+        properties: { sessionID, status: { type: "busy" } },
+      });
+      runtimeMock.state.subscribedEvents.push({
+        type: "session.status",
+        properties: { sessionID, status: { type: "idle" } },
+      });
+      yield* Effect.sleep("50 millis");
+      NodeAssert.equal(completed.length, 2);
+      NodeAssert.equal(String(completed[1]?.turnId), String(secondTurn.turnId));
+
+      yield* Fiber.interrupt(eventsFiber).pipe(Effect.ignore);
       yield* adapter.stopSession(threadId);
     }).pipe(TestClock.withLive),
   );
