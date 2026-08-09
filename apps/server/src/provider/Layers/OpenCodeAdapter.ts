@@ -308,6 +308,19 @@ interface OpenCodeSessionContext {
   activeTurnId: TurnId | undefined;
   /** Turn for which OpenCode has emitted session.status=busy. */
   providerBusyTurnId: TurnId | undefined;
+  /**
+   * Last known provider busy/idle. Stays true after Stop when abort may not
+   * have landed (best-effort), so the next turn can opt into unpaired-idle
+   * settlement. Cleared only on a real session.status idle.
+   */
+  providerSessionBusy: boolean;
+  /**
+   * Turn opened while the provider was already busy. OpenCode only emits the
+   * busy edge on idle→busy, so this turn will not get providerBusyTurnId and
+   * must be allowed to settle from the next idle. Never used as a catch-all
+   * for arbitrary active turns (avoids stale idle completing a fresh turn).
+   */
+  unpairedIdleAllowedForTurnId: TurnId | undefined;
   /** Shared authoritative owner for terminal turn effects (SBS-428). */
   turnLifecycle: TurnQueueState;
   activeAgent: string | undefined;
@@ -1781,7 +1794,11 @@ export function makeOpenCodeAdapter(
 
         case "session.status": {
           if (event.properties.status.type === "busy") {
+            context.providerSessionBusy = true;
             context.providerBusyTurnId = turnId;
+            // Normal busy edge owns settlement; unpaired fallback is only for
+            // turns that never observe this edge.
+            context.unpairedIdleAllowedForTurnId = undefined;
             yield* updateProviderSession(context, {
               status: "running",
               activeTurnId: turnId,
@@ -1807,21 +1824,31 @@ export function makeOpenCodeAdapter(
           // Terminal idle binds to the turn that observed the provider's busy
           // transition. OpenCode only emits that edge on idle -> busy, so a turn
           // opened while the server was already busy never records one. Fall back
-          // to the authoritative lifecycle owner rather than dropping the only
-          // terminal signal this provider has: a dropped idle strands the turn on
-          // Working with no further event to recover from.
-          const idleTurnId =
-            context.providerBusyTurnId ??
-            (context.turnLifecycle.activeTurnId
-              ? TurnId.make(context.turnLifecycle.activeTurnId)
-              : undefined);
+          // only for that turn (unpairedIdleAllowedForTurnId), not any active
+          // lifecycle owner — a stale idle after a clean turn rotation must not
+          // complete a fresh turn that never ran.
+          const unpairedIdleTurnId =
+            context.unpairedIdleAllowedForTurnId !== undefined &&
+            context.turnLifecycle.activeTurnId === String(context.unpairedIdleAllowedForTurnId)
+              ? context.unpairedIdleAllowedForTurnId
+              : undefined;
+          const idleTurnId = context.providerBusyTurnId ?? unpairedIdleTurnId;
           if (event.properties.status.type === "idle" && !idleTurnId) {
             // An id-less busy/idle pair can arrive while restoring a provider
             // session, before Studio has a turn owner to bind it to. Reconcile
             // stale Working state only when no authoritative turn is live; a
             // late idle must not clear a newly preparing turn.
+            if (context.turnLifecycle.activeTurnId !== undefined) {
+              // Live turn exists but this idle is unbound (no busy edge and no
+              // unpaired-idle grant). Ignore it so a stale idle after a clean
+              // rotation cannot complete or clear the fresh turn.
+              context.providerSessionBusy = false;
+              break;
+            }
             context.activeTurnId = undefined;
             context.providerBusyTurnId = undefined;
+            context.providerSessionBusy = false;
+            context.unpairedIdleAllowedForTurnId = undefined;
             yield* updateProviderSession(context, { status: "ready" }, { clearActiveTurnId: true });
             break;
           }
@@ -1838,6 +1865,8 @@ export function makeOpenCodeAdapter(
             }
             context.turnLifecycle = settlement.state;
             context.providerBusyTurnId = undefined;
+            context.providerSessionBusy = false;
+            context.unpairedIdleAllowedForTurnId = undefined;
             yield* forceCloseOpenTools(context, idleTurnId);
             yield* forceCloseOpenCodeAgents(
               context,
@@ -1922,6 +1951,9 @@ export function makeOpenCodeAdapter(
           }
           context.activeTurnId = undefined;
           context.providerBusyTurnId = undefined;
+          context.unpairedIdleAllowedForTurnId = undefined;
+          // session.error does not prove the server is idle; keep
+          // providerSessionBusy so a follow-up turn can use unpaired idle.
           yield* updateProviderSession(
             context,
             {
@@ -2252,6 +2284,8 @@ export function makeOpenCodeAdapter(
           turns: [],
           activeTurnId: undefined,
           providerBusyTurnId: undefined,
+          providerSessionBusy: false,
+          unpairedIdleAllowedForTurnId: undefined,
           turnLifecycle: emptyTurnQueue(),
           activeAgent: undefined,
           activeVariant: undefined,
@@ -2420,6 +2454,11 @@ export function makeOpenCodeAdapter(
 
       if (steeringTurnId === undefined) {
         context.turnLifecycle = trackLiveTurn(context.turnLifecycle, String(turnId));
+        // OpenCode skips the busy edge when the server is already busy (Stop
+        // abort that never landed, prior error that settled Studio only). Allow
+        // the next idle to settle *this* turn only — not whatever happens to be
+        // active later.
+        context.unpairedIdleAllowedForTurnId = context.providerSessionBusy ? turnId : undefined;
         yield* emit({
           ...(yield* buildEventBase({ threadId: input.threadId, turnId })),
           type: "turn.started",
@@ -2459,6 +2498,7 @@ export function makeOpenCodeAdapter(
                 context.turnLifecycle = settlement.state;
                 context.activeTurnId = undefined;
                 context.providerBusyTurnId = undefined;
+                context.unpairedIdleAllowedForTurnId = undefined;
                 context.activeAgent = undefined;
                 context.activeVariant = undefined;
                 yield* updateProviderSession(
@@ -2535,6 +2575,9 @@ export function makeOpenCodeAdapter(
           // turn event to emit, but Stop must clear stale Working state.
           context.activeTurnId = undefined;
           context.providerBusyTurnId = undefined;
+          context.unpairedIdleAllowedForTurnId = undefined;
+          // Keep providerSessionBusy: abort is best-effort and the server may
+          // still be mid-turn. The next sendTurn needs unpaired-idle fallback.
           context.activeAgent = undefined;
           context.activeVariant = undefined;
           yield* updateProviderSession(context, { status: "ready" }, { clearActiveTurnId: true });
@@ -2551,6 +2594,10 @@ export function makeOpenCodeAdapter(
         // steer into a dead turn and breaks long multi-turn sessions.
         context.activeTurnId = undefined;
         context.providerBusyTurnId = undefined;
+        context.unpairedIdleAllowedForTurnId = undefined;
+        // Do not clear providerSessionBusy here: session.abort is best-effort
+        // (2s timeout, errors ignored). A still-busy server is why the next
+        // turn needs unpaired-idle settlement.
         context.activeAgent = undefined;
         context.activeVariant = undefined;
         yield* updateProviderSession(context, { status: "ready" }, { clearActiveTurnId: true });

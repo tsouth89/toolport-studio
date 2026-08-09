@@ -3256,6 +3256,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         capturedProposedPlanKeys: new Set(),
         nextSyntheticAssistantBlockIndex: -1,
       };
+      // Synthetic turns are live stream traffic after Stop. Disarm so their
+      // result is not treated as the interrupted turn's trailing completion.
+      context.ignoreNextResultAfterInterrupt = false;
       context.turnLifecycle = trackLiveTurn(context.turnLifecycle, String(turnId));
       context.session = {
         ...context.session,
@@ -3345,14 +3348,24 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       return;
     }
 
+    // After Stop, the SDK may still emit one trailing result for the interrupted
+    // turn. Ignore that when it classifies as an interrupt/abort diagnostic.
+    // Do not ignore ordinary failures (rate-limit, auth, error_max_turns): when
+    // interrupt() never left a trailing result, those are the live turn's only
+    // completion and must settle it. The non-result disarm below covers the
+    // case where the trailing result is delayed past live traffic.
     if (context.ignoreNextResultAfterInterrupt) {
+      if (context.turnState === undefined || isInterruptedResult(message)) {
+        context.ignoreNextResultAfterInterrupt = false;
+        yield* Effect.logDebug("ignored Claude result trailing an interrupted turn", {
+          threadId: context.session.threadId,
+          subtype: message.subtype,
+          ...(context.turnState ? { liveTurnId: context.turnState.turnId } : {}),
+        });
+        return;
+      }
+      // Live turn + non-interrupt result: this is the follow-up's own terminal.
       context.ignoreNextResultAfterInterrupt = false;
-      yield* Effect.logDebug("ignored Claude result trailing an interrupted turn", {
-        threadId: context.session.threadId,
-        subtype: message.subtype,
-        ...(context.turnState ? { liveTurnId: context.turnState.turnId } : {}),
-      });
-      return;
     }
 
     const status = turnStatusFromResult(message);
@@ -3831,15 +3844,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     yield* logNativeSdkMessage(context, message);
     yield* ensureThreadId(context, message);
 
-    // The interrupted turn's trailing result arrives before any message of the
-    // next prompt. So once a live turn produces traffic of its own, that result
-    // either already came and went or is never coming, and the guard has to be
-    // disarmed either way — leaving it armed swallows this turn's own result
-    // and strands it on Working. Keying only off assistant messages missed the
-    // turns that reach `result` without producing one (immediate rate-limit or
-    // auth rejection, error_max_turns), and interrupt() itself is best-effort
-    // (2s timeout, errors ignored), so "a trailing result always follows" is
-    // not something the guard can assume.
+    // Belt-and-suspenders with the sendTurn/synthetic disarm above: any
+    // non-result traffic on a live turn also proves the interrupted trailing
+    // result is either gone or will not arrive. interrupt() is best-effort
+    // (2s timeout, errors ignored), so the guard must not assume it always
+    // leaves a result behind.
     if (
       message.type !== "result" &&
       context.turnState !== undefined &&
