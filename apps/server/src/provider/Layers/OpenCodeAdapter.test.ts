@@ -259,6 +259,7 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
                 continue;
               }
               idleRounds++;
+              // @effect-diagnostics-next-line globalTimers:off - test double polls for late push events
               await new Promise((resolve) => setTimeout(resolve, 5));
             }
           })(),

@@ -3332,13 +3332,14 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     if (message.type !== "result") {
       return;
     }
+    const result = message as SDKResultMessage;
 
     // Resumed Claude sessions may first replay the completion of a background
     // task. The SDK marks that result explicitly. It belongs to the prior task,
     // not to the foreground prompt Studio just opened; settling the current
     // turn here clears its correlation and makes the real response appear as a
     // synthetic second turn (observed in SBS-604).
-    const origin = (message as SDKMessage & { readonly origin?: { readonly kind?: string } })
+    const origin = (result as SDKResultMessage & { readonly origin?: { readonly kind?: string } })
       .origin;
     if (origin?.kind === "task-notification") {
       yield* Effect.logDebug("ignored Claude background-task result for foreground lifecycle", {
@@ -3355,11 +3356,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     // completion and must settle it. The non-result disarm below covers the
     // case where the trailing result is delayed past live traffic.
     if (context.ignoreNextResultAfterInterrupt) {
-      if (context.turnState === undefined || isInterruptedResult(message)) {
+      if (context.turnState === undefined || isInterruptedResult(result)) {
         context.ignoreNextResultAfterInterrupt = false;
         yield* Effect.logDebug("ignored Claude result trailing an interrupted turn", {
           threadId: context.session.threadId,
-          subtype: message.subtype,
+          subtype: result.subtype,
           ...(context.turnState ? { liveTurnId: context.turnState.turnId } : {}),
         });
         return;
@@ -3368,8 +3369,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       context.ignoreNextResultAfterInterrupt = false;
     }
 
-    const status = turnStatusFromResult(message);
-    const errorMessage = message.subtype === "success" ? undefined : message.errors[0];
+    const status = turnStatusFromResult(result);
+    const errorMessage = result.subtype === "success" ? undefined : result.errors[0];
 
     // A result with no live turn is the tail of a turn we already settled —
     // interruptTurn force-settles and clears turnState before the SDK's result
@@ -3391,12 +3392,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     } else if (status === "failed") {
       yield* Effect.logDebug("Claude result arrived after the turn was already settled", {
         threadId: context.session.threadId,
-        subtype: message.subtype,
+        subtype: result.subtype,
         ...(errorMessage ? { errorMessage } : {}),
       });
     }
 
-    yield* completeTurn(context, status, errorMessage, message);
+    yield* completeTurn(context, status, errorMessage, result);
   });
 
   const handleSystemMessage = Effect.fn("handleSystemMessage")(function* (
