@@ -23,7 +23,6 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import { PROVIDER_TURN_CAPABILITIES } from "../../turnEngine/index.ts";
 import * as Ref from "effect/Ref";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
@@ -125,7 +124,8 @@ export function scriptToAcpEnv(script: ConformanceScript): Record<string, string
 
 export const grokConformanceBinding: ConformanceBinding = {
   provider: "grok",
-  sendWhileRunning: PROVIDER_TURN_CAPABILITIES.grok.sendWhileRunning,
+  // Independent oracle: Grok ACP accepts a concurrent preempting prompt.
+  sendWhileRunning: "steer",
   openSession: (script, options?: ConformanceOpenSessionOptions) =>
     Effect.gen(function* () {
       // Raw inbound JSON-RPC log — the only way to prove a mid-turn follow-up

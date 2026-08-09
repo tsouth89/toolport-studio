@@ -7,8 +7,8 @@
  *
  * The fake models both Codex app-server send paths: `turn/start` mints a new
  * turn while `turn/steer` folds input into the live turn. The binding reads the
- * shared capability declaration so the conformance contract fails if runtime
- * behavior and the declared product behavior ever drift apart.
+ * real provider behavior independently of the shared declaration, so the
+ * conformance registry can fail if runtime capability data drifts.
  */
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -31,7 +31,6 @@ import {
 } from "@toolport-studio/contracts";
 
 import { ServerConfig } from "../../../config.ts";
-import { PROVIDER_TURN_CAPABILITIES } from "../../turnEngine/index.ts";
 import { ServerSettingsService } from "../../../serverSettings.ts";
 import { makeCodexAdapter } from "../../Layers/CodexAdapter.ts";
 import type { CodexAdapterShape } from "../../Services/CodexAdapter.ts";
@@ -338,7 +337,8 @@ export const codexConformanceBinding: ConformanceBinding = {
   // Declared to match what the client actually does: the composer sends
   // `intent: "steer"` for every provider. If Codex cannot honour that, the
   // contract must say so out loud rather than let the UI keep promising it.
-  sendWhileRunning: PROVIDER_TURN_CAPABILITIES.codex.sendWhileRunning,
+  // Independent oracle: current Codex app-server exposes turn/steer.
+  sendWhileRunning: "steer",
   openSession: (script, options?: ConformanceOpenSessionOptions) =>
     Effect.gen(function* () {
       const runtime = new ScriptedCodexRuntime({

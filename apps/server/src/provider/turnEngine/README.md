@@ -25,9 +25,9 @@ model, capability matrix, stop settle rules).
 - **No synthetic “Following up”** `runtime.warning`. Silence beats invention.
 - **No force-close open tools on steer.** Ghost tool rows are a projection
   problem; killing real tools is not the fix.
-- **Capability declarations drive steer.** Every adapter and its conformance
-  binding read `PROVIDER_TURN_CAPABILITIES`; a provider cannot silently keep
-  steering after its declaration changes to queueing.
+- **Capability declarations drive steer.** Every adapter reads
+  `PROVIDER_TURN_CAPABILITIES`; independent conformance bindings describe the
+  real transport and fail if a declaration drifts from observed behavior.
 - **Force-close open tools on Stop.** Settlement must not wait on wedged tools.
 
 ## Wiring status

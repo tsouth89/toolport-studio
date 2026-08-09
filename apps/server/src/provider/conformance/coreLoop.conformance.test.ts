@@ -13,7 +13,7 @@
 import { assert, describe, it } from "@effect/vitest";
 
 import { BUILT_IN_DRIVERS } from "../builtInDrivers.ts";
-import type { BuiltInTurnEngineProvider } from "../turnEngine/index.ts";
+import { PROVIDER_TURN_CAPABILITIES, type BuiltInTurnEngineProvider } from "../turnEngine/index.ts";
 import { claudeConformanceBinding } from "./bindings/claude.ts";
 import { codexConformanceBinding } from "./bindings/codex.ts";
 import { cursorConformanceBinding } from "./bindings/cursor.ts";
@@ -44,6 +44,16 @@ describe("core-loop conformance registry", () => {
     );
 
     assert.deepEqual(uncovered, []);
+  });
+
+  it("matches declared send behavior to each independent provider oracle", () => {
+    for (const [provider, binding] of Object.entries(CONFORMANCE_BINDINGS)) {
+      assert.equal(
+        PROVIDER_TURN_CAPABILITIES[provider as BuiltInTurnEngineProvider].sendWhileRunning,
+        binding.sendWhileRunning,
+        `${provider} capability drifted from its conformance binding`,
+      );
+    }
   });
 });
 
