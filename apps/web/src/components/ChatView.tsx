@@ -18,7 +18,6 @@ import {
   type TurnId,
   type KeybindingCommand,
   OrchestrationThreadActivity,
-  ProviderInteractionMode,
   ProviderDriverKind,
   RuntimeMode,
   TerminalOpenInput,
@@ -76,10 +75,7 @@ import { AsyncResult } from "effect/unstable/reactivity";
 import { isElectron } from "../env";
 import { readLocalApi } from "../localApi";
 import { useDiffPanelStore } from "../diffPanelStore";
-import {
-  collapseExpandedComposerCursor,
-  parseStandaloneComposerSlashCommand,
-} from "../composer-logic";
+import { collapseExpandedComposerCursor } from "../composer-logic";
 import {
   derivePendingApprovals,
   derivePendingUserInputs,
@@ -90,14 +86,13 @@ import {
   findSidebarProposedPlan,
   findLatestProposedPlan,
   deriveWorkLogEntries,
-  hasActionableProposedPlan,
   isLatestTurnSettled,
   isPendingRequestTimeoutWarningMessage,
 } from "../session-logic";
 import { type LegendListRef } from "@legendapp/list/react";
 import {
+  advanceTimelineEndConvergence,
   getAnchoredTurnMetrics,
-  isTimelineEndPositionKnown,
   type TimelineScrollMode,
 } from "./chat/timelineScrollAnchoring";
 import {
@@ -154,7 +149,7 @@ import PlanSidebar from "./PlanSidebar";
 import { ActivityPanel } from "./ActivityPanel";
 import { AgentsPanel } from "./AgentsPanel";
 import { agentRunsForTurn, deriveAgentRuns, latestMessageTurnId } from "../agentRuns";
-import { deriveBackgroundTasks } from "../backgroundTasks";
+import { deriveBackgroundTasks, summarizeBackgroundTasks } from "../backgroundTasks";
 import { isThisTurnCardVisible, ThisTurnCard } from "./ThisTurnCard";
 import ThreadTerminalDrawer from "./ThreadTerminalDrawer";
 import { deriveThreadActivityViewModel } from "../threadActivityViewModel";
@@ -468,8 +463,16 @@ function formatOutgoingPrompt(params: {
 }
 const SCRIPT_TERMINAL_COLS = 120;
 const SCRIPT_TERMINAL_ROWS = 30;
-/** Frames to wait for an appended timeline row to get a real position before giving up. */
-const TIMELINE_END_SCROLL_MAX_FRAMES = 12;
+/**
+ * Frames to keep working a scroll-to-end before giving up — long enough to
+ * cover both waiting for an appended row to get a real position and the
+ * measurement convergence described on `requestTimelineScrollToEnd`.
+ */
+const TIMELINE_END_SCROLL_MAX_FRAMES = 40;
+/** Consecutive frames the end must hold still before the scroll is settled. */
+const TIMELINE_END_SCROLL_STABLE_FRAMES = 2;
+/** Preserve the opening smooth scroll before measurement-correction jumps begin. */
+const TIMELINE_END_SCROLL_ANIMATION_GRACE_MS = 350;
 
 type ChatViewProps =
   | {
@@ -1264,9 +1267,6 @@ function ChatViewContent(props: ChatViewProps) {
   const setThreadRuntimeMode = useAtomCommand(threadEnvironment.setRuntimeMode, {
     reportFailure: false,
   });
-  const setThreadInteractionMode = useAtomCommand(threadEnvironment.setInteractionMode, {
-    reportFailure: false,
-  });
   const startThreadTurn = useAtomCommand(threadEnvironment.startTurn, { reportFailure: false });
   const queueThreadTurn = useAtomCommand(threadEnvironment.queueTurn, { reportFailure: false });
   const discardQueuedTurns = useAtomCommand(threadEnvironment.discardQueuedTurns, {
@@ -1312,15 +1312,13 @@ function ChatViewContent(props: ChatViewProps) {
     (store) => store.setStickyModelSelection,
   );
   const timestampFormat = settings.timestampFormat;
+  const verboseActivity = settings.verboseActivity;
   const autoOpenPlanSidebar = settings.autoOpenPlanSidebar;
   const navigate = useNavigate();
   const { resolvedTheme } = useTheme();
   // Granular store selectors — avoid subscribing to prompt changes.
   const composerRuntimeMode = useComposerDraftStore(
     (store) => store.getComposerDraft(composerDraftTarget)?.runtimeMode ?? null,
-  );
-  const composerInteractionMode = useComposerDraftStore(
-    (store) => store.getComposerDraft(composerDraftTarget)?.interactionMode ?? null,
   );
   const composerActiveProvider = useComposerDraftStore(
     (store) => store.getComposerDraft(composerDraftTarget)?.activeProvider ?? null,
@@ -1339,9 +1337,6 @@ function ChatViewContent(props: ChatViewProps) {
   const setComposerDraftReviewComments = useComposerDraftStore((store) => store.setReviewComments);
   const setComposerDraftModelSelection = useComposerDraftStore((store) => store.setModelSelection);
   const setComposerDraftRuntimeMode = useComposerDraftStore((store) => store.setRuntimeMode);
-  const setComposerDraftInteractionMode = useComposerDraftStore(
-    (store) => store.setInteractionMode,
-  );
   const clearComposerDraftContent = useComposerDraftStore((store) => store.clearComposerContent);
   const setDraftThreadContext = useComposerDraftStore((store) => store.setDraftThreadContext);
   const getDraftSessionByLogicalProjectKey = useComposerDraftStore(
@@ -1559,6 +1554,15 @@ function ChatViewContent(props: ChatViewProps) {
     () => deriveBackgroundTasks(activeThread?.activities ?? []),
     [activeThread?.activities],
   );
+  // The Agents panel already rosters these, but it has to be opened to be
+  // read. A turn waiting on backgrounded work looks exactly like a stalled
+  // one in the transcript, so the running count belongs on the Working row.
+  // Only the running count: a failed background task is not why the turn is
+  // quiet, and the roster is the right place to go read about it.
+  const backgroundTaskLabel = useMemo(() => {
+    const summary = summarizeBackgroundTasks(backgroundTasks);
+    return summary.runningCount > 0 ? summary.label : null;
+  }, [backgroundTasks]);
   const threadError = isServerThread
     ? resolveThreadError({
         local: localServerErrorsByThreadKey[routeThreadKey],
@@ -1566,8 +1570,7 @@ function ChatViewContent(props: ChatViewProps) {
       })
     : localDraftError;
   const runtimeMode = composerRuntimeMode ?? activeThread?.runtimeMode ?? DEFAULT_RUNTIME_MODE;
-  const interactionMode =
-    composerInteractionMode ?? activeThread?.interactionMode ?? DEFAULT_INTERACTION_MODE;
+  const interactionMode = DEFAULT_INTERACTION_MODE;
   const isLocalDraftThread = !isServerThread && localDraftThread !== undefined;
   const canCheckoutPullRequestIntoThread = isLocalDraftThread;
   const activeThreadId = activeThread?.id ?? null;
@@ -1730,25 +1733,6 @@ function ChatViewContent(props: ChatViewProps) {
     (activeProject ? isGeneralChatProject(activeProject) : false);
   const activeTerminalCwd = activeProject?.workspaceRoot ?? GENERAL_CHAT_WORKSPACE_ROOT;
 
-  const prevProviderNameRef = useRef<string | null>(null);
-  const [providerChangeNotice, setProviderChangeNotice] = useState<{
-    from: string;
-    to: string;
-  } | null>(null);
-  useEffect(() => {
-    if (!activeThread) return;
-    const currentProvider = activeThread.session?.providerName ?? null;
-    const prevProvider = prevProviderNameRef.current;
-    if (currentProvider && prevProvider && currentProvider !== prevProvider) {
-      setProviderChangeNotice({ from: prevProvider, to: currentProvider });
-    }
-    prevProviderNameRef.current = currentProvider;
-  }, [activeThread?.session?.providerName]);
-  useEffect(() => {
-    if (providerChangeNotice === null) return;
-    const timer = setTimeout(() => setProviderChangeNotice(null), 6000);
-    return () => clearTimeout(timer);
-  }, [providerChangeNotice]);
   const activeEnvironmentShell = useEnvironmentQuery(
     activeThread ? environmentShell.stateAtom(activeThread.environmentId) : null,
   );
@@ -2217,12 +2201,8 @@ function ChatViewContent(props: ChatViewProps) {
     () => deriveActivePlanState(threadActivities, activeLatestTurn?.turnId ?? undefined),
     [activeLatestTurn?.turnId, threadActivities],
   );
-  const planSidebarLabel = sidebarProposedPlan || interactionMode === "plan" ? "Plan" : "Tasks";
-  const showPlanFollowUpPrompt =
-    pendingUserInputs.length === 0 &&
-    interactionMode === "plan" &&
-    latestTurnSettled &&
-    hasActionableProposedPlan(activeProposedPlan);
+  const planSidebarLabel = sidebarProposedPlan ? "Plan" : "Tasks";
+  const showPlanFollowUpPrompt = false;
   const activePendingApproval = pendingApprovals[0] ?? null;
   const {
     beginLocalDispatch,
@@ -3295,27 +3275,6 @@ function ChatViewContent(props: ChatViewProps) {
     ],
   );
 
-  const handleInteractionModeChange = useCallback(
-    (mode: ProviderInteractionMode) => {
-      if (mode === interactionMode) return;
-      setComposerDraftInteractionMode(composerDraftTarget, mode);
-      if (isLocalDraftThread) {
-        setDraftThreadContext(composerDraftTarget, { interactionMode: mode });
-      }
-      scheduleComposerFocus();
-    },
-    [
-      interactionMode,
-      isLocalDraftThread,
-      scheduleComposerFocus,
-      composerDraftTarget,
-      setComposerDraftInteractionMode,
-      setDraftThreadContext,
-    ],
-  );
-  const toggleInteractionMode = useCallback(() => {
-    handleInteractionModeChange(interactionMode === "plan" ? "default" : "plan");
-  }, [handleInteractionModeChange, interactionMode]);
   const dismissPlanSidebarForCurrentTurn = useCallback(() => {
     planSidebarDismissedForTurnRef.current =
       activePlan?.turnId ?? sidebarProposedPlan?.turnId ?? "__dismissed__";
@@ -3726,7 +3685,6 @@ function ChatViewContent(props: ChatViewProps) {
       modelSelection?: ModelSelection;
       branch?: string;
       runtimeMode: RuntimeMode;
-      interactionMode: ProviderInteractionMode;
     }): Promise<AtomCommandResult<void, unknown>> => {
       if (!serverThread) {
         return AsyncResult.success(undefined);
@@ -3772,28 +3730,9 @@ function ChatViewContent(props: ChatViewProps) {
         }
       }
 
-      if (input.interactionMode !== serverThread.interactionMode) {
-        result = mapAtomCommandResult(
-          await setThreadInteractionMode({
-            environmentId,
-            input: {
-              threadId: input.threadId,
-              interactionMode: input.interactionMode,
-              createdAt: input.createdAt,
-            },
-          }),
-          () => undefined,
-        );
-      }
       return result;
     },
-    [
-      environmentId,
-      serverThread,
-      setThreadInteractionMode,
-      setThreadRuntimeMode,
-      updateThreadMetadata,
-    ],
+    [environmentId, serverThread, setThreadRuntimeMode, updateThreadMetadata],
   );
 
   // Debounce *showing* the scroll-to-bottom pill so it doesn't flash during
@@ -3860,35 +3799,69 @@ function ChatViewContent(props: ChatViewProps) {
     },
     [composerOverlayHeight],
   );
-  // Never hand LegendList a scrollToEnd it cannot resolve: an appended row with no
-  // computed position makes it target offset 0, which reads as "thrown to the top of
-  // the thread for the whole response". Wait for the position instead, and if it never
-  // arrives leave the scroll alone — maintainScrollAtEnd still pins us, and staying
-  // put is always better than jumping to the oldest message.
+  // LegendList's scrollToEnd can resolve an unmeasured final row to offset 0.
+  // Drive the native scroll container instead so a long virtualized transcript
+  // can always make forward progress without jumping to the oldest message.
   const cancelPendingTimelineEndScroll = useCallback(() => {
     if (endScrollFrameRef.current !== null) {
       cancelAnimationFrame(endScrollFrameRef.current);
       endScrollFrameRef.current = null;
     }
   }, []);
+  // Newly visible rows replace estimates with measured heights, which can move
+  // scrollHeight after the first scroll. Re-pin until that height converges.
   const requestTimelineScrollToEnd = useCallback(
     (animated: boolean) => {
       cancelPendingTimelineEndScroll();
+      let convergence = advanceTimelineEndConvergence(
+        { previousEnd: null, stableFrames: 0 },
+        null,
+        TIMELINE_END_SCROLL_STABLE_FRAMES,
+      );
+      let hasScrolled = false;
+      const animationGraceEndsAt = animated
+        ? performance.now() + TIMELINE_END_SCROLL_ANIMATION_GRACE_MS
+        : 0;
       const attempt = (remainingAttempts: number) => {
         const list = legendListRef.current;
         if (!list) {
           return;
         }
-        if (isTimelineEndPositionKnown(list.getState())) {
-          void list.scrollToEnd?.({ animated });
+        const scrollNode = list.getScrollableNode();
+        if (!scrollNode) {
           return;
+        }
+        const withinAnimationGrace = animated && performance.now() < animationGraceEndsAt;
+        if (!hasScrolled) {
+          scrollNode.scrollTo({
+            top: scrollNode.scrollHeight,
+            behavior: animated ? "smooth" : "auto",
+          });
+          hasScrolled = true;
+        } else if (!withinAnimationGrace) {
+          // Once the opening animation has had time to read naturally, re-pin
+          // without animation so expanding measurements cannot restart easing.
+          scrollNode.scrollTo({ top: scrollNode.scrollHeight, behavior: "auto" });
+        }
+
+        if (withinAnimationGrace) {
+          convergence = { previousEnd: null, stableFrames: 0, settled: false };
+        } else {
+          convergence = advanceTimelineEndConvergence(
+            convergence,
+            scrollNode.scrollHeight,
+            TIMELINE_END_SCROLL_STABLE_FRAMES,
+          );
+          if (convergence.settled) {
+            return;
+          }
         }
         if (remainingAttempts <= 0) {
           return;
         }
         endScrollFrameRef.current = requestAnimationFrame(() => {
           endScrollFrameRef.current = null;
-          attempt(remainingAttempts - 1);
+          attempt(withinAnimationGrace ? remainingAttempts : remainingAttempts - 1);
         });
       };
       attempt(TIMELINE_END_SCROLL_MAX_FRAMES);
@@ -4826,21 +4799,6 @@ function ChatViewContent(props: ChatViewProps) {
       });
       return true;
     }
-    const standaloneSlashCommand =
-      composerImages.length === 0 &&
-      sendableComposerTerminalContexts.length === 0 &&
-      composerElementContexts.length === 0 &&
-      composerPreviewAnnotations.length === 0 &&
-      composerReviewComments.length === 0
-        ? parseStandaloneComposerSlashCommand(trimmed)
-        : null;
-    if (standaloneSlashCommand) {
-      handleInteractionModeChange(standaloneSlashCommand);
-      promptRef.current = "";
-      clearComposerDraftContent(composerDraftTarget);
-      composerRef.current?.resetCursorState();
-      return true;
-    }
     if (!hasSendableContent) {
       if (expiredTerminalContextCount > 0) {
         const toastCopy = buildExpiredTerminalContextToastCopy(
@@ -5056,7 +5014,6 @@ function ChatViewContent(props: ChatViewProps) {
           ? { branch: localCheckoutBranchMismatch.currentBranch }
           : {}),
         runtimeMode,
-        interactionMode,
       });
       if (settingsResult._tag === "Failure") {
         failure = settingsResult;
@@ -5562,19 +5519,11 @@ function ChatViewContent(props: ChatViewProps) {
           ? { branch: localCheckoutBranchMismatch.currentBranch }
           : {}),
         runtimeMode,
-        interactionMode: nextInteractionMode,
       });
       let failure: AtomCommandResult<unknown, unknown> | null =
         settingsResult._tag === "Failure" ? settingsResult : null;
 
       if (failure === null) {
-        // Keep the mode toggle and plan-follow-up banner in sync immediately
-        // while the same-thread implementation turn is starting.
-        setComposerDraftInteractionMode(
-          scopeThreadRef(activeThread.environmentId, threadIdForSend),
-          nextInteractionMode,
-        );
-
         const startResult = await startThreadTurn({
           environmentId,
           input: {
@@ -5651,7 +5600,6 @@ function ChatViewContent(props: ChatViewProps) {
       persistThreadSettingsForNextTurn,
       resetLocalDispatch,
       runtimeMode,
-      setComposerDraftInteractionMode,
       setThreadError,
       startThreadTurn,
       autoOpenPlanSidebar,
@@ -6168,17 +6116,6 @@ function ChatViewContent(props: ChatViewProps) {
           onDismiss={dismissThreadError}
           {...(canRetryLastUserMessage ? { onRetry: onRetryLastUserMessage } : {})}
         />
-        {providerChangeNotice && (
-          <div className="mx-auto flex w-full max-w-[720px] items-center gap-2 rounded-md bg-sky-50 px-3 py-2 text-sm text-sky-700 dark:bg-sky-950 dark:text-sky-300">
-            <span className="shrink-0 font-medium">Provider changed</span>
-            <span className="text-muted-foreground">
-              <span className="font-medium text-foreground">{providerChangeNotice.from}</span> →{" "}
-              <span className="font-medium text-foreground">
-                {activeThread?.session?.providerName ?? activeThread?.modelSelection.model}
-              </span>
-            </span>
-          </div>
-        )}
         {/* Main content area with optional plan sidebar */}
         <div className="flex min-h-0 min-w-0 flex-1">
           {/* Chat column */}
@@ -6201,6 +6138,7 @@ function ChatViewContent(props: ChatViewProps) {
                 activeTurnInProgress={isWorking || !latestTurnSettled}
                 activeTurnStartedAt={activeWorkStartedAt}
                 lastStreamActivityAt={lastStreamActivityAt}
+                backgroundTaskLabel={backgroundTaskLabel}
                 listRef={legendListRef}
                 timelineEntries={timelineEntries}
                 latestTurn={activeLatestTurn}
@@ -6224,6 +6162,7 @@ function ChatViewContent(props: ChatViewProps) {
                 markdownCwd={gitCwd ?? undefined}
                 resolvedTheme={resolvedTheme}
                 timestampFormat={timestampFormat}
+                verboseActivity={verboseActivity}
                 workspaceRoot={activeWorkspaceRoot}
                 skills={activeProviderStatus?.skills ?? EMPTY_PROVIDER_SKILLS}
                 anchorMessageId={timelineAnchorMessageId}
@@ -6439,7 +6378,6 @@ function ChatViewContent(props: ChatViewProps) {
                             planSidebarLabel={planSidebarLabel}
                             planSidebarOpen={planSidebarOpen}
                             runtimeMode={runtimeMode}
-                            interactionMode={interactionMode}
                             lockedProvider={lockedProvider}
                             providerStatuses={providerStatuses as ServerProvider[]}
                             activeProjectDefaultModelSelection={
@@ -6474,9 +6412,7 @@ function ChatViewContent(props: ChatViewProps) {
                             }
                             onProviderModelSelect={onProviderModelSelect}
                             getModelDisabledReason={getModelDisabledReason}
-                            toggleInteractionMode={toggleInteractionMode}
                             handleRuntimeModeChange={handleRuntimeModeChange}
-                            handleInteractionModeChange={handleInteractionModeChange}
                             togglePlanSidebar={togglePlanSidebar}
                             focusComposer={focusComposer}
                             scheduleComposerFocus={scheduleComposerFocus}

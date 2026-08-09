@@ -34,7 +34,10 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { deriveServerPaths, ServerConfig } from "../../config.ts";
 import { TextGenerationError } from "@toolport-studio/contracts";
-import { ProviderAdapterRequestError } from "../../provider/Errors.ts";
+import {
+  ProviderAdapterRequestError,
+  ProviderSessionNotFoundError,
+} from "../../provider/Errors.ts";
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
@@ -1164,7 +1167,7 @@ describe("ProviderCommandReactor", () => {
     });
   });
 
-  it("forwards plan interaction mode to the provider turn request", async () => {
+  it("does not forward legacy plan interaction mode to the provider turn request", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
 
@@ -1198,8 +1201,8 @@ describe("ProviderCommandReactor", () => {
     await waitFor(() => harness.sendTurn.mock.calls.length === 1);
     expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({
       threadId: ThreadId.make("thread-1"),
-      interactionMode: "plan",
     });
+    expect(harness.sendTurn.mock.calls[0]?.[0]).not.toHaveProperty("interactionMode");
   });
 
   it("preserves the active session model when in-session model switching is unsupported", async () => {
@@ -1998,6 +2001,223 @@ describe("ProviderCommandReactor", () => {
     });
   });
 
+  it("delivers a mid-turn message while the first turn is still running (SOU-561/562)", async () => {
+    // A steer arrives as another thread.turn-start-requested. While the turn
+    // lane was held for the whole prompt it could not be dequeued until the
+    // turn it was meant to steer had already finished, which is exactly what
+    // "did nothing until the turn ended" looked like. The adapters implement
+    // steering; they were never reached in time.
+    const turnGate = Effect.runSync(Deferred.make<void>());
+    const harness = await createHarness({
+      sendTurnEffect: () =>
+        Deferred.await(turnGate).pipe(
+          Effect.as({ threadId: ThreadId.make("thread-1"), turnId: asTurnId("turn-1") }),
+        ),
+    });
+
+    try {
+      await runtime!.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-turn-start-1"),
+          threadId: ThreadId.make("thread-1"),
+          message: {
+            messageId: asMessageId("user-message-1"),
+            role: "user",
+            text: "long running work",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "full-access",
+          createdAt: "2026-01-01T00:00:00.000Z",
+        }),
+      );
+      await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+
+      // The steer, sent while the first prompt is still in flight.
+      await runtime!.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-turn-start-2"),
+          threadId: ThreadId.make("thread-1"),
+          message: {
+            messageId: asMessageId("user-message-2"),
+            role: "user",
+            text: "actually focus on the tests",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "full-access",
+          createdAt: "2026-01-01T00:00:04.000Z",
+        }),
+      );
+
+      // Reaches the provider without the first turn having settled. The
+      // adapter decides steer-vs-queue from there; the reactor's job is only
+      // to stop swallowing it.
+      await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+    } finally {
+      await Effect.runPromise(Deferred.succeed(turnGate, undefined));
+    }
+  });
+
+  it("dispatches Stop while the turn it targets is still in flight (SOU-569)", async () => {
+    // Turn execution holds its lane for the whole provider turn. Stop rides a
+    // separate control lane so it can actually interrupt; when both shared one
+    // lane this timed out, because the interrupt could only be dequeued after
+    // the turn it was meant to stop had already finished on its own.
+    const turnGate = Effect.runSync(Deferred.make<void>());
+    const harness = await createHarness({
+      sendTurnEffect: () =>
+        Deferred.await(turnGate).pipe(
+          Effect.as({ threadId: ThreadId.make("thread-1"), turnId: asTurnId("turn-1") }),
+        ),
+    });
+
+    try {
+      await runtime!.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-turn-start-1"),
+          threadId: ThreadId.make("thread-1"),
+          message: {
+            messageId: asMessageId("user-message-1"),
+            role: "user",
+            text: "long running work",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "full-access",
+          createdAt: "2026-01-01T00:00:00.000Z",
+        }),
+      );
+      await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+
+      await runtime!.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.interrupt",
+          commandId: CommandId.make("cmd-turn-interrupt"),
+          threadId: ThreadId.make("thread-1"),
+          turnId: asTurnId("turn-1"),
+          createdAt: "2026-01-01T00:00:05.000Z",
+        }),
+      );
+
+      await waitFor(() => harness.interruptTurn.mock.calls.length === 1);
+      // The turn is still in flight - that is the entire point of the test.
+      expect(harness.sendTurn.mock.calls.length).toBe(1);
+      // Stop must reach the provider *while* the prompt is unresolved. If the
+      // gate had settled first this would be indistinguishable from the old
+      // behaviour, where the interrupt only ran once the turn finished.
+      expect(await Effect.runPromise(Deferred.isDone(turnGate))).toBe(false);
+    } finally {
+      await Effect.runPromise(Deferred.succeed(turnGate, undefined));
+    }
+  });
+
+  it("drops a queued turn start that a later Stop superseded (SOU-569)", async () => {
+    // Control intents no longer wait for the turn lane, so a turn start can
+    // still be queued when Stop runs. Starting it afterwards would open a new
+    // turn seconds after the user asked the thread to stop.
+    const turnGate = Effect.runSync(Deferred.make<void>());
+    const harness = await createHarness({
+      sendTurnEffect: () =>
+        Deferred.await(turnGate).pipe(
+          Effect.as({ threadId: ThreadId.make("thread-1"), turnId: asTurnId("turn-1") }),
+        ),
+    });
+
+    try {
+      await runtime!.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-turn-start-1"),
+          threadId: ThreadId.make("thread-1"),
+          message: {
+            messageId: asMessageId("user-message-1"),
+            role: "user",
+            text: "first turn",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "full-access",
+          createdAt: "2026-01-01T00:00:00.000Z",
+        }),
+      );
+      await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+
+      // Queued behind the in-flight turn.
+      await runtime!.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-turn-start-2"),
+          threadId: ThreadId.make("thread-1"),
+          message: {
+            messageId: asMessageId("user-message-2"),
+            role: "user",
+            text: "actually dont",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "full-access",
+          createdAt: "2026-01-01T00:00:04.000Z",
+        }),
+      );
+
+      await runtime!.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.interrupt",
+          commandId: CommandId.make("cmd-turn-interrupt"),
+          threadId: ThreadId.make("thread-1"),
+          turnId: asTurnId("turn-1"),
+          createdAt: "2026-01-01T00:00:05.000Z",
+        }),
+      );
+      await waitFor(() => harness.interruptTurn.mock.calls.length === 1);
+    } finally {
+      await Effect.runPromise(Deferred.succeed(turnGate, undefined));
+    }
+
+    await harness.drain();
+    // The queued turn must never have reached the provider.
+    expect(harness.sendTurn.mock.calls.length).toBe(1);
+  });
+
+  it("still runs a turn requested after a Stop (SOU-569)", async () => {
+    // The Stop watermark must suppress only what was already queued, never
+    // wedge the thread against everything the user does next.
+    const harness = await createHarness();
+
+    await runtime!.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.interrupt",
+        commandId: CommandId.make("cmd-turn-interrupt"),
+        threadId: ThreadId.make("thread-1"),
+        turnId: asTurnId("turn-1"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+
+    await runtime!.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-after-stop"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-1"),
+          role: "user",
+          text: "new work after stopping",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "full-access",
+        createdAt: "2026-01-01T00:00:10.000Z",
+      }),
+    );
+
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+  });
+
   it("surfaces provider interrupt rejections without clearing the running turn (SOU-376)", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
@@ -2069,6 +2289,140 @@ describe("ProviderCommandReactor", () => {
       "Stop failed: expected active turn id turn-a but found turn-b",
     );
     expect(thread?.session?.providerInstanceId).toBe(ProviderInstanceId.make("codex"));
+  });
+
+  it("clears a projected running turn when Stop confirms the provider session is gone", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    harness.interruptTurn.mockReturnValue(
+      Effect.fail(new ProviderSessionNotFoundError({ threadId: "thread-1" })),
+    );
+
+    await runtime!.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-missing-runtime"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "running",
+          providerName: "claudeAgent",
+          providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+          runtimeMode: "approval-required",
+          activeTurnId: asTurnId("turn-stale"),
+          lastError: "old error",
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+
+    await runtime!.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.interrupt",
+        commandId: CommandId.make("cmd-turn-interrupt-missing-runtime"),
+        threadId: ThreadId.make("thread-1"),
+        turnId: asTurnId("turn-stale"),
+        createdAt: "2026-01-01T00:00:01.000Z",
+      }),
+    );
+
+    await waitFor(async () => {
+      const readModel = await harness.readModel();
+      const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+      return thread?.session?.status === "interrupted";
+    });
+
+    const readModel = await harness.readModel();
+    const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+    expect(thread?.session).toMatchObject({
+      status: "interrupted",
+      activeTurnId: null,
+      lastError: null,
+    });
+    expect(
+      thread?.activities.find((activity) => activity.kind === "provider.turn.interrupt.reconciled"),
+    ).toMatchObject({
+      tone: "info",
+      summary: "Cleared stale turn",
+      turnId: asTurnId("turn-stale"),
+    });
+    expect(
+      thread?.activities.some((activity) => activity.kind === "provider.turn.interrupt.failed"),
+    ).toBe(false);
+  });
+
+  it("does not let stale Stop recovery overwrite a newer running turn", async () => {
+    const missingRuntimeGate = Effect.runSync(Deferred.make<void>());
+    const harness = await createHarness({
+      interruptTurnEffect: () =>
+        Deferred.await(missingRuntimeGate).pipe(
+          Effect.flatMap(() =>
+            Effect.fail(new ProviderSessionNotFoundError({ threadId: "thread-1" })),
+          ),
+        ),
+    });
+    const threadId = ThreadId.make("thread-1");
+
+    await runtime!.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-before-racing-stop"),
+        threadId,
+        session: {
+          threadId,
+          status: "starting",
+          providerName: "claudeAgent",
+          providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+          runtimeMode: "full-access",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        },
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+    await runtime!.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.interrupt",
+        commandId: CommandId.make("cmd-racing-stop"),
+        threadId,
+        createdAt: "2026-01-01T00:00:01.000Z",
+      }),
+    );
+    await waitFor(() => harness.interruptTurn.mock.calls.length === 1);
+
+    await runtime!.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-newer-turn"),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "claudeAgent",
+          providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+          runtimeMode: "full-access",
+          activeTurnId: asTurnId("turn-new"),
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:02.000Z",
+        },
+        createdAt: "2026-01-01T00:00:02.000Z",
+      }),
+    );
+    await Effect.runPromise(Deferred.succeed(missingRuntimeGate, undefined));
+    await harness.drain();
+
+    const readModel = await harness.readModel();
+    const thread = readModel.threads.find((entry) => entry.id === threadId);
+    expect(thread?.session).toMatchObject({
+      status: "running",
+      activeTurnId: asTurnId("turn-new"),
+      lastError: null,
+    });
+    expect(
+      thread?.activities.some((activity) => activity.kind === "provider.turn.interrupt.reconciled"),
+    ).toBe(false);
   });
 
   it("times out a wedged provider interrupt and keeps the running lifecycle visible", async () => {

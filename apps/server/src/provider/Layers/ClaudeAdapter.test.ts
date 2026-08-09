@@ -8,6 +8,7 @@ import type {
   Options as ClaudeQueryOptions,
   PermissionMode,
   PermissionResult,
+  SDKControlGetContextUsageResponse,
   SDKMessage,
   SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -119,6 +120,11 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
     this.closeCalls += 1;
     this.finish();
   };
+
+  // Left undefined by default: the adapter branches on whether the SDK exposes
+  // this at all, so declaring it always-present would put every other test on
+  // the context-usage path. Tests that need it assign a stub.
+  public getContextUsage?: () => Promise<SDKControlGetContextUsageResponse>;
 
   [Symbol.asyncIterator](): AsyncIterator<SDKMessage> {
     return {
@@ -1544,6 +1550,279 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("does not let an interrupted result settle the follow-up turn", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+      const collector = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          runtimeEvents.push(event);
+        }),
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      const interruptedTurn = yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "stop this turn",
+        attachments: [],
+      });
+      yield* adapter.interruptTurn(THREAD_ID, interruptedTurn.turnId);
+      const followUpTurn = yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "follow up immediately",
+        attachments: [],
+      });
+
+      harness.query.emit({
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: false,
+        errors: ["Error: Request was aborted."],
+        stop_reason: "tool_use",
+        session_id: "sdk-session-stale-after-stop",
+        uuid: "result-stale-after-stop",
+      } as unknown as SDKMessage);
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+
+      const liveSessions = yield* adapter.listSessions();
+      const liveSession = liveSessions.find((entry) => entry.threadId === THREAD_ID);
+      assert.equal(liveSession?.status, "running");
+      assert.equal(String(liveSession?.activeTurnId), String(followUpTurn.turnId));
+      assert.isFalse(
+        runtimeEvents.some(
+          (event) =>
+            event.type === "turn.completed" && String(event.turnId) === String(followUpTurn.turnId),
+        ),
+      );
+
+      harness.query.emit({
+        type: "assistant",
+        session_id: "sdk-session-follow-up",
+        uuid: "assistant-follow-up",
+        parent_tool_use_id: null,
+        message: {
+          id: "assistant-message-follow-up",
+          content: [{ type: "text", text: "Follow-up completed." }],
+        },
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        session_id: "sdk-session-follow-up",
+        uuid: "result-follow-up",
+      } as unknown as SDKMessage);
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+
+      const completions = runtimeEvents.filter(
+        (event): event is Extract<ProviderRuntimeEvent, { type: "turn.completed" }> =>
+          event.type === "turn.completed",
+      );
+      assert.deepEqual(
+        completions.map((event) => [String(event.turnId), event.payload.state]),
+        [
+          [String(interruptedTurn.turnId), "interrupted"],
+          [String(followUpTurn.turnId), "completed"],
+        ],
+      );
+
+      yield* Fiber.interrupt(collector).pipe(Effect.ignore);
+      yield* adapter.stopSession(THREAD_ID);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("does not settle a foreground turn from a resumed background-task result", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+      const completedSignal = yield* Deferred.make<void>();
+      const collector = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          runtimeEvents.push(event);
+        }).pipe(
+          Effect.flatMap(() =>
+            event.type === "turn.completed"
+              ? Deferred.succeed(completedSignal, undefined)
+              : Effect.void,
+          ),
+        ),
+      ).pipe(Effect.forkChild);
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      const turn = yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "hello after resume",
+        attachments: [],
+      });
+
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        origin: { kind: "task-notification" },
+        session_id: "sdk-session-resumed-task",
+        uuid: "result-background-task",
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "assistant",
+        session_id: "sdk-session-resumed-task",
+        uuid: "assistant-foreground",
+        parent_tool_use_id: null,
+        message: {
+          id: "assistant-message-foreground",
+          content: [{ type: "text", text: "Foreground response" }],
+        },
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        session_id: "sdk-session-resumed-task",
+        uuid: "result-foreground",
+      } as unknown as SDKMessage);
+
+      yield* Deferred.await(completedSignal);
+      yield* Effect.yieldNow;
+      yield* Fiber.interrupt(collector).pipe(Effect.ignore);
+
+      const completed = runtimeEvents.filter((event) => event.type === "turn.completed");
+      assert.equal(completed.length, 1);
+      assert.equal(String(completed[0]?.turnId), String(turn.turnId));
+      const assistantItems = runtimeEvents.filter(
+        (event) =>
+          event.type === "item.completed" && event.payload.itemType === "assistant_message",
+      );
+      assert.equal(assistantItems.length, 1);
+      assert.equal(String(assistantItems[0]?.turnId), String(turn.turnId));
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("does not report a live turn as failed when Claude stops with a tool call open", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+      const collector = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          runtimeEvents.push(event);
+        }),
+      ).pipe(Effect.forkScoped);
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "hello",
+        attachments: [],
+      });
+
+      // No interruptTurn here: the turn is still live, which is the case the
+      // existing suppression in handleResultMessage does not cover. A user who
+      // restarts to escape a stalled turn lands on exactly this path.
+      harness.query.emit({
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: false,
+        // No structured stop_reason field: this exercises the prose fallback,
+        // which shipped broken once already (a literal backspace in place of
+        // the  word boundary meant it could never match) and which the
+        // structured-field test could not have caught.
+        errors: ["[ede_diagnostic] result_type=user last_content_type=n/a STOP_REASON=Tool_Use"],
+        session_id: "sdk-session-tool-use-result",
+        uuid: "result-tool-use",
+      } as unknown as SDKMessage);
+
+      yield* Effect.yieldNow;
+      yield* Fiber.interrupt(collector).pipe(Effect.ignore);
+
+      // Cut off with a tool call outstanding is an abandoned turn, not a failed
+      // one. No red banner.
+      assert.equal(
+        runtimeEvents.some((event) => event.type === "runtime.error"),
+        false,
+      );
+      const completed = runtimeEvents.find((event) => event.type === "turn.completed");
+      assert.equal(completed?.type === "turn.completed" && completed.payload.state, "interrupted");
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("still reports a genuine failure that happened while a tool was in flight", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+      const collector = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          runtimeEvents.push(event);
+        }),
+      ).pipe(Effect.forkScoped);
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "hello",
+        attachments: [],
+      });
+
+      // Same stop_reason as an abandoned turn, but is_error marks it a real
+      // failure. Reclassifying this as an interruption would swallow the error.
+      harness.query.emit({
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+        errors: ["tool execution blew up stop_reason=tool_use"],
+        stop_reason: "tool_use",
+        session_id: "sdk-session-tool-use-failure",
+        uuid: "result-tool-use-failure",
+      } as unknown as SDKMessage);
+
+      yield* Effect.yieldNow;
+      yield* Fiber.interrupt(collector).pipe(Effect.ignore);
+
+      assert.equal(
+        runtimeEvents.some((event) => event.type === "runtime.error"),
+        true,
+      );
+      const completed = runtimeEvents.find((event) => event.type === "turn.completed");
+      assert.equal(completed?.type === "turn.completed" && completed.payload.state, "failed");
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("force-settles the turn on interrupt even when the SDK stream stays open", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
@@ -2259,6 +2538,17 @@ describe("ClaudeAdapterLive", () => {
       } as unknown as SDKMessage);
 
       const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const usageEvent = runtimeEvents.find((event) => event.type === "thread.token-usage.updated");
+      assert.equal(usageEvent?.type, "thread.token-usage.updated");
+      if (usageEvent?.type === "thread.token-usage.updated") {
+        assert.deepEqual(usageEvent.payload.usage, {
+          usedTokens: 0,
+          lastUsedTokens: 0,
+          totalProcessedTokens: 123,
+          toolUses: 4,
+          durationMs: 987,
+        });
+      }
       const progressEvent = runtimeEvents.find((event) => event.type === "task.progress");
       assert.equal(progressEvent?.type, "task.progress");
       if (progressEvent?.type === "task.progress") {
@@ -2268,6 +2558,313 @@ describe("ClaudeAdapterLive", () => {
         );
         assert.equal(progressEvent.payload.description, "Running background teammate");
       }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("does not block task progress while Claude context usage is pending", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      harness.query.getContextUsage = () =>
+        new Promise<SDKControlGetContextUsageResponse>(() => {});
+
+      const progressFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "task.progress"),
+        Stream.take(1),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      harness.query.emit({
+        type: "system",
+        subtype: "task_progress",
+        task_id: "task-slow-context-usage",
+        description: "Continuing while context usage is pending",
+        usage: { total_tokens: 456 },
+        session_id: "sdk-session-slow-context-usage",
+        uuid: "task-progress-slow-context-usage",
+      } as unknown as SDKMessage);
+
+      for (let index = 0; index < 10; index += 1) {
+        yield* Effect.yieldNow;
+      }
+
+      assert.isDefined(
+        progressFiber.pollUnsafe(),
+        "task progress should not wait for getContextUsage",
+      );
+      const progressEvents = Array.from(yield* Fiber.join(progressFiber));
+      assert.equal(progressEvents[0]?.type, "task.progress");
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("keeps cumulative task totals when active context is larger", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => runtimeEvents.push(event)),
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      harness.query.emit({
+        type: "system",
+        subtype: "compact_boundary",
+        compact_metadata: { trigger: "manual", pre_tokens: 195_000, post_tokens: 190_000 },
+        session_id: "sdk-session-task-total",
+        uuid: "compact-task-total",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "system",
+        subtype: "task_progress",
+        task_id: "task-total-below-active-context",
+        description: "Reporting cumulative task usage",
+        usage: { total_tokens: 150_000 },
+        session_id: "sdk-session-task-total",
+        uuid: "task-progress-total-below-active",
+      } as unknown as SDKMessage);
+
+      for (let index = 0; index < 20; index += 1) {
+        yield* Effect.yieldNow;
+      }
+
+      const usageEvents = runtimeEvents.filter(
+        (event) => event.type === "thread.token-usage.updated",
+      );
+      const finalUsage = usageEvents.at(-1);
+      assert.equal(finalUsage?.type, "thread.token-usage.updated");
+      if (finalUsage?.type === "thread.token-usage.updated") {
+        assert.equal(finalUsage.payload.usage.usedTokens, 190_000);
+        assert.equal(finalUsage.payload.usage.totalProcessedTokens, 150_000);
+      }
+      runtimeEventsFiber.interruptUnsafe();
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("coalesces task usage queries and preserves the maximum cumulative total", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const contextUsageResolvers: Array<(value: SDKControlGetContextUsageResponse) => void> = [];
+      let activeContextUsageQueries = 0;
+      let maxActiveContextUsageQueries = 0;
+      harness.query.getContextUsage = () =>
+        new Promise<SDKControlGetContextUsageResponse>((resolve) => {
+          activeContextUsageQueries += 1;
+          maxActiveContextUsageQueries = Math.max(
+            maxActiveContextUsageQueries,
+            activeContextUsageQueries,
+          );
+          contextUsageResolvers.push((value) => {
+            activeContextUsageQueries -= 1;
+            resolve(value);
+          });
+        });
+      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => runtimeEvents.push(event)),
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      harness.query.emit({
+        type: "system",
+        subtype: "task_progress",
+        task_id: "task-usage-older",
+        description: "Older progress",
+        usage: { total_tokens: 200_000 },
+        session_id: "sdk-session-reverse-usage",
+        uuid: "task-progress-older",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "system",
+        subtype: "task_progress",
+        task_id: "task-usage-newer",
+        description: "Newer progress",
+        usage: { total_tokens: 100_000 },
+        session_id: "sdk-session-reverse-usage",
+        uuid: "task-progress-newer",
+      } as unknown as SDKMessage);
+
+      for (let index = 0; index < 20 && contextUsageResolvers.length < 1; index += 1) {
+        yield* Effect.yieldNow;
+      }
+      assert.lengthOf(contextUsageResolvers, 1);
+      assert.equal(maxActiveContextUsageQueries, 1);
+
+      contextUsageResolvers[0]?.({
+        totalTokens: 10_000,
+        maxTokens: 200_000,
+        isAutoCompactEnabled: true,
+      } as SDKControlGetContextUsageResponse);
+      for (let index = 0; index < 20 && contextUsageResolvers.length < 2; index += 1) {
+        yield* Effect.yieldNow;
+      }
+      assert.lengthOf(contextUsageResolvers, 2);
+      assert.equal(maxActiveContextUsageQueries, 1);
+      assert.lengthOf(
+        runtimeEvents.filter((event) => event.type === "thread.token-usage.updated"),
+        0,
+      );
+
+      contextUsageResolvers[1]?.({
+        totalTokens: 20_000,
+        maxTokens: 200_000,
+        isAutoCompactEnabled: true,
+      } as SDKControlGetContextUsageResponse);
+      for (let index = 0; index < 10; index += 1) {
+        yield* Effect.yieldNow;
+      }
+
+      const usageEvents = runtimeEvents.filter(
+        (event) => event.type === "thread.token-usage.updated",
+      );
+      assert.lengthOf(usageEvents, 1);
+      const usageEvent = usageEvents[0];
+      assert.equal(usageEvent?.type, "thread.token-usage.updated");
+      if (usageEvent?.type === "thread.token-usage.updated") {
+        assert.equal(usageEvent.payload.usage.usedTokens, 20_000);
+        assert.equal(usageEvent.payload.usage.totalProcessedTokens, 200_000);
+      }
+      runtimeEventsFiber.interruptUnsafe();
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("does not let a pending task query overwrite a compacted context", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      let resolveContextUsage: ((value: SDKControlGetContextUsageResponse) => void) | undefined;
+      harness.query.getContextUsage = () =>
+        new Promise<SDKControlGetContextUsageResponse>((resolve) => {
+          resolveContextUsage = resolve;
+        });
+      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => runtimeEvents.push(event)),
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      harness.query.emit({
+        type: "system",
+        subtype: "task_progress",
+        task_id: "task-before-compaction",
+        description: "Progress before compaction",
+        usage: { total_tokens: 370_000 },
+        session_id: "sdk-session-pending-compaction",
+        uuid: "task-progress-before-compaction",
+      } as unknown as SDKMessage);
+      for (let index = 0; index < 20; index += 1) {
+        yield* Effect.yieldNow;
+      }
+      assert.isDefined(resolveContextUsage);
+
+      harness.query.emit({
+        type: "system",
+        subtype: "compact_boundary",
+        compact_metadata: { trigger: "auto", pre_tokens: 198_000, post_tokens: 40_000 },
+        session_id: "sdk-session-pending-compaction",
+        uuid: "compact-while-context-query-pending",
+      } as unknown as SDKMessage);
+      for (let index = 0; index < 10; index += 1) {
+        yield* Effect.yieldNow;
+      }
+      resolveContextUsage?.({
+        totalTokens: 190_000,
+        maxTokens: 200_000,
+        isAutoCompactEnabled: true,
+      } as SDKControlGetContextUsageResponse);
+      for (let index = 0; index < 20; index += 1) {
+        yield* Effect.yieldNow;
+      }
+
+      const usageEvents = runtimeEvents.filter(
+        (event) => event.type === "thread.token-usage.updated",
+      );
+      const finalUsage = usageEvents.at(-1);
+      assert.equal(finalUsage?.type, "thread.token-usage.updated");
+      if (finalUsage?.type === "thread.token-usage.updated") {
+        assert.equal(finalUsage.payload.usage.usedTokens, 40_000);
+      }
+      runtimeEventsFiber.interruptUnsafe();
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("does not query context usage for task progress without usage", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      let contextUsageQueries = 0;
+      harness.query.getContextUsage = async () => {
+        contextUsageQueries += 1;
+        return {
+          totalTokens: 10_000,
+          maxTokens: 200_000,
+          isAutoCompactEnabled: true,
+        } as SDKControlGetContextUsageResponse;
+      };
+      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => runtimeEvents.push(event)),
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      harness.query.emit({
+        type: "system",
+        subtype: "task_progress",
+        task_id: "task-without-usage",
+        description: "Progress without usage",
+        session_id: "sdk-session-no-task-usage",
+        uuid: "task-progress-without-usage",
+      } as unknown as SDKMessage);
+      for (let index = 0; index < 20; index += 1) {
+        yield* Effect.yieldNow;
+      }
+
+      assert.equal(contextUsageQueries, 0);
+      assert.lengthOf(
+        runtimeEvents.filter((event) => event.type === "thread.token-usage.updated"),
+        0,
+      );
+      assert.isTrue(runtimeEvents.some((event) => event.type === "task.progress"));
+      runtimeEventsFiber.interruptUnsafe();
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -2489,10 +3086,16 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
-  it.effect("emits thread token usage updates from Claude task progress", () => {
+  it.effect("uses authoritative context usage for Claude task progress", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
+      harness.query.getContextUsage = async () =>
+        ({
+          totalTokens: 42_000,
+          maxTokens: 1_000_000,
+          isAutoCompactEnabled: true,
+        }) as SDKControlGetContextUsageResponse;
 
       const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 6).pipe(
         Stream.runCollect,
@@ -2503,6 +3106,11 @@ describe("ClaudeAdapterLive", () => {
         threadId: THREAD_ID,
         provider: ProviderDriverKind.make("claudeAgent"),
         runtimeMode: "full-access",
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          "claude-opus-5",
+          [{ id: "contextWindow", value: "200k" }],
+        ),
       });
 
       harness.query.emit({
@@ -2511,7 +3119,7 @@ describe("ClaudeAdapterLive", () => {
         task_id: "task-usage-1",
         description: "Thinking through the patch",
         usage: {
-          total_tokens: 321,
+          total_tokens: 321_000,
           tool_uses: 2,
           duration_ms: 654,
         },
@@ -2526,16 +3134,91 @@ describe("ClaudeAdapterLive", () => {
       if (usageEvent?.type === "thread.token-usage.updated") {
         assert.deepEqual(usageEvent.payload, {
           usage: {
-            usedTokens: 321,
-            lastUsedTokens: 321,
+            usedTokens: 42_000,
+            lastUsedTokens: 42_000,
+            totalProcessedTokens: 321_000,
+            maxTokens: 200_000,
             toolUses: 2,
             durationMs: 654,
+            compactsAutomatically: true,
           },
         });
       }
       assert.equal(progressEvent?.type, "task.progress");
       if (usageEvent && progressEvent) {
         assert.notStrictEqual(usageEvent.eventId, progressEvent.eventId);
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("does not let task progress overwrite a compacted 200k context", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      harness.query.getContextUsage = async () =>
+        ({
+          totalTokens: 45_000,
+          maxTokens: 1_000_000,
+          isAutoCompactEnabled: true,
+        }) as SDKControlGetContextUsageResponse;
+
+      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 8).pipe(
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          "claude-opus-5",
+          [{ id: "contextWindow", value: "200k" }],
+        ),
+      });
+
+      harness.query.emit({
+        type: "system",
+        subtype: "compact_boundary",
+        compact_metadata: {
+          trigger: "auto",
+          pre_tokens: 198_000,
+          post_tokens: 40_000,
+        },
+        session_id: "sdk-session-compacted-context",
+        uuid: "compact-boundary-1",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "system",
+        subtype: "task_progress",
+        task_id: "task-after-compaction",
+        description: "Continuing after compaction",
+        usage: {
+          total_tokens: 370_000,
+        },
+        session_id: "sdk-session-compacted-context",
+        uuid: "task-progress-after-compaction",
+      } as unknown as SDKMessage);
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const usageEvents = runtimeEvents.filter(
+        (event) => event.type === "thread.token-usage.updated",
+      );
+      assert.lengthOf(usageEvents, 2);
+      const finalUsage = usageEvents.at(-1);
+      assert.equal(finalUsage?.type, "thread.token-usage.updated");
+      if (finalUsage?.type === "thread.token-usage.updated") {
+        assert.deepEqual(finalUsage.payload.usage, {
+          usedTokens: 45_000,
+          lastUsedTokens: 45_000,
+          totalProcessedTokens: 370_000,
+          maxTokens: 200_000,
+          compactsAutomatically: true,
+        });
       }
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
@@ -2604,6 +3287,138 @@ describe("ClaudeAdapterLive", () => {
           },
         });
       }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("keeps the selected 200k window when getContextUsage reports the model ceiling", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      // The SDK reports the model's own ceiling here, not the session budget:
+      // 1M for Opus 5 and for Sonnet, whatever window the user picked. #125
+      // made the selection authoritative in completeTurn but not on this path,
+      // which runs on every poll and put the ceiling straight back.
+      let contextUsageQueries = 0;
+      harness.query.getContextUsage = async () => {
+        contextUsageQueries += 1;
+        return {
+          totalTokens: 33_000,
+          maxTokens: 1_000_000,
+          isAutoCompactEnabled: true,
+        } as unknown as SDKControlGetContextUsageResponse;
+      };
+
+      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 7).pipe(
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          "claude-opus-4-6",
+          [{ id: "contextWindow", value: "200k" }],
+        ),
+      });
+      yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "hello",
+        attachments: [],
+      });
+
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        duration_ms: 10,
+        duration_api_ms: 10,
+        num_turns: 1,
+        result: "done",
+        stop_reason: "end_turn",
+        session_id: "sdk-session-context-usage-window",
+        usage: { input_tokens: 10, output_tokens: 5 },
+      } as unknown as SDKMessage);
+      harness.query.finish();
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const usageEvents = runtimeEvents.filter(
+        (event) => event.type === "thread.token-usage.updated",
+      );
+      assert.equal(contextUsageQueries, 1, "expected result settlement to query SDK usage");
+      assert.isAtLeast(usageEvents.length, 1);
+      // Every emitted snapshot must agree with the selection; one that reports
+      // 1M overstates remaining room five-fold in the meter.
+      for (const usageEvent of usageEvents) {
+        if (usageEvent.type === "thread.token-usage.updated") {
+          assert.equal(usageEvent.payload.usage.maxTokens, 200000);
+        }
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("keeps the selected 200k window when the SDK usage map reports 1M", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 7).pipe(
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          "claude-opus-4-6",
+          [{ id: "contextWindow", value: "200k" }],
+        ),
+      });
+      yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "hello",
+        attachments: [],
+      });
+
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        duration_ms: 10,
+        duration_api_ms: 10,
+        num_turns: 1,
+        result: "done",
+        stop_reason: "end_turn",
+        session_id: "sdk-session-selected-window",
+        usage: { input_tokens: 10, output_tokens: 5 },
+        // The usage map is keyed by model and reports each model's own ceiling.
+        // Taking its maximum flipped a 200k session to 1M from the first
+        // completed turn onward, overstating remaining room five-fold.
+        modelUsage: {
+          "claude-opus-4-6": { contextWindow: 200000, maxOutputTokens: 64000 },
+          "claude-opus-5": { contextWindow: 1000000, maxOutputTokens: 64000 },
+        },
+      } as unknown as SDKMessage);
+      harness.query.finish();
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const usageEvent = runtimeEvents.find((event) => event.type === "thread.token-usage.updated");
+      assert.equal(
+        usageEvent?.type === "thread.token-usage.updated" && usageEvent.payload.usage.maxTokens,
+        200000,
+      );
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -2679,6 +3494,12 @@ describe("ClaudeAdapterLive", () => {
       const harness = makeHarness();
       return Effect.gen(function* () {
         const adapter = yield* ClaudeAdapter;
+        harness.query.getContextUsage = async () =>
+          ({
+            totalTokens: 190_000,
+            maxTokens: 200_000,
+            isAutoCompactEnabled: true,
+          }) as SDKControlGetContextUsageResponse;
 
         const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 9).pipe(
           Stream.runCollect,
@@ -2744,6 +3565,7 @@ describe("ClaudeAdapterLive", () => {
               lastUsedTokens: 190000,
               totalProcessedTokens: 535000,
               maxTokens: 200000,
+              compactsAutomatically: true,
             },
           });
         }
@@ -3556,6 +4378,8 @@ describe("ClaudeAdapterLive", () => {
       assert.equal(resolved?.type, "request.resolved");
       if (resolved?.type === "request.resolved") {
         assert.equal(resolved.payload.decision, "cancel");
+        // `cancel` alone reads as the user pressing cancel.
+        assert.equal(resolved.payload.resolvedBy, "timeout");
       }
 
       yield* Fiber.interrupt(eventsFiber);
@@ -4087,7 +4911,7 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
-  it.effect("sets plan permission mode on sendTurn when interactionMode is plan", () => {
+  it.effect("does not change permission mode while sending a turn", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
@@ -4100,11 +4924,10 @@ describe("ClaudeAdapterLive", () => {
       yield* adapter.sendTurn({
         threadId: session.threadId,
         input: "plan this for me",
-        interactionMode: "plan",
         attachments: [],
       });
 
-      assert.deepEqual(harness.query.setPermissionModeCalls, ["plan"]);
+      assert.deepEqual(harness.query.setPermissionModeCalls, []);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -4115,59 +4938,54 @@ describe("ClaudeAdapterLive", () => {
     { runtimeMode: "full-access", expectedBase: "bypassPermissions" },
     { runtimeMode: "approval-required", expectedBase: "default" },
     { runtimeMode: "auto-accept-edits", expectedBase: "acceptEdits" },
-  ])(
-    "restores $expectedBase permission mode after plan turn ($runtimeMode)",
-    ({ runtimeMode, expectedBase }) => {
-      const harness = makeHarness();
-      return Effect.gen(function* () {
-        const adapter = yield* ClaudeAdapter;
+  ])("does not switch permission mode between turns ($runtimeMode)", ({ runtimeMode }) => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
 
-        const session = yield* adapter.startSession({
-          threadId: THREAD_ID,
-          provider: ProviderDriverKind.make("claudeAgent"),
-          runtimeMode,
-        });
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode,
+      });
 
-        // First turn in plan mode
-        yield* adapter.sendTurn({
-          threadId: session.threadId,
-          input: "plan this",
-          interactionMode: "plan",
-          attachments: [],
-        });
+      // First turn in plan mode
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "plan this",
+        attachments: [],
+      });
 
-        // Complete the turn so we can send another
-        const turnCompletedFiber = yield* Stream.filter(
-          adapter.streamEvents,
-          (event) => event.type === "turn.completed",
-        ).pipe(Stream.runHead, Effect.forkChild);
+      // Complete the turn so we can send another
+      const turnCompletedFiber = yield* Stream.filter(
+        adapter.streamEvents,
+        (event) => event.type === "turn.completed",
+      ).pipe(Stream.runHead, Effect.forkChild);
 
-        harness.query.emit({
-          type: "result",
-          subtype: "success",
-          is_error: false,
-          errors: [],
-          session_id: `sdk-session-${runtimeMode}`,
-          uuid: `result-${runtimeMode}`,
-        } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        session_id: `sdk-session-${runtimeMode}`,
+        uuid: `result-${runtimeMode}`,
+      } as unknown as SDKMessage);
 
-        yield* Fiber.join(turnCompletedFiber);
+      yield* Fiber.join(turnCompletedFiber);
 
-        // Second turn back to default
-        yield* adapter.sendTurn({
-          threadId: session.threadId,
-          input: "now do it",
-          interactionMode: "default",
-          attachments: [],
-        });
+      // Second turn back to default
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "now do it",
+        attachments: [],
+      });
 
-        assert.deepEqual(harness.query.setPermissionModeCalls, ["plan", expectedBase]);
-      }).pipe(
-        Effect.provideService(Random.Random, makeDeterministicRandomService()),
-        Effect.provide(harness.layer),
-      );
-    },
-  );
+      assert.deepEqual(harness.query.setPermissionModeCalls, []);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
 
   it.effect("does not call setPermissionMode when interactionMode is absent", () => {
     const harness = makeHarness();
@@ -4208,7 +5026,6 @@ describe("ClaudeAdapterLive", () => {
       yield* adapter.sendTurn({
         threadId: session.threadId,
         input: "plan this",
-        interactionMode: "plan",
         attachments: [],
       });
       yield* Stream.take(adapter.streamEvents, 1).pipe(Stream.runDrain);
@@ -4274,7 +5091,6 @@ describe("ClaudeAdapterLive", () => {
       yield* adapter.sendTurn({
         threadId: session.threadId,
         input: "plan this",
-        interactionMode: "plan",
         attachments: [],
       });
       yield* Stream.take(adapter.streamEvents, 1).pipe(Stream.runDrain);
@@ -4436,6 +5252,7 @@ describe("ClaudeAdapterLive", () => {
       assert.deepEqual(resolvedEvent.value.payload.answers, {
         "Which framework?": "React",
       });
+      assert.equal(resolvedEvent.value.payload.resolvedBy, "user");
       assert.deepEqual(resolvedEvent.value.providerRefs, {
         providerItemId: ProviderItemId.make("tool-ask-1"),
       });
@@ -4691,6 +5508,9 @@ describe("ClaudeAdapterLive", () => {
       assert.equal(resolved?.type, "user-input.resolved");
       if (resolved?.type === "user-input.resolved") {
         assert.deepEqual(resolved.payload.answers, {});
+        // The empty answers alone are indistinguishable from the user
+        // submitting an empty form; only this says who did it.
+        assert.equal(resolved.payload.resolvedBy, "timeout");
       }
 
       yield* Fiber.interrupt(eventsFiber);

@@ -41,8 +41,10 @@ import { ProviderInstanceRegistryHydrationLive } from "./ProviderInstanceRegistr
 import {
   haveProvidersChanged,
   INDETERMINATE_TOLERANCE,
+  type IndeterminateStreak,
   mergeProviderSnapshot,
   mergeProviderSnapshots,
+  priorFailuresForObservation,
   resolveIndeterminateSnapshot,
   ProviderRegistryLive,
   selectProvidersByKind,
@@ -644,6 +646,58 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
         assert.strictEqual(outcome.provider.message, timedOut.message);
         assert.strictEqual(outcome.provider.refreshFailure, undefined);
         assert.strictEqual(outcome.consecutiveFailures, INDETERMINATE_TOLERANCE + 1);
+      });
+
+      it("absorbs one probe timeout that gets published twice", () => {
+        // Boot subscribes to the live source and then reads it directly. A
+        // result landing between those two steps arrives on both paths, and
+        // counting it twice used to exhaust the tolerance in the same
+        // millisecond and report the provider broken.
+        let streak: IndeterminateStreak | undefined;
+        // `previousByKey` reads back from `providersRef`, so the second
+        // delivery sees whatever the first one published.
+        let published: ServerProvider = observed;
+        const publish = (next: ServerProvider) => {
+          const outcome = resolveIndeterminateSnapshot({
+            previous: published,
+            next,
+            consecutiveFailures: priorFailuresForObservation(streak, next === timedOut),
+            now,
+          });
+          streak = {
+            consecutiveFailures: outcome.consecutiveFailures,
+          };
+          published = outcome.provider;
+          return outcome;
+        };
+
+        const first = publish(timedOut);
+        assert.strictEqual(first.provider.status, "ready");
+        assert.strictEqual(first.consecutiveFailures, 1);
+
+        // Same observation, second delivery: must not advance the streak.
+        const second = publish(timedOut);
+        assert.strictEqual(second.consecutiveFailures, 1);
+        assert.strictEqual(second.provider.status, "ready");
+      });
+
+      it("still accumulates across genuinely separate probes", () => {
+        // Independent observations must still pass the tolerance even when a
+        // coarse clock gives both probes the same timestamp.
+        const streak: IndeterminateStreak = {
+          consecutiveFailures: 1,
+        };
+        const later = { ...timedOut } as const;
+
+        const outcome = resolveIndeterminateSnapshot({
+          previous: observed,
+          next: later,
+          consecutiveFailures: priorFailuresForObservation(streak, later === timedOut),
+          now,
+        });
+
+        assert.strictEqual(outcome.consecutiveFailures, 2);
+        assert.strictEqual(outcome.provider.status, "error");
       });
 
       it("clears the streak and the marker on any determinate result", () => {

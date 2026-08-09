@@ -1,6 +1,6 @@
 {
   "name": "@toolport-studio/desktop",
-  "version": "0.1.0-beta.13",
+  "version": "0.1.0-beta.15",
   "private": true,
   "description": "The Toolport Studio Electron desktop shell.",
   "type": "module",
@@ -22,7 +22,7 @@
     "@toolport-studio/ssh": "workspace:*",
     "@toolport-studio/tailscale": "workspace:*",
     "effect": "catalog:",
-    "electron": "41.5.0",
+    "electron": "41.10.3",
     "electron-store": "^8.2.0",
     "electron-updater": "^6.6.2",
     "playwright-core": "1.60.0",

@@ -116,6 +116,7 @@ describe("OrchestrationEngine", () => {
           nextSequence += 1;
           return savedEvent;
         }),
+      hasLaterStreamStop: () => Effect.succeed(false),
       readFromSequence: () => Stream.empty,
       readAll: () =>
         Stream.fail(
@@ -229,6 +230,7 @@ describe("OrchestrationEngine", () => {
       Layer.provide(
         Layer.succeed(OrchestrationProjectionPipeline, {
           bootstrap: Effect.void,
+          reconcileStartupThreadSessions: Effect.void,
           projectEvent: () => Effect.void,
         } satisfies OrchestrationProjectionPipelineShape),
       ),
@@ -841,6 +843,7 @@ describe("OrchestrationEngine", () => {
     let shouldFailFirstAppend = true;
 
     const flakyStore: OrchestrationEventStoreShape = {
+      hasLaterStreamStop: () => Effect.succeed(false),
       append(event) {
         if (shouldFailFirstAppend && event.commandId === CommandId.make("cmd-flaky-1")) {
           shouldFailFirstAppend = false;
@@ -962,6 +965,7 @@ describe("OrchestrationEngine", () => {
     let shouldFailRequestedProjection = true;
     const flakyProjectionPipeline: OrchestrationProjectionPipelineShape = {
       bootstrap: Effect.void,
+      reconcileStartupThreadSessions: Effect.void,
       projectEvent: (event) => {
         if (
           shouldFailRequestedProjection &&
@@ -1086,6 +1090,7 @@ describe("OrchestrationEngine", () => {
     let nextSequence = 1;
 
     const nonTransactionalStore: OrchestrationEventStoreShape = {
+      hasLaterStreamStop: () => Effect.succeed(false),
       append(event) {
         const savedEvent = {
           ...event,
@@ -1110,6 +1115,7 @@ describe("OrchestrationEngine", () => {
     let shouldFailProjection = true;
     const flakyProjectionPipeline: OrchestrationProjectionPipelineShape = {
       bootstrap: Effect.void,
+      reconcileStartupThreadSessions: Effect.void,
       projectEvent: (event) => {
         if (
           shouldFailProjection &&

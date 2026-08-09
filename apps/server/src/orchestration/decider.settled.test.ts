@@ -5,6 +5,7 @@ import {
   ProjectId,
   ProviderInstanceId,
   ThreadId,
+  TurnId,
   type OrchestrationReadModel,
   type OrchestrationSession,
   type OrchestrationThread,
@@ -468,6 +469,36 @@ it.layer(NodeServices.layer)("settled thread decider", (it) => {
         const events = Array.isArray(result) ? result : [result];
         expect(events.map((event) => event.type)).toEqual(["thread.session-set"]);
       }
+    }),
+  );
+
+  it.effect("rejects a conditional session update after the session changes", () =>
+    Effect.gen(function* () {
+      const currentSession: OrchestrationSession = {
+        ...makeSession("running"),
+        activeTurnId: TurnId.make("turn-new"),
+        updatedAt: "2026-01-01T00:00:02.000Z",
+      };
+      const error = yield* decideOrchestrationCommand({
+        command: {
+          type: "thread.session.set",
+          commandId: CommandId.make("cmd-stale-session-set"),
+          threadId: ThreadId.make("thread-1"),
+          session: {
+            ...currentSession,
+            status: "interrupted",
+            activeTurnId: null,
+          },
+          expectedSession: {
+            activeTurnId: null,
+            updatedAt: NOW,
+          },
+          createdAt: "2026-01-01T00:00:03.000Z",
+        },
+        readModel: makeReadModel(null, null, currentSession),
+      }).pipe(Effect.flip);
+
+      expect(error._tag).toBe("OrchestrationCommandInvariantError");
     }),
   );
 

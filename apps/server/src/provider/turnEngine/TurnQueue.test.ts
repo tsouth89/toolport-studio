@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  abandonPendingTurns,
   abandonTurnQueue,
   beginTurn,
   disposeSendWhileRunning,
@@ -9,6 +10,7 @@ import {
   markTurnStopping,
   pendingCount,
   settleTurn,
+  settleTrackedTurn,
   trackLiveTurn,
 } from "./TurnQueue.ts";
 
@@ -101,6 +103,31 @@ describe("TurnQueue", () => {
     expect(settled.state.phase).toBe("idle");
   });
 
+  it("lets only the live turn claim settlement", () => {
+    const state = trackLiveTurn(emptyTurnQueue(), "turn-live");
+
+    const stale = settleTrackedTurn(state, {
+      turnId: "turn-stale",
+      reason: "completed",
+    });
+    expect(stale.claimed).toBe(false);
+    expect(stale.state).toBe(state);
+
+    const live = settleTrackedTurn(state, {
+      turnId: "turn-live",
+      reason: "completed",
+    });
+    expect(live.claimed).toBe(true);
+    expect(live.state.activeTurnId).toBeUndefined();
+    expect(live.state.phase).toBe("idle");
+
+    const duplicate = settleTrackedTurn(live.state, {
+      turnId: "turn-live",
+      reason: "completed",
+    });
+    expect(duplicate.claimed).toBe(false);
+  });
+
   it("abandons pending inputs on Stop without returning a next turn", () => {
     let state = beginTurn(emptyTurnQueue(), "turn-1");
     state = markTurnRunning(state);
@@ -112,6 +139,20 @@ describe("TurnQueue", () => {
     expect(abandoned.abandoned.map((entry) => entry.id)).toEqual(["b"]);
     expect(pendingCount(abandoned.state)).toBe(0);
     expect(abandoned.state.activeTurnId).toBeUndefined();
+  });
+
+  it("abandons pending inputs before Stop without losing live-turn ownership", () => {
+    let state = trackLiveTurn(emptyTurnQueue(), "turn-1");
+    state = disposeSendWhileRunning(state, {
+      sendWhileRunning: "queue",
+      nextTurn: turn("b", "second"),
+    }).state;
+
+    const abandoned = abandonPendingTurns(state);
+    expect(abandoned.abandoned.map((entry) => entry.id)).toEqual(["b"]);
+    expect(abandoned.state.activeTurnId).toBe("turn-1");
+    expect(abandoned.state.phase).toBe("running");
+    expect(pendingCount(abandoned.state)).toBe(0);
   });
 
   it("trackLiveTurn marks a running turn for queue bookkeeping", () => {

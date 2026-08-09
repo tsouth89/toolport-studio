@@ -33,7 +33,12 @@ import {
   type ProviderSessionContinuity,
 } from "../providerSwitch.ts";
 import { increment, orchestrationEventsProcessedTotal } from "../../observability/Metrics.ts";
-import { ProviderAdapterRequestError } from "../../provider/Errors.ts";
+import {
+  ProviderAdapterRequestError,
+  ProviderAdapterSessionClosedError,
+  ProviderAdapterSessionNotFoundError,
+  ProviderSessionNotFoundError,
+} from "../../provider/Errors.ts";
 import { TextGeneration } from "../../textGeneration/TextGeneration.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
@@ -46,9 +51,17 @@ import {
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
-import { ORCHESTRATION_SIDE_EFFECT_CONSUMERS } from "../../persistence/Services/OrchestrationEventStore.ts";
+import {
+  ORCHESTRATION_SIDE_EFFECT_CONSUMERS,
+  OrchestrationEventStore,
+} from "../../persistence/Services/OrchestrationEventStore.ts";
 import { makeDurableSideEffectReactor } from "../DurableSideEffectReactor.ts";
+import { OrchestrationCommandInvariantError } from "../Errors.ts";
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
+const isProviderAdapterSessionClosedError = Schema.is(ProviderAdapterSessionClosedError);
+const isProviderAdapterSessionNotFoundError = Schema.is(ProviderAdapterSessionNotFoundError);
+const isProviderSessionNotFoundError = Schema.is(ProviderSessionNotFoundError);
+const isOrchestrationCommandInvariantError = Schema.is(OrchestrationCommandInvariantError);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
 
 type ProviderIntentEvent = Extract<
@@ -89,6 +102,31 @@ function mapProviderSessionStatusToOrchestrationStatus(
 
 const turnStartKeyForEvent = (event: ProviderIntentEvent): string =>
   event.commandId !== null ? `command:${event.commandId}` : `event:${event.eventId}`;
+
+/**
+ * Provider intents run in two serial lanes per thread rather than one.
+ *
+ * Turn execution holds its lane for the *entire* provider turn: `sendTurn`
+ * blocks until the whole prompt settles and deliberately carries no timeout
+ * (see `DEFAULT_PROVIDER_TURN_OPERATION_TIMEOUT`). With a single lane per
+ * thread every control intent queued behind that, which meant Stop could not
+ * be dequeued until the turn it was trying to stop had already finished on
+ * its own — a Stop that only works once stopping is pointless (SOU-569,
+ * observed as an agent editing files for 2m37s after the user pressed Stop).
+ * The same lane also carried approval responses, so in approval-required mode
+ * a mid-turn approval would queue behind the turn that was blocked waiting
+ * for it.
+ *
+ * Control intents keep sharing one lane *with each other* per thread, so two
+ * Stops, or a Stop and an approval response, still apply in request order.
+ *
+ * `thread.runtime-mode-set` stays on the turn lane on purpose: it can restart
+ * the provider session, which must not race a turn that is mid-flight.
+ */
+const providerCommandLaneKey = (event: ProviderIntentEvent): string =>
+  event.type === "thread.turn-start-requested" || event.type === "thread.runtime-mode-set"
+    ? `turn:${event.payload.threadId}`
+    : `control:${event.payload.threadId}`;
 
 const HANDLED_TURN_START_KEY_MAX = 10_000;
 const HANDLED_TURN_START_KEY_TTL = Duration.minutes(30);
@@ -253,6 +291,7 @@ function buildGeneratedWorktreeBranchName(raw: string): string {
 
 const make = Effect.gen(function* () {
   const options = yield* ProviderCommandReactorConfig;
+  const eventStore = yield* OrchestrationEventStore;
   const sessionOperationTimeout =
     options.sessionOperationTimeout ?? DEFAULT_PROVIDER_SESSION_OPERATION_TIMEOUT;
   // Explicit null disables the sendTurn wall-clock. Undefined falls back to
@@ -312,6 +351,41 @@ const make = Effect.gen(function* () {
       ),
     );
 
+  /**
+   * Whether a Stop for this thread was appended after this turn start.
+   *
+   * Turn execution and control intents run on separate lanes, so by the time a
+   * queued turn start dispatches the user may already have pressed Stop. Two
+   * shapes of that, both real:
+   *
+   *   1. The turn start waited behind an earlier turn while Stop ran.
+   *   2. The turn lane was idle, so the turn start and the Stop were dequeued
+   *      concurrently and the turn start won the race to check.
+   *
+   * Reading the event log answers both, because the Stop event is durable the
+   * moment it is appended — well before either lane processes it. An
+   * in-memory watermark could not close (2) at all, and would additionally
+   * have made correctness depend on cache TTL and capacity: `sendTurn` has no
+   * maximum duration, so a queued turn start can outlive any expiry, and a
+   * busy host can evict the entry outright. Neither is an acceptable boundary
+   * for "did the user stop this".
+   *
+   * Only Stops strictly after this turn start count. Anything the user sends
+   * *after* pressing Stop gets a higher sequence and still runs.
+   */
+  const wasStoppedAfterRequest = (threadId: ThreadId, sequence: number) =>
+    eventStore.hasLaterStreamStop({ streamId: String(threadId), afterSequence: sequence }).pipe(
+      // A read failure must not strand the user's turn. Log and dispatch:
+      // the control lane still interrupts whatever this starts.
+      Effect.catchCause((cause) =>
+        Effect.logWarning("could not check for a later stop before dispatching a turn", {
+          threadId,
+          sequence,
+          cause: Cause.pretty(cause),
+        }).pipe(Effect.as(false)),
+      ),
+    );
+
   const threadModelSelections = new Map<string, ModelSelection>();
   /**
    * Threads whose session was just restarted onto a different driver, waiting
@@ -352,6 +426,36 @@ const make = Effect.gen(function* () {
             payload: {
               detail: input.detail,
               ...(input.requestId ? { requestId: input.requestId } : {}),
+            },
+            turnId: input.turnId,
+            createdAt: input.createdAt,
+          },
+          createdAt: input.createdAt,
+        }),
+      ),
+    );
+
+  const appendStaleTurnReconciledActivity = (input: {
+    readonly threadId: ThreadId;
+    readonly turnId: TurnId | null;
+    readonly createdAt: string;
+  }) =>
+    Effect.all({
+      commandId: serverCommandId("provider-stale-turn-activity"),
+      eventId: serverEventId(),
+    }).pipe(
+      Effect.flatMap(({ commandId, eventId }) =>
+        orchestrationEngine.dispatch({
+          type: "thread.activity.append",
+          commandId,
+          threadId: input.threadId,
+          activity: {
+            id: eventId,
+            tone: "info",
+            kind: "provider.turn.interrupt.reconciled",
+            summary: "Cleared stale turn",
+            payload: {
+              detail: "The provider process was no longer bound to this thread.",
             },
             turnId: input.turnId,
             createdAt: input.createdAt,
@@ -416,6 +520,10 @@ const make = Effect.gen(function* () {
   const setThreadSession = (input: {
     readonly threadId: ThreadId;
     readonly session: OrchestrationSession;
+    readonly expectedSession?: {
+      readonly activeTurnId: TurnId | null;
+      readonly updatedAt: string;
+    };
     readonly createdAt: string;
   }) =>
     serverCommandId("provider-session-set").pipe(
@@ -425,8 +533,20 @@ const make = Effect.gen(function* () {
           commandId,
           threadId: input.threadId,
           session: input.session,
+          expectedSession: input.expectedSession,
           createdAt: input.createdAt,
         }),
+      ),
+    );
+
+  const setThreadSessionIfCurrent = (input: Parameters<typeof setThreadSession>[0]) =>
+    setThreadSession(input).pipe(
+      Effect.as(true),
+      Effect.catchIf(isOrchestrationCommandInvariantError, (error) =>
+        Effect.logDebug("skipped stale conditional session update", {
+          threadId: input.threadId,
+          detail: error.detail,
+        }).pipe(Effect.as(false)),
       ),
     );
 
@@ -849,7 +969,6 @@ const make = Effect.gen(function* () {
     readonly messageId?: string;
     readonly attachments?: ReadonlyArray<ChatAttachment>;
     readonly modelSelection?: ModelSelection;
-    readonly interactionMode?: "default" | "plan";
     readonly createdAt: string;
   }) {
     const thread = yield* resolveThread(input.threadId);
@@ -966,7 +1085,6 @@ const make = Effect.gen(function* () {
       ...(inputWithHandoff ? { input: inputWithHandoff } : {}),
       ...(normalizedAttachments.length > 0 ? { attachments: normalizedAttachments } : {}),
       ...(modelForTurn !== undefined ? { modelSelection: modelForTurn } : {}),
-      ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
       ...(conversationHistory.length > 0 && shouldSendConversationHistory(continuity)
         ? { conversationHistory }
         : {}),
@@ -1106,6 +1224,20 @@ const make = Effect.gen(function* () {
       return;
     }
 
+    // A Stop can now land while this turn start is still queued behind an
+    // earlier turn on this lane. Starting it would open a new turn moments
+    // after the user asked the thread to stop, so drop it instead. Runs before
+    // session ensure and title/branch generation so a dropped turn costs
+    // nothing.
+    if (yield* wasStoppedAfterRequest(event.payload.threadId, event.sequence)) {
+      yield* Effect.logDebug("dropping turn start superseded by a later stop", {
+        threadId: event.payload.threadId,
+        messageId: event.payload.messageId,
+        sequence: event.sequence,
+      });
+      return;
+    }
+
     const isFirstUserMessageTurn =
       thread.messages.filter((entry) => entry.role === "user").length === 1;
     if (isFirstUserMessageTurn) {
@@ -1182,7 +1314,6 @@ const make = Effect.gen(function* () {
         ...(event.payload.modelSelection !== undefined
           ? { modelSelection: event.payload.modelSelection }
           : {}),
-        interactionMode: event.payload.interactionMode,
         createdAt: event.payload.createdAt,
       }),
       {
@@ -1204,6 +1335,22 @@ const make = Effect.gen(function* () {
       return;
     }
 
+    // Re-check immediately before dispatch, not only on entry.
+    //
+    // Everything between the two checks can take real time — ensuring a
+    // session spawns a provider child, and the handoff path restarts one. A
+    // Stop pressed during that window was appended after the first check read
+    // the log, so only this second read sees it. Without it the user watches
+    // Stop do nothing while a turn they cancelled seconds ago starts up.
+    if (yield* wasStoppedAfterRequest(event.payload.threadId, event.sequence)) {
+      yield* Effect.logDebug("dropping turn start superseded by a stop during preparation", {
+        threadId: event.payload.threadId,
+        messageId: event.payload.messageId,
+        sequence: event.sequence,
+      });
+      return;
+    }
+
     // Do not reuse sessionOperationTimeout here. Grok/Cursor sendTurn blocks
     // until the prompt finishes; a 2m "start" timeout interrupts live turns.
     const sendTurnEffect = providerService.sendTurn(sendTurnRequest.value);
@@ -1212,6 +1359,28 @@ const make = Effect.gen(function* () {
       modelSelectionInstanceId: thread.modelSelection.instanceId,
       sessionProvider: thread.session?.providerName ?? undefined,
     });
+    // Forked, so the turn lane is released once the turn is *dispatched*
+    // rather than held until it settles.
+    //
+    // ACP `sendTurn` blocks for the whole prompt. Awaiting it here meant the
+    // thread's turn lane was occupied for minutes, and a mid-turn message —
+    // which arrives as another `thread.turn-start-requested` — could not be
+    // dequeued until the turn it was meant to steer had already finished.
+    // That is why steering "did nothing until the turn ended" on Cursor
+    // (SOU-561) and looked dropped entirely on Grok (SOU-562). The adapters
+    // already implement steering correctly (`promptConcurrent` /
+    // `preemptActivePrompt`); they were simply never reached in time.
+    //
+    // Everything the lane actually needs to serialize still happens above and
+    // is still awaited: session ensure, the continuity/handoff decision, and
+    // request construction. Only the long-running prompt escapes. So two turn
+    // starts can no longer both bootstrap a session (SOU-519) — by the time
+    // the second is dequeued the first has already bound one — while a second
+    // prompt reaching a live session is exactly what a steer is.
+    //
+    // The delivery is marked complete on dispatch rather than on settle. That
+    // is deliberate: a crash mid-turn now drops the turn instead of replaying
+    // it, and replaying a prompt whose tools already ran is the worse failure.
     yield* (
       turnOperationTimeout === null
         ? sendTurnEffect
@@ -1221,7 +1390,7 @@ const make = Effect.gen(function* () {
             method: "turn.start",
             operation: "Provider turn",
           })
-    ).pipe(Effect.catchCause(recoverTurnStartFailure));
+    ).pipe(Effect.catchCause(recoverTurnStartFailure), Effect.forkScoped);
   });
 
   /**
@@ -1241,7 +1410,7 @@ const make = Effect.gen(function* () {
     if (session.status !== "running" && session.status !== "starting") {
       return;
     }
-    yield* setThreadSession({
+    yield* setThreadSessionIfCurrent({
       threadId: input.threadId,
       session: {
         threadId: session.threadId,
@@ -1255,8 +1424,58 @@ const make = Effect.gen(function* () {
         lastError: null,
         updatedAt: input.createdAt,
       },
+      expectedSession: {
+        activeTurnId: session.activeTurnId,
+        updatedAt: session.updatedAt,
+      },
       createdAt: input.createdAt,
     });
+  });
+
+  const reconcileMissingProviderSessionAfterInterrupt = Effect.fnUntraced(function* (input: {
+    readonly threadId: ThreadId;
+    readonly turnId: TurnId | null;
+    readonly expectedActiveTurnId: TurnId | null;
+    readonly createdAt: string;
+  }) {
+    const thread = yield* resolveThread(input.threadId);
+    const session = thread?.session;
+    if (!session || (session.status !== "running" && session.status !== "starting")) {
+      return;
+    }
+    // Control and turn execution intentionally use separate lanes. A new turn
+    // can therefore start while an older Stop is discovering that its runtime
+    // is gone; never let that older recovery overwrite newer projected work.
+    if (session.activeTurnId !== input.expectedActiveTurnId) {
+      return;
+    }
+    if (Date.parse(session.updatedAt) > Date.parse(input.createdAt)) {
+      return;
+    }
+    const applied = yield* setThreadSessionIfCurrent({
+      threadId: input.threadId,
+      session: {
+        threadId: session.threadId,
+        status: "interrupted",
+        providerName: session.providerName,
+        ...(session.providerInstanceId !== undefined
+          ? { providerInstanceId: session.providerInstanceId }
+          : {}),
+        runtimeMode: session.runtimeMode,
+        activeTurnId: null,
+        lastError: null,
+        updatedAt: input.createdAt,
+      },
+      expectedSession: {
+        activeTurnId: session.activeTurnId,
+        updatedAt: session.updatedAt,
+      },
+      createdAt: input.createdAt,
+    });
+    if (!applied) {
+      return;
+    }
+    yield* appendStaleTurnReconciledActivity(input);
   });
 
   const processTurnInterruptRequested = Effect.fn("processTurnInterruptRequested")(function* (
@@ -1279,6 +1498,7 @@ const make = Effect.gen(function* () {
         createdAt: event.payload.createdAt,
       });
     }
+    const expectedActiveTurnId = thread.session.activeTurnId;
 
     // Orchestration turn ids are not provider turn ids, so interrupt by session.
     // Provider rejections must not be swallowed by processDomainEventSafely —
@@ -1301,6 +1521,22 @@ const make = Effect.gen(function* () {
       Effect.catchCause((cause) => {
         if (Cause.hasInterruptsOnly(cause)) {
           return Effect.void;
+        }
+        const failure = cause.reasons.find(Cause.isFailReason)?.error;
+        if (
+          isProviderSessionNotFoundError(failure) ||
+          isProviderAdapterSessionNotFoundError(failure) ||
+          isProviderAdapterSessionClosedError(failure)
+        ) {
+          // There is nothing left to interrupt. This is positive evidence that
+          // the projected running turn is stale, so clear it rather than
+          // preserving an impossible lifecycle behind an error banner.
+          return reconcileMissingProviderSessionAfterInterrupt({
+            threadId: event.payload.threadId,
+            turnId,
+            expectedActiveTurnId,
+            createdAt: event.payload.createdAt,
+          });
         }
         const failureDetail = formatFailureDetail(cause);
         // Prefix so the thread banner is unambiguous: dispatch accepted, stop did not.
@@ -1501,6 +1737,19 @@ const make = Effect.gen(function* () {
         if (!thread?.session || thread.session.status === "stopped") {
           return;
         }
+        // Stays on the turn lane because it can restart the provider session,
+        // which must not race a live turn — but that means it is no longer
+        // ordered against Stop, which now rides the control lane. Applying a
+        // mode change after the user stopped the thread can restart the very
+        // session they just killed, so honour a later Stop the same way a turn
+        // start does.
+        if (yield* wasStoppedAfterRequest(event.payload.threadId, event.sequence)) {
+          yield* Effect.logDebug("skipping runtime-mode-set superseded by a later stop", {
+            threadId: event.payload.threadId,
+            sequence: event.sequence,
+          });
+          return;
+        }
         const cachedModelSelection = threadModelSelections.get(event.payload.threadId);
         yield* withProviderOperationTimeout(
           ensureSessionForThread(
@@ -1619,7 +1868,7 @@ const make = Effect.gen(function* () {
   const durableReactor = yield* makeDurableSideEffectReactor({
     consumer: ORCHESTRATION_SIDE_EFFECT_CONSUMERS.providerCommand,
     decode: (event) => (isProviderIntentEvent(event) ? event : null),
-    key: (event) => event.payload.threadId,
+    key: providerCommandLaneKey,
     keyLabel: String,
     laneIdleTimeToLive,
     process: processDomainEvent,

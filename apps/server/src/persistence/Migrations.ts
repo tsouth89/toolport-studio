@@ -54,6 +54,7 @@ import Migration0038 from "./Migrations/038_ProjectionThreadsSidebarGroupId.ts";
 import Migration0039 from "./Migrations/039_ProjectionSidebarFolders.ts";
 import Migration0040 from "./Migrations/040_ProjectionThreadsNullableProjectId.ts";
 import Migration0041 from "./Migrations/041_ProjectionThreadBackgroundTasks.ts";
+import Migration0042 from "./Migrations/042_RemoveProjectionThreadPlanMode.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -107,6 +108,7 @@ export const migrationEntries = [
   [39, "ProjectionSidebarFolders", Migration0039],
   [40, "ProjectionThreadsNullableProjectId", Migration0040],
   [41, "ProjectionThreadBackgroundTasks", Migration0041],
+  [42, "RemoveProjectionThreadPlanMode", Migration0042],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>

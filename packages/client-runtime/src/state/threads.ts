@@ -7,10 +7,12 @@ import {
   type ThreadId as ThreadIdType,
 } from "@toolport-studio/contracts";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
+import * as Random from "effect/Random";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
@@ -64,6 +66,32 @@ function retrySubscribeBackoff(attempt: number, capMillis: number): Duration.Dur
   return Duration.millis(Math.min(RETRY_BASE_MILLIS * 2 ** attempt, capMillis));
 }
 
+/**
+ * How long a thread the client believes is mid-turn may go without applying a
+ * single item before the client re-establishes its subscription.
+ *
+ * Deliberately not a progress timer. A turn is allowed to be silent for
+ * minutes — one long tool call does that routinely — and reconciling never
+ * touches the turn: it re-subscribes, which re-reads the authoritative
+ * snapshot and resumes from `afterSequence`. If the turn really is still
+ * running the server says so and nothing visible changes.
+ *
+ * What it ends is the state where the client's stream is gone and the client
+ * cannot tell, because the only evidence of that is events *not* arriving.
+ * Silence is indistinguishable from work from inside the client, so the only
+ * way out is to ask the server rather than wait for a human to restart.
+ */
+const ACTIVE_TURN_SILENCE_RECONCILE_MS = 3 * 60 * 1_000;
+const ACTIVE_TURN_SILENCE_POLL_MS = 30 * 1_000;
+
+function sessionIsActive(state: EnvironmentThreadState): boolean {
+  const status = Option.match(state.data, {
+    onNone: () => undefined,
+    onSome: (thread) => thread.session?.status,
+  });
+  return status === "starting" || status === "running";
+}
+
 export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make")(function* (
   threadId: ThreadIdType,
 ) {
@@ -101,6 +129,12 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   );
   const awaitingCompletion = yield* Ref.make(false);
   const persistence = yield* Queue.sliding<OrchestrationThreadDetailSnapshot>(1);
+  // Stamped on every applied item, so "nothing has arrived" is measurable
+  // rather than merely invisible.
+  const lastItemAppliedAt = yield* Ref.make(yield* Clock.currentTimeMillis);
+  // Sliding(1): while a reconcile is already pending there is nothing a
+  // second one would add.
+  const stallReconciliations = yield* Queue.sliding<void>(1);
 
   const persist = Effect.fn("EnvironmentThreadState.persist")(function* (
     snapshot: OrchestrationThreadDetailSnapshot,
@@ -204,6 +238,8 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   const applyItem = Effect.fn("EnvironmentThreadState.applyItem")(function* (
     item: OrchestrationThreadStreamItem,
   ) {
+    yield* Ref.set(lastItemAppliedAt, yield* Clock.currentTimeMillis);
+
     if (item.kind === "synchronized") {
       yield* Ref.set(awaitingCompletion, false);
       yield* SubscriptionRef.update(state, (current) =>
@@ -255,11 +291,70 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     Effect.forkScoped,
   );
 
+  const checkForSilence = Effect.gen(function* () {
+    const now = yield* Clock.currentTimeMillis;
+    // Read-and-restamp atomically. Polling and applyItem race otherwise: an
+    // item landing between the read and the write would be overwritten by an
+    // older timestamp and still trigger a reconcile the thread did not need.
+    const silentForMs = yield* Ref.modify(lastItemAppliedAt, (last) => {
+      // `last` ahead of `now` has two causes, and they want opposite
+      // handling. Either an item was applied in the gap between reading the
+      // clock above and this modify — microseconds, and the newer stamp is
+      // the correct one to keep — or the wall clock jumped backwards, which
+      // would otherwise suppress the reconcile for the whole duration of the
+      // jump. Only the second is ever larger than a poll interval, because a
+      // concurrent apply cannot stamp further ahead than the race window.
+      if (last > now) {
+        return last - now > ACTIVE_TURN_SILENCE_POLL_MS ? [null, now] : [null, last];
+      }
+      const elapsed = now - last;
+      return elapsed < ACTIVE_TURN_SILENCE_RECONCILE_MS ? [null, last] : [elapsed, now];
+    });
+    if (silentForMs === null) return;
+    yield* Effect.logWarning(
+      "Thread has shown an active turn with no applied events; reconciling against the server.",
+      { environmentId, threadId, silentForMs },
+    );
+    yield* Queue.offer(stallReconciliations, undefined);
+  });
+
+  // Only threads that are actually mid-turn carry a timer. Polling every
+  // thread state unconditionally meant a settled thread woke every 30s to
+  // learn it had nothing to do, which scales with how many threads the user
+  // has opened rather than with how much work is running.
+  yield* Effect.forkScoped(
+    SubscriptionRef.changes(state).pipe(
+      Stream.map(sessionIsActive),
+      Stream.changes,
+      Stream.switchMap((active) =>
+        active
+          ? Stream.fromEffect(
+              // Jittered for the same reason the transport backoff is: a fault
+              // that resubscribes many threads at once starts all their timers
+              // together, and they would then reconcile in lockstep. Re-drawn
+              // each iteration because `Effect.forever` re-runs the whole
+              // chain, so the timers drift apart rather than staying aligned.
+              Random.nextBetween(
+                ACTIVE_TURN_SILENCE_POLL_MS * 0.75,
+                ACTIVE_TURN_SILENCE_POLL_MS,
+              ).pipe(Effect.flatMap(Effect.sleep), Effect.andThen(checkForSilence), Effect.forever),
+            )
+          : Stream.empty,
+      ),
+      Stream.runDrain,
+    ),
+  );
+
   const foregroundResubscriptions = Option.match(wakeups, {
     onNone: () => Stream.never,
     onSome: (service) =>
       service.changes.pipe(Stream.filter((reason) => reason === "application-active")),
   });
+
+  const resubscriptions = Stream.merge(
+    foregroundResubscriptions,
+    Stream.fromQueue(stallReconciliations),
+  );
 
   yield* setSynchronizing;
   yield* Effect.forkScoped(
@@ -327,7 +422,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
             attempt,
             hasData ? RETRY_CAP_WITH_DATA_MILLIS : RETRY_CAP_NO_DATA_MILLIS,
           ),
-        resubscribe: foregroundResubscriptions,
+        resubscribe: resubscriptions,
       },
     ).pipe(Stream.runForEach(applyItem)),
   );

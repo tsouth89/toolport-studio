@@ -415,6 +415,9 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.timestampFormat !== DEFAULT_UNIFIED_SETTINGS.timestampFormat
         ? ["Time format"]
         : []),
+      ...(settings.verboseActivity !== DEFAULT_UNIFIED_SETTINGS.verboseActivity
+        ? ["Verbose activity"]
+        : []),
       ...(settings.sidebarThreadPreviewCount !== DEFAULT_UNIFIED_SETTINGS.sidebarThreadPreviewCount
         ? ["Visible threads"]
         : []),
@@ -483,6 +486,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.sidebarProjectGroupingMode,
       settings.sidebarThreadPreviewCount,
       settings.timestampFormat,
+      settings.verboseActivity,
       settings.wordWrap,
       theme,
     ],
@@ -501,6 +505,7 @@ export function useSettingsRestore(onRestored?: () => void) {
     setTheme("system");
     updateSettings({
       timestampFormat: DEFAULT_UNIFIED_SETTINGS.timestampFormat,
+      verboseActivity: DEFAULT_UNIFIED_SETTINGS.verboseActivity,
       wordWrap: DEFAULT_UNIFIED_SETTINGS.wordWrap,
       diffIgnoreWhitespace: DEFAULT_UNIFIED_SETTINGS.diffIgnoreWhitespace,
       glassOpacity: DEFAULT_UNIFIED_SETTINGS.glassOpacity,
@@ -756,6 +761,30 @@ export function GeneralSettingsPanel() {
                 ))}
               </SelectPopup>
             </Select>
+          }
+        />
+
+        <SettingsRow
+          title="Verbose activity"
+          description="Show every command, search, tool call, and thinking step in the session transcript. Off keeps the conversation concise while failures, requests, agent handoffs, and edited files remain visible."
+          resetAction={
+            settings.verboseActivity !== DEFAULT_UNIFIED_SETTINGS.verboseActivity ? (
+              <SettingResetButton
+                label="verbose activity"
+                onClick={() =>
+                  updateSettings({
+                    verboseActivity: DEFAULT_UNIFIED_SETTINGS.verboseActivity,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.verboseActivity}
+              onCheckedChange={(verboseActivity) => updateSettings({ verboseActivity })}
+              aria-label="Verbose activity"
+            />
           }
         />
 

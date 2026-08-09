@@ -3,7 +3,12 @@
  * reads rather than reimplements per adapter (SOU-428).
  */
 
-export type SendWhileRunningBehavior = "steer" | "queue";
+/** One declared product behavior for a send that arrives during a live turn. */
+export type SendWhileRunningBehavior =
+  /** New input folds into the live turn; the same turn id continues. */
+  | "steer"
+  /** New input is held and starts a fresh turn once the live turn settles. */
+  | "queue";
 
 export type TurnTerminalSignal =
   | "result-message"

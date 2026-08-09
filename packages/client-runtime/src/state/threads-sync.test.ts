@@ -573,6 +573,50 @@ describe("EnvironmentThreads", () => {
     }),
   );
 
+  it.effect("reconciles a thread left showing an active turn with no events arriving", () =>
+    Effect.gen(function* () {
+      // SBS-573: the subscription can end while the socket stays up, and from
+      // inside the client that is indistinguishable from a turn that is simply
+      // working — no error, no disconnect, just nothing. The reported session
+      // sat on a finished turn for 24 minutes until the user restarted.
+      const harness = yield* makeHarness();
+      yield* Queue.offer(harness.inputs, snapshot(ACTIVE_THREAD));
+      yield* awaitThreadState(
+        harness.observed,
+        (value) => value.status === "live" && Option.isSome(value.data),
+      );
+      expect(yield* Ref.get(harness.subscriptionCount)).toBe(1);
+
+      // Silence inside the window is ordinary work and must be left alone.
+      yield* TestClock.adjust("2 minutes");
+      expect(yield* Ref.get(harness.subscriptionCount)).toBe(1);
+
+      yield* TestClock.adjust("2 minutes");
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        if ((yield* Ref.get(harness.subscriptionCount)) >= 2) break;
+        yield* Effect.yieldNow;
+      }
+      expect(yield* Ref.get(harness.subscriptionCount)).toBe(2);
+    }),
+  );
+
+  it.effect("leaves an idle thread alone however long it stays quiet", () =>
+    Effect.gen(function* () {
+      // The reconcile is scoped to threads the client believes are mid-turn.
+      // A settled thread going quiet is the normal resting state and must not
+      // generate subscription churn.
+      const harness = yield* makeHarness();
+      yield* Queue.offer(harness.inputs, snapshot(BASE_THREAD));
+      yield* awaitThreadState(
+        harness.observed,
+        (value) => value.status === "live" && Option.isSome(value.data),
+      );
+
+      yield* TestClock.adjust("30 minutes");
+      expect(yield* Ref.get(harness.subscriptionCount)).toBe(1);
+    }),
+  );
+
   it.effect("preserves data after a domain failure and resumes on a replacement session", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness({ cached: BASE_THREAD });

@@ -4,6 +4,7 @@ import {
   formatWorkLogToolContext,
   formatWorkLogToolLabel,
   isThinkingWorkLogEntry,
+  workEntryIndicatesToolFailure,
   workEntryIndicatesToolNeutralStatus,
   workEntryIndicatesToolSuccess,
   workEntryLooksLongRunning,
@@ -117,6 +118,28 @@ export const TIMELINE_MINIMAP_PERSISTENT_GUTTER = 48;
 export interface TimelineEndState {
   readonly isAtEnd?: boolean;
   readonly isNearEnd?: boolean;
+}
+
+/**
+ * Concise mode keeps the conversation readable without discarding the
+ * underlying activity. Failures, warnings, requests, provider handoffs, and
+ * delegated-agent milestones remain visible because they can require action
+ * or materially change who is doing the work. Routine successful tools and
+ * narration remain available through the verbose setting and Activity panel.
+ */
+export function shouldShowWorkEntryInConciseActivity(entry: WorkLogEntry): boolean {
+  if (workEntryIndicatesToolFailure(entry) || entry.toolLifecycleStatus === "stopped") {
+    return true;
+  }
+  const kind = entry.sourceActivityKind ?? "";
+  return (
+    kind === "runtime.warning" ||
+    kind === "runtime.error" ||
+    kind === "provider.handoff" ||
+    kind.startsWith("approval.") ||
+    kind.startsWith("user-input.") ||
+    kind.startsWith("agent.")
+  );
 }
 
 export function resolveTimelineIsAtEnd(state: TimelineEndState | undefined): boolean | undefined {
@@ -276,6 +299,19 @@ export type MessagesTimelineRow =
       proposedPlan: ProposedPlan;
     }
   | {
+      /**
+       * A provider handoff, marked inline at the point in the transcript where
+       * it happened. The thread changes voice partway through; without this the
+       * shift is baffling on a re-read and there is nothing to point at when
+       * answer quality changes. A top-of-view banner could not carry that,
+       * because the one thing that matters is *where* (SOU-566).
+       */
+      kind: "provider-handoff";
+      id: string;
+      createdAt: string;
+      label: string;
+    }
+  | {
       kind: "working";
       id: string;
       createdAt: string | null;
@@ -427,49 +463,6 @@ export function deriveActiveWorkingToolLabel(input: {
   readonly unsettledTurnId?: TurnId | null;
 }): string | null {
   return deriveActiveWorkingToolStatus(input)?.label ?? null;
-}
-
-/**
- * Latest mid-turn user instruction while Working. When the user interjects,
- * this is the signal the chrome must surface so they know Studio heard them
- * (instead of only "Working · Tool call" from the aborted plan).
- */
-export function deriveActiveWorkingFollowUpIntent(input: {
-  readonly timelineEntries: ReadonlyArray<TimelineEntry>;
-  readonly activeTurnStartedAt?: string | null;
-}): string | null {
-  const turnStart = input.activeTurnStartedAt ?? null;
-  let firstUserText: string | null = null;
-  let lastUserText: string | null = null;
-  let userMessagesOnTurn = 0;
-
-  for (const timelineEntry of input.timelineEntries) {
-    if (timelineEntry.kind !== "message" || timelineEntry.message.role !== "user") {
-      continue;
-    }
-    if (turnStart !== null && timelineEntry.createdAt < turnStart) {
-      continue;
-    }
-    const text = timelineEntry.message.text.trim();
-    if (text.length === 0) {
-      continue;
-    }
-    userMessagesOnTurn += 1;
-    if (firstUserText === null) {
-      firstUserText = text;
-    }
-    lastUserText = text;
-  }
-
-  // Only surface when the user has interjected (2+ user messages this turn).
-  if (userMessagesOnTurn < 2 || lastUserText === null || lastUserText === firstUserText) {
-    return null;
-  }
-  const normalized = lastUserText.replace(/\s+/g, " ").trim();
-  if (normalized.length <= 72) {
-    return normalized;
-  }
-  return `${normalized.slice(0, 71).trimEnd()}…`;
 }
 
 /** Whether a thread error should offer one-tap resend of the last user message. */
@@ -706,18 +699,26 @@ export function deriveMessagesTimelineRows(input: {
   activeTurnStartedAt: string | null;
   turnDiffSummaryByAssistantMessageId: ReadonlyMap<MessageId, TurnDiffSummary>;
   revertTurnCountByUserMessageId: ReadonlyMap<MessageId, number>;
+  /** Defaults true for direct legacy callers; the product always supplies its setting. */
+  verboseActivity?: boolean;
 }): MessagesTimelineRow[] {
   const nextRows: MessagesTimelineRow[] = [];
+  const timelineEntries =
+    input.verboseActivity === false
+      ? input.timelineEntries.filter(
+          (entry) => entry.kind !== "work" || shouldShowWorkEntryInConciseActivity(entry.entry),
+        )
+      : input.timelineEntries;
   const durationStartByMessageId = computeMessageDurationStart(
-    input.timelineEntries.flatMap((entry) => (entry.kind === "message" ? [entry.message] : [])),
+    timelineEntries.flatMap((entry) => (entry.kind === "message" ? [entry.message] : [])),
   );
-  const terminalAssistantMessageIds = deriveTerminalAssistantMessageIds(input.timelineEntries);
+  const terminalAssistantMessageIds = deriveTerminalAssistantMessageIds(timelineEntries);
   const unsettledTurnId = deriveUnsettledTurnId(
     input.latestTurn ?? null,
     input.runningTurnId ?? null,
   );
   const foldsByAnchorEntryId = deriveTurnFolds({
-    timelineEntries: input.timelineEntries,
+    timelineEntries,
     terminalAssistantMessageIds,
     latestTurn: input.latestTurn ?? null,
     unsettledTurnId,
@@ -731,8 +732,8 @@ export function deriveMessagesTimelineRows(input: {
     }
   }
 
-  for (let index = 0; index < input.timelineEntries.length; index += 1) {
-    const timelineEntry = input.timelineEntries[index];
+  for (let index = 0; index < timelineEntries.length; index += 1) {
+    const timelineEntry = timelineEntries[index];
     if (!timelineEntry) {
       continue;
     }
@@ -749,6 +750,24 @@ export function deriveMessagesTimelineRows(input: {
       });
     }
 
+    // Before the collapse check on purpose. A handoff inside a folded turn
+    // must still show: this is a thread-level structural marker, not turn
+    // content, and hiding it behind a fold would put us back where the
+    // dismissable banner was — a record of which agent ran that the reader
+    // cannot find later.
+    if (
+      timelineEntry.kind === "work" &&
+      timelineEntry.entry.sourceActivityKind === "provider.handoff"
+    ) {
+      nextRows.push({
+        kind: "provider-handoff",
+        id: `provider-handoff:${timelineEntry.id}`,
+        createdAt: timelineEntry.createdAt,
+        label: timelineEntry.entry.label,
+      });
+      continue;
+    }
+
     if (collapsedEntryIds.has(timelineEntry.id)) {
       continue;
     }
@@ -756,11 +775,12 @@ export function deriveMessagesTimelineRows(input: {
     if (timelineEntry.kind === "work") {
       const groupedEntries = [timelineEntry.entry];
       let cursor = index + 1;
-      while (cursor < input.timelineEntries.length) {
-        const nextEntry = input.timelineEntries[cursor];
+      while (cursor < timelineEntries.length) {
+        const nextEntry = timelineEntries[cursor];
         if (
           !nextEntry ||
           nextEntry.kind !== "work" ||
+          nextEntry.entry.sourceActivityKind === "provider.handoff" ||
           collapsedEntryIds.has(nextEntry.id) ||
           foldsByAnchorEntryId.has(nextEntry.id)
         ) {
@@ -894,21 +914,21 @@ export function deriveMessagesTimelineRows(input: {
       timelineEntries: input.timelineEntries,
       unsettledTurnId,
     });
-    const followUpIntent = deriveActiveWorkingFollowUpIntent({
-      timelineEntries: input.timelineEntries,
-      activeTurnStartedAt: input.activeTurnStartedAt,
-    });
-    // Mid-turn interjection always wins the Working chrome. Opaque "Tool call"
-    // from an aborted plan must not bury the user's latest instruction.
-    // When a live tool is open after the pivot, keep it as secondary detail.
-    const label = followUpIntent ? "Following up" : (activeTool?.label ?? null);
-    const detail = followUpIntent
-      ? activeTool?.isOpenTool === true && activeTool.label
-        ? activeTool.detail
-          ? `${followUpIntent} · ${activeTool.label} · ${activeTool.detail}`
-          : `${followUpIntent} · ${activeTool.label}`
-        : followUpIntent
-      : (activeTool?.detail ?? null);
+    // The Working row reports what the agent is doing, nothing else.
+    //
+    // It used to switch to "Following up: <the user's message>" as soon as a
+    // turn carried a second user message. That condition stays true for the
+    // rest of the turn, so the status pinned a full message body in place of
+    // live tool status until the turn ended and read as stuck. The interjection
+    // is already visible in the transcript as the user's own message, which is
+    // the honest signal; restating it here was both redundant and wrong about
+    // what the agent was doing.
+    //
+    // Matches the recorded decision in `turnEngine/InterjectionPolicy.ts`
+    // ("silence beats invention") and `docs/architecture/turn-engine-handoff.md`,
+    // which the server side had not yet been carried through on.
+    const label = activeTool?.label ?? null;
+    const detail = activeTool?.detail ?? null;
     nextRows.push({
       kind: "working",
       id: "working-indicator-row",
@@ -962,6 +982,11 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
     case "turn-fold": {
       const bf = b as typeof a;
       return a.createdAt === bf.createdAt && a.label === bf.label && a.expanded === bf.expanded;
+    }
+
+    case "provider-handoff": {
+      const bh = b as typeof a;
+      return a.createdAt === bh.createdAt && a.label === bh.label;
     }
 
     case "proposed-plan":

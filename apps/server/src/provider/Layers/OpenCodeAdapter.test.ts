@@ -3,6 +3,7 @@ import * as NodeProcess from "node:process";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -20,6 +21,7 @@ import {
   OpenCodeSettings,
   ProviderDriverKind,
   ProviderInstanceId,
+  type ProviderRuntimeEvent,
   ThreadId,
 } from "@toolport-studio/contracts";
 import { createModelSelection } from "@toolport-studio/shared/model";
@@ -28,6 +30,7 @@ import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
 import type { OpenCodeAdapterShape } from "../Services/OpenCodeAdapter.ts";
 import {
+  buildOpenCodePermissionRules,
   OpenCodeRuntime,
   OpenCodeRuntimeError,
   type OpenCodeRuntimeShape,
@@ -49,6 +52,24 @@ class OpenCodeAdapter extends Context.Service<OpenCodeAdapter, OpenCodeAdapterSh
 ) {}
 
 const asThreadId = (value: string): ThreadId => ThreadId.make(value);
+
+describe("buildOpenCodePermissionRules", () => {
+  plainIt("allows only the current thread attachment directory", () => {
+    const attachmentDirectory = "C:\\state\\attachments\\thread-1";
+    const rules = buildOpenCodePermissionRules("auto", attachmentDirectory);
+
+    expect(rules).toContainEqual({
+      permission: "external_directory",
+      pattern: attachmentDirectory,
+      action: "allow",
+    });
+    expect(rules).not.toContainEqual({
+      permission: "external_directory",
+      pattern: "C:\\state\\attachments",
+      action: "allow",
+    });
+  });
+});
 
 type MessageEntry = {
   info: {
@@ -920,6 +941,107 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive more", (it) => {
       NodeAssert.equal(session?.status, "running");
       NodeAssert.equal(String(session?.activeTurnId), String(turn.turnId));
     }),
+  );
+
+  it.effect("emits one terminal event when Stop is requested twice", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-opencode-double-stop");
+      const completed: Array<ProviderRuntimeEvent> = [];
+      const eventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.threadId === threadId && event.type === "turn.completed"),
+        Stream.runForEach((event) => Effect.sync(() => completed.push(event))),
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId,
+        input: "keep working",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("opencode"),
+          model: "openai/gpt-5",
+        },
+      });
+      yield* adapter.interruptTurn(threadId);
+      yield* adapter.interruptTurn(threadId);
+      yield* Effect.sleep("50 millis");
+
+      NodeAssert.equal(completed.length, 1);
+      NodeAssert.equal(completed[0]?.type, "turn.completed");
+      if (completed[0]?.type === "turn.completed") {
+        NodeAssert.equal(completed[0].payload.state, "cancelled");
+      }
+      yield* Fiber.interrupt(eventsFiber).pipe(Effect.ignore);
+      yield* adapter.stopSession(threadId);
+    }).pipe(TestClock.withLive),
+  );
+
+  it.effect("forces a running session ready when Stop has no claimable turn", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-opencode-stop-without-turn");
+      runtimeMock.state.subscribedEvents = [
+        {
+          type: "session.status",
+          properties: {
+            sessionID: "http://127.0.0.1:9999/session",
+            status: { type: "busy" },
+          },
+        },
+      ];
+
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      yield* Effect.sleep("20 millis");
+      const before = (yield* adapter.listSessions()).find((entry) => entry.threadId === threadId);
+      NodeAssert.equal(before?.status, "running");
+      NodeAssert.equal(before?.activeTurnId, undefined);
+
+      yield* adapter.interruptTurn(threadId);
+
+      const after = (yield* adapter.listSessions()).find((entry) => entry.threadId === threadId);
+      NodeAssert.equal(after?.status, "ready");
+      NodeAssert.equal(after?.activeTurnId, undefined);
+      yield* adapter.stopSession(threadId);
+    }).pipe(TestClock.withLive),
+  );
+
+  it.effect("reconciles an id-less idle when no lifecycle turn is active", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-opencode-idless-idle");
+      const sessionID = "http://127.0.0.1:9999/session";
+      runtimeMock.state.subscribedEvents = [
+        {
+          type: "session.status",
+          properties: { sessionID, status: { type: "busy" } },
+        },
+        {
+          type: "session.status",
+          properties: { sessionID, status: { type: "idle" } },
+        },
+      ];
+
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      yield* Effect.sleep("20 millis");
+
+      const session = (yield* adapter.listSessions()).find((entry) => entry.threadId === threadId);
+      NodeAssert.equal(session?.status, "ready");
+      NodeAssert.equal(session?.activeTurnId, undefined);
+      yield* adapter.stopSession(threadId);
+    }).pipe(TestClock.withLive),
   );
 
   it.effect("passes agent and variant options for the adapter's bound custom instance id", () => {
@@ -1817,6 +1939,77 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive more", (it) => {
         ["question-stranded"],
         "expected the timeout to reject the question upstream",
       );
+    }),
+  );
+
+  it.effect("records Stop as the resolver of a pending permission", () =>
+    Effect.gen(function* () {
+      const threadId = asThreadId("thread-opencode-approval-aborted");
+      const adapterLayer = Layer.effect(
+        OpenCodeAdapter,
+        makeOpenCodeAdapter(openCodeAdapterTestSettings),
+      ).pipe(
+        Layer.provideMerge(Layer.succeed(OpenCodeRuntime, OpenCodeRuntimeTestDouble)),
+        Layer.provideMerge(ServerConfig.layerTest(NodeProcess.cwd(), NodeProcess.cwd())),
+        Layer.provideMerge(
+          ServerSettingsService.layerTest({
+            providers: {
+              opencode: {
+                binaryPath: "fake-opencode",
+                serverUrl: "http://127.0.0.1:9999",
+                serverPassword: "secret-password",
+              },
+            },
+          }),
+        ),
+        Layer.provideMerge(providerSessionDirectoryTestLayer),
+        Layer.provideMerge(NodeServices.layer),
+      );
+
+      yield* Effect.gen(function* () {
+        const adapter = yield* OpenCodeAdapter;
+        const opened = yield* Deferred.make<void>();
+        const resolved =
+          yield* Deferred.make<
+            Extract<ProviderRuntimeEvent, { readonly type: "request.resolved" }>
+          >();
+        runtimeMock.state.subscribedEvents = [
+          {
+            type: "permission.asked",
+            properties: {
+              id: "perm-aborted",
+              sessionID: "http://127.0.0.1:9999/session",
+              permission: "bash",
+              patterns: ["ls"],
+              metadata: {},
+            },
+          },
+        ];
+
+        const eventsFiber = yield* adapter.streamEvents.pipe(
+          Stream.filter((event) => event.threadId === threadId),
+          Stream.runForEach((event) => {
+            if (event.type === "request.opened") return Deferred.succeed(opened, undefined);
+            if (event.type === "request.resolved") return Deferred.succeed(resolved, event);
+            return Effect.void;
+          }),
+          Effect.forkChild,
+        );
+        yield* adapter.startSession({
+          provider: ProviderDriverKind.make("opencode"),
+          threadId,
+          runtimeMode: "approval-required",
+        });
+        yield* Deferred.await(opened).pipe(Effect.timeout("5 seconds"));
+        yield* adapter.interruptTurn(threadId);
+
+        const event = yield* Deferred.await(resolved).pipe(Effect.timeout("5 seconds"));
+        NodeAssert.equal(event.payload.decision, "cancel");
+        NodeAssert.equal(event.payload.resolvedBy, "aborted");
+
+        yield* Fiber.interrupt(eventsFiber).pipe(Effect.ignore);
+        yield* adapter.stopSession(threadId);
+      }).pipe(Effect.provide(adapterLayer));
     }),
   );
 

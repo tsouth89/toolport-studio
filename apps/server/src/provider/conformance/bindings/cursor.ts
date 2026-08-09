@@ -61,6 +61,7 @@ class CursorConformanceAdapter extends Context.Service<
 
 export const cursorConformanceBinding: ConformanceBinding = {
   provider: "cursor",
+  // Independent oracle: Cursor ACP accepts a concurrent preempting prompt.
   sendWhileRunning: "steer",
   openSession: (script, options?: ConformanceOpenSessionOptions) =>
     Effect.gen(function* () {

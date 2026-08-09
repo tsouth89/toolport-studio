@@ -436,10 +436,21 @@ const RequestOpenedPayload = Schema.Struct({
 });
 export type RequestOpenedPayload = typeof RequestOpenedPayload.Type;
 
+/**
+ * Who closed a pending request. Without this the record cannot tell a user who
+ * cancelled from a watchdog that cancelled on their behalf: both land as
+ * `decision: "cancel"`, and an auto-submitted empty form is byte-identical to a
+ * user submitting one. Optional so events persisted before this field decode
+ * unchanged; absent means "not reported", not "user".
+ */
+export const RequestResolutionSource = Schema.Literals(["user", "timeout", "aborted"]);
+export type RequestResolutionSource = typeof RequestResolutionSource.Type;
+
 const RequestResolvedPayload = Schema.Struct({
   requestType: CanonicalRequestType,
   decision: Schema.optional(TrimmedNonEmptyStringSchema),
   resolution: Schema.optional(Schema.Unknown),
+  resolvedBy: Schema.optional(RequestResolutionSource),
 });
 export type RequestResolvedPayload = typeof RequestResolvedPayload.Type;
 
@@ -467,6 +478,7 @@ export type UserInputRequestedPayload = typeof UserInputRequestedPayload.Type;
 
 const UserInputResolvedPayload = Schema.Struct({
   answers: UnknownRecordSchema,
+  resolvedBy: Schema.optional(RequestResolutionSource),
 });
 export type UserInputResolvedPayload = typeof UserInputResolvedPayload.Type;
 

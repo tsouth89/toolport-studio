@@ -512,7 +512,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           title: command.title,
           modelSelection: command.modelSelection,
           runtimeMode: command.runtimeMode,
-          interactionMode: command.interactionMode,
+          interactionMode: "default",
           branch: command.branch,
           worktreePath: command.worktreePath,
           createdAt: command.createdAt,
@@ -889,7 +889,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         type: "thread.interaction-mode-set",
         payload: {
           threadId: command.threadId,
-          interactionMode: command.interactionMode,
+          interactionMode: "default",
           updatedAt: occurredAt,
         },
       };
@@ -962,7 +962,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             : {}),
           ...(command.titleSeed !== undefined ? { titleSeed: command.titleSeed } : {}),
           runtimeMode: targetThread.runtimeMode,
-          interactionMode: targetThread.interactionMode,
+          interactionMode: "default",
           ...(sourceProposedPlan !== undefined ? { sourceProposedPlan } : {}),
           createdAt: command.createdAt,
         },
@@ -1041,7 +1041,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
               : {}),
             ...(command.titleSeed !== undefined ? { titleSeed: command.titleSeed } : {}),
             runtimeMode: command.runtimeMode,
-            interactionMode: command.interactionMode,
+            interactionMode: "default",
             createdAt: command.createdAt,
           },
         },
@@ -1086,11 +1086,18 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         });
       }
 
+      // Stamped when the queue flushes, not when the user typed it. Messages
+      // render `ORDER BY created_at ASC`, and the queue time falls inside the
+      // previous turn, so queue-time stamping sorted this message above a
+      // response that had not been written yet — the transcript then showed the
+      // follow-up before the answer it was following up on, and replayed to the
+      // provider in that order. The queue time is still on record in the
+      // `thread.turn-queued` event; nothing is lost by not repeating it here.
       const userMessageEvent: Omit<OrchestrationEvent, "sequence"> = {
         ...(yield* withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
-          occurredAt: queuedTurn.createdAt,
+          occurredAt: command.createdAt,
           commandId: command.commandId,
         })),
         type: "thread.message-sent",
@@ -1102,8 +1109,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           attachments: queuedTurn.message.attachments,
           turnId: null,
           streaming: false,
-          createdAt: queuedTurn.createdAt,
-          updatedAt: queuedTurn.createdAt,
+          createdAt: command.createdAt,
+          updatedAt: command.createdAt,
         },
       };
       const turnStartRequestedEvent: Omit<OrchestrationEvent, "sequence"> = {
@@ -1123,7 +1130,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             : {}),
           ...(queuedTurn.titleSeed !== undefined ? { titleSeed: queuedTurn.titleSeed } : {}),
           runtimeMode: queuedTurn.runtimeMode,
-          interactionMode: queuedTurn.interactionMode,
+          interactionMode: "default",
           createdAt: command.createdAt,
         },
       };
@@ -1267,6 +1274,17 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      if (
+        command.expectedSession !== undefined &&
+        (thread.session === null ||
+          thread.session.activeTurnId !== command.expectedSession.activeTurnId ||
+          thread.session.updatedAt !== command.expectedSession.updatedAt)
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Thread session changed before the conditional update was applied.",
+        });
+      }
       const sessionSetEvent: Omit<OrchestrationEvent, "sequence"> = {
         ...(yield* withEventBase({
           aggregateKind: "thread",

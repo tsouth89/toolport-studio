@@ -1,4 +1,8 @@
 import { describe, expect, it } from "vite-plus/test";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { it as effectIt } from "@effect/vitest";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import {
   CommandId,
   type ClientOrchestrationCommand,
@@ -8,7 +12,9 @@ import {
   ThreadId,
 } from "@toolport-studio/contracts";
 
-import { canonicalizeClientCommandTimestamps } from "./Normalizer.ts";
+import { ServerConfig } from "../config.ts";
+import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
+import { canonicalizeClientCommandTimestamps, normalizeDispatchCommand } from "./Normalizer.ts";
 
 const clientCreatedAt = "2031-01-01T00:00:00.000Z";
 const serverReceivedAt = "2026-07-18T00:00:00.000Z";
@@ -69,5 +75,54 @@ describe("canonicalizeClientCommandTimestamps", () => {
     }
     expect(result.createdAt).toBe(serverReceivedAt);
     expect(result.bootstrap?.createThread?.createdAt).toBe(serverReceivedAt);
+  });
+});
+
+describe("normalizeDispatchCommand attachments", () => {
+  effectIt.effect("persists a non-image upload instead of rejecting it as an invalid image", () => {
+    const command: ClientOrchestrationCommand = {
+      type: "thread.turn.start",
+      commandId: CommandId.make("command-file"),
+      threadId: ThreadId.make("thread-file"),
+      message: {
+        messageId: MessageId.make("message-file"),
+        role: "user",
+        text: "Read this",
+        attachments: [
+          {
+            type: "file",
+            name: "message.eml",
+            mimeType: "message/rfc822",
+            sizeBytes: 5,
+            dataUrl: "data:message/rfc822;base64,aGVsbG8=",
+          },
+        ],
+      },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      createdAt: serverReceivedAt,
+    };
+    const layer = Layer.merge(
+      ServerConfig.layerTest(process.cwd(), { prefix: "t3-normalizer-file-" }),
+      WorkspacePaths.layer,
+    ).pipe(Layer.provideMerge(NodeServices.layer));
+
+    return normalizeDispatchCommand(command).pipe(
+      Effect.tap((result) =>
+        Effect.sync(() => {
+          expect(result.type).toBe("thread.turn.start");
+          if (result.type !== "thread.turn.start") throw new Error("Expected thread.turn.start");
+          expect(result.message.attachments).toEqual([
+            expect.objectContaining({
+              type: "file",
+              name: "message.eml",
+              mimeType: "message/rfc822",
+              sizeBytes: 5,
+            }),
+          ]);
+        }),
+      ),
+      Effect.provide(layer),
+    );
   });
 });

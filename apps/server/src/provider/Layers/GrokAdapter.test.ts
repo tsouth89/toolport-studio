@@ -38,6 +38,7 @@ import {
   formatGrokSilentTurnWorkSummary,
   grokPromptSettlementBelongsToContext,
   isGrokLongRunningToolKind,
+  lastGrokAssistantTextSince,
   makeGrokAdapter,
   resolveGrokOpenToolWatchdogMs,
   slimGrokStreamDeltaNativeLog,
@@ -395,6 +396,23 @@ it("merges consecutive conversation turns of the same role", () => {
     { role: "user", text: "hello" },
     { role: "assistant", text: "hi there" },
   ]);
+});
+
+it("scopes provider failure text to the current Grok turn", () => {
+  const conversationLog = [
+    { role: "user" as const, text: "first" },
+    { role: "assistant" as const, text: "previous rate limit failure" },
+    { role: "user" as const, text: "retry" },
+  ];
+
+  assert.equal(lastGrokAssistantTextSince(conversationLog, 2), "");
+  assert.equal(
+    lastGrokAssistantTextSince(
+      [...conversationLog, { role: "assistant" as const, text: "current answer" }],
+      2,
+    ),
+    "current answer",
+  );
 });
 
 it("builds a rehydration prefix from Studio-side conversation history", () => {
@@ -2478,11 +2496,63 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
       assert.deepEqual(resolvedEvent.payload.answers, {
         "Which scope should Grok use?": "Workspace",
       });
+      assert.equal(resolvedEvent.payload.resolvedBy, "user");
       assert.equal(String(resolvedEvent.turnId), String(requestedEvent.turnId));
       yield* Fiber.join(sendTurnFiber);
 
       yield* Fiber.interrupt(eventsFiber);
       yield* adapter.stopSession(threadId);
+    }),
+  );
+
+  it.effect("records a user input cancelled by session stop as aborted, not as the user", () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("grok-xai-ask-user-question-aborted");
+      const adapter = yield* makeMockTestAdapter({
+        TOOLPORT_STUDIO_ACP_EMIT_XAI_ASK_USER_QUESTION: "1",
+      });
+      const requested =
+        yield* Deferred.make<Extract<ProviderRuntimeEvent, { type: "user-input.requested" }>>();
+      const resolved =
+        yield* Deferred.make<Extract<ProviderRuntimeEvent, { type: "user-input.resolved" }>>();
+
+      const eventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) => {
+        if (String(event.threadId) !== String(threadId)) {
+          return Effect.void;
+        }
+        if (event.type === "user-input.requested") {
+          return Deferred.succeed(requested, event).pipe(Effect.ignore);
+        }
+        if (event.type === "user-input.resolved") {
+          return Deferred.succeed(resolved, event).pipe(Effect.ignore);
+        }
+        return Effect.void;
+      }).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("grok"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+
+      const sendTurnFiber = yield* adapter
+        .sendTurn({ threadId, input: "ask before continuing", attachments: [] })
+        .pipe(Effect.forkChild);
+
+      yield* Deferred.await(requested);
+
+      // Stopping the session settles every pending request through the bulk
+      // helper, which resolves the deferred without the timeout branch. Nobody
+      // answered anything here, so recording this as "user" would put a
+      // submission the user never made into the permanent record.
+      yield* adapter.stopSession(threadId);
+
+      const resolvedEvent = yield* Deferred.await(resolved);
+      assert.equal(resolvedEvent.payload.resolvedBy, "aborted");
+
+      yield* Fiber.join(sendTurnFiber).pipe(Effect.ignore);
+      yield* Fiber.interrupt(eventsFiber);
     }),
   );
 

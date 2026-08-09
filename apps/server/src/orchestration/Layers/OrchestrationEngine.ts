@@ -306,6 +306,9 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   };
 
   yield* projectionPipeline.bootstrap;
+  // The command worker is intentionally created only after this repair. A
+  // newly submitted turn therefore cannot be mistaken for pre-restart work.
+  yield* projectionPipeline.reconcileStartupThreadSessions;
   commandReadModel = yield* projectionSnapshotQuery.getCommandReadModel();
 
   const worker = Effect.forever(Queue.take(commandQueue).pipe(Effect.flatMap(processEnvelope)));

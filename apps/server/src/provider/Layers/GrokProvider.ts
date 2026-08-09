@@ -44,7 +44,6 @@ import { readGrokAccount, type GrokAccount } from "../Drivers/GrokAccount.ts";
 const GROK_PRESENTATION = {
   displayName: "Grok",
   badgeLabel: "Early Access",
-  showInteractionModeToggle: false,
   requiresNewThreadForModelChange: true,
 } as const;
 

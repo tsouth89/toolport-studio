@@ -148,6 +148,12 @@ interface TimelineRowActivityState {
   latestTurnId: TurnId | null;
   /** Last client-observed stream/orchestration activity for the running turn. */
   lastStreamActivityAt: string | null;
+  /**
+   * In-flight backgrounded work, e.g. "1 running task". Null when there is
+   * none. A turn waiting on a background task is silent in exactly the way a
+   * stalled one is, so without this the two are indistinguishable.
+   */
+  backgroundTaskLabel: string | null;
   onInterrupt: (() => void) | null;
   /** Open the Activity right panel (Working-row deep link). */
   onOpenActivity: (() => void) | null;
@@ -172,6 +178,8 @@ interface MessagesTimelineProps {
   activeTurnStartedAt: string | null;
   /** Latest orchestration/stream activity timestamp while a turn is running. */
   lastStreamActivityAt?: string | null;
+  /** In-flight backgrounded work, surfaced on the Working row. */
+  backgroundTaskLabel?: string | null;
   listRef: React.RefObject<LegendListRef | null>;
   timelineEntries: ReturnType<typeof deriveTimelineEntries>;
   latestTurn: TimelineLatestTurn | null;
@@ -193,6 +201,7 @@ interface MessagesTimelineProps {
   markdownCwd: string | undefined;
   resolvedTheme: "light" | "dark";
   timestampFormat: TimestampFormat;
+  verboseActivity: boolean;
   workspaceRoot: string | undefined;
   skills?: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
   anchorMessageId: MessageId | null;
@@ -214,6 +223,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   activeTurnInProgress,
   activeTurnStartedAt,
   lastStreamActivityAt = null,
+  backgroundTaskLabel = null,
   listRef,
   timelineEntries,
   latestTurn,
@@ -232,6 +242,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   markdownCwd,
   resolvedTheme,
   timestampFormat,
+  verboseActivity,
   workspaceRoot,
   skills = EMPTY_TIMELINE_SKILLS,
   anchorMessageId,
@@ -333,6 +344,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         activeTurnStartedAt,
         turnDiffSummaryByAssistantMessageId,
         revertTurnCountByUserMessageId,
+        verboseActivity,
       }),
     [
       timelineEntries,
@@ -344,6 +356,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       activeTurnStartedAt,
       turnDiffSummaryByAssistantMessageId,
       revertTurnCountByUserMessageId,
+      verboseActivity,
     ],
   );
   const rows = useStableRows(rawRows);
@@ -476,12 +489,14 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       activeTurnInProgress,
       latestTurnId: latestTurn?.turnId ?? null,
       lastStreamActivityAt,
+      backgroundTaskLabel,
       onInterrupt: onInterrupt ?? null,
       onOpenActivity: onOpenActivity ?? null,
       onOpenAgents: onOpenAgents ?? null,
     }),
     [
       activeTurnInProgress,
+      backgroundTaskLabel,
       isRevertingCheckpoint,
       isWorking,
       lastStreamActivityAt,
@@ -896,11 +911,40 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
       {row.kind === "message" && row.message.role === "assistant" ? (
         <AssistantTimelineRow row={row} />
       ) : null}
+      {row.kind === "provider-handoff" ? <ProviderHandoffTimelineRow row={row} /> : null}
       {row.kind === "proposed-plan" ? <ProposedPlanTimelineRow row={row} /> : null}
       {row.kind === "working" ? <WorkingTimelineRow row={row} /> : null}
     </div>
   );
 });
+
+/**
+ * Provider handoff, marked where it happened in the transcript.
+ *
+ * A rule with the label centred on it: unmissable on a scroll-back because it
+ * spans the column, but quiet enough that it does not compete with the
+ * conversation. This is the "where" that a top-of-view banner could never
+ * carry, and unlike that banner it is part of the thread, so it survives a
+ * reload and is still there weeks later (SOU-566).
+ */
+function ProviderHandoffTimelineRow({
+  row,
+}: {
+  row: Extract<TimelineRow, { kind: "provider-handoff" }>;
+}) {
+  return (
+    <div className="flex items-center gap-3 py-2" data-provider-handoff-row="true">
+      <span aria-hidden className="h-px min-w-4 flex-1 bg-border" />
+      <span
+        title={row.label}
+        className="min-w-0 truncate text-[11px] font-semibold tracking-wide text-muted-foreground"
+      >
+        {row.label}
+      </span>
+      <span aria-hidden className="h-px min-w-4 flex-1 bg-border" />
+    </div>
+  );
+}
 
 function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
@@ -1130,7 +1174,6 @@ function ProposedPlanTimelineRow({
 function isGenericWorkingToolLabel(label: string | null): boolean {
   if (!label) return true;
   const normalized = label.trim().toLowerCase();
-  // Keep "Following up" — that is the mid-turn interjection signal.
   return normalized === "thinking" || normalized === "thought" || normalized === "working";
 }
 
@@ -1148,6 +1191,10 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
   const toolTooltip = row.activeToolTooltip?.trim() || toolDetail;
   const toolTitle = [toolLabel, toolTooltip].filter(Boolean).join(" — ") || undefined;
   const onOpenActivity = activity.onOpenActivity;
+  // Backgrounded work is the most common honest reason a live turn is silent.
+  // Naming it here is the difference between "watching CI" and "hung" — which
+  // previously read identically, and only the Agents panel could tell apart.
+  const backgroundTaskLabel = activity.backgroundTaskLabel?.trim() || null;
   // Wait notice only — Stop lives on the composer (queue/send). Silence is
   // usually model think or a long tool, not a hang recovery moment.
   // Always offer This turn while live so the Codex-style card is one click
@@ -1234,6 +1281,16 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
             </>
           ) : null}
         </span>
+        {backgroundTaskLabel ? (
+          <>
+            <span className="text-muted-foreground/50" aria-hidden="true">
+              ·
+            </span>
+            <span className="whitespace-nowrap font-medium text-foreground/85">
+              {backgroundTaskLabel}
+            </span>
+          </>
+        ) : null}
         {quiet.isQuiet && quiet.notice ? (
           <>
             <span className="text-muted-foreground/50" aria-hidden="true">

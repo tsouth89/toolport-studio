@@ -231,6 +231,58 @@ describe("environment RPC", () => {
     }),
   );
 
+  it.effect("resubscribes after a transport failure even when the session is never replaced", () =>
+    Effect.gen(function* () {
+      // SBS-573: the supervisor only publishes a new session when the
+      // connection itself is replaced. A stream that faulted on its own used
+      // to drain and wait for a session change that never arrived — the
+      // socket stayed up, unary calls over it kept working, and the
+      // projection silently stopped applying events. From inside the client
+      // that is indistinguishable from a turn that is still working.
+      const subscriptions: string[] = [];
+      const client = {
+        [WS_METHODS.subscribeTerminalEvents]: () => {
+          subscriptions.push("attempt");
+          return subscriptions.length === 1
+            ? Stream.fail(
+                new RpcClientError.RpcClientError({
+                  reason: new RpcClientError.RpcClientDefect({
+                    message: "stream closed",
+                    cause: new Error("stream closed"),
+                  }),
+                }),
+              )
+            : Stream.never;
+        },
+      } as unknown as WsRpcProtocolClient;
+      const { activeSession, retryCount, supervisor } = yield* makeHarness();
+
+      const subscriptionFiber = yield* subscribe(WS_METHODS.subscribeTerminalEvents, {}).pipe(
+        Stream.runDrain,
+        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+        Effect.forkChild,
+      );
+      yield* SubscriptionRef.set(activeSession, Option.some(session(client)));
+      for (let attempt = 0; attempt < 100 && subscriptions.length < 1; attempt += 1) {
+        yield* Effect.yieldNow;
+      }
+      expect(subscriptions).toEqual(["attempt"]);
+
+      // The session is deliberately left alone: this is the case the old
+      // code could not escape.
+      yield* TestClock.adjust("250 millis");
+      for (let attempt = 0; attempt < 100 && subscriptions.length < 2; attempt += 1) {
+        yield* Effect.yieldNow;
+      }
+      yield* Fiber.interrupt(subscriptionFiber);
+
+      expect(subscriptions).toEqual(["attempt", "attempt"]);
+      // Reconnecting the whole environment is the supervisor's call, not a
+      // single subscription's.
+      expect(yield* Ref.get(retryCount)).toBe(0);
+    }),
+  );
+
   it.effect("surfaces domain subscription failures without reconnecting", () =>
     Effect.gen(function* () {
       const domainError = new Error("terminal subscription rejected");

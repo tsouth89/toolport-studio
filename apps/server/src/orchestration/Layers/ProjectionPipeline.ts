@@ -8,6 +8,7 @@ import {
   SidebarFolderId,
   ThreadId,
 } from "@toolport-studio/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -18,7 +19,10 @@ import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { toPersistenceSqlError, type ProjectionRepositoryError } from "../../persistence/Errors.ts";
-import { backgroundTaskProjectionFromActivity } from "../backgroundTasks.ts";
+import {
+  backgroundTaskProjectionFromActivity,
+  IN_FLIGHT_BACKGROUND_TASK_STATUSES,
+} from "../backgroundTasks.ts";
 import {
   MAX_PROJECTED_THREAD_ACTIVITIES,
   ORCHESTRATION_EVENT_RETENTION_SEQUENCE_CUSHION,
@@ -351,9 +355,6 @@ function collectThreadAttachmentRelativePaths(
   const relativePaths = new Set<string>();
   for (const message of messages) {
     for (const attachment of message.attachments ?? []) {
-      if (attachment.type !== "image") {
-        continue;
-      }
       const attachmentThreadSegment = parseThreadSegmentFromAttachmentId(attachment.id);
       if (!attachmentThreadSegment || attachmentThreadSegment !== threadSegment) {
         continue;
@@ -373,16 +374,20 @@ const runAttachmentSideEffects = Effect.fn("runAttachmentSideEffects")(function*
 
   const attachmentsRootDir = serverConfig.attachmentsDir;
   const readAttachmentRootEntries = fileSystem
-    .readDirectory(attachmentsRootDir, { recursive: false })
+    .readDirectory(attachmentsRootDir, { recursive: true })
     .pipe(Effect.orElseSucceed(() => [] as Array<string>));
 
   const removeDeletedThreadAttachmentEntry = Effect.fn("removeDeletedThreadAttachmentEntry")(
     function* (threadSegment: string, entry: string) {
       const normalizedEntry = entry.replace(/^[/\\]+/, "").replace(/\\/g, "/");
-      if (normalizedEntry.length === 0 || normalizedEntry.includes("/")) {
+      if (normalizedEntry.length === 0) {
         return;
       }
-      const attachmentId = parseAttachmentIdFromRelativePath(normalizedEntry);
+      const [scope, fileName, extra] = normalizedEntry.includes("/")
+        ? normalizedEntry.split("/")
+        : [undefined, normalizedEntry, undefined];
+      if (extra !== undefined || (scope !== undefined && scope !== threadSegment)) return;
+      const attachmentId = parseAttachmentIdFromRelativePath(fileName ?? "");
       if (!attachmentId) {
         return;
       }
@@ -415,6 +420,8 @@ const runAttachmentSideEffects = Effect.fn("runAttachmentSideEffects")(function*
         concurrency: 1,
       },
     );
+    const scopedDirectory = path.join(attachmentsRootDir, threadSegment);
+    yield* fileSystem.remove(scopedDirectory, { recursive: true, force: true }).pipe(Effect.ignore);
   });
 
   const pruneThreadAttachmentEntry = Effect.fn("pruneThreadAttachmentEntry")(function* (
@@ -423,10 +430,14 @@ const runAttachmentSideEffects = Effect.fn("runAttachmentSideEffects")(function*
     entry: string,
   ) {
     const relativePath = entry.replace(/^[/\\]+/, "").replace(/\\/g, "/");
-    if (relativePath.length === 0 || relativePath.includes("/")) {
+    if (relativePath.length === 0) {
       return;
     }
-    const attachmentId = parseAttachmentIdFromRelativePath(relativePath);
+    const [scope, fileName, extra] = relativePath.includes("/")
+      ? relativePath.split("/")
+      : [undefined, relativePath, undefined];
+    if (extra !== undefined || (scope !== undefined && scope !== threadSegment)) return;
+    const attachmentId = parseAttachmentIdFromRelativePath(fileName ?? "");
     if (!attachmentId) {
       return;
     }
@@ -732,7 +743,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             title: event.payload.title,
             modelSelection: event.payload.modelSelection,
             runtimeMode: event.payload.runtimeMode,
-            interactionMode: event.payload.interactionMode,
+            interactionMode: "default",
             branch: event.payload.branch,
             worktreePath: event.payload.worktreePath,
             latestTurnId: null,
@@ -897,7 +908,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           }
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
-            interactionMode: event.payload.interactionMode,
+            interactionMode: "default",
             updatedAt: event.payload.updatedAt,
           });
           return;
@@ -1878,6 +1889,161 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
      * After projectors catch up, drop unbounded activity history and fully
      * applied event-log rows so state.sqlite cannot grow without bound.
      */
+    /**
+     * Settle background tasks left in flight by a previous process.
+     *
+     * A background task is a child of the app that spawned it, so it cannot
+     * outlive that process. Any row still `pending`/`running`/`paused` at
+     * startup therefore belongs to a task that is already dead, and nothing
+     * will ever deliver its terminal event — the row would count as running
+     * forever, and the count only grows with each restart (SBS-596).
+     *
+     * Runs as part of bootstrap, *after* the projectors have caught up, so a
+     * rebuild that replays these rows back to in-flight is corrected in the
+     * same pass rather than resurrecting the bad state.
+     */
+    const reconcileInFlightBackgroundTasks = Effect.fn("reconcileInFlightBackgroundTasks")(
+      function* () {
+        const now = DateTime.formatIso(yield* DateTime.now);
+        // Destructured rather than interpolated so the values stay parameters
+        // and stay tied to the shared constant: adding a fourth in-flight status
+        // breaks this line loudly instead of silently leaving those rows stuck.
+        const [pending, running, paused] = IN_FLIGHT_BACKGROUND_TASK_STATUSES;
+        const inFlight = yield* sql`
+            SELECT task_id
+            FROM projection_thread_background_tasks
+            WHERE status IN (${pending}, ${running}, ${paused})
+          `.pipe(
+          Effect.mapError(
+            toPersistenceSqlError("ProjectionPipeline.bootstrap:findInFlightBackgroundTasks"),
+          ),
+        );
+        if (inFlight.length === 0) {
+          return;
+        }
+
+        yield* sql`
+            UPDATE projection_thread_background_tasks
+            SET status = 'stopped', updated_at = ${now}
+            WHERE status IN (${pending}, ${running}, ${paused})
+          `.pipe(
+          Effect.mapError(
+            toPersistenceSqlError("ProjectionPipeline.bootstrap:stopInFlightBackgroundTasks"),
+          ),
+        );
+        const count = inFlight.length;
+        // Logged rather than silent: this is the only record that work the user
+        // may have been waiting on did not survive the restart.
+        yield* Effect.logInfo("settled background tasks left running by a previous process", {
+          count,
+        });
+      },
+    );
+
+    /**
+     * A provider process and its foreground turn cannot survive a Studio
+     * process restart. Replaying the event log can nevertheless rebuild their
+     * last projected state as `starting`/`running`, so reconcile only after all
+     * projectors have caught up. This makes the repair rebuild-safe and avoids
+     * presenting a dead turn as live forever (SBS-423/SBS-604).
+     */
+    const reconcileInFlightThreadSessions = Effect.fn("reconcileInFlightThreadSessions")(
+      function* () {
+        const now = DateTime.formatIso(yield* DateTime.now);
+        const inFlight = yield* sql<{
+          readonly threadId: string;
+          readonly activeTurnId: string | null;
+        }>`
+          SELECT
+            thread_id AS "threadId",
+            active_turn_id AS "activeTurnId"
+          FROM projection_thread_sessions
+          WHERE status IN ('starting', 'running')
+        `.pipe(
+          Effect.mapError(
+            toPersistenceSqlError("ProjectionPipeline.bootstrap:findInFlightThreadSessions"),
+          ),
+        );
+        if (inFlight.length === 0) {
+          return;
+        }
+
+        yield* sql
+          .withTransaction(
+            Effect.forEach(
+              inFlight,
+              ({ threadId, activeTurnId }) =>
+                Effect.all(
+                  [
+                    sql`
+                    UPDATE projection_turns
+                    SET state = 'interrupted', completed_at = ${now}
+                    WHERE thread_id = ${threadId}
+                      AND turn_id IS NOT NULL
+                      AND state = 'running'
+                  `,
+                    sql`
+                    DELETE FROM projection_turns
+                    WHERE thread_id = ${threadId}
+                      AND turn_id IS NULL
+                      AND state = 'pending'
+                  `,
+                    sql`
+                    INSERT INTO projection_thread_activities (
+                      activity_id,
+                      thread_id,
+                      turn_id,
+                      tone,
+                      kind,
+                      summary,
+                      payload_json,
+                      sequence,
+                      created_at
+                    ) VALUES (
+                      ${`startup-session-reconcile:${threadId}`},
+                      ${threadId},
+                      ${activeTurnId},
+                      'info',
+                      'provider.session.reconciled',
+                      'Turn interrupted by Studio restart',
+                      ${JSON.stringify({ reason: "startup_reconciliation" })},
+                      NULL,
+                      ${now}
+                    )
+                    ON CONFLICT (activity_id)
+                    DO UPDATE SET
+                      turn_id = excluded.turn_id,
+                      payload_json = excluded.payload_json,
+                      created_at = excluded.created_at
+                  `,
+                    sql`
+                    UPDATE projection_thread_sessions
+                    SET
+                      status = 'interrupted',
+                      active_turn_id = NULL,
+                      last_error = NULL,
+                      updated_at = ${now}
+                    WHERE thread_id = ${threadId}
+                      AND status IN ('starting', 'running')
+                  `,
+                  ],
+                  { concurrency: 1, discard: true },
+                ),
+              { concurrency: 1, discard: true },
+            ),
+          )
+          .pipe(
+            Effect.mapError(
+              toPersistenceSqlError("ProjectionPipeline.bootstrap:reconcileInFlightThreadSessions"),
+            ),
+          );
+
+        yield* Effect.logInfo("settled foreground turns left running by a previous process", {
+          count: inFlight.length,
+        });
+      },
+    );
+
     const runRetentionMaintenance = Effect.fn("runProjectionRetentionMaintenance")(function* () {
       yield* projectionThreadActivityRepository.pruneAllThreadsKeepLast({
         keepLast: MAX_PROJECTED_THREAD_ACTIVITIES,
@@ -1922,6 +2088,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       Effect.provideService(FileSystem.FileSystem, fileSystem),
       Effect.provideService(Path.Path, path),
       Effect.provideService(ServerConfig, serverConfig),
+      Effect.flatMap(() => reconcileInFlightBackgroundTasks()),
       Effect.flatMap(() => runRetentionMaintenance()),
       Effect.asVoid,
       Effect.tap(() =>
@@ -1937,6 +2104,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
     return {
       bootstrap,
       projectEvent,
+      reconcileStartupThreadSessions: reconcileInFlightThreadSessions(),
     } satisfies OrchestrationProjectionPipelineShape;
   },
 );
