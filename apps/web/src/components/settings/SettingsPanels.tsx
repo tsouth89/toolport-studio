@@ -546,7 +546,7 @@ export function AppearanceSettingsPanel() {
   } as CSSProperties;
   return (
     <SettingsPageContainer>
-      <SettingsSection title="Appearance">
+      <SettingsSection id="appearance" title="Appearance">
         <SettingsRow
           title="Theme"
           description="Choose how Toolport Studio looks across the app."
