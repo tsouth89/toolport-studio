@@ -1696,6 +1696,12 @@ export function makeCursorAdapter(
           }
           if (input.attachments && input.attachments.length > 0) {
             for (const attachment of input.attachments) {
+              // File attachments are disclosed to the agent as paths by
+              // ProviderService; inlining them as fake images would double-handle
+              // them. Only images are encoded inline, matching Claude.
+              if (attachment.type !== "image") {
+                continue;
+              }
               const attachmentPath = resolveAttachmentPath({
                 attachmentsDir: serverConfig.attachmentsDir,
                 attachment,

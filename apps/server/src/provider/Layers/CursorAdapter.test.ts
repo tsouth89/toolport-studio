@@ -712,6 +712,128 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
     }),
   );
 
+  it.effect("does not inline type:file attachments as image blocks", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CursorAdapter;
+      const serverSettings = yield* ServerSettingsService;
+      const serverConfig = yield* ServerConfig;
+      const threadId = ThreadId.make("cursor-file-attachment-probe");
+      const fileId = "cursor-file-attachment-11111111-2222-3333-4444-555555555555";
+      const filePath = NodePath.join(
+        serverConfig.attachmentsDir,
+        "cursor-file-attachment",
+        `${fileId}.bin`,
+      );
+      yield* Effect.promise(async () => {
+        await NodeFSP.mkdir(NodePath.dirname(filePath), { recursive: true });
+        await NodeFSP.writeFile(filePath, "attached message file");
+      });
+
+      const tempDir = yield* Effect.promise(() =>
+        NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "cursor-acp-")),
+      );
+      const requestLogPath = NodePath.join(tempDir, "requests.ndjson");
+      const argvLogPath = NodePath.join(tempDir, "argv.txt");
+      yield* Effect.promise(() => NodeFSP.writeFile(requestLogPath, "", "utf8"));
+      const wrapperPath = yield* Effect.promise(() =>
+        makeProbeWrapper(requestLogPath, argvLogPath),
+      );
+      yield* serverSettings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("cursor"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "composer-2" },
+      });
+
+      yield* adapter.sendTurn({
+        threadId,
+        input: "read this",
+        attachments: [
+          {
+            type: "file",
+            id: fileId,
+            name: "message.eml",
+            mimeType: "message/rfc822",
+            sizeBytes: 24,
+          },
+        ],
+      });
+      yield* adapter.stopSession(threadId);
+
+      const requests = yield* Effect.promise(() => readJsonLines(requestLogPath));
+      const promptRequest = requests.find((entry) => entry.method === "session/prompt");
+      assert.isDefined(promptRequest);
+      const promptBlocks = (promptRequest?.params as { prompt?: unknown[] } | undefined)?.prompt;
+      assert.isDefined(promptBlocks);
+      assert.equal(
+        promptBlocks.filter((block) => (block as { type?: string }).type === "image").length,
+        0,
+      );
+    }),
+  );
+
+  it.effect("still inlines type:image attachments as image blocks", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CursorAdapter;
+      const serverSettings = yield* ServerSettingsService;
+      const serverConfig = yield* ServerConfig;
+      const threadId = ThreadId.make("cursor-image-attachment-probe");
+      const imageId = "cursor-image-attachment-11111111-2222-3333-4444-555555555555";
+      const imagePath = NodePath.join(serverConfig.attachmentsDir, `${imageId}.png`);
+      yield* Effect.promise(async () => {
+        await NodeFSP.mkdir(NodePath.dirname(imagePath), { recursive: true });
+        await NodeFSP.writeFile(imagePath, "fake png bytes");
+      });
+
+      const tempDir = yield* Effect.promise(() =>
+        NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "cursor-acp-")),
+      );
+      const requestLogPath = NodePath.join(tempDir, "requests.ndjson");
+      const argvLogPath = NodePath.join(tempDir, "argv.txt");
+      yield* Effect.promise(() => NodeFSP.writeFile(requestLogPath, "", "utf8"));
+      const wrapperPath = yield* Effect.promise(() =>
+        makeProbeWrapper(requestLogPath, argvLogPath),
+      );
+      yield* serverSettings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("cursor"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "composer-2" },
+      });
+
+      yield* adapter.sendTurn({
+        threadId,
+        input: "look at this",
+        attachments: [
+          {
+            type: "image",
+            id: imageId,
+            name: "screenshot.png",
+            mimeType: "image/png",
+            sizeBytes: 16,
+          },
+        ],
+      });
+      yield* adapter.stopSession(threadId);
+
+      const requests = yield* Effect.promise(() => readJsonLines(requestLogPath));
+      const promptRequest = requests.find((entry) => entry.method === "session/prompt");
+      assert.isDefined(promptRequest);
+      const promptBlocks = (promptRequest?.params as { prompt?: unknown[] } | undefined)?.prompt;
+      assert.isDefined(promptBlocks);
+      const imageBlocks = promptBlocks.filter(
+        (block) => (block as { type?: string }).type === "image",
+      );
+      assert.equal(imageBlocks.length, 1);
+    }),
+  );
+
   it.effect(
     "applies initial model and mode configuration during startSession and skips repeating it on first send",
     () =>

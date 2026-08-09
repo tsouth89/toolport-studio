@@ -2188,6 +2188,12 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     input: ProviderSendTurnInput,
     attachment: NonNullable<ProviderSendTurnInput["attachments"]>[number],
   ) {
+    // File attachments are disclosed to the agent as paths by ProviderService;
+    // inlining them as fake images would double-handle them. Only images are
+    // encoded inline, matching Claude.
+    if (attachment.type !== "image") {
+      return null;
+    }
     const attachmentPath = resolveAttachmentPath({
       attachmentsDir: serverConfig.attachmentsDir,
       attachment,
@@ -2236,7 +2242,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       },
     });
 
-    const codexAttachments = yield* Effect.forEach(
+    const codexAttachments = (yield* Effect.forEach(
       input.attachments ?? [],
       (attachment) => resolveAttachment(input, attachment),
       { concurrency: 1 },
@@ -2257,7 +2263,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           });
         }).pipe(Effect.ignore),
       ),
-    );
+    )).filter((attachment): attachment is NonNullable<typeof attachment> => attachment !== null);
 
     const session = yield* requireSession(input.threadId);
     const reasoningEffort =

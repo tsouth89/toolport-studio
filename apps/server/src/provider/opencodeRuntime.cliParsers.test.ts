@@ -2,7 +2,11 @@ import * as NodeAssert from "node:assert/strict";
 
 import { describe, it } from "vite-plus/test";
 
-import { parseModelsCliOutput, parseAgentListCliOutput } from "./opencodeRuntime.ts";
+import {
+  parseModelsCliOutput,
+  parseAgentListCliOutput,
+  toOpenCodeFileParts,
+} from "./opencodeRuntime.ts";
 
 describe("parseModelsCliOutput", () => {
   it("parses a single model from a single provider", () => {
@@ -225,5 +229,45 @@ describe("parseAgentListCliOutput", () => {
     const result = parseAgentListCliOutput(stdout);
     NodeAssert.equal(result[0]!.hidden, true);
     NodeAssert.equal(result[1]!.hidden, false);
+  });
+});
+
+describe("toOpenCodeFileParts", () => {
+  const fileAttachment = {
+    type: "file" as const,
+    id: "thread-1-11111111-2222-3333-4444-555555555555",
+    name: "Re_ GageSage setup.eml",
+    mimeType: "message/rfc822",
+    sizeBytes: 2048,
+  };
+
+  const imageAttachment = {
+    type: "image" as const,
+    id: "thread-1-99999999-2222-3333-4444-555555555555",
+    name: "screenshot.png",
+    mimeType: "image/png",
+    sizeBytes: 1024,
+  };
+
+  it("passes file attachments as native file parts, not image blocks", () => {
+    const parts = toOpenCodeFileParts({
+      attachments: [fileAttachment],
+      resolveAttachmentPath: (attachment) =>
+        attachment.type === "file" ? `/attachments/${attachment.id}.bin` : null,
+    });
+
+    NodeAssert.equal(parts.length, 1);
+    NodeAssert.equal(parts[0]!.type, "file");
+    NodeAssert.equal(parts[0]!.mime, "message/rfc822");
+    NodeAssert.equal(parts[0]!.filename, "Re_ GageSage setup.eml");
+    NodeAssert.ok(parts[0]!.url.startsWith("file:"));
+  });
+
+  it("skips attachments whose path cannot be resolved", () => {
+    const parts = toOpenCodeFileParts({
+      attachments: [fileAttachment],
+      resolveAttachmentPath: () => null,
+    });
+    NodeAssert.equal(parts.length, 0);
   });
 });
