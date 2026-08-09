@@ -5,6 +5,12 @@ import * as Path from "effect/Path";
 export const writeFileStringAtomically = (input: {
   readonly filePath: string;
   readonly contents: string;
+  /**
+   * Mode bits to apply to the staged file before the rename. Without this, a
+   * fresh temp file inherits the default creation mode and overwriting an
+   * executable (0755) or private (0600) file silently strips those bits.
+   */
+  readonly mode?: number;
 }) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -20,6 +26,9 @@ export const writeFileStringAtomically = (input: {
       const tempPath = path.join(tempDirectory, "contents.tmp");
 
       yield* fs.writeFileString(tempPath, input.contents);
+      if (input.mode !== undefined) {
+        yield* fs.chmod(tempPath, input.mode);
+      }
       yield* fs.rename(tempPath, input.filePath);
     }),
   );

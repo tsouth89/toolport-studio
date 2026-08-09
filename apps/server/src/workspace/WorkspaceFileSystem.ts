@@ -22,6 +22,7 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
+import { writeFileStringAtomically } from "../atomicWrite.ts";
 import * as WorkspaceEntries from "./WorkspaceEntries.ts";
 import * as WorkspacePaths from "./WorkspacePaths.ts";
 
@@ -267,20 +268,100 @@ export const make = Effect.gen(function* () {
       relativePath: input.relativePath,
     });
 
-    yield* fileSystem.makeDirectory(path.dirname(target.absolutePath), { recursive: true }).pipe(
-      Effect.mapError(
-        (cause) =>
+    const realWorkspaceRoot = yield* Effect.tryPromise({
+      try: () => NodeFSP.realpath(input.cwd),
+      catch: (cause) =>
+        new WorkspaceFileSystemOperationError({
+          workspaceRoot: input.cwd,
+          relativePath: input.relativePath,
+          resolvedPath: target.absolutePath,
+          operationPath: input.cwd,
+          operation: "realpath-workspace-root",
+          cause,
+        }),
+    });
+
+    // Resolve the nearest existing ancestor so a symlink escape is caught even
+    // when the file (or some parent directories) does not exist yet and would
+    // otherwise be created through the symlink.
+    let probePath = target.absolutePath;
+    while (true) {
+      const resolvedProbe = yield* Effect.tryPromise({
+        try: async () => {
+          try {
+            return await NodeFSP.realpath(probePath);
+          } catch (cause) {
+            if (
+              (cause as NodeJS.ErrnoException).code === "ENOENT" &&
+              probePath !== realWorkspaceRoot
+            ) {
+              probePath = path.dirname(probePath);
+              return null;
+            }
+            throw cause;
+          }
+        },
+        catch: (cause) =>
           new WorkspaceFileSystemOperationError({
             workspaceRoot: input.cwd,
             relativePath: input.relativePath,
             resolvedPath: target.absolutePath,
-            operationPath: path.dirname(target.absolutePath),
-            operation: "make-directory",
+            operationPath: probePath,
+            operation: "realpath-target",
             cause,
           }),
-      ),
-    );
-    yield* fileSystem.writeFileString(target.absolutePath, input.contents).pipe(
+      });
+      if (resolvedProbe !== null) {
+        const relativeRealPath = path.relative(realWorkspaceRoot, resolvedProbe);
+        if (
+          relativeRealPath.startsWith(`..${path.sep}`) ||
+          relativeRealPath === ".." ||
+          path.isAbsolute(relativeRealPath)
+        ) {
+          return yield* new WorkspaceFilePathEscapeError({
+            workspaceRoot: input.cwd,
+            relativePath: input.relativePath,
+            resolvedWorkspaceRoot: realWorkspaceRoot,
+            resolvedPath: resolvedProbe,
+          });
+        }
+        break;
+      }
+    }
+
+    // Preserve the mode of an existing regular file across the atomic replace
+    // (executables and private files would otherwise lose their bits to the
+    // temp file's default creation mode). Symlinks are skipped: the rename
+    // replaces the link itself, so a linked file's mode does not apply.
+    let existingMode: number | undefined;
+    const existingTarget = yield* Effect.tryPromise({
+      try: async () => {
+        try {
+          const stat = await NodeFSP.lstat(target.absolutePath);
+          return stat.isFile() ? stat.mode & 0o777 : undefined;
+        } catch {
+          return undefined;
+        }
+      },
+      catch: (cause) =>
+        new WorkspaceFileSystemOperationError({
+          workspaceRoot: input.cwd,
+          relativePath: input.relativePath,
+          resolvedPath: target.absolutePath,
+          operationPath: target.absolutePath,
+          operation: "stat",
+          cause,
+        }),
+    });
+    existingMode = existingTarget;
+
+    yield* writeFileStringAtomically({
+      filePath: target.absolutePath,
+      contents: input.contents,
+      ...(existingMode !== undefined ? { mode: existingMode } : {}),
+    }).pipe(
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(Path.Path, path),
       Effect.mapError(
         (cause) =>
           new WorkspaceFileSystemOperationError({

@@ -80,6 +80,7 @@ import * as Keybindings from "./keybindings.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import { normalizeDispatchCommand } from "./orchestration/Normalizer.ts";
 import { isThreadDetailEvent } from "./orchestration/threadDetailEvents.ts";
+import { ORCHESTRATION_EVENT_RETENTION_SEQUENCE_CUSHION } from "./persistence/retentionLimits.ts";
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { createThreadTolerantOfExisting } from "./orchestration/bootstrapThreadCreate.ts";
@@ -279,7 +280,15 @@ const SHELL_RESUME_MAX_GAP = 1_000;
 // Thread detail is denser than shell (every activity/message is an event). A
 // large afterSequence gap used to stream thousands of events one-by-one and
 // the client re-rendered each step. Prefer one thread snapshot past this gap.
-const THREAD_RESUME_MAX_GAP = 500;
+//
+// Event-only catch-up must stay inside the band retention still guarantees:
+// retention deletes fully-applied events at or below
+// minLastApplied - ORCHESTRATION_EVENT_RETENTION_SEQUENCE_CUSHION, so a gap
+// larger than the cushion can span deleted sequences and replaying the
+// retained tail would silently drop intermediate events. The snapshot
+// threshold is therefore the retention cushion itself; the old standalone
+// THREAD_RESUME_MAX_GAP (500) sat far inside the deleted band and produced
+// sparse streams with holes.
 
 const RPC_REQUIRED_SCOPE = new Map<string, AuthEnvironmentScope>([
   [ORCHESTRATION_WS_METHODS.dispatchCommand, AuthOrchestrationOperateScope],
@@ -1515,18 +1524,46 @@ const makeWsRpcLayer = (
               // Read the range after the cursor. When the client already holds a
               // near-head snapshot (HTTP), the gap is tiny. A large gap (stale
               // IndexedDB cache after a long dogfood turn) is cheaper as one
-              // snapshot than thousands of per-event reducer applies.
+              // snapshot than thousands of per-event reducer applies. The
+              // replay band is capped at the event-retention cushion: retention
+              // deletes fully-applied events at or below
+              // minLastApplied - ORCHESTRATION_EVENT_RETENTION_SEQUENCE_CUSHION,
+              // so replaying a gap wider than the cushion can span deleted
+              // sequences and the client would silently skip the hole.
               if (input.afterSequence !== undefined) {
                 const afterSequence = input.afterSequence;
                 const headSequence = yield* orchestrationEngine.latestSequence;
                 const replayGap = headSequence - afterSequence;
-                if (replayGap < 0 || replayGap > THREAD_RESUME_MAX_GAP) {
+                if (replayGap < 0 || replayGap > ORCHESTRATION_EVENT_RETENTION_SEQUENCE_CUSHION) {
                   const snapshot = yield* loadThreadSnapshot;
                   if (Option.isNone(snapshot)) {
                     return yield* new OrchestrationGetSnapshotError({
                       message: `Thread ${input.threadId} was not found`,
                       cause: input.threadId,
                     });
+                  }
+                  // A stale snapshot must never be sent: the client applies a
+                  // snapshot unconditionally and would regress lastSequence
+                  // (and the thread) below its cursor. When the projection is
+                  // not as new as the client cursor (fresh data store, rebuilt
+                  // projection), replay the retained tail instead — the client
+                  // already holds everything up to its cursor, so a sparse
+                  // stream cannot lose state it has.
+                  if (snapshot.value.snapshotSequence <= afterSequence) {
+                    const catchUpStream = orchestrationEngine
+                      .readEvents(afterSequence, replayGap)
+                      .pipe(
+                        Stream.filter(isThisThreadDetailEvent),
+                        Stream.map((event) => ({ kind: "event" as const, event })),
+                        Stream.mapError(
+                          (cause) =>
+                            new OrchestrationGetSnapshotError({
+                              message: `Failed to replay thread ${input.threadId} events`,
+                              cause,
+                            }),
+                        ),
+                      );
+                    return Stream.concat(catchUpStream, afterCatchUp);
                   }
                   return Stream.concat(
                     Stream.make({

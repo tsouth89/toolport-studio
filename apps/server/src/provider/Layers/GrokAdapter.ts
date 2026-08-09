@@ -2535,39 +2535,43 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               });
 
               const text = input.input?.trim();
-              const imagePromptParts = yield* Effect.forEach(
-                input.attachments ?? [],
-                (attachment) =>
-                  Effect.gen(function* () {
-                    const attachmentPath = resolveAttachmentPath({
-                      attachmentsDir: serverConfig.attachmentsDir,
-                      attachment,
+              // File attachments are disclosed to the agent as paths by
+              // ProviderService; inlining them as fake images would double-handle
+              // them. Only images are encoded inline, matching Claude.
+              const imageAttachments = (input.attachments ?? []).filter(
+                (attachment) => attachment.type === "image",
+              );
+              const imagePromptParts = yield* Effect.forEach(imageAttachments, (attachment) =>
+                Effect.gen(function* () {
+                  const attachmentPath = resolveAttachmentPath({
+                    attachmentsDir: serverConfig.attachmentsDir,
+                    attachment,
+                  });
+                  if (!attachmentPath) {
+                    return yield* new ProviderAdapterRequestError({
+                      provider: PROVIDER,
+                      method: "session/prompt",
+                      detail: `Invalid attachment id '${attachment.id}'.`,
                     });
-                    if (!attachmentPath) {
-                      return yield* new ProviderAdapterRequestError({
-                        provider: PROVIDER,
-                        method: "session/prompt",
-                        detail: `Invalid attachment id '${attachment.id}'.`,
-                      });
-                    }
-                    const bytes = yield* fileSystem.readFile(attachmentPath).pipe(
-                      Effect.mapError(
-                        (cause) =>
-                          new ProviderAdapterRequestError({
-                            provider: PROVIDER,
-                            method: "session/prompt",
-                            detail: cause.message,
-                            cause,
-                          }),
-                      ),
-                    );
-                    return buildGrokImagePromptPart({
-                      data: Buffer.from(bytes).toString("base64"),
-                      mimeType: attachment.mimeType,
-                      uri: NodeURL.pathToFileURL(attachmentPath).href,
-                      promptCapabilities: ctx.promptCapabilities,
-                    });
-                  }),
+                  }
+                  const bytes = yield* fileSystem.readFile(attachmentPath).pipe(
+                    Effect.mapError(
+                      (cause) =>
+                        new ProviderAdapterRequestError({
+                          provider: PROVIDER,
+                          method: "session/prompt",
+                          detail: cause.message,
+                          cause,
+                        }),
+                    ),
+                  );
+                  return buildGrokImagePromptPart({
+                    data: Buffer.from(bytes).toString("base64"),
+                    mimeType: attachment.mimeType,
+                    uri: NodeURL.pathToFileURL(attachmentPath).href,
+                    promptCapabilities: ctx.promptCapabilities,
+                  });
+                }),
               );
               // When Stop/cold-start forced a blank session/new, inject Studio
               // history so Grok still has prior turns (session/load often Path

@@ -5917,6 +5917,204 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  it.effect("subscribeThread forces a snapshot for a gap inside the retention-deleted band", () =>
+    Effect.gen(function* () {
+      let readEventsCalls = 0;
+      const thread = makeDefaultOrchestrationReadModel().threads[0]!;
+      const now = "2026-01-01T00:00:00.000Z";
+
+      // Head is 300 sequences past the client cursor: well inside the old
+      // THREAD_RESUME_MAX_GAP (500) event-replay band, but wider than the
+      // event-retention cushion (100). Retention deletes fully-applied events
+      // at or below minLastApplied - cushion, so replaying this gap can span
+      // deleted sequences and the client would silently drop the hole.
+      // The catch-up must fall back to an authoritative snapshot instead.
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            latestSequence: Effect.succeed(50_000),
+            readEvents: () =>
+              Stream.sync(() => {
+                readEventsCalls += 1;
+                return {
+                  sequence: 49_750,
+                  eventId: EventId.make("event-thread-should-not-replay"),
+                  aggregateKind: "thread",
+                  aggregateId: defaultThreadId,
+                  occurredAt: now,
+                  commandId: null,
+                  causationEventId: null,
+                  correlationId: null,
+                  metadata: {},
+                  type: "thread.activity-appended",
+                  payload: {} as never,
+                } satisfies OrchestrationEvent;
+              }),
+          },
+          projectionSnapshotQuery: {
+            getThreadDetailSnapshot: () =>
+              Effect.succeed(Option.some({ snapshotSequence: 50_000, thread })),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const items = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+            threadId: defaultThreadId,
+            afterSequence: 49_700,
+            requestCompletionMarker: true,
+          }).pipe(Stream.take(2), Stream.runCollect),
+        ),
+      );
+
+      const [first, second] = Array.from(items);
+      assert.equal(first?.kind, "snapshot");
+      if (first?.kind === "snapshot") {
+        assert.equal(first.snapshot.snapshotSequence, 50_000);
+      }
+      assert.equal(second?.kind, "synchronized");
+      assert.equal(readEventsCalls, 0);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("subscribeThread still replays events for a gap inside the retention cushion", () =>
+    Effect.gen(function* () {
+      let readEventsCalls = 0;
+      const thread = makeDefaultOrchestrationReadModel().threads[0]!;
+      const now = "2026-01-01T00:00:00.000Z";
+
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            // Head is 60 past the cursor: within the cushion, so every
+            // sequence in (afterSequence, head] is guaranteed retained.
+            latestSequence: Effect.succeed(50_060),
+            readEvents: () => {
+              readEventsCalls += 1;
+              return Stream.make({
+                sequence: 50_001,
+                eventId: EventId.make("event-thread-replay"),
+                aggregateKind: "thread",
+                aggregateId: defaultThreadId,
+                occurredAt: now,
+                commandId: null,
+                causationEventId: null,
+                correlationId: null,
+                metadata: {},
+                type: "thread.message-sent",
+                payload: {
+                  threadId: defaultThreadId,
+                  messageId: MessageId.make("message-1"),
+                  role: "user",
+                  text: "First message",
+                  turnId: null,
+                  streaming: false,
+                  createdAt: "2026-01-01T00:00:00.000Z",
+                  updatedAt: "2026-01-01T00:00:00.000Z",
+                },
+              } satisfies Extract<OrchestrationEvent, { type: "thread.message-sent" }>);
+            },
+          },
+          projectionSnapshotQuery: {
+            getThreadDetailSnapshot: () =>
+              Effect.succeed(Option.some({ snapshotSequence: 50_060, thread })),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const first = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+            threadId: defaultThreadId,
+            afterSequence: 50_000,
+            requestCompletionMarker: true,
+          }).pipe(Stream.runHead),
+        ),
+      );
+
+      const firstItem = Option.getOrThrow(first);
+      assert.equal(firstItem.kind, "event");
+      if (firstItem.kind === "event") {
+        assert.equal(firstItem.event.sequence, 50_001);
+      }
+      assert.equal(readEventsCalls, 1);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("subscribeThread never sends a snapshot older than the client cursor", () =>
+    Effect.gen(function* () {
+      let readEventsCalls = 0;
+      const now = "2026-01-01T00:00:00.000Z";
+
+      // Gap of 300 forces the snapshot path, but the projection only reached
+      // 49,500 - older than the client cursor (49,700). Sending that snapshot
+      // would regress the client below its cursor; the catch-up must replay
+      // the retained tail instead.
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            latestSequence: Effect.succeed(50_000),
+            readEvents: () => {
+              readEventsCalls += 1;
+              return Stream.make({
+                sequence: 49_800,
+                eventId: EventId.make("event-thread-tail-replay"),
+                aggregateKind: "thread",
+                aggregateId: defaultThreadId,
+                occurredAt: now,
+                commandId: null,
+                causationEventId: null,
+                correlationId: null,
+                metadata: {},
+                type: "thread.message-sent",
+                payload: {
+                  threadId: defaultThreadId,
+                  messageId: MessageId.make("message-1"),
+                  role: "user",
+                  text: "First message",
+                  turnId: null,
+                  streaming: false,
+                  createdAt: now,
+                  updatedAt: now,
+                },
+              } satisfies Extract<OrchestrationEvent, { type: "thread.message-sent" }>);
+            },
+          },
+          projectionSnapshotQuery: {
+            getThreadDetailSnapshot: () =>
+              Effect.succeed(
+                Option.some({
+                  snapshotSequence: 49_500,
+                  thread: makeDefaultOrchestrationReadModel().threads[0]!,
+                }),
+              ),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const first = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+            threadId: defaultThreadId,
+            afterSequence: 49_700,
+            requestCompletionMarker: true,
+          }).pipe(Stream.runHead),
+        ),
+      );
+
+      const firstItem = Option.getOrThrow(first);
+      assert.equal(firstItem.kind, "event");
+      if (firstItem.kind === "event") {
+        assert.equal(firstItem.event.sequence, 49_800);
+      }
+      assert.equal(readEventsCalls, 1);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect("subscribeShell replaces a cursor ahead of the authoritative head", () =>
     Effect.gen(function* () {
       let readEventsCalls = 0;

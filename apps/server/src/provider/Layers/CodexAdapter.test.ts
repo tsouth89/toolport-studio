@@ -471,6 +471,103 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
     }),
   );
 
+  it.effect("does not inline type:file attachments as images", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const serverConfig = yield* ServerConfig;
+      const threadId = asThreadId("codex-file-attachment");
+      const fileId = "codex-file-attachment-11111111-2222-3333-4444-555555555555";
+      const filePath = NodePath.join(
+        serverConfig.attachmentsDir,
+        "codex-file-attachment",
+        `${fileId}.bin`,
+      );
+      yield* Effect.promise(async () => {
+        await NodeFS.promises.mkdir(NodePath.dirname(filePath), { recursive: true });
+        await NodeFS.promises.writeFile(filePath, "attached message file");
+      });
+
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const runtime = sessionRuntimeFactory.lastRuntime;
+      NodeAssert.ok(runtime);
+      runtime.sendTurnImpl.mockClear();
+
+      yield* Effect.ignore(
+        adapter.sendTurn({
+          threadId,
+          input: "read this",
+          attachments: [
+            {
+              type: "file",
+              id: fileId,
+              name: "message.eml",
+              mimeType: "message/rfc822",
+              sizeBytes: 24,
+            },
+          ],
+        }),
+      );
+
+      const sent = runtime.sendTurnImpl.mock.calls[0]?.[0];
+      NodeAssert.ok(sent);
+      NodeAssert.equal(
+        "attachments" in sent ? (sent as { attachments?: unknown[] }).attachments?.length : 0,
+        0,
+      );
+    }),
+  );
+
+  it.effect("still inlines type:image attachments as image blocks", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const serverConfig = yield* ServerConfig;
+      const threadId = asThreadId("codex-image-attachment");
+      const imageId = "codex-image-attachment-11111111-2222-3333-4444-555555555555";
+      const imagePath = NodePath.join(serverConfig.attachmentsDir, `${imageId}.png`);
+      yield* Effect.promise(async () => {
+        await NodeFS.promises.mkdir(NodePath.dirname(imagePath), { recursive: true });
+        await NodeFS.promises.writeFile(imagePath, "fake png bytes");
+      });
+
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const runtime = sessionRuntimeFactory.lastRuntime;
+      NodeAssert.ok(runtime);
+      runtime.sendTurnImpl.mockClear();
+
+      yield* Effect.ignore(
+        adapter.sendTurn({
+          threadId,
+          input: "look at this",
+          attachments: [
+            {
+              type: "image",
+              id: imageId,
+              name: "screenshot.png",
+              mimeType: "image/png",
+              sizeBytes: 16,
+            },
+          ],
+        }),
+      );
+
+      const sent = runtime.sendTurnImpl.mock.calls[0]?.[0];
+      NodeAssert.ok(sent);
+      const attachments = (sent as { attachments?: Array<{ type: string; url: string }> })
+        .attachments;
+      NodeAssert.equal(attachments?.length, 1);
+      NodeAssert.equal(attachments?.[0]?.type, "image");
+      NodeAssert.ok(attachments?.[0]?.url.startsWith("data:image/png;base64,"));
+    }),
+  );
+
   it.effect("passes configured launch args into the session runtime", () => {
     const runtimeFactory = makeRuntimeFactory();
     const layer = Layer.effect(

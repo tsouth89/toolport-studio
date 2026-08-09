@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off
+import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeProcess from "node:process";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -277,5 +278,134 @@ it.layer(TestLayer, { excludeTestServices: true })("WorkspaceFileSystemLive", (i
         expect(escapedStat).toBeNull();
       }),
     );
+
+    it.effect("rejects writes whose file symlink resolves outside the workspace root", () =>
+      Effect.gen(function* () {
+        if (yield* isHostWindows) return;
+        const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const cwd = yield* makeTempDir;
+        const outsideDir = yield* makeTempDir;
+        const outsidePath = path.join(outsideDir, "secret.txt");
+        yield* writeTextFile(outsideDir, "secret.txt", "outside\n");
+        yield* fileSystem.symlink(outsidePath, path.join(cwd, "linked-secret.txt"));
+
+        const error = yield* workspaceFileSystem
+          .writeFile({ cwd, relativePath: "linked-secret.txt", contents: "pwned\n" })
+          .pipe(Effect.flip);
+        const resolvedWorkspaceRoot = yield* fileSystem.realPath(cwd);
+        const resolvedPath = yield* fileSystem.realPath(outsidePath);
+
+        expect(error).toBeInstanceOf(WorkspaceFileSystem.WorkspaceFilePathEscapeError);
+        expect(error).toMatchObject({
+          workspaceRoot: cwd,
+          relativePath: "linked-secret.txt",
+          resolvedWorkspaceRoot,
+          resolvedPath,
+        });
+        const outsideContents = yield* fileSystem.readFileString(outsidePath).pipe(Effect.orDie);
+        expect(outsideContents).toBe("outside\n");
+      }),
+    );
+
+    it.effect("rejects writes whose directory symlink resolves outside the workspace root", () =>
+      Effect.gen(function* () {
+        if (yield* isHostWindows) return;
+        const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const cwd = yield* makeTempDir;
+        const outsideDir = yield* makeTempDir;
+        yield* fileSystem.symlink(outsideDir, path.join(cwd, "out"));
+
+        const error = yield* workspaceFileSystem
+          .writeFile({ cwd, relativePath: "out/pwned.txt", contents: "pwned\n" })
+          .pipe(Effect.flip);
+        const resolvedWorkspaceRoot = yield* fileSystem.realPath(cwd);
+        const resolvedPath = yield* fileSystem.realPath(outsideDir);
+
+        expect(error).toBeInstanceOf(WorkspaceFileSystem.WorkspaceFilePathEscapeError);
+        expect(error).toMatchObject({
+          workspaceRoot: cwd,
+          relativePath: "out/pwned.txt",
+          resolvedWorkspaceRoot,
+          resolvedPath,
+        });
+        const createdOutside = yield* fileSystem
+          .stat(path.join(outsideDir, "pwned.txt"))
+          .pipe(Effect.orElseSucceed(() => null));
+        expect(createdOutside).toBeNull();
+      }),
+    );
+
+    it.effect("replaces existing files atomically and leaves no temp artifacts", () =>
+      Effect.gen(function* () {
+        const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;
+        const cwd = yield* makeTempDir;
+        const path = yield* Path.Path;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const targetPath = path.join(cwd, "plans/effect-rpc.md");
+        yield* writeTextFile(cwd, "plans/effect-rpc.md", "# Old\n");
+
+        yield* workspaceFileSystem.writeFile({
+          cwd,
+          relativePath: "plans/effect-rpc.md",
+          contents: "# New\n",
+        });
+
+        const saved = yield* fileSystem.readFileString(targetPath).pipe(Effect.orDie);
+        expect(saved).toBe("# New\n");
+
+        const dirEntries = yield* fileSystem
+          .readDirectory(path.dirname(targetPath), { recursive: true })
+          .pipe(Effect.orDie);
+        const leftovers = dirEntries.filter((entry) => !entry.endsWith("effect-rpc.md"));
+        expect(leftovers).toEqual([]);
+      }),
+    );
+
+    it.effect("preserves the mode of an existing executable file across a write", () =>
+      Effect.gen(function* () {
+        if (yield* isHostWindows) return;
+        const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;
+        const cwd = yield* makeTempDir;
+        const path = yield* Path.Path;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const targetPath = path.join(cwd, "deploy.sh");
+        yield* writeTextFile(cwd, "deploy.sh", "#!/bin/sh\n");
+        yield* fileSystem.chmod(targetPath, 0o755);
+
+        yield* workspaceFileSystem.writeFile({
+          cwd,
+          relativePath: "deploy.sh",
+          contents: "#!/bin/sh\necho new\n",
+        });
+
+        const saved = yield* fileSystem.readFileString(targetPath).pipe(Effect.orDie);
+        expect(saved).toBe("#!/bin/sh\necho new\n");
+        const stat = yield* fileSystem.stat(targetPath).pipe(Effect.orDie);
+        expect(stat.mode & 0o777).toBe(0o755);
+      }),
+    );
+  });
+});
+
+it.layer(TestLayer, { excludeTestServices: true })("WorkspaceFileSystem source shape", (it) => {
+  it("stages workspace writes through atomic write, not in-place truncation", () => {
+    const source = NodeFS.readFileSync(
+      new URL("./WorkspaceFileSystem.ts", import.meta.url),
+      "utf8",
+    );
+    const writeFnStart = source.indexOf('"WorkspaceFileSystem.writeFile"');
+    expect(writeFnStart).toBeGreaterThanOrEqual(0);
+    const writeFnBody = source.slice(writeFnStart, writeFnStart + 6_000);
+
+    const usesAtomicHelper =
+      writeFnBody.includes("writeFileStringAtomically") || writeFnBody.includes("atomicWrite");
+    const writesInPlaceToTarget = /writeFileString\(\s*target\.absolutePath/.test(writeFnBody);
+
+    expect(usesAtomicHelper).toBe(true);
+    expect(writesInPlaceToTarget).toBe(false);
   });
 });

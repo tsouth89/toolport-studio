@@ -2593,4 +2593,116 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
       yield* adapter.stopSession(threadId);
     }),
   );
+
+  it.effect("does not inline type:file attachments as image blocks", () =>
+    Effect.gen(function* () {
+      const serverConfig = yield* ServerConfig;
+      const threadId = ThreadId.make("grok-file-attachment-probe");
+      const fileId = "grok-file-attachment-11111111-2222-3333-4444-555555555555";
+      const filePath = NodePath.join(
+        serverConfig.attachmentsDir,
+        "grok-file-attachment",
+        `${fileId}.bin`,
+      );
+      yield* Effect.promise(async () => {
+        await NodeFSP.mkdir(NodePath.dirname(filePath), { recursive: true });
+        await NodeFSP.writeFile(filePath, "attached message file");
+      });
+
+      const tempDir = yield* Effect.promise(() =>
+        NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "grok-acp-")),
+      );
+      const requestLogPath = NodePath.join(tempDir, "requests.ndjson");
+      yield* Effect.promise(() => NodeFSP.writeFile(requestLogPath, "", "utf8"));
+      const adapter = yield* makeMockTestAdapter({
+        TOOLPORT_STUDIO_ACP_REQUEST_LOG_PATH: requestLogPath,
+      });
+
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("grok"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId,
+        input: "read this",
+        attachments: [
+          {
+            type: "file",
+            id: fileId,
+            name: "message.eml",
+            mimeType: "message/rfc822",
+            sizeBytes: 24,
+          },
+        ],
+      });
+      yield* adapter.stopSession(threadId);
+
+      yield* waitForFileContent(requestLogPath, 80, '"method":"session/prompt"');
+      const requests = yield* Effect.promise(() => readJsonLines(requestLogPath));
+      const promptRequest = requests.find((entry) => entry.method === "session/prompt");
+      assert.isDefined(promptRequest);
+      const promptBlocks = (promptRequest?.params as { prompt?: unknown[] } | undefined)?.prompt;
+      assert.isDefined(promptBlocks);
+      assert.equal(
+        promptBlocks.filter((block) => (block as { type?: string }).type === "image").length,
+        0,
+      );
+    }),
+  );
+
+  it.effect("still inlines type:image attachments as image blocks", () =>
+    Effect.gen(function* () {
+      const serverConfig = yield* ServerConfig;
+      const threadId = ThreadId.make("grok-image-attachment-probe");
+      const imageId = "grok-image-attachment-11111111-2222-3333-4444-555555555555";
+      const imagePath = NodePath.join(serverConfig.attachmentsDir, `${imageId}.png`);
+      yield* Effect.promise(async () => {
+        await NodeFSP.mkdir(NodePath.dirname(imagePath), { recursive: true });
+        await NodeFSP.writeFile(imagePath, "fake png bytes");
+      });
+
+      const tempDir = yield* Effect.promise(() =>
+        NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "grok-acp-")),
+      );
+      const requestLogPath = NodePath.join(tempDir, "requests.ndjson");
+      yield* Effect.promise(() => NodeFSP.writeFile(requestLogPath, "", "utf8"));
+      const adapter = yield* makeMockTestAdapter({
+        TOOLPORT_STUDIO_ACP_REQUEST_LOG_PATH: requestLogPath,
+      });
+
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("grok"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId,
+        input: "look at this",
+        attachments: [
+          {
+            type: "image",
+            id: imageId,
+            name: "screenshot.png",
+            mimeType: "image/png",
+            sizeBytes: 16,
+          },
+        ],
+      });
+      yield* adapter.stopSession(threadId);
+
+      yield* waitForFileContent(requestLogPath, 80, '"method":"session/prompt"');
+      const requests = yield* Effect.promise(() => readJsonLines(requestLogPath));
+      const promptRequest = requests.find((entry) => entry.method === "session/prompt");
+      assert.isDefined(promptRequest);
+      const promptBlocks = (promptRequest?.params as { prompt?: unknown[] } | undefined)?.prompt;
+      assert.isDefined(promptBlocks);
+      assert.equal(
+        promptBlocks.filter((block) => (block as { type?: string }).type === "image").length,
+        1,
+      );
+    }),
+  );
 });
