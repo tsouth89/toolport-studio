@@ -1,14 +1,21 @@
+import { scopeProjectRef } from "@toolport-studio/client-runtime/environment";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { LinkIcon, PlusIcon, RotateCcwIcon } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { openCommandPalette } from "../commandPaletteBus";
+import { sortScopedProjectsForSidebar } from "../components/Sidebar.logic";
 import { Button } from "../components/ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../components/ui/empty";
 import { SidebarInset } from "../components/ui/sidebar";
-import { useProjectlessThreadHandler } from "../hooks/useProjectlessThread";
-import { useAllEnvironmentShellsBootstrapped } from "../state/entities";
-import { useEnvironments, usePrimaryEnvironmentId } from "../state/environments";
+import { useNewThreadHandler } from "../hooks/useHandleNewThread";
+import { isGeneralChatProject } from "../lib/generalChat";
+import {
+  useAllEnvironmentShellsBootstrapped,
+  useProjects,
+  useThreadShells,
+} from "../state/entities";
+import { useEnvironments } from "../state/environments";
 import { APP_DISPLAY_NAME } from "~/branding";
 import { hasCloudPublicConfig } from "~/cloud/publicConfig";
 import { cn } from "~/lib/utils";
@@ -26,52 +33,47 @@ function ChatIndexRouteView() {
 }
 
 /**
- * Landing on the index route always opens an ungrouped (projectless) draft.
- * Workspace attachment is optional and explicit; do not inherit the most
- * recently active project shelf (Claude Code-style new session).
+ * Landing on the index route opens a draft for the most recently active real
+ * project. Historical General/projectless records stay readable but are not
+ * used to seed new sessions.
  */
 function IndexDraftLanding() {
+  const projects = useProjects();
+  const threads = useThreadShells();
   const bootstrapped = useAllEnvironmentShellsBootstrapped();
-  const startProjectlessThread = useProjectlessThreadHandler();
-  const primaryEnvironmentId = usePrimaryEnvironmentId();
-  const { environments } = useEnvironments();
+  const handleNewThread = useNewThreadHandler();
   const startingRef = useRef(false);
   const [startState, setStartState] = useState({ failed: false, retryRequest: 0 });
 
+  const mostRecentProject = useMemo(
+    () =>
+      bootstrapped
+        ? (sortScopedProjectsForSidebar(
+            projects.filter((project) => !isGeneralChatProject(project)),
+            threads,
+            "updated_at",
+          )[0] ?? null)
+        : null,
+    [bootstrapped, projects, threads],
+  );
+
   useEffect(() => {
-    if (!bootstrapped || startingRef.current) {
+    if (mostRecentProject === null || startingRef.current) {
       return;
     }
-
-    const environmentId = primaryEnvironmentId ?? environments[0]?.environmentId ?? null;
-    if (environmentId === null) {
-      return;
-    }
-
     startingRef.current = true;
-    void startProjectlessThread({ replace: true })
-      .then((started) => {
-        if (!started) {
-          startingRef.current = false;
-          setStartState((state) => ({ ...state, failed: true }));
-        }
-      })
-      .catch(() => {
-        startingRef.current = false;
-        setStartState((state) => ({ ...state, failed: true }));
-      });
-  }, [
-    bootstrapped,
-    environments,
-    primaryEnvironmentId,
-    startProjectlessThread,
-    startState.retryRequest,
-  ]);
+    void handleNewThread(scopeProjectRef(mostRecentProject.environmentId, mostRecentProject.id), {
+      replace: true,
+    }).catch(() => {
+      startingRef.current = false;
+      setStartState((state) => ({ ...state, failed: true }));
+    });
+  }, [handleNewThread, mostRecentProject, startState.retryRequest]);
 
   if (!bootstrapped) {
     return null;
   }
-  if (primaryEnvironmentId || environments.length > 0) {
+  if (mostRecentProject !== null) {
     return startState.failed ? (
       <DraftStartError
         onRetry={() => {
@@ -92,9 +94,9 @@ function DraftStartError({ onRetry }: { readonly onRetry: () => void }) {
     <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground">
       <Empty className="flex-1">
         <EmptyHeader className="max-w-md">
-          <EmptyTitle className="text-foreground text-xl">Couldn’t start a new chat</EmptyTitle>
+          <EmptyTitle className="text-foreground text-xl">Couldn’t start a new thread</EmptyTitle>
           <EmptyDescription className="mt-2 text-sm text-muted-foreground/78">
-            Try opening a new ungrouped session again.
+            The project is still available. Try opening the draft again.
           </EmptyDescription>
           <div className="mt-5 flex justify-center">
             <Button size="sm" onClick={onRetry}>
@@ -121,12 +123,9 @@ function NoProjectsHero() {
                 What should we work on?
               </EmptyTitle>
               <EmptyDescription className="mt-2 text-sm text-muted-foreground/78">
-                Connect an environment, then start chatting. You can attach a folder anytime.
+                Add a project to start your first thread.
               </EmptyDescription>
               <div className="mt-6 flex justify-center gap-2">
-                <Button render={<Link to="/settings/connections" />} size="sm" variant="outline">
-                  Connections
-                </Button>
                 <Button size="sm" onClick={openAddProject}>
                   <PlusIcon className="size-4" />
                   Add project

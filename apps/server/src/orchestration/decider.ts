@@ -12,7 +12,6 @@ import type * as PlatformError from "effect/PlatformError";
 
 import { OrchestrationCommandInvariantError } from "./Errors.ts";
 import {
-  findProjectById,
   findSidebarFolderById,
   listThreadsByProjectId,
   listThreadsBySidebarGroupId,
@@ -475,14 +474,19 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.create": {
-      // null = projectless: there is no workspace to validate.
-      if (command.projectId !== null) {
-        yield* requireProject({
-          readModel,
-          command,
-          projectId: command.projectId,
+      // Historical projections/events remain nullable until migration, but
+      // every newly-created thread must belong to a real project.
+      if (command.projectId === null) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "A project is required to create a thread.",
         });
       }
+      yield* requireProject({
+        readModel,
+        command,
+        projectId: command.projectId,
+      });
       yield* requireThreadAbsent({
         readModel,
         command,

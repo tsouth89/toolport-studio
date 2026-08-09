@@ -69,10 +69,10 @@ function makeReadModel(threads: ReadonlyArray<OrchestrationThread> = []): Orches
   };
 }
 
-it.layer(NodeServices.layer)("projectless thread decider", (it) => {
-  it.effect("creates a thread with no workspace attached", () =>
+it.layer(NodeServices.layer)("project attachment boundaries", (it) => {
+  it.effect("rejects creating a thread without a project", () =>
     Effect.gen(function* () {
-      const decided = yield* decideOrchestrationCommand({
+      const error = yield* decideOrchestrationCommand({
         command: {
           type: "thread.create",
           commandId: CommandId.make("cmd-create-projectless"),
@@ -87,13 +87,10 @@ it.layer(NodeServices.layer)("projectless thread decider", (it) => {
           createdAt: NOW,
         },
         readModel: makeReadModel(),
-      });
-      const events = Array.isArray(decided) ? decided : [decided];
-      expect(events).toHaveLength(1);
-      if (events[0]?.type === "thread.created") {
-        expect(events[0].payload.projectId).toBe(null);
-        // Projectless and ungrouped are independent, but a new session is both.
-        expect(events[0].payload.sidebarGroupId).toBe(null);
+      }).pipe(Effect.flip);
+      expect(error._tag).toBe("OrchestrationCommandInvariantError");
+      if (error._tag === "OrchestrationCommandInvariantError") {
+        expect(error.detail).toBe("A project is required to create a thread.");
       }
     }),
   );

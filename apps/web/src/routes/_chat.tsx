@@ -5,7 +5,6 @@ import { useEffect } from "react";
 import { isCommandPaletteOpen } from "../commandPaletteBus";
 import { dispatchPreviewAction } from "../components/preview/previewActionBus";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
-import { useProjectlessThreadHandler } from "../hooks/useProjectlessThread";
 import { startNewThreadFromContext } from "../lib/chatThreadActions";
 import { isPreviewFocused } from "../lib/previewFocus";
 import { isTerminalFocused } from "../lib/terminalFocus";
@@ -22,7 +21,6 @@ function ChatRouteGlobalShortcuts() {
   const selectedThreadKeysSize = useThreadSelectionStore((state) => state.selectedThreadKeys.size);
   const { activeDraftThread, activeThread, defaultProjectRef, handleNewThread, routeThreadRef } =
     useHandleNewThread();
-  const startProjectlessThread = useProjectlessThreadHandler();
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
   const terminalOpen = useTerminalUiStateStore((state) =>
     routeThreadRef
@@ -74,14 +72,11 @@ function ChatRouteGlobalShortcuts() {
       if (command === "chat.new") {
         event.preventDefault();
         event.stopPropagation();
-        void startProjectlessThread().catch((error: unknown) => {
-          toastManager.add(
-            stackedThreadToast({
-              type: "error",
-              title: "Could not start a new chat",
-              description: error instanceof Error ? error.message : "An unexpected error occurred.",
-            }),
-          );
+        void startNewThreadFromContext({
+          activeDraftThread,
+          activeThread: activeThread ?? undefined,
+          defaultProjectRef,
+          handleNewThread,
         });
         return;
       }
@@ -144,7 +139,6 @@ function ChatRouteGlobalShortcuts() {
     previewOpen,
     routeThreadRef,
     selectedThreadKeysSize,
-    startProjectlessThread,
     terminalOpen,
   ]);
 

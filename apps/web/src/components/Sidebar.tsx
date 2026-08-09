@@ -84,8 +84,8 @@ import {
 import { useThreadSelectionStore } from "../threadSelectionStore";
 import { useThreadActions } from "../hooks/useThreadActions";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
-import { useProjectlessThreadHandler } from "../hooks/useProjectlessThread";
 import { openCommandPalette } from "../commandPaletteBus";
+import { startNewThreadFromContext } from "../lib/chatThreadActions";
 import { isGeneralChatProject } from "../lib/generalChat";
 import { useClientSettings, useUpdateClientSettings } from "../hooks/useSettings";
 import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
@@ -827,7 +827,6 @@ export default function Sidebar() {
   const [newFolderDialogOpen, setNewFolderDialogOpen] = useState(false);
   const [newFolderTitle, setNewFolderTitle] = useState("");
   const newThreadContext = useHandleNewThread();
-  const startProjectlessThread = useProjectlessThreadHandler();
   const openAddProjectCommandPalette = useCallback(
     () => openCommandPalette({ open: "add-project" }),
     [],
@@ -2059,16 +2058,17 @@ export default function Sidebar() {
 
   const handleNewThreadClick = useCallback(() => {
     if (isMobile) setOpenMobile(false);
-    void startProjectlessThread().catch((error: unknown) => {
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Could not start a new chat",
-          description: error instanceof Error ? error.message : "An unexpected error occurred.",
-        }),
-      );
+    if (projectGroups.length > 1) {
+      openCommandPalette({ open: "new-thread-in" });
+      return;
+    }
+    void startNewThreadFromContext({
+      activeDraftThread: newThreadContext.activeDraftThread,
+      activeThread: newThreadContext.activeThread ?? undefined,
+      defaultProjectRef: newThreadContext.defaultProjectRef,
+      handleNewThread: newThreadContext.handleNewThread,
     });
-  }, [isMobile, setOpenMobile, startProjectlessThread]);
+  }, [isMobile, newThreadContext, projectGroups.length, setOpenMobile]);
 
   const commandPaletteShortcutLabel = shortcutLabelForCommand(keybindings, "commandPalette.toggle");
   const newThreadShortcutLabel = shortcutLabelForCommand(keybindings, "chat.new");
@@ -2076,7 +2076,7 @@ export default function Sidebar() {
     <>
       <SidebarChromeHeader
         isElectron={isElectron}
-        newThreadDisabled={environments.length === 0}
+        newThreadDisabled={visibleProjects.length === 0}
         newThreadShortcutLabel={newThreadShortcutLabel}
         onNewThread={handleNewThreadClick}
       />

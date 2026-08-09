@@ -22,6 +22,7 @@ import {
 } from "../logicalProject";
 import { readThreadShell, useProjects, useThread } from "../state/entities";
 import { resolveNewDraftStartFromOrigin } from "../lib/chatThreadActions";
+import { isGeneralChatProject } from "../lib/generalChat";
 import { primaryServerSettingsAtom } from "../state/server";
 import { resolveThreadRouteTarget } from "../threadRoutes";
 import { legacyProjectCwdPreferenceKey, useUiStateStore } from "../uiStateStore";
@@ -302,7 +303,9 @@ export function useHandleNewThread() {
   const projects = useProjects();
   const orderedProjects = useMemo(() => {
     return orderItemsByPreferredIds({
-      items: projects,
+      // The legacy General workspace remains readable for migration, but new
+      // sessions default only to user-owned projects.
+      items: projects.filter((project) => !isGeneralChatProject(project)),
       preferredIds: projectOrder,
       getId: getProjectOrderKey,
       getPreferenceIds: (project) => [
