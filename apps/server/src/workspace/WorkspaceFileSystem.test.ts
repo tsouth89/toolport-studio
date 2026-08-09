@@ -364,6 +364,30 @@ it.layer(TestLayer, { excludeTestServices: true })("WorkspaceFileSystemLive", (i
         expect(leftovers).toEqual([]);
       }),
     );
+
+    it.effect("preserves the mode of an existing executable file across a write", () =>
+      Effect.gen(function* () {
+        if (yield* isHostWindows) return;
+        const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;
+        const cwd = yield* makeTempDir;
+        const path = yield* Path.Path;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const targetPath = path.join(cwd, "deploy.sh");
+        yield* writeTextFile(cwd, "deploy.sh", "#!/bin/sh\n");
+        yield* fileSystem.chmod(targetPath, 0o755);
+
+        yield* workspaceFileSystem.writeFile({
+          cwd,
+          relativePath: "deploy.sh",
+          contents: "#!/bin/sh\necho new\n",
+        });
+
+        const saved = yield* fileSystem.readFileString(targetPath).pipe(Effect.orDie);
+        expect(saved).toBe("#!/bin/sh\necho new\n");
+        const stat = yield* fileSystem.stat(targetPath).pipe(Effect.orDie);
+        expect(stat.mode & 0o777).toBe(0o755);
+      }),
+    );
   });
 });
 

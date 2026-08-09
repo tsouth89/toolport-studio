@@ -1542,6 +1542,29 @@ const makeWsRpcLayer = (
                       cause: input.threadId,
                     });
                   }
+                  // A stale snapshot must never be sent: the client applies a
+                  // snapshot unconditionally and would regress lastSequence
+                  // (and the thread) below its cursor. When the projection is
+                  // not as new as the client cursor (fresh data store, rebuilt
+                  // projection), replay the retained tail instead — the client
+                  // already holds everything up to its cursor, so a sparse
+                  // stream cannot lose state it has.
+                  if (snapshot.value.snapshotSequence <= afterSequence) {
+                    const catchUpStream = orchestrationEngine
+                      .readEvents(afterSequence, replayGap)
+                      .pipe(
+                        Stream.filter(isThisThreadDetailEvent),
+                        Stream.map((event) => ({ kind: "event" as const, event })),
+                        Stream.mapError(
+                          (cause) =>
+                            new OrchestrationGetSnapshotError({
+                              message: `Failed to replay thread ${input.threadId} events`,
+                              cause,
+                            }),
+                        ),
+                      );
+                    return Stream.concat(catchUpStream, afterCatchUp);
+                  }
                   return Stream.concat(
                     Stream.make({
                       kind: "snapshot" as const,

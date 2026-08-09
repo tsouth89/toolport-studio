@@ -329,9 +329,36 @@ export const make = Effect.gen(function* () {
       }
     }
 
+    // Preserve the mode of an existing regular file across the atomic replace
+    // (executables and private files would otherwise lose their bits to the
+    // temp file's default creation mode). Symlinks are skipped: the rename
+    // replaces the link itself, so a linked file's mode does not apply.
+    let existingMode: number | undefined;
+    const existingTarget = yield* Effect.tryPromise({
+      try: async () => {
+        try {
+          const stat = await NodeFSP.lstat(target.absolutePath);
+          return stat.isFile() ? stat.mode & 0o777 : undefined;
+        } catch {
+          return undefined;
+        }
+      },
+      catch: (cause) =>
+        new WorkspaceFileSystemOperationError({
+          workspaceRoot: input.cwd,
+          relativePath: input.relativePath,
+          resolvedPath: target.absolutePath,
+          operationPath: target.absolutePath,
+          operation: "stat",
+          cause,
+        }),
+    });
+    existingMode = existingTarget;
+
     yield* writeFileStringAtomically({
       filePath: target.absolutePath,
       contents: input.contents,
+      ...(existingMode !== undefined ? { mode: existingMode } : {}),
     }).pipe(
       Effect.provideService(FileSystem.FileSystem, fileSystem),
       Effect.provideService(Path.Path, path),

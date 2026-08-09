@@ -251,6 +251,10 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     }
 
     if (item.kind === "snapshot") {
+      const currentSequence = yield* SubscriptionRef.get(lastSequence);
+      if (item.snapshot.snapshotSequence <= currentSequence) {
+        return;
+      }
       yield* SubscriptionRef.set(lastSequence, item.snapshot.snapshotSequence);
       yield* setThread(item.snapshot.thread);
       return;

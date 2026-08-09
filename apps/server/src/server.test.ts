@@ -6044,6 +6044,77 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  it.effect("subscribeThread never sends a snapshot older than the client cursor", () =>
+    Effect.gen(function* () {
+      let readEventsCalls = 0;
+      const now = "2026-01-01T00:00:00.000Z";
+
+      // Gap of 300 forces the snapshot path, but the projection only reached
+      // 49,500 - older than the client cursor (49,700). Sending that snapshot
+      // would regress the client below its cursor; the catch-up must replay
+      // the retained tail instead.
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            latestSequence: Effect.succeed(50_000),
+            readEvents: () => {
+              readEventsCalls += 1;
+              return Stream.make({
+                sequence: 49_800,
+                eventId: EventId.make("event-thread-tail-replay"),
+                aggregateKind: "thread",
+                aggregateId: defaultThreadId,
+                occurredAt: now,
+                commandId: null,
+                causationEventId: null,
+                correlationId: null,
+                metadata: {},
+                type: "thread.message-sent",
+                payload: {
+                  threadId: defaultThreadId,
+                  messageId: MessageId.make("message-1"),
+                  role: "user",
+                  text: "First message",
+                  turnId: null,
+                  streaming: false,
+                  createdAt: now,
+                  updatedAt: now,
+                },
+              } satisfies Extract<OrchestrationEvent, { type: "thread.message-sent" }>);
+            },
+          },
+          projectionSnapshotQuery: {
+            getThreadDetailSnapshot: () =>
+              Effect.succeed(
+                Option.some({
+                  snapshotSequence: 49_500,
+                  thread: makeDefaultOrchestrationReadModel().threads[0]!,
+                }),
+              ),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const first = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+            threadId: defaultThreadId,
+            afterSequence: 49_700,
+            requestCompletionMarker: true,
+          }).pipe(Stream.runHead),
+        ),
+      );
+
+      const firstItem = Option.getOrThrow(first);
+      assert.equal(firstItem.kind, "event");
+      if (firstItem.kind === "event") {
+        assert.equal(firstItem.event.sequence, 49_800);
+      }
+      assert.equal(readEventsCalls, 1);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect("subscribeShell replaces a cursor ahead of the authoritative head", () =>
     Effect.gen(function* () {
       let readEventsCalls = 0;
