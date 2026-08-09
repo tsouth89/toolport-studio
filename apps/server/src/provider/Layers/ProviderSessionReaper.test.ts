@@ -79,6 +79,7 @@ function makeReadModel(
       readonly lastError: string | null;
       readonly updatedAt: string;
     } | null;
+    readonly runningBackgroundTaskCount?: number;
   }>,
 ) {
   const now = "2026-01-01T00:00:00.000Z";
@@ -120,6 +121,7 @@ function makeReadModel(
       latestTurn: null,
       messages: [],
       session: thread.session,
+      runningBackgroundTaskCount: thread.runningBackgroundTaskCount ?? 0,
       activities: [],
       proposedPlans: [],
       checkpoints: [],
@@ -148,10 +150,15 @@ describe("ProviderSessionReaper", () => {
 
   async function createHarness(input: {
     readonly readModel: ReturnType<typeof makeReadModel> | (() => ReturnType<typeof makeReadModel>);
-    readonly activeSessions?: ReadonlyArray<{
-      readonly threadId: ThreadId;
-      readonly provider: "codex" | "claudeAgent";
-    }>;
+    readonly activeSessions?:
+      | ReadonlyArray<{
+          readonly threadId: ThreadId;
+          readonly provider: "codex" | "claudeAgent";
+        }>
+      | (() => ReadonlyArray<{
+          readonly threadId: ThreadId;
+          readonly provider: "codex" | "claudeAgent";
+        }>);
     readonly stopSessionImplementation?: (input: {
       readonly threadId: ThreadId;
     }) => ReturnType<ProviderServiceShape["stopSession"]>;
@@ -178,7 +185,10 @@ describe("ProviderSessionReaper", () => {
       stopSession,
       listSessions: () =>
         Effect.succeed(
-          (input.activeSessions ?? []).map(
+          (typeof input.activeSessions === "function"
+            ? input.activeSessions()
+            : (input.activeSessions ?? [])
+          ).map(
             (session) =>
               ({
                 threadId: session.threadId,
@@ -358,9 +368,155 @@ describe("ProviderSessionReaper", () => {
     );
 
     const reaper = await runtime!.runPromise(Effect.service(ProviderSessionReaper));
+    scope = await runtime!.runPromise(Scope.make("sequential"));
+    await runtime!.runPromise(reaper.start().pipe(Scope.provide(scope)));
+    await runtime!.runPromise(drainFibers);
+
+    expect(harness.stopSession).not.toHaveBeenCalled();
+    const remaining = await runtime!.runPromise(repository.getByThreadId({ threadId }));
+    expect(Option.isSome(remaining)).toBe(true);
+  });
+
+  it("skips stale sessions while authoritative background work is still running", async () => {
+    const threadId = ThreadId.make("thread-reaper-background-work");
+    const now = "2026-01-01T00:00:00.000Z";
+    const harness = await createHarness({
+      readModel: makeReadModel([
+        {
+          id: threadId,
+          session: {
+            threadId,
+            status: "ready",
+            providerName: "claudeAgent",
+            runtimeMode: "full-access",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: now,
+          },
+          runningBackgroundTaskCount: 2,
+        },
+      ]),
+      activeSessions: [{ threadId, provider: "claudeAgent" }],
+    });
+    const repository = await runtime!.runPromise(
+      Effect.service(ProviderSessionRuntime.ProviderSessionRuntimeRepository),
+    );
+
+    await runtime!.runPromise(
+      repository.upsert({
+        threadId,
+        providerName: "claudeAgent",
+        providerInstanceId: null,
+        adapterKey: "claudeAgent",
+        runtimeMode: "full-access",
+        status: "running",
+        lastSeenAt: "2026-04-14T00:00:00.000Z",
+        resumeCursor: { opaque: "resume-background-work" },
+        runtimePayload: null,
+      }),
+    );
+
+    const reaper = await runtime!.runPromise(Effect.service(ProviderSessionReaper));
     scope = await Effect.runPromise(Scope.make("sequential"));
     await runtime!.runPromise(reaper.start().pipe(Scope.provide(scope)));
     await Effect.runPromise(drainFibers);
+
+    expect(harness.stopSession).not.toHaveBeenCalled();
+    expect(harness.dispatchedCommands).toEqual([]);
+    const remaining = await runtime!.runPromise(repository.getByThreadId({ threadId }));
+    expect(Option.isSome(remaining)).toBe(true);
+  });
+
+  it("reaps stale background projections when no provider runtime is live", async () => {
+    const threadId = ThreadId.make("thread-reaper-stale-background-projection");
+    const now = "2026-01-01T00:00:00.000Z";
+    const harness = await createHarness({
+      readModel: makeReadModel([
+        {
+          id: threadId,
+          session: {
+            threadId,
+            status: "ready",
+            providerName: "claudeAgent",
+            runtimeMode: "full-access",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: now,
+          },
+          runningBackgroundTaskCount: 1,
+        },
+      ]),
+    });
+    const repository = await runtime!.runPromise(
+      Effect.service(ProviderSessionRuntime.ProviderSessionRuntimeRepository),
+    );
+    await runtime!.runPromise(
+      repository.upsert({
+        threadId,
+        providerName: "claudeAgent",
+        providerInstanceId: null,
+        adapterKey: "claudeAgent",
+        runtimeMode: "full-access",
+        status: "running",
+        lastSeenAt: now,
+        resumeCursor: { opaque: "resume-stale-background-projection" },
+        runtimePayload: null,
+      }),
+    );
+
+    const reaper = await runtime!.runPromise(Effect.service(ProviderSessionReaper));
+    scope = await runtime!.runPromise(Scope.make("sequential"));
+    await runtime!.runPromise(reaper.start().pipe(Scope.provide(scope)));
+
+    await waitFor(() => harness.stopSession.mock.calls.length === 1);
+    expect(harness.stoppedThreadIds.has(threadId)).toBe(true);
+  });
+
+  it("rechecks background liveness immediately before stopping a stale session", async () => {
+    const threadId = ThreadId.make("thread-reaper-background-start-race");
+    const now = "2026-01-01T00:00:00.000Z";
+    let projectionReads = 0;
+    let sessionReads = 0;
+    const harness = await createHarness({
+      readModel: () =>
+        makeReadModel([
+          {
+            id: threadId,
+            session: {
+              threadId,
+              status: "ready",
+              providerName: "claudeAgent",
+              runtimeMode: "full-access",
+              activeTurnId: null,
+              lastError: null,
+              updatedAt: now,
+            },
+            runningBackgroundTaskCount: projectionReads++ === 0 ? 0 : 1,
+          },
+        ]),
+      activeSessions: () => (sessionReads++ === 0 ? [] : [{ threadId, provider: "claudeAgent" }]),
+    });
+    const repository = await runtime!.runPromise(
+      Effect.service(ProviderSessionRuntime.ProviderSessionRuntimeRepository),
+    );
+    await runtime!.runPromise(
+      repository.upsert({
+        threadId,
+        providerName: "claudeAgent",
+        providerInstanceId: null,
+        adapterKey: "claudeAgent",
+        runtimeMode: "full-access",
+        status: "running",
+        lastSeenAt: now,
+        resumeCursor: { opaque: "resume-background-start-race" },
+        runtimePayload: null,
+      }),
+    );
+
+    const reaper = await runtime!.runPromise(Effect.service(ProviderSessionReaper));
+    scope = await runtime!.runPromise(Scope.make("sequential"));
+    await runtime!.runPromise(reaper.start().pipe(Scope.provide(scope)));
+    await runtime!.runPromise(drainFibers);
 
     expect(harness.stopSession).not.toHaveBeenCalled();
     const remaining = await runtime!.runPromise(repository.getByThreadId({ threadId }));
@@ -496,6 +652,75 @@ describe("ProviderSessionReaper", () => {
     await Effect.runPromise(drainFibers);
     expect(harness.dispatchedCommands).toEqual([]);
     expect(readModel.threads[0]?.session?.activeTurnId).toBe(newTurnId);
+  });
+
+  it("does not overwrite newer background liveness after an orphan stop finishes", async () => {
+    const threadId = ThreadId.make("thread-reaper-racing-background-work");
+    const turnId = TurnId.make("turn-reaper-background-race");
+    const now = "2026-01-01T00:00:00.000Z";
+    let readModel = makeReadModel([
+      {
+        id: threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "claudeAgent",
+          runtimeMode: "full-access",
+          activeTurnId: turnId,
+          lastError: null,
+          updatedAt: now,
+        },
+      },
+    ]);
+    let hasLiveRuntime = false;
+    const harness = await createHarness({
+      readModel: () => readModel,
+      activeSessions: () => (hasLiveRuntime ? [{ threadId, provider: "claudeAgent" }] : []),
+      stopSessionImplementation: () =>
+        Effect.sync(() => {
+          hasLiveRuntime = true;
+          readModel = makeReadModel([
+            {
+              id: threadId,
+              session: {
+                threadId,
+                status: "running",
+                providerName: "claudeAgent",
+                runtimeMode: "full-access",
+                activeTurnId: null,
+                lastError: null,
+                updatedAt: "2099-01-01T00:00:00.000Z",
+              },
+              runningBackgroundTaskCount: 1,
+            },
+          ]);
+        }),
+    });
+    const repository = await runtime!.runPromise(
+      Effect.service(ProviderSessionRuntime.ProviderSessionRuntimeRepository),
+    );
+    await runtime!.runPromise(
+      repository.upsert({
+        threadId,
+        providerName: "claudeAgent",
+        providerInstanceId: null,
+        adapterKey: "claudeAgent",
+        runtimeMode: "full-access",
+        status: "running",
+        lastSeenAt: now,
+        resumeCursor: { opaque: "resume-racing-background-work" },
+        runtimePayload: null,
+      }),
+    );
+
+    const reaper = await runtime!.runPromise(Effect.service(ProviderSessionReaper));
+    scope = await runtime!.runPromise(Scope.make("sequential"));
+    await runtime!.runPromise(reaper.start().pipe(Scope.provide(scope)));
+
+    await waitFor(() => harness.stopSession.mock.calls.length === 1);
+    await runtime!.runPromise(drainFibers);
+    expect(harness.dispatchedCommands).toEqual([]);
+    expect(readModel.threads[0]?.runningBackgroundTaskCount).toBe(1);
   });
 
   it("reconciles the same turn when a heartbeat lands during orphan stop", async () => {
