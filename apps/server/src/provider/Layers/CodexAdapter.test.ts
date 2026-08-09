@@ -1014,9 +1014,7 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
     Effect.gen(function* () {
       const { adapter, runtime } = yield* startLifecycleRuntime();
       const eventsFiber = yield* adapter.streamEvents.pipe(
-        Stream.filter(
-          (event) => event.type === "turn.completed" || event.type === "runtime.error",
-        ),
+        Stream.filter((event) => event.type === "turn.completed" || event.type === "runtime.error"),
         Stream.take(2),
         Stream.runCollect,
         Effect.forkChild,
