@@ -36,6 +36,13 @@ export function projectGroupingModeFromToggle(
   return lastEnabledMode === "repository_path" ? "repository_path" : "repository";
 }
 
+export function normalizeFontSizeDraft(value: string, min: number, max: number): number | null {
+  if (value.trim().length === 0) return null;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return null;
+  return Math.min(max, Math.max(min, Math.round(parsed)));
+}
+
 const LAST_ENABLED_PROJECT_GROUPING_MODE_KEY = "toolport-studio:last-enabled-project-grouping-mode";
 
 export function readLastEnabledProjectGroupingMode(): SidebarProjectGroupingMode {

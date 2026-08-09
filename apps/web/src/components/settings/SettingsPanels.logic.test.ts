@@ -10,8 +10,18 @@ import {
   formatDiagnosticsDescription,
   hasLegacyProviderSlot,
   isProjectGroupingEnabled,
+  normalizeFontSizeDraft,
   projectGroupingModeFromToggle,
 } from "./SettingsPanels.logic";
+
+describe("font size drafts", () => {
+  it("clamps and rounds numeric drafts on commit", () => {
+    expect(normalizeFontSizeDraft("99", 12, 20)).toBe(20);
+    expect(normalizeFontSizeDraft("7", 12, 20)).toBe(12);
+    expect(normalizeFontSizeDraft("12.5", 13, 20)).toBe(13);
+    expect(normalizeFontSizeDraft("", 12, 20)).toBeNull();
+  });
+});
 
 describe("project grouping toggle", () => {
   it("enables repository grouping and disables into separate projects", () => {

@@ -15,4 +15,17 @@ describe("searchSettings", () => {
   it("returns no results for a blank query", () => {
     expect(searchSettings("   ")).toEqual([]);
   });
+
+  it("matches the visible settings section label", () => {
+    expect(searchSettings("Appearance").map((item) => item.id)).toEqual([
+      "theme",
+      "glass-opacity",
+      "word-wrap",
+      "interface-font",
+      "prompt-font",
+      "code-font",
+      "terminal-font",
+      "font-smoothing",
+    ]);
+  });
 });

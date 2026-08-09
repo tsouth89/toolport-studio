@@ -103,5 +103,9 @@ export function searchSettings(
   const normalizedQuery = normalizeSearchText(query);
   if (normalizedQuery.length === 0) return [];
 
-  return items.filter((item) => normalizeSearchText(item.title).includes(normalizedQuery));
+  return items.filter((item) =>
+    normalizeSearchText(`${item.title} ${SETTINGS_SECTION_LABELS[item.to]}`).includes(
+      normalizedQuery,
+    ),
+  );
 }

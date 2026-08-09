@@ -55,10 +55,12 @@ import { TraitsPicker } from "../chat/TraitsPicker";
 import { isElectron } from "../../env";
 import { buildHostedChannelSelectionUrl, type HostedAppChannel } from "../../hostedPairing";
 import { useTheme } from "../../hooks/useTheme";
+import { useCustomThemes } from "../../hooks/useCustomThemes";
 import {
   EMBER_THEME,
   GROVE_THEME,
   IRIS_THEME,
+  LEGACY_T3_CHAT_DARK_THEME_ID,
   OCEAN_THEME,
   T3_CHAT_THEME,
 } from "../../themePalette";
@@ -105,6 +107,7 @@ import {
   formatDiagnosticsDescription,
   hasLegacyProviderSlot,
   isProjectGroupingEnabled,
+  normalizeFontSizeDraft,
   projectGroupingModeFromToggle,
   readLastEnabledProjectGroupingMode,
   rememberEnabledProjectGroupingMode,
@@ -135,6 +138,10 @@ const THEME_OPTIONS = [
   {
     value: T3_CHAT_THEME.id,
     label: "Studio",
+  },
+  {
+    value: LEGACY_T3_CHAT_DARK_THEME_ID,
+    label: "Studio (dark)",
   },
   {
     value: GROVE_THEME.id,
@@ -604,6 +611,17 @@ export function useSettingsRestore(onRestored?: () => void) {
 
 export function AppearanceSettingsPanel() {
   const { theme, setTheme } = useTheme();
+  const customThemes = useCustomThemes();
+  const themeOptions = useMemo(
+    () => [
+      ...THEME_OPTIONS,
+      ...customThemes.map((customTheme) => ({
+        value: customTheme.id,
+        label: customTheme.label,
+      })),
+    ],
+    [customThemes],
+  );
   const settings = usePrimarySettings();
   const updateSettings = useUpdatePrimarySettings();
   const glassOpacityRatio =
@@ -632,11 +650,11 @@ export function AppearanceSettingsPanel() {
             >
               <SelectTrigger className="w-full sm:w-40" aria-label="Theme preference">
                 <SelectValue>
-                  {THEME_OPTIONS.find((option) => option.value === theme)?.label ?? "System"}
+                  {themeOptions.find((option) => option.value === theme)?.label ?? "System"}
                 </SelectValue>
               </SelectTrigger>
               <SelectPopup align="end" alignItemWithTrigger={false}>
-                {THEME_OPTIONS.map((option) => (
+                {themeOptions.map((option) => (
                   <SelectItem hideIndicator key={option.value} value={option.value}>
                     {option.label}
                   </SelectItem>
@@ -885,17 +903,17 @@ function FontPreferenceControl({
         spellCheck={false}
         aria-label={`${ariaLabel} family`}
       />
-      <input
+      <DraftInput
         className="h-8 w-16 rounded-md border border-input bg-background px-2 text-sm text-foreground"
         type="number"
-        value={size}
+        value={String(size)}
         min={min}
         max={max}
         step={1}
         aria-label={`${ariaLabel} size`}
-        onChange={(event) => {
-          const next = Number(event.currentTarget.value);
-          if (Number.isInteger(next) && next >= min && next <= max) onSizeChange(next);
+        onCommit={(draft) => {
+          const next = normalizeFontSizeDraft(draft, min, max);
+          if (next !== null && next !== size) onSizeChange(next);
         }}
       />
     </div>

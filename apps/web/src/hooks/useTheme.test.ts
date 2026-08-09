@@ -156,6 +156,97 @@ describe("theme failure handling", () => {
     unsubscribe?.();
   });
 
+  it("refreshes an active custom palette and falls back when it is removed", async () => {
+    const storage = createStorage();
+    storage.setItem("toolport-studio:theme", "aurora");
+    storage.setItem("toolport-studio:theme-appearance-mode", "light");
+    storage.setItem(
+      "toolport-studio:themes:v1",
+      JSON.stringify([
+        {
+          id: "aurora",
+          label: "Aurora",
+          appearance: "light",
+          colors: { canvas: "#f8fbff", accent: "#5b6cff" },
+        },
+      ]),
+    );
+    const variables = new Map<string, string>();
+    const root = {
+      classList: { add: vi.fn(), remove: vi.fn(), toggle: vi.fn() },
+      dataset: {} as Record<string, string>,
+      offsetHeight: 0,
+      style: {
+        backgroundColor: "",
+        removeProperty: (name: string) => variables.delete(name),
+        setProperty: (name: string, value: string) => variables.set(name, value),
+      },
+    };
+    const body = { style: { backgroundColor: "" } };
+    let readSnapshot: (() => { theme: string }) | undefined;
+    let subscribeToTheme: ((listener: () => void) => () => void) | undefined;
+    vi.doMock("react", () => ({
+      useCallback: <A>(callback: A) => callback,
+      useEffect: () => undefined,
+      useSyncExternalStore: (
+        subscribe: (listener: () => void) => () => void,
+        getSnapshot: () => { theme: string },
+      ) => {
+        subscribeToTheme = subscribe;
+        readSnapshot = getSnapshot;
+        return getSnapshot();
+      },
+    }));
+    vi.stubGlobal("window", {
+      addEventListener: vi.fn(),
+      localStorage: storage,
+      matchMedia: () => ({
+        matches: false,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      }),
+      removeEventListener: vi.fn(),
+    });
+    vi.stubGlobal("document", {
+      body,
+      createElement: () => ({ name: "", setAttribute: vi.fn() }),
+      documentElement: root,
+      head: { append: vi.fn() },
+      querySelector: (selector: string) => (selector.startsWith("meta") ? null : body),
+      querySelectorAll: () => [],
+    });
+    vi.stubGlobal("getComputedStyle", () => ({
+      backgroundColor: "#ffffff",
+      getPropertyValue: (name: string) => variables.get(name) ?? "",
+    }));
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      callback(0);
+      return 1;
+    });
+
+    const { useTheme } = await import("./useTheme");
+    const { getCustomThemes, getThemeColorVariable, removeCustomTheme, updateCustomTheme } =
+      await import("../themePalette");
+    useTheme();
+    const listener = vi.fn();
+    const unsubscribe = subscribeToTheme?.(listener);
+    const current = getCustomThemes()[0]!;
+    updateCustomTheme({
+      ...current,
+      colors: { ...current.colors, canvas: "#eef2ff" },
+    });
+
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(variables.get(getThemeColorVariable("canvas"))).toBe("#eef2ff");
+    expect(readSnapshot?.().theme).toBe("aurora");
+
+    removeCustomTheme("aurora");
+    expect(listener).toHaveBeenCalledTimes(2);
+    expect(readSnapshot?.().theme).toBe("system");
+    expect(root.dataset.themeId).toBeUndefined();
+    unsubscribe?.();
+  });
+
   it("preserves desktop sync causes and retries after a failed cosmetic sync", async () => {
     const cause = new Error("desktop IPC unavailable");
     const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});

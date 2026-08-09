@@ -16,7 +16,7 @@ export const THEME_FOLLOW_SYSTEM_STORAGE_KEY = "toolport-studio:theme-follow-sys
 export const THEME_APPEARANCE_MODE_STORAGE_KEY = "toolport-studio:theme-appearance-mode";
 export const THEME_HALVES_STORAGE_KEY = "toolport-studio:theme-halves:v1";
 
-const LEGACY_T3_CHAT_DARK_THEME_ID = "t3-chat-dark";
+export const LEGACY_T3_CHAT_DARK_THEME_ID = "t3-chat-dark";
 
 export const ThemePreference = Schema.String;
 export type ThemePreference = typeof ThemePreference.Type;

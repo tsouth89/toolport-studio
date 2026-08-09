@@ -13,6 +13,7 @@ import {
   resolveDesktopTheme,
   resolveThemeAppearance,
   resolveThemeHalf,
+  subscribeToCustomThemes,
   THEME_APPEARANCE_MODE_STORAGE_KEY,
   THEME_FOLLOW_SYSTEM_STORAGE_KEY,
   THEME_HALVES_STORAGE_KEY,
@@ -441,11 +442,17 @@ function subscribe(listener: () => void): () => void {
   // subscribers; each event applies the theme once and notifies everyone.
   if (!removeWindowListeners) {
     const mq = typeof window.matchMedia === "function" ? window.matchMedia(MEDIA_QUERY) : null;
+    const unsubscribeCustomThemes = subscribeToCustomThemes(() => {
+      lastAppliedTheme = null;
+      applyTheme(getStored(), true);
+      emitChange();
+    });
     mq?.addEventListener("change", handleSystemAppearanceChange);
     window.addEventListener("storage", handleStorageChange);
     removeWindowListeners = () => {
       mq?.removeEventListener("change", handleSystemAppearanceChange);
       window.removeEventListener("storage", handleStorageChange);
+      unsubscribeCustomThemes();
     };
   }
 
