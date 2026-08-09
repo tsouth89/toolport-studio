@@ -24,6 +24,8 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 
+import { PROVIDER_TURN_CAPABILITIES } from "../../turnEngine/index.ts";
+
 import {
   CursorSettings,
   ProviderDriverKind,
@@ -61,7 +63,7 @@ class CursorConformanceAdapter extends Context.Service<
 
 export const cursorConformanceBinding: ConformanceBinding = {
   provider: "cursor",
-  sendWhileRunning: "steer",
+  sendWhileRunning: PROVIDER_TURN_CAPABILITIES.cursor.sendWhileRunning,
   openSession: (script, options?: ConformanceOpenSessionOptions) =>
     Effect.gen(function* () {
       // Raw inbound JSON-RPC log, the same seam Grok uses. Both bindings spawn

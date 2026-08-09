@@ -89,6 +89,7 @@ import {
   claimTurnSettlement,
   emptyTurnQueue,
   markTurnStopping,
+  PROVIDER_TURN_CAPABILITIES,
   shouldForceCloseOpenToolsOnStop,
   trackLiveTurn,
   type TurnQueueState,
@@ -1572,6 +1573,7 @@ export function makeCursorAdapter(
         // reused instead of opening a new turn (shared steer policy, SOU-428).
         const liveActiveTurnId = ctx.activeTurnId;
         const steeringTurnId = canSteerSendTurn({
+          sendWhileRunning: PROVIDER_TURN_CAPABILITIES.cursor.sendWhileRunning,
           promptsInFlight: ctx.promptsInFlight,
           hasActiveTurnId: liveActiveTurnId !== undefined,
           activeTurnInterrupted:

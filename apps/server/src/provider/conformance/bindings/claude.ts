@@ -32,6 +32,7 @@ import { ServerConfig } from "../../../config.ts";
 import { ServerSettingsService } from "../../../serverSettings.ts";
 import { makeClaudeAdapter } from "../../Layers/ClaudeAdapter.ts";
 import type { ClaudeAdapterShape } from "../../Services/ClaudeAdapter.ts";
+import { PROVIDER_TURN_CAPABILITIES } from "../../turnEngine/index.ts";
 import { ConformanceHarnessError } from "../contract.ts";
 import type {
   ConformanceBinding,
@@ -284,7 +285,7 @@ function playScript(query: ScriptedClaudeQuery, script: ConformanceScript, seq: 
 
 export const claudeConformanceBinding: ConformanceBinding = {
   provider: "claude",
-  sendWhileRunning: "steer",
+  sendWhileRunning: PROVIDER_TURN_CAPABILITIES.claudeAgent.sendWhileRunning,
   openSession: (script, options?: ConformanceOpenSessionOptions) =>
     Effect.gen(function* () {
       const query = new ScriptedClaudeQuery();

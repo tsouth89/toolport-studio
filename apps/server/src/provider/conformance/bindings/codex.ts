@@ -5,12 +5,10 @@
  * `runtimeFactory` seam, so the fake is a `CodexSessionRuntimeShape` whose
  * events are pushed onto a queue.
  *
- * The fake models the real app-server faithfully on the one point this
- * contract turns on: `turn/start` always mints a **new** turn id. Codex has no
- * interject primitive, and `CodexAdapter.sendTurn` makes no attempt to reuse
- * or preempt a live turn — so `send-while-running-has-one-behavior` is
- * expected to fail against a `steer` declaration. That failure is SOU-421,
- * surfaced as a test rather than an audit note.
+ * The fake models both Codex app-server send paths: `turn/start` mints a new
+ * turn while `turn/steer` folds input into the live turn. The binding reads the
+ * shared capability declaration so the conformance contract fails if runtime
+ * behavior and the declared product behavior ever drift apart.
  */
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -33,6 +31,7 @@ import {
 } from "@toolport-studio/contracts";
 
 import { ServerConfig } from "../../../config.ts";
+import { PROVIDER_TURN_CAPABILITIES } from "../../turnEngine/index.ts";
 import { ServerSettingsService } from "../../../serverSettings.ts";
 import { makeCodexAdapter } from "../../Layers/CodexAdapter.ts";
 import type { CodexAdapterShape } from "../../Services/CodexAdapter.ts";
@@ -339,7 +338,7 @@ export const codexConformanceBinding: ConformanceBinding = {
   // Declared to match what the client actually does: the composer sends
   // `intent: "steer"` for every provider. If Codex cannot honour that, the
   // contract must say so out loud rather than let the UI keep promising it.
-  sendWhileRunning: "steer",
+  sendWhileRunning: PROVIDER_TURN_CAPABILITIES.codex.sendWhileRunning,
   openSession: (script, options?: ConformanceOpenSessionOptions) =>
     Effect.gen(function* () {
       const runtime = new ScriptedCodexRuntime({

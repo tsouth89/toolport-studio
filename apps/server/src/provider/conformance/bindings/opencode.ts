@@ -21,6 +21,8 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 
+import { PROVIDER_TURN_CAPABILITIES } from "../../turnEngine/index.ts";
+
 import {
   OpenCodeSettings,
   ProviderDriverKind,
@@ -338,7 +340,7 @@ function makeRuntimeDouble(
 
 export const openCodeConformanceBinding: ConformanceBinding = {
   provider: "opencode",
-  sendWhileRunning: "steer",
+  sendWhileRunning: PROVIDER_TURN_CAPABILITIES.opencode.sendWhileRunning,
   openSession: (script, options?: ConformanceOpenSessionOptions) =>
     Effect.gen(function* () {
       const events = new PushableEvents();
