@@ -59,6 +59,8 @@ interface RightPanelTabsProps {
   browserAvailable: boolean;
   diffAvailable: boolean;
   filesAvailable: boolean;
+  /** Running and pending subagents, shown on the Agents entry point. */
+  liveAgentCount: number;
   children: ReactNode;
 }
 
@@ -108,6 +110,7 @@ function RightPanelEmptyState(props: {
   browserAvailable: boolean;
   diffAvailable: boolean;
   filesAvailable: boolean;
+  liveAgentCount: number;
 }) {
   // Prefer destinations (files / terminal / browser / diff). Activity is optional
   // deep-inspect now that the main timeline carries Working chrome.
@@ -119,6 +122,7 @@ function RightPanelEmptyState(props: {
       available: true,
       disabledReason: null,
       onClick: props.onAddAgents,
+      badgeCount: props.liveAgentCount,
     },
     {
       label: "Files",
@@ -127,6 +131,7 @@ function RightPanelEmptyState(props: {
       available: props.filesAvailable,
       disabledReason: SURFACE_DISABLED_REASONS.files,
       onClick: props.onAddFiles,
+      badgeCount: 0,
     },
     {
       label: "Diff",
@@ -135,6 +140,7 @@ function RightPanelEmptyState(props: {
       available: props.diffAvailable,
       disabledReason: SURFACE_DISABLED_REASONS.diff,
       onClick: props.onAddDiff,
+      badgeCount: 0,
     },
     {
       label: "Terminal",
@@ -143,6 +149,7 @@ function RightPanelEmptyState(props: {
       available: true,
       disabledReason: null,
       onClick: props.onAddTerminal,
+      badgeCount: 0,
     },
     {
       label: "Browser",
@@ -151,6 +158,7 @@ function RightPanelEmptyState(props: {
       available: props.browserAvailable,
       disabledReason: SURFACE_DISABLED_REASONS.browser,
       onClick: props.onAddBrowser,
+      badgeCount: 0,
     },
     {
       label: "Activity",
@@ -159,6 +167,7 @@ function RightPanelEmptyState(props: {
       available: true,
       disabledReason: null,
       onClick: props.onAddActivity,
+      badgeCount: 0,
     },
   ] as const;
 
@@ -176,7 +185,17 @@ function RightPanelEmptyState(props: {
             const Icon = action.icon;
             const content = (
               <>
-                <Icon className="mb-3 size-5" />
+                <span className="relative mb-3 inline-flex">
+                  <Icon className="size-5" />
+                  {action.badgeCount > 0 ? (
+                    <span
+                      aria-hidden
+                      className="absolute -top-1.5 -right-2 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-info px-1 text-[9px] font-semibold tabular-nums text-white"
+                    >
+                      {action.badgeCount}
+                    </span>
+                  ) : null}
+                </span>
                 <span className="text-sm font-medium">{action.label}</span>
                 <span className="mt-1 text-xs leading-relaxed text-muted-foreground">
                   {action.description}
@@ -546,6 +565,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
             browserAvailable={props.browserAvailable}
             diffAvailable={props.diffAvailable}
             filesAvailable={props.filesAvailable}
+            liveAgentCount={props.liveAgentCount}
           />
         ) : (
           props.children

@@ -58,7 +58,7 @@ describe("AgentsPanel", () => {
       />,
     );
 
-    expect(markup).toContain("1 active · 2 total");
+    expect(markup).toContain("1 working · 2 total");
     expect(markup).toContain("Inspect the protocol");
     expect(markup).toContain("gpt-5.6-codex");
     expect(markup).toContain("high reasoning");
@@ -81,7 +81,7 @@ describe("AgentsPanel", () => {
       />,
     );
 
-    expect(markup).toContain("Background tasks");
+    expect(markup).toContain("Background work");
     expect(markup).toContain("Watching CI");
     expect(markup).toContain("gh run watch");
     // Backgrounded + running reads as "Watching", not a generic "Running".
@@ -101,8 +101,8 @@ describe("AgentsPanel", () => {
       />,
     );
 
-    expect(markup).toContain("Background tasks");
-    expect(markup).not.toContain("Subagents");
+    expect(markup).toContain("Background work");
+    expect(markup).not.toContain(">Agents<");
     expect(markup).not.toContain("Nothing running");
   });
 

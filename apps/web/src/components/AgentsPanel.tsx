@@ -1,12 +1,5 @@
-import {
-  Bot,
-  CheckCircle2,
-  Circle,
-  Loader2,
-  PauseCircle,
-  TerminalSquare,
-  XCircle,
-} from "lucide-react";
+import { Bot, Check, TerminalSquare, X } from "lucide-react";
+import { useEffect, useRef } from "react";
 
 import type { AgentRun, AgentRunStatus } from "../agentRuns";
 import {
@@ -17,29 +10,31 @@ import {
 import { cn } from "../lib/utils";
 import { ScrollArea } from "./ui/scroll-area";
 
-function StatusIcon({ status }: { status: AgentRunStatus }) {
-  switch (status) {
-    case "pending":
-    case "unknown":
-      return <Circle className="size-3.5 text-muted-foreground" aria-hidden />;
-    case "running":
-      return <Loader2 className="size-3.5 animate-spin text-primary" aria-hidden />;
-    case "completed":
-      return <CheckCircle2 className="size-3.5 text-success" aria-hidden />;
-    case "failed":
-      return <XCircle className="size-3.5 text-destructive" aria-hidden />;
-    case "interrupted":
-    case "stopped":
-      return <XCircle className="size-3.5 text-muted-foreground" aria-hidden />;
-  }
+const STATUS_VISUALS: Record<AgentRunStatus, { dotClass: string; label: string }> = {
+  pending: { dotClass: "bg-info", label: "Working" },
+  running: { dotClass: "bg-info", label: "Working" },
+  completed: { dotClass: "bg-success", label: "Completed" },
+  failed: { dotClass: "bg-destructive", label: "Failed" },
+  interrupted: { dotClass: "bg-muted-foreground/60", label: "Stopped" },
+  stopped: { dotClass: "bg-muted-foreground/60", label: "Stopped" },
+  unknown: { dotClass: "bg-muted-foreground/50", label: "Unknown" },
+};
+
+function StatusDot({ status }: { status: AgentRunStatus }) {
+  return (
+    <span
+      aria-hidden
+      className={cn("size-1.5 shrink-0 rounded-full", STATUS_VISUALS[status].dotClass)}
+    />
+  );
 }
 
 function statusLabel(status: AgentRunStatus): string {
   switch (status) {
     case "pending":
-      return "Pending";
+      return "Working";
     case "running":
-      return "Running";
+      return "Working";
     case "completed":
       return "Completed";
     case "failed":
@@ -53,21 +48,64 @@ function statusLabel(status: AgentRunStatus): string {
   }
 }
 
-function TaskStatusIcon({ status }: { status: BackgroundTaskStatus }) {
-  switch (status) {
-    case "pending":
-      return <Circle className="size-3.5 text-muted-foreground" aria-hidden />;
-    case "running":
-      return <Loader2 className="size-3.5 animate-spin text-primary" aria-hidden />;
-    case "paused":
-      return <PauseCircle className="size-3.5 text-muted-foreground" aria-hidden />;
-    case "completed":
-      return <CheckCircle2 className="size-3.5 text-success" aria-hidden />;
-    case "failed":
-      return <XCircle className="size-3.5 text-destructive" aria-hidden />;
-    case "stopped":
-      return <XCircle className="size-3.5 text-muted-foreground" aria-hidden />;
-  }
+const TASK_DOT_CLASS: Record<BackgroundTaskStatus, string> = {
+  pending: "bg-info",
+  running: "bg-info",
+  paused: "bg-warning",
+  completed: "bg-success",
+  failed: "bg-destructive",
+  stopped: "bg-muted-foreground/60",
+};
+
+function TaskStatusDot({ status }: { status: BackgroundTaskStatus }) {
+  return <span aria-hidden className={cn("size-1.5 rounded-full", TASK_DOT_CLASS[status])} />;
+}
+
+function formatElapsedSeconds(totalSeconds: number): string {
+  const seconds = Math.max(0, Math.floor(totalSeconds));
+  const minutes = Math.floor(seconds / 60);
+  if (minutes === 0) return `${seconds}s`;
+  const hours = Math.floor(minutes / 60);
+  if (hours === 0) return `${minutes}m ${String(seconds % 60).padStart(2, "0")}s`;
+  return `${hours}h ${String(minutes % 60).padStart(2, "0")}m`;
+}
+
+function elapsedBetween(startedAt: string, completedAt: string | null): string {
+  const start = Date.parse(startedAt);
+  const end = completedAt ? Date.parse(completedAt) : Date.now();
+  return Number.isNaN(start) || Number.isNaN(end) ? "" : formatElapsedSeconds((end - start) / 1000);
+}
+
+/** Live elapsed time updates without forcing a React render every second. */
+function AgentElapsed({ run }: { run: AgentRun }) {
+  const textRef = useRef<HTMLSpanElement>(null);
+  const live = run.status === "pending" || run.status === "running";
+
+  useEffect(() => {
+    if (!live) return;
+    const update = () => {
+      if (textRef.current) textRef.current.textContent = elapsedBetween(run.startedAt, null);
+    };
+    update();
+    const interval = window.setInterval(update, 1000);
+    return () => window.clearInterval(interval);
+  }, [live, run.startedAt]);
+
+  return (
+    <span ref={textRef} className="tabular-nums">
+      {elapsedBetween(run.startedAt, live ? null : run.completedAt)}
+    </span>
+  );
+}
+
+function agentActivityText(run: AgentRun): string {
+  const lifecycleKinds = new Set(["agent.started", "agent.updated", "agent.completed"]);
+  const latestWork = run.activities
+    .toReversed()
+    .find((activity) => !lifecycleKinds.has(activity.kind));
+  const live = run.status === "pending" || run.status === "running";
+  if (live) return latestWork?.summary ?? run.message ?? run.prompt ?? "Working";
+  return run.message ?? latestWork?.summary ?? statusLabel(run.status);
 }
 
 function taskStatusLabel(task: BackgroundTask): string {
@@ -88,9 +126,8 @@ function taskStatusLabel(task: BackgroundTask): string {
 }
 
 /**
- * Background work that outlives the turn (backgrounded shells, monitors,
- * detached subagents). Sits above Subagents because it is the section that
- * answers "is anything still going?" after a turn settles.
+ * Background work that outlives the turn (shells, monitors, and dev servers).
+ * It stays visually separate from the agent fleet so "agent" keeps one meaning.
  */
 function BackgroundTasksSection({ tasks }: { tasks: ReadonlyArray<BackgroundTask> }) {
   const runningCount = tasks.filter(isBackgroundTaskInFlight).length;
@@ -99,7 +136,7 @@ function BackgroundTasksSection({ tasks }: { tasks: ReadonlyArray<BackgroundTask
     <div data-testid="background-tasks-section">
       <div className="sticky top-0 z-10 flex items-center justify-between border-b border-border/45 bg-background/95 px-3 py-2 backdrop-blur">
         <span className="text-[10px] font-semibold tracking-[0.14em] text-muted-foreground/80 uppercase">
-          Background tasks
+          Background work
         </span>
         <span className="text-[10px] tabular-nums text-muted-foreground" role="status">
           {runningCount > 0
@@ -111,29 +148,27 @@ function BackgroundTasksSection({ tasks }: { tasks: ReadonlyArray<BackgroundTask
         {tasks.map((task) => (
           <li
             key={task.id}
-            className="flex w-full min-w-0 items-start gap-2 rounded-lg px-2 py-2 text-left"
+            className="grid h-14 grid-cols-[0.375rem_minmax(0,1fr)_auto] grid-rows-2 items-center gap-x-2 rounded-md px-2 py-1"
           >
-            <span className="mt-0.5 shrink-0">
-              <TaskStatusIcon status={task.status} />
+            <span className="col-start-1 row-start-1 flex items-center">
+              <TaskStatusDot status={task.status} />
             </span>
-            <span className="min-w-0 flex-1">
-              <span className="block truncate text-xs font-medium">{task.label}</span>
-              {task.command ? (
-                <span className="mt-0.5 flex min-w-0 items-center gap-1 text-[11px] text-muted-foreground">
-                  <TerminalSquare className="size-3 shrink-0" aria-hidden />
-                  <span className="truncate font-mono">{task.command}</span>
-                </span>
-              ) : null}
-              {task.error ? (
-                <span className="mt-0.5 block truncate text-[11px] text-destructive">
-                  {task.error}
-                </span>
-              ) : null}
+            <span className="col-start-2 row-start-1 block truncate text-xs font-medium">
+              {task.label}
             </span>
-            <span className="flex shrink-0 items-center gap-1 text-[10px] text-muted-foreground">
-              {task.kind ? <span className="capitalize">{task.kind}</span> : null}
-              <span>·</span>
-              <span>{taskStatusLabel(task)}</span>
+            <span className="col-start-3 row-start-1 text-[10px] text-muted-foreground">
+              {taskStatusLabel(task)}
+            </span>
+            <span
+              className={cn(
+                "col-start-2 col-end-4 row-start-2 flex min-w-0 items-center gap-1 truncate font-mono text-[11px]",
+                task.error ? "text-destructive" : "text-muted-foreground",
+              )}
+            >
+              {task.command ? <TerminalSquare className="size-3 shrink-0" aria-hidden /> : null}
+              <span className="truncate">
+                {task.error ?? task.command ?? task.kind ?? "Background task"}
+              </span>
             </span>
           </li>
         ))}
@@ -191,45 +226,70 @@ export function AgentsPanel(props: {
       data-testid="agents-panel"
     >
       <ScrollArea className="min-h-0 border-b border-border/60">
-        {backgroundTasks.length > 0 ? <BackgroundTasksSection tasks={backgroundTasks} /> : null}
         <div className="sticky top-0 z-10 flex items-center justify-between border-b border-border/45 bg-background/95 px-3 py-2 backdrop-blur">
           <span className="text-[10px] font-semibold tracking-[0.14em] text-muted-foreground/80 uppercase">
-            Subagents
+            Agents
           </span>
           <span className="text-[10px] tabular-nums text-muted-foreground" role="status">
             {activeCount > 0
-              ? `${activeCount} active · ${props.runs.length} total`
+              ? `${activeCount} working · ${props.runs.length} total`
               : `${props.runs.length} total`}
           </span>
         </div>
         <div className="space-y-1 p-2">
-          {props.runs.map((run) => (
-            <button
-              key={run.id}
-              type="button"
-              className={cn(
-                "flex w-full min-w-0 items-start gap-2 rounded-lg px-2 py-2 text-left transition-colors",
-                selected?.id === run.id ? "bg-accent text-foreground" : "hover:bg-accent/55",
-              )}
-              style={{ paddingInlineStart: `${8 + run.depth * 16}px` }}
-              onClick={() => props.onSelectAgent(run.id)}
-              aria-current={selected?.id === run.id ? "true" : undefined}
-            >
-              <span className="mt-0.5 shrink-0">
-                <StatusIcon status={run.status} />
-              </span>
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-xs font-medium">{run.label}</span>
-                <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">
-                  {run.prompt ?? run.message ?? statusLabel(run.status)}
+          {props.runs.map((run) => {
+            const toolUses = run.activities.filter((activity) => activity.kind.startsWith("tool."));
+            const metadata = [
+              run.model,
+              run.reasoningEffort ? `${run.reasoningEffort} reasoning` : null,
+              toolUses.length > 0
+                ? `${toolUses.length} tool${toolUses.length === 1 ? "" : "s"}`
+                : null,
+            ].filter((value): value is string => value !== null);
+            return (
+              <button
+                key={run.id}
+                type="button"
+                className={cn(
+                  "grid h-[3.875rem] w-full min-w-0 grid-cols-[0.375rem_minmax(0,1fr)_auto] grid-rows-[1.25rem_1.125rem_1rem] items-center gap-x-2 rounded-md px-1.5 py-1 text-left transition-colors",
+                  selected?.id === run.id ? "bg-accent/70 text-foreground" : "hover:bg-accent/45",
+                )}
+                style={{ paddingInlineStart: `${6 + run.depth * 14}px` }}
+                onClick={() => props.onSelectAgent(run.id)}
+                aria-current={selected?.id === run.id ? "true" : undefined}
+              >
+                <span className="col-start-1 row-start-1 flex items-center">
+                  <StatusDot status={run.status} />
                 </span>
-              </span>
-              <span className="shrink-0 text-[10px] text-muted-foreground">
-                {statusLabel(run.status)}
-              </span>
-            </button>
-          ))}
+                <span className="col-start-2 row-start-1 block min-w-0 truncate text-sm font-medium">
+                  {run.label}
+                </span>
+                <span className="col-start-3 row-start-1 inline-flex min-w-14 items-center justify-end gap-1 font-mono text-[.7rem] text-muted-foreground/80">
+                  <AgentElapsed run={run} />
+                  {run.status === "completed" ? (
+                    <Check aria-hidden className="size-3 text-success" />
+                  ) : null}
+                  {run.status === "failed" ? (
+                    <X aria-hidden className="size-3 text-destructive" />
+                  ) : null}
+                </span>
+                <span
+                  className={cn(
+                    "col-start-2 col-end-4 row-start-2 block truncate text-xs",
+                    run.status === "failed" ? "text-destructive" : "text-muted-foreground",
+                  )}
+                >
+                  {agentActivityText(run)}
+                </span>
+                <span className="col-start-2 col-end-4 row-start-3 truncate font-mono text-[.7rem] text-muted-foreground/70">
+                  {metadata.length > 0 ? metadata.join(" · ") : STATUS_VISUALS[run.status].label}
+                </span>
+                <span className="sr-only">{STATUS_VISUALS[run.status].label}</span>
+              </button>
+            );
+          })}
         </div>
+        {backgroundTasks.length > 0 ? <BackgroundTasksSection tasks={backgroundTasks} /> : null}
       </ScrollArea>
 
       {selected ? (
@@ -237,7 +297,7 @@ export function AgentsPanel(props: {
           <div className="space-y-5 p-4">
             <section>
               <div className="flex items-center gap-2">
-                <StatusIcon status={selected.status} />
+                <StatusDot status={selected.status} />
                 <h3 className="min-w-0 flex-1 truncate text-sm font-semibold">{selected.label}</h3>
                 <span className="text-[11px] text-muted-foreground">
                   {statusLabel(selected.status)}

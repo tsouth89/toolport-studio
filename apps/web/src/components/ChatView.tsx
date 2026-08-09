@@ -148,9 +148,8 @@ import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings"
 import PlanSidebar from "./PlanSidebar";
 import { ActivityPanel } from "./ActivityPanel";
 import { AgentsPanel } from "./AgentsPanel";
-import { agentRunsForTurn, deriveAgentRuns, latestMessageTurnId } from "../agentRuns";
+import { deriveAgentRuns, summarizeAgentRuns } from "../agentRuns";
 import { deriveBackgroundTasks, summarizeBackgroundTasks } from "../backgroundTasks";
-import { isThisTurnCardVisible, ThisTurnCard } from "./ThisTurnCard";
 import ThreadTerminalDrawer from "./ThreadTerminalDrawer";
 import { deriveThreadActivityViewModel } from "../threadActivityViewModel";
 import { openToolportApp } from "../lib/openToolport";
@@ -1312,7 +1311,6 @@ function ChatViewContent(props: ChatViewProps) {
     (store) => store.setStickyModelSelection,
   );
   const timestampFormat = settings.timestampFormat;
-  const verboseActivity = settings.verboseActivity;
   const autoOpenPlanSidebar = settings.autoOpenPlanSidebar;
   const navigate = useNavigate();
   const { resolvedTheme } = useTheme();
@@ -1548,6 +1546,7 @@ function ChatViewContent(props: ChatViewProps) {
     () => deriveAgentRuns(activeThread?.activities ?? []),
     [activeThread?.activities],
   );
+  const liveAgentCount = useMemo(() => summarizeAgentRuns(agentRuns).activeCount, [agentRuns]);
   // Not scoped to the active turn: background work outlives the turn that
   // started it, which is the whole reason it needs its own status.
   const backgroundTasks = useMemo(
@@ -1666,25 +1665,6 @@ function ChatViewContent(props: ChatViewProps) {
     return openTerminalThreadKeys.filter((nextThreadKey) => existingThreadKeys.has(nextThreadKey));
   }, [draftThreadKeys, openTerminalThreadKeys, serverThreadKeys]);
   const activeLatestTurn = activeThread?.latestTurn ?? null;
-  const latestSettledMessageTurnId = useMemo(
-    () => latestMessageTurnId(activeThread?.messages ?? []),
-    [activeThread?.messages],
-  );
-  const thisTurnAgentRuns = useMemo(
-    () =>
-      agentRunsForTurn(
-        agentRuns,
-        activeThread?.session?.activeTurnId ??
-          activeLatestTurn?.turnId ??
-          latestSettledMessageTurnId,
-      ),
-    [
-      activeLatestTurn?.turnId,
-      activeThread?.session?.activeTurnId,
-      agentRuns,
-      latestSettledMessageTurnId,
-    ],
-  );
   const sourcePlanThreadRef = useMemo(() => {
     const sourceThreadId = activeLatestTurn?.sourceProposedPlan?.threadId;
     if (!activeThread || !sourceThreadId || sourceThreadId === activeThread.id) {
@@ -3337,48 +3317,6 @@ function ChatViewContent(props: ChatViewProps) {
     // Prefer installed Toolport app (toolport://); fall back to web catalog.
     void openToolportApp();
   }, []);
-  // Codex-style This-turn card: show while work is interesting; hide when
-  // docked Activity is open (duplicate) or the user dismisses for this turn key.
-  // Prefer the in-flight local send key while busy so dismiss does not stick to
-  // the previous turnId and re-open when the new latestTurn arrives.
-  const thisTurnCardKey =
-    isSendBusy && localDispatchStartedAt != null
-      ? `send:${localDispatchStartedAt}`
-      : activeLatestTurn?.turnId != null
-        ? String(activeLatestTurn.turnId)
-        : localDispatchStartedAt != null
-          ? `send:${localDispatchStartedAt}`
-          : activeThreadKey != null
-            ? `thread:${activeThreadKey}`
-            : "none";
-  const [thisTurnCardDismissedKey, setThisTurnCardDismissedKey] = useState<string | null>(null);
-  const [thisTurnCardForcedOpen, setThisTurnCardForcedOpen] = useState(false);
-  const [thisTurnExpandRequestId, setThisTurnExpandRequestId] = useState(0);
-  useEffect(() => {
-    // New turn / send re-enables the card after a prior dismiss.
-    setThisTurnCardDismissedKey((previous) =>
-      previous !== null && previous !== thisTurnCardKey ? null : previous,
-    );
-    setThisTurnCardForcedOpen(false);
-  }, [thisTurnCardKey]);
-  const dockedActivityOpen = rightPanelOpen && activeRightPanelKind === "activity";
-  const thisTurnCardVisible = isThisTurnCardVisible({
-    model: activityViewModel,
-    agentRuns: thisTurnAgentRuns,
-    backgroundTasks,
-    dockedActivityOpen,
-    dismissed: thisTurnCardDismissedKey === thisTurnCardKey,
-    forcedOpen: thisTurnCardForcedOpen,
-  });
-  const openThisTurnCard = useCallback(() => {
-    setThisTurnCardDismissedKey(null);
-    setThisTurnCardForcedOpen(true);
-    setThisTurnExpandRequestId((previous) => previous + 1);
-  }, []);
-  const dismissThisTurnCard = useCallback(() => {
-    setThisTurnCardDismissedKey(thisTurnCardKey);
-    setThisTurnCardForcedOpen(false);
-  }, [thisTurnCardKey]);
   const openFileSurface = useCallback(
     (relativePath: string) => {
       if (!activeThreadRef || !activeProject) return;
@@ -6157,12 +6095,11 @@ function ChatViewContent(props: ChatViewProps) {
                 isRevertingCheckpoint={isRevertingCheckpoint}
                 onImageExpand={onExpandTimelineImage}
                 onInterrupt={onInterrupt}
-                onOpenActivity={openThisTurnCard}
+                onOpenActivity={addActivitySurface}
                 onOpenAgents={openAgentsSurface}
                 markdownCwd={gitCwd ?? undefined}
                 resolvedTheme={resolvedTheme}
                 timestampFormat={timestampFormat}
-                verboseActivity={verboseActivity}
                 workspaceRoot={activeWorkspaceRoot}
                 skills={activeProviderStatus?.skills ?? EMPTY_PROVIDER_SKILLS}
                 anchorMessageId={timelineAnchorMessageId}
@@ -6193,26 +6130,6 @@ function ChatViewContent(props: ChatViewProps) {
                   </button>
                 </div>
               )}
-
-              {/* Codex-style this-turn inspect card (not a docked Activity column). */}
-              {thisTurnCardVisible ? (
-                <div
-                  className="pointer-events-none absolute right-2 z-30 sm:right-3"
-                  style={{ top: 8 }}
-                >
-                  <ThisTurnCard
-                    model={activityViewModel}
-                    agentRuns={thisTurnAgentRuns}
-                    backgroundTasks={backgroundTasks}
-                    onDismiss={dismissThisTurnCard}
-                    onOpenTurnDiff={isServerThread ? onOpenTurnDiff : undefined}
-                    onOpenToolport={openToolportMcp}
-                    onOpenDockedActivity={addActivitySurface}
-                    onOpenAgents={openAgentsSurface}
-                    expandRequestId={thisTurnExpandRequestId}
-                  />
-                </div>
-              ) : null}
             </div>
 
             {/* Input bar — centered hero while a draft has no messages, docked at the bottom otherwise */}
@@ -6562,6 +6479,7 @@ function ChatViewContent(props: ChatViewProps) {
           browserAvailable={isPreviewSupportedInRuntime()}
           diffAvailable={isServerThread && isGitRepo}
           filesAvailable={activeProject !== null}
+          liveAgentCount={liveAgentCount}
         >
           {rightPanelContent}
         </RightPanelTabs>
@@ -6591,6 +6509,7 @@ function ChatViewContent(props: ChatViewProps) {
             browserAvailable={isPreviewSupportedInRuntime()}
             diffAvailable={isServerThread && isGitRepo}
             filesAvailable={activeProject !== null}
+            liveAgentCount={liveAgentCount}
           >
             {rightPanelContent}
           </RightPanelTabs>

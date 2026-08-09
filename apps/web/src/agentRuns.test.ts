@@ -1,13 +1,7 @@
 import { EventId, RuntimeAgentId, TurnId } from "@toolport-studio/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import {
-  agentRunsForTurn,
-  deriveAgentRuns,
-  latestMessageTurnId,
-  preferredAgentRun,
-  summarizeAgentRuns,
-} from "./agentRuns";
+import { deriveAgentRuns, preferredAgentRun, summarizeAgentRuns } from "./agentRuns";
 
 const activity = (
   id: string,
@@ -93,8 +87,6 @@ describe("deriveAgentRuns", () => {
       }),
     ]);
 
-    expect(agentRunsForTurn(firstTurnRuns, TurnId.make("turn-1"))).toHaveLength(2);
-    expect(agentRunsForTurn(firstTurnRuns, TurnId.make("turn-2"))).toEqual([]);
     expect(summarizeAgentRuns(firstTurnRuns)).toEqual({
       totalCount: 2,
       activeCount: 1,
@@ -143,16 +135,5 @@ describe("deriveAgentRuns", () => {
         activity("2", "agent.started", "2026-08-01T10:00:01.000Z", { status: "running" }),
       ]),
     ).toEqual([]);
-  });
-
-  it("uses the latest turn-stamped message when settled user messages have no turn id", () => {
-    expect(
-      latestMessageTurnId([
-        { turnId: TurnId.make("turn-1") },
-        { turnId: null },
-        { turnId: TurnId.make("turn-2") },
-        { turnId: null },
-      ]),
-    ).toBe("turn-2");
   });
 });

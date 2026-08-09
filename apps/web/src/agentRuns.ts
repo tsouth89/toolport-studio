@@ -142,24 +142,6 @@ export function deriveAgentRuns(
   return flattened;
 }
 
-export function agentRunsForTurn(
-  runs: ReadonlyArray<AgentRun>,
-  turnId: TurnId | null,
-): ReadonlyArray<AgentRun> {
-  if (turnId === null) return [];
-  return runs.filter((run) => run.turnId === turnId);
-}
-
-export function latestMessageTurnId(
-  messages: ReadonlyArray<{ readonly turnId: TurnId | null }>,
-): TurnId | null {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const turnId = messages[index]?.turnId;
-    if (turnId !== null && turnId !== undefined) return turnId;
-  }
-  return null;
-}
-
 export interface AgentRunSummary {
   totalCount: number;
   activeCount: number;

@@ -267,7 +267,7 @@ describe("resolveAssistantMessageCopyState", () => {
 });
 
 describe("deriveMessagesTimelineRows", () => {
-  it("hides routine activity in concise mode but keeps failures and handoffs", () => {
+  it("keeps routine activity, failures, and handoffs in the chronological transcript", () => {
     const workEntry = (id: string, overrides: Partial<WorkLogEntry> = {}) => ({
       id,
       kind: "work" as const,
@@ -293,15 +293,19 @@ describe("deriveMessagesTimelineRows", () => {
       activeTurnStartedAt: null,
       turnDiffSummaryByAssistantMessageId: new Map(),
       revertTurnCountByUserMessageId: new Map(),
-      verboseActivity: false,
     });
 
-    expect(rows.some((row) => row.kind === "work" && row.id === "routine")).toBe(false);
-    expect(rows.some((row) => row.kind === "work" && row.id === "failed")).toBe(true);
+    const workRows = rows.filter((row) => row.kind === "work");
+    expect(workRows.some((row) => row.groupedEntries.some((entry) => entry.id === "routine"))).toBe(
+      true,
+    );
+    expect(workRows.some((row) => row.groupedEntries.some((entry) => entry.id === "failed"))).toBe(
+      true,
+    );
     expect(rows.some((row) => row.kind === "provider-handoff")).toBe(true);
   });
 
-  it("restores routine activity when verbose mode is enabled", () => {
+  it("shows routine activity without a presentation mode setting", () => {
     const rows = deriveMessagesTimelineRows({
       timelineEntries: [
         {
@@ -323,7 +327,6 @@ describe("deriveMessagesTimelineRows", () => {
       activeTurnStartedAt: null,
       turnDiffSummaryByAssistantMessageId: new Map(),
       revertTurnCountByUserMessageId: new Map(),
-      verboseActivity: true,
     });
 
     expect(rows.some((row) => row.kind === "work" && row.id === "routine")).toBe(true);

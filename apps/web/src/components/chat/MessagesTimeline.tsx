@@ -50,6 +50,7 @@ import {
 } from "../../lib/diffRendering";
 import ChatMarkdown from "../ChatMarkdown";
 import {
+  BotIcon,
   CheckIcon,
   ChevronDownIcon,
   ChevronRightIcon,
@@ -201,7 +202,6 @@ interface MessagesTimelineProps {
   markdownCwd: string | undefined;
   resolvedTheme: "light" | "dark";
   timestampFormat: TimestampFormat;
-  verboseActivity: boolean;
   workspaceRoot: string | undefined;
   skills?: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
   anchorMessageId: MessageId | null;
@@ -242,7 +242,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   markdownCwd,
   resolvedTheme,
   timestampFormat,
-  verboseActivity,
   workspaceRoot,
   skills = EMPTY_TIMELINE_SKILLS,
   anchorMessageId,
@@ -344,7 +343,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         activeTurnStartedAt,
         turnDiffSummaryByAssistantMessageId,
         revertTurnCountByUserMessageId,
-        verboseActivity,
       }),
     [
       timelineEntries,
@@ -356,7 +354,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       activeTurnStartedAt,
       turnDiffSummaryByAssistantMessageId,
       revertTurnCountByUserMessageId,
-      verboseActivity,
     ],
   );
   const rows = useStableRows(rawRows);
@@ -1465,6 +1462,17 @@ const WorkGroupSection = memo(function WorkGroupSection({
 
   if (nonEmptyEntries.length === 0) return null;
 
+  const agentEntries = nonEmptyEntries.filter(
+    (entry) =>
+      entry.itemType === "collab_agent_tool_call" && entry.sourceActivityKind?.startsWith("agent."),
+  );
+  // One stable launch row per consecutive spawn batch. The Agents panel owns
+  // the live roster; repeating every agent lifecycle in chat creates a second,
+  // noisier story that the user has to reconcile.
+  if (agentEntries.length === nonEmptyEntries.length) {
+    return <AgentSpawnBatchRow entries={agentEntries} />;
+  }
+
   if (onlyToolEntries || isNarrationStack) {
     const rawStepCount = nonEmptyEntries.length;
     const densifiedCount = densifiedItems.length;
@@ -1560,6 +1568,59 @@ const WorkGroupSection = memo(function WorkGroupSection({
     </section>
   );
 });
+
+function AgentSpawnBatchRow({ entries }: { entries: ReadonlyArray<TimelineWorkEntry> }) {
+  const activity = use(TimelineRowActivityCtx);
+  const uniqueEntries = [
+    ...new Map(entries.map((entry) => [entry.toolCallId ?? entry.id, entry])).values(),
+  ];
+  const runningCount = uniqueEntries.filter(
+    (entry) => entry.toolLifecycleStatus === "inProgress",
+  ).length;
+  const failedCount = uniqueEntries.filter((entry) => workEntryIndicatesToolFailure(entry)).length;
+  const firstAgentId = uniqueEntries[0]?.toolCallId ?? null;
+  const canOpen = firstAgentId !== null && activity.onOpenAgents !== null;
+  const count = uniqueEntries.length;
+  const title =
+    runningCount > 0
+      ? `Kicked off ${count} subagent${count === 1 ? "" : "s"}`
+      : `Ran ${count} subagent${count === 1 ? "" : "s"}`;
+  const status =
+    failedCount > 0
+      ? `${failedCount} failed`
+      : runningCount > 0
+        ? `${runningCount} working`
+        : "Completed";
+
+  return (
+    <button
+      type="button"
+      disabled={!canOpen}
+      onClick={() => {
+        if (firstAgentId) activity.onOpenAgents?.(firstAgentId);
+      }}
+      className={cn(
+        "my-1 flex w-full items-center gap-2 rounded-md border border-border/60 bg-card/55 px-2.5 py-2 text-left",
+        canOpen &&
+          "cursor-pointer transition-colors hover:border-border hover:bg-accent/35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/70",
+      )}
+      aria-label={`${title}. ${status}. Open Agents`}
+    >
+      <span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-info/10 text-info-foreground">
+        <BotIcon className="size-4" aria-hidden />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-xs font-medium text-foreground/90">{title}</span>
+        <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">{status}</span>
+      </span>
+      {canOpen ? (
+        <span className="shrink-0 text-[11px] font-medium text-info-foreground">
+          {runningCount > 0 ? "Open Agents" : "View"} ▸
+        </span>
+      ) : null}
+    </button>
+  );
+}
 
 function thoughtDurationLabelForIndex(
   entries: ReadonlyArray<TimelineWorkEntry>,

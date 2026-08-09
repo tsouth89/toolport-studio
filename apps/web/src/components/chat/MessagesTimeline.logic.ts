@@ -4,7 +4,6 @@ import {
   formatWorkLogToolContext,
   formatWorkLogToolLabel,
   isThinkingWorkLogEntry,
-  workEntryIndicatesToolFailure,
   workEntryIndicatesToolNeutralStatus,
   workEntryIndicatesToolSuccess,
   workEntryLooksLongRunning,
@@ -118,28 +117,6 @@ export const TIMELINE_MINIMAP_PERSISTENT_GUTTER = 48;
 export interface TimelineEndState {
   readonly isAtEnd?: boolean;
   readonly isNearEnd?: boolean;
-}
-
-/**
- * Concise mode keeps the conversation readable without discarding the
- * underlying activity. Failures, warnings, requests, provider handoffs, and
- * delegated-agent milestones remain visible because they can require action
- * or materially change who is doing the work. Routine successful tools and
- * narration remain available through the verbose setting and Activity panel.
- */
-export function shouldShowWorkEntryInConciseActivity(entry: WorkLogEntry): boolean {
-  if (workEntryIndicatesToolFailure(entry) || entry.toolLifecycleStatus === "stopped") {
-    return true;
-  }
-  const kind = entry.sourceActivityKind ?? "";
-  return (
-    kind === "runtime.warning" ||
-    kind === "runtime.error" ||
-    kind === "provider.handoff" ||
-    kind.startsWith("approval.") ||
-    kind.startsWith("user-input.") ||
-    kind.startsWith("agent.")
-  );
 }
 
 export function resolveTimelineIsAtEnd(state: TimelineEndState | undefined): boolean | undefined {
@@ -699,16 +676,12 @@ export function deriveMessagesTimelineRows(input: {
   activeTurnStartedAt: string | null;
   turnDiffSummaryByAssistantMessageId: ReadonlyMap<MessageId, TurnDiffSummary>;
   revertTurnCountByUserMessageId: ReadonlyMap<MessageId, number>;
-  /** Defaults true for direct legacy callers; the product always supplies its setting. */
-  verboseActivity?: boolean;
 }): MessagesTimelineRow[] {
   const nextRows: MessagesTimelineRow[] = [];
-  const timelineEntries =
-    input.verboseActivity === false
-      ? input.timelineEntries.filter(
-          (entry) => entry.kind !== "work" || shouldShowWorkEntryInConciseActivity(entry.entry),
-        )
-      : input.timelineEntries;
+  // The transcript is the durable, chronological source of truth. Visual
+  // density is handled by turn folds and work-group disclosure below; never
+  // discard successful tools, searches, commands, or thinking steps.
+  const timelineEntries = input.timelineEntries;
   const durationStartByMessageId = computeMessageDurationStart(
     timelineEntries.flatMap((entry) => (entry.kind === "message" ? [entry.message] : [])),
   );

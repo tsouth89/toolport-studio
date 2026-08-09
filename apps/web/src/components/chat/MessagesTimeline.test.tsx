@@ -189,7 +189,6 @@ function buildProps() {
     markdownCwd: undefined,
     resolvedTheme: "light" as const,
     timestampFormat: "locale" as const,
-    verboseActivity: true,
     workspaceRoot: undefined,
     anchorMessageId: null,
     onAnchorReady: () => {},
@@ -704,8 +703,8 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).toContain('aria-label="Open Agent 1 in Agents"');
-    expect(markup).toContain('tabindex="0"');
+    expect(markup).toContain('aria-label="Kicked off 1 subagent. 1 working. Open Agents"');
+    expect(markup).toContain("Open Agents ▸");
   });
 
   it("names the open tool on the wait notice when a long tool is still running", () => {
